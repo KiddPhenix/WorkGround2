@@ -280,6 +280,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__settings-error { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: #ffacb7; font-size: 11px; }
 .desktop-icon-popup__settings-error span { flex: 1; min-width: 0; }
 .desktop-icon-popup__settings-error button { min-height: 28px; padding: 3px 8px; font-size: 11px; }
+.desktop-icon-popup__dsh-warning { margin: 8px 0 0; color: #c8a7ff; font-size: 11px; line-height: 1.45; }
 .desktop-icon-popup__error, .desktop-icon-toast { color: #ffacb7; }
 /* The height budget is the TS-computed logical --popup-max-height minus the
    popup's own vertical padding/border, so a maxHeight-tall popup lands with

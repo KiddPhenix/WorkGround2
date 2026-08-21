@@ -2,7 +2,7 @@
 
 ## 1. 文档状态
 
-- 状态：P0/P1/P2 已完成，P3 待办
+- 状态：P0/P1/P2/P3 已完成，P4 待办
 - 分支：`developping/external-agent-runhub+2026-08-20`
 - 首个适配目标：DeepSeek Harness（DSH）
 - 后续目标：Codex、Claude Code
@@ -384,13 +384,15 @@ internal/runhub/dsh/
 
 验收：成功、模型失败、进程崩溃、取消和 Desktop 重启均得到明确状态，且不会重复启动；默认测试不访问网络/模型，使用 fake JSON-RPC child/process 覆盖成功、错误 response、坏帧、崩溃、取消升级、重复取消、错误 session/message、重启恢复、重复启动。另有 opt-in 真实 runtime smoke（见 16.2），驱动 rc.8 `dsh-jsonrpc-agent` 覆盖 probe→process→initialize→session/prompt→事件/终态→shutdown/cleanup。
 
-### P3：Desktop 投影与快速启动（待办）
+### P3：Desktop 投影与快速启动（已完成）
 
-- 图标小组件合并外部 RunProjection。
-- 支持当前 Workspace 快速启动和显式 Workspace 覆盖。
-- 动作按 Capability 显示。
+- Desktop 以 `%MemoryUserDir%/runhub` 为权威状态目录，通过 Wails 暴露只读快照、幂等启动和取消入口；重启发现未完成 binding 时收敛为 interrupted/stale，不自动重启未知结果任务。
+- 图标小组件合并外部 `RunProjection`，固定 DSH 入口支持当前 Workspace 快速启动和显式 Workspace 覆盖。
+- 启动意图在前端持久化完整 packet；响应丢失后以同一 requestId、Workspace 和 prompt 重放。RunHub receipt 保存意图指纹但不落盘 prompt。
+- 动作严格按 frozen Capability 显示。DSH rc.8 当前只显示 Cancel，不伪造 Open、Retry、Resume、Approve 或 Send。
+- DSH 根目录优先使用 `DSH_RUNHUB_ROOT`，并可从 `DSH_RUNTIME_ANCHOR`、Workspace、当前目录或可执行文件附近发现；不写死开发机路径。子进程仅继承运行所需的系统、代理和 DSH/DeepSeek/Node 环境变量。
 
-验收：DSH 状态变化可见；缺少协议能力的操作不会出现。
+验收：RunHub/DSH 与 Desktop 专项 Go 测试、前端 ledger/图标契约、TypeScript、生产前端构建通过；DSH 状态变化可见，缺少协议能力的操作不会出现。
 
 ### P4：DSH Observer
 

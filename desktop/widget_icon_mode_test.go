@@ -13,8 +13,48 @@ import (
 
 	"workground2/internal/agent"
 	"workground2/internal/control"
+	"workground2/internal/runhub"
 	"workground2/internal/unread"
 )
+
+func TestExternalRunIconsExposeOnlyDeclaredCapabilities(t *testing.T) {
+	now := time.Now()
+	snapshot := DesktopIconSnapshot{Items: []DesktopIconItem{}}
+	appendExternalRunIcons(&snapshot, ExternalRunSnapshot{
+		DSH: ExternalRunProfileView{Ready: true, Version: "0.1.0-rc.8"},
+		Runs: []runhub.RunProjection{
+			{ID: "active", Source: runhub.SourceDSH, State: runhub.StateRunning, Activity: runhub.ActivityTool, ActivityLabel: "执行测试", Workspace: `D:\Work\one`, Capabilities: runhub.Capabilities{Cancel: true, Open: true}, CreatedAt: now, UpdatedAt: now},
+			{ID: "done", Source: runhub.SourceDSH, State: runhub.StateSucceeded, Workspace: `D:\Work\two`, Capabilities: runhub.Capabilities{Cancel: true}, Summary: "完成", CreatedAt: now, UpdatedAt: now},
+		},
+	}, map[string]DesktopIconPosition{})
+
+	launcher := findDesktopIconItem(snapshot.Items, "fixed:dsh")
+	if launcher == nil || !reflect.DeepEqual(launcher.Actions, []string{"launch"}) {
+		t.Fatalf("DSH launcher actions = %+v", launcher)
+	}
+	active := findDesktopIconItem(snapshot.Items, "external:active")
+	if active == nil || !reflect.DeepEqual(active.Actions, []string{"cancel"}) || active.Runtime == nil {
+		t.Fatalf("active external projection = %+v", active)
+	}
+	done := findDesktopIconItem(snapshot.Items, "external:done")
+	if done == nil || len(done.Actions) != 0 || done.Runtime != nil {
+		t.Fatalf("terminal external projection = %+v", done)
+	}
+}
+
+func TestExternalRunRevisionChangesWithinSameActivity(t *testing.T) {
+	now := time.Now()
+	projection := runhub.RunProjection{ID: "active", Source: runhub.SourceDSH, State: runhub.StateRunning, Activity: runhub.ActivityTool, ActivityLabel: "第一步", Revision: 2, CreatedAt: now, UpdatedAt: now}
+	first := DesktopIconSnapshot{Items: []DesktopIconItem{}}
+	appendExternalRunIcons(&first, ExternalRunSnapshot{Runs: []runhub.RunProjection{projection}}, nil)
+	projection.ActivityLabel = "第二步"
+	projection.Revision++
+	second := DesktopIconSnapshot{Items: []DesktopIconItem{}}
+	appendExternalRunIcons(&second, ExternalRunSnapshot{Runs: []runhub.RunProjection{projection}}, nil)
+	if first.Revision == second.Revision {
+		t.Fatal("same-phase external event did not advance desktop snapshot revision")
+	}
+}
 
 func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 	state := UnreadState{Available: true, Summary: unread.Summary{Revision: 7, Conversations: []unread.Conversation{{

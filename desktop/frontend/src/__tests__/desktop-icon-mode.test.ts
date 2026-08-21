@@ -144,6 +144,10 @@ assert.deepEqual(iconHitRect(physicalRect, 1.5), { x: 445, y: 625, width: 108, h
 const component = readFileSync(resolve(import.meta.dirname, "../components/widget/DesktopIconMode.tsx"), "utf8");
 const css = readFileSync(resolve(import.meta.dirname, "../components/widget/desktop-icon-mode.css"), "utf8");
 const backend = readFileSync(resolve(import.meta.dirname, "../../../widget_icon_mode.go"), "utf8");
+assert.match(component, /readExternalRunLaunch\(localStorage\)[\s\S]+prepareExternalRunLaunch\(localStorage, choice\.root, prompt,[\s\S]+LaunchDSHRun\(\{ requestId: packet\.requestId, workspace: packet\.workspace, prompt: packet\.prompt \}\)/, "DSH quick start reloads and replays the complete persisted launch packet");
+assert.match(component, /item\.actions\?\.includes\("cancel"\)[\s\S]+取消 DSH 任务/, "external-run controls render cancel only from the capability-derived action list");
+assert.doesNotMatch(component.slice(component.indexOf("function ExternalRunBody"), component.indexOf("function previewText")), />打开<|>重试<|>恢复<|>批准<|>发送</, "DSH rc.8 external-run popup does not manufacture unsupported controls");
+assert.match(backend, /run\.Capabilities\.Cancel && !run\.State\.IsTerminal\(\)[\s\S]+item\.Actions = append\(item\.Actions, "cancel"\)/, "backend freezes the rc.8 capability surface into external icon actions");
 assert.doesNotMatch(component, /desktop-icon-exit/, "icon mode CSS carries no legacy exit-button class");
 assert.doesNotMatch(css, /desktop-icon-exit/, "icon mode CSS carries no exit-button styles");
 assert.match(component, /onOpenMain: \(\) => Promise<void>/, "the quick toolbar receives the open-main callback from the root App");

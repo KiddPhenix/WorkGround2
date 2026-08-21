@@ -154,35 +154,40 @@ func (h *Hub) Launch(intent LaunchIntent) (Receipt, AgentRun) {
 
 	id := DeriveRunID(intent.RequestID)
 	if run, ok := h.runs[id]; ok {
-		if err := h.ensureLaunchReceipt(intent, run); err != nil {
+		if conflict, err := h.ensureLaunchReceipt(intent, run); err != nil {
 			return Receipt{Status: ReceiptRetryable, RunID: id, Message: err.Error()}, AgentRun{}
+		} else if conflict != "" {
+			return Receipt{Status: ReceiptInvalid, RunID: id, Revision: run.Revision, Message: conflict}, run
 		}
 		return Receipt{Status: ReceiptAlreadyApplied, RunID: id, Revision: run.Revision}, run
 	}
 
 	now := time.Now().Round(0)
 	run := AgentRun{
-		ID:         id,
-		Source:     intent.Source,
-		Ownership:  OwnershipManaged,
-		Workspace:  intent.Workspace,
-		State:      StateQueued,
-		Activity:   ActivityIdle,
-		Revision:   1,
-		LastSeenAt: now,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:                id,
+		Source:            intent.Source,
+		Ownership:         OwnershipManaged,
+		Workspace:         intent.Workspace,
+		Capabilities:      intent.Capabilities,
+		LaunchFingerprint: launchIntentFingerprint(intent),
+		State:             StateQueued,
+		Activity:          ActivityIdle,
+		Revision:          1,
+		LastSeenAt:        now,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	if err := h.store.SaveRun(run); err != nil {
 		return Receipt{Status: ReceiptRetryable, RunID: id, Message: err.Error()}, AgentRun{}
 	}
 
 	rec := LaunchReceipt{
-		RequestID: intent.RequestID,
-		RunID:     id,
-		Status:    ReceiptAccepted,
-		Intent:    intent,
-		CreatedAt: now,
+		RequestID:         intent.RequestID,
+		RunID:             id,
+		Status:            ReceiptAccepted,
+		Intent:            sanitizedLaunchIntent(intent),
+		IntentFingerprint: launchIntentFingerprint(intent),
+		CreatedAt:         now,
 	}
 	if err := h.store.SaveLaunchReceipt(intent.RequestID, rec); err != nil {
 		return Receipt{Status: ReceiptRetryable, RunID: id, Message: err.Error()}, AgentRun{}
@@ -198,22 +203,34 @@ func (h *Hub) Launch(intent LaunchIntent) (Receipt, AgentRun) {
 // snapshot but crashed before writing its receipt. It runs with the lock held
 // and returns any persistence failure so the caller can surface a retryable
 // error instead of a false already-applied success.
-func (h *Hub) ensureLaunchReceipt(intent LaunchIntent, run AgentRun) error {
-	if _, ok := h.launches[intent.RequestID]; ok {
-		return nil
+func (h *Hub) ensureLaunchReceipt(intent LaunchIntent, run AgentRun) (string, error) {
+	wantFingerprint := launchIntentFingerprint(intent)
+	if rec, ok := h.launches[intent.RequestID]; ok {
+		fingerprint := rec.IntentFingerprint
+		if fingerprint == "" {
+			fingerprint = launchIntentFingerprint(rec.Intent)
+		}
+		if fingerprint != wantFingerprint {
+			return "requestId was already used for another launch intent", nil
+		}
+		return "", nil
+	}
+	if run.LaunchFingerprint != "" && run.LaunchFingerprint != wantFingerprint {
+		return "requestId was already used for another launch intent", nil
 	}
 	rec := LaunchReceipt{
-		RequestID: intent.RequestID,
-		RunID:     run.ID,
-		Status:    ReceiptAccepted,
-		Intent:    intent,
-		CreatedAt: run.CreatedAt,
+		RequestID:         intent.RequestID,
+		RunID:             run.ID,
+		Status:            ReceiptAccepted,
+		Intent:            sanitizedLaunchIntent(intent),
+		IntentFingerprint: wantFingerprint,
+		CreatedAt:         run.CreatedAt,
 	}
 	if err := h.store.SaveLaunchReceipt(intent.RequestID, rec); err != nil {
-		return err
+		return "", err
 	}
 	h.launches[intent.RequestID] = rec
-	return nil
+	return "", nil
 }
 
 // Report idempotently reduces one event. The same event id returns the same

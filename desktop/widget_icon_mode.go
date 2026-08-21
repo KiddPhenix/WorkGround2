@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"workground2/internal/agent"
 	"workground2/internal/fileutil"
 	"workground2/internal/provider"
+	"workground2/internal/runhub"
 	"workground2/internal/unread"
 )
 
@@ -180,6 +182,13 @@ type DesktopIconItem struct {
 	Revision      string              `json:"revision"`
 	Retained      bool                `json:"retained,omitempty"`
 	SessionRef    *DesktopIconTaskRef `json:"sessionRef,omitempty"`
+	// Actions is the exact capability-derived surface for external runs and
+	// launch profiles. Local task actions continue to use their existing typed
+	// Controller path. An absent action must never be manufactured by the UI.
+	Actions []string `json:"actions,omitempty"`
+	// SourceRevision lets externally-owned projections participate in the icon
+	// snapshot revision even when consecutive events keep the same phase.
+	SourceRevision uint64 `json:"sourceRevision,omitempty"`
 }
 
 type DesktopIconSnapshot struct {
@@ -752,11 +761,14 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	roomSummaries := a.desktopRoomSummaries()
 	roomRefs := a.desktopIconRoomRefs(projectTree)
 	snapshot := buildDesktopIconSnapshot(sources, unreadState, spaces, a.iconWidgetState, hover, roomSummaries, roomRefs, subagentCounts)
+	external := a.GetExternalRunSnapshot()
+	appendExternalRunIcons(&snapshot, external, a.iconWidgetState.Positions)
 	if a.pinNewDesktopIconTaskOrdersLocked(snapshot) {
 		// The snapshot just pinned brand-new task icons, so rebuild once: the
 		// current response must already reflect the pinned (stable) orders,
 		// otherwise the very first render would still use the ephemeral ones.
 		snapshot = buildDesktopIconSnapshot(sources, unreadState, spaces, a.iconWidgetState, hover, roomSummaries, roomRefs, subagentCounts)
+		appendExternalRunIcons(&snapshot, external, a.iconWidgetState.Positions)
 	}
 	snapshot.Style = style
 	if recoveryErr != nil {
@@ -771,7 +783,107 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	if a.iconWidgetWindowErr != nil {
 		snapshot.Error = firstNonEmpty(snapshot.Error, a.iconWidgetWindowErr.Error())
 	}
+	if external.Error != "" {
+		snapshot.Error = firstNonEmpty(snapshot.Error, external.Error)
+	}
 	return snapshot
+}
+
+func appendExternalRunIcons(snapshot *DesktopIconSnapshot, external ExternalRunSnapshot, positions map[string]DesktopIconPosition) {
+	runningOrder, fixedOrder := 0, 0
+	for _, item := range snapshot.Items {
+		if item.Position.Zone == "running" {
+			runningOrder = max(runningOrder, item.Position.Order+1)
+		}
+		if item.Position.Zone == "fixed" {
+			fixedOrder = max(fixedOrder, item.Position.Order+1)
+		}
+	}
+	profileStatus := "idle"
+	profileSubtitle := "DSH rc.8 未就绪"
+	profileActions := []string(nil)
+	if external.DSH.Ready {
+		profileSubtitle = firstNonEmpty(external.DSH.Version, "DSH rc.8") + " · 快速启动"
+		profileActions = []string{"launch"}
+	} else if external.DSH.Error != "" || len(external.DSH.Missing) > 0 {
+		profileStatus = "failed"
+		profileSubtitle = firstNonEmpty(external.DSH.Error, dshIssues(external.DSH.Missing))
+	}
+	launcher := DesktopIconItem{
+		ID: "fixed:dsh", Kind: "fixed", SourceID: "dsh", Title: "DSH", Icon: "terminal",
+		Subtitle: profileSubtitle, Status: profileStatus, Notifications: []DesktopIconNotice{}, Actions: profileActions,
+		Position: DesktopIconPosition{Row: "bottom", Zone: "fixed", Order: fixedOrder},
+	}
+	launcher.Revision = desktopIconItemRevision(launcher)
+	snapshot.Items = append(snapshot.Items, launcher)
+
+	terminal := 0
+	for _, projection := range external.Runs {
+		if projection.State.IsTerminal() {
+			if terminal >= 3 {
+				continue
+			}
+			terminal++
+		}
+		item := externalRunIcon(projection, runningOrder)
+		runningOrder++
+		if position, ok := positions[item.ID]; ok && validDesktopIconPosition(item, position) {
+			item.Position = position
+		}
+		item.Revision = desktopIconItemRevision(item)
+		snapshot.Items = append(snapshot.Items, item)
+	}
+	sort.SliceStable(snapshot.Items, func(i, j int) bool {
+		left, right := snapshot.Items[i].Position, snapshot.Items[j].Position
+		if left.Row != right.Row {
+			return left.Row < right.Row
+		}
+		if left.Zone != right.Zone {
+			return desktopIconZoneRank(left.Zone) < desktopIconZoneRank(right.Zone)
+		}
+		if left.Order != right.Order {
+			return left.Order < right.Order
+		}
+		return snapshot.Items[i].ID < snapshot.Items[j].ID
+	})
+	snapshot.Revision = desktopIconSnapshotRevision(*snapshot)
+}
+
+func externalRunIcon(run runhub.RunProjection, order int) DesktopIconItem {
+	status := "idle"
+	switch run.State {
+	case runhub.StateStarting, runhub.StateRunning:
+		status = "running"
+		if run.Activity == runhub.ActivityThinking || run.Activity == runhub.ActivityResponding {
+			status = "thinking"
+		}
+	case runhub.StateWaitingUser:
+		status = "needs_input"
+	case runhub.StateSucceeded, runhub.StateCancelled:
+		status = "done"
+	case runhub.StateFailed, runhub.StateInterrupted, runhub.StateStale:
+		status = "failed"
+	}
+	item := DesktopIconItem{
+		ID: "external:" + string(run.ID), Kind: "external", SourceID: string(run.ID),
+		Title:    firstNonEmpty(strings.TrimSpace(run.Title), strings.ToUpper(string(run.Source))),
+		Subtitle: filepath.Base(run.Workspace), Icon: "terminal", Status: status,
+		Notifications: []DesktopIconNotice{}, Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: order},
+		SourceRevision: run.Revision,
+	}
+	if run.Capabilities.Cancel && !run.State.IsTerminal() {
+		item.Actions = append(item.Actions, "cancel")
+	}
+	if !run.State.IsTerminal() {
+		item.Runtime = &DesktopIconRuntime{
+			Phase:     firstNonEmpty(string(run.Activity), string(run.State)),
+			Summary:   firstNonEmpty(strings.TrimSpace(run.ActivityLabel), strings.TrimSpace(run.Summary), "DSH 正在执行"),
+			ElapsedMs: max(int64(0), time.Since(run.CreatedAt).Milliseconds()), UpdatedAt: run.UpdatedAt.UnixMilli(),
+		}
+	} else if strings.TrimSpace(run.Summary) != "" {
+		item.Subtitle = conciseWidgetText(run.Summary, 80)
+	}
+	return item
 }
 
 // pinNewDesktopIconTaskOrdersLocked durably pins the running-zone order of
@@ -1560,7 +1672,7 @@ func desktopIconStatus(kind, fallback string) string {
 }
 
 func desktopIconItemRevision(item DesktopIconItem) string {
-	parts := []string{item.ID, item.Status, strconv.Itoa(item.Position.Order), item.Position.Row, item.Position.Zone}
+	parts := []string{item.ID, item.Status, strconv.Itoa(item.Position.Order), item.Position.Row, item.Position.Zone, strconv.FormatUint(item.SourceRevision, 10)}
 	if item.Runtime != nil {
 		parts = append(parts, item.Runtime.Phase)
 	}
@@ -1573,6 +1685,7 @@ func desktopIconItemRevision(item DesktopIconItem) string {
 	for _, notice := range item.Notifications {
 		parts = append(parts, notice.ID, notice.Revision)
 	}
+	parts = append(parts, item.Actions...)
 	return widgetRevision(parts...)
 }
 
@@ -1610,7 +1723,7 @@ func validDesktopIconPosition(item DesktopIconItem, position DesktopIconPosition
 		return false
 	}
 	switch item.Kind {
-	case "task":
+	case "task", "external":
 		return position.Zone == "running"
 	case "workspace":
 		return position.Zone == "workspace"
@@ -1975,6 +2088,12 @@ func (a *App) applyDesktopIconActionLocked(item DesktopIconItem, notice *Desktop
 		}
 		a.CancelTab(item.SourceID)
 		return nil
+	case "cancel":
+		if item.Kind != "external" || !slices.Contains(item.Actions, "cancel") {
+			return errors.New("external run does not expose cancel")
+		}
+		_, err := a.CancelExternalRun(ExternalRunCancelInput{RunID: item.SourceID, RequestID: input.RequestID})
+		return err
 	case "mark_read":
 		if notice == nil || notice.Conversation == "" {
 			return errors.New("conversation notification is required")

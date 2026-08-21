@@ -43,11 +43,12 @@ const maxStoredEventLine = 1 << 20
 // LaunchReceipt is the durable record proving a requestId maps to exactly one
 // run, even across restarts.
 type LaunchReceipt struct {
-	RequestID string        `json:"requestId"`
-	RunID     RunID         `json:"runId"`
-	Status    ReceiptStatus `json:"status"`
-	Intent    LaunchIntent  `json:"intent,omitempty"`
-	CreatedAt time.Time     `json:"createdAt"`
+	RequestID         string        `json:"requestId"`
+	RunID             RunID         `json:"runId"`
+	Status            ReceiptStatus `json:"status"`
+	Intent            LaunchIntent  `json:"intent,omitempty"`
+	IntentFingerprint string        `json:"intentFingerprint,omitempty"`
+	CreatedAt         time.Time     `json:"createdAt"`
 }
 
 // EventReceipt is the durable record proving an eventId was already evaluated,
@@ -486,6 +487,17 @@ func validateLaunchReceipt(rec LaunchReceipt) error {
 	}
 	if rec.Intent.RequestID != rec.RequestID {
 		return fmt.Errorf("runhub: launch receipt %q intent request id %q diverges", rec.RequestID, rec.Intent.RequestID)
+	}
+	if rec.IntentFingerprint != "" {
+		if len(rec.IntentFingerprint) != sha256.Size*2 {
+			return fmt.Errorf("runhub: launch receipt %q has invalid intent fingerprint", rec.RequestID)
+		}
+		if _, err := hex.DecodeString(rec.IntentFingerprint); err != nil {
+			return fmt.Errorf("runhub: launch receipt %q has invalid intent fingerprint: %w", rec.RequestID, err)
+		}
+		if rec.Intent.Prompt != "" {
+			return fmt.Errorf("runhub: launch receipt %q persists a prompt beside its fingerprint", rec.RequestID)
+		}
 	}
 	if DeriveRunID(rec.RequestID) != rec.RunID {
 		return fmt.Errorf("runhub: launch receipt %q run id %q does not match derived id", rec.RequestID, rec.RunID)

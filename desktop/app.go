@@ -137,6 +137,12 @@ type App struct {
 	dshWorkbenchMu sync.Mutex
 	dshWorkbenches map[string]*dshWorkbench
 
+	// runHub owns external managed-agent projections independently from local
+	// tabs. Initialization failures remain visible through the Wails snapshot;
+	// they never disable the rest of Desktop.
+	runHub    *desktopRunHub
+	runHubErr error
+
 	// tabsSaveMu serializes writes to desktop-tabs.json and its fixed .tmp path.
 	tabsSaveMu             sync.Mutex
 	tabsSaveVersion        uint64 // protected by mu; assigned when collecting a snapshot
@@ -482,6 +488,7 @@ func NewApp() *App {
 		return a
 	}
 	a.unreadStore, a.unreadErr = unread.Open(filepath.Join(root, "unread-v1.json"))
+	a.runHub, a.runHubErr = newDesktopRunHub(filepath.Join(root, "runhub"))
 	a.sessionRefs, a.sessionRefsErr = work.NewFileSessionRefStore(
 		filepath.Join(root, "work-session-refs-v1.json"),
 		work.WithRetention(30*24*time.Hour),
@@ -858,6 +865,9 @@ func (a *App) snapshotAllTabs() {
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
 	a.stopDecisionRuntime()
+	if a.runHub != nil {
+		a.runHub.close()
+	}
 	a.closeDSHWorkbenches()
 	a.closeCollaborations()
 	if a.heartbeat != nil {

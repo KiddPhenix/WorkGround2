@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, MessageCircle, Pencil, Pin, PinOff, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
-import { app, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
+import { app, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type ExternalRunSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import { asArray } from "../../lib/array";
 import { AgentIcon } from "../agent-icon/AgentIcon";
 import { buildAgentIconViewModel, isAgentIconItem } from "../../lib/agentIcon/viewModel";
@@ -21,6 +21,7 @@ import { resolveWidgetZoomFrame } from "./widgetZoom";
 import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTitle, WORKSPACE_PIN_LIMIT, workspacePinsFull, type WorkspaceRow } from "./workspaceManager";
 import { roomRows, type RoomRow } from "./roomsManager";
 import { readRoomIconVisibility, visibleDesktopIcons, writeRoomIconVisibility } from "./roomIconVisibility";
+import { clearExternalRunLaunch, prepareExternalRunLaunch, readExternalRunLaunch } from "./externalRunLaunchLedger";
 import { isWorkspaceMatteIcon, WORKSPACE_MATTE_ICON_OPTIONS, type ProjectIconKey, type WorkspaceMatteIconKey } from "../../lib/projectIcons";
 import { WorkspaceMatteIcon } from "./WorkspaceMatteIcon";
 import "./desktop-icon-mode.css";
@@ -101,6 +102,7 @@ function itemGlyph(item: DesktopIconItem, agentViewModel?: AgentIconViewModel) {
   // 真实 task/session 使用可组合 Agent Icon（身份/任务/徽标/状态眼睛）；
   // QuickStart 乐观条目尚未形成真实 session，保留旧 Bot 图标。
   if (item.kind === "task") return agentViewModel ? <AgentIcon viewModel={agentViewModel} /> : <Bot />;
+  if (item.kind === "external" || item.sourceId === "dsh") return <SquareTerminal />;
   if (item.kind === "workspace") return <WorkspaceMatteIcon icon={isWorkspaceMatteIcon(item.icon) ? item.icon : "folder"} className="desktop-icon__matte" />;
   const fixedIcon: Record<string, WorkspaceMatteIconKey> = {
     new: "new",
@@ -111,6 +113,20 @@ function itemGlyph(item: DesktopIconItem, agentViewModel?: AgentIconViewModel) {
     search: "research",
   };
   return <WorkspaceMatteIcon icon={fixedIcon[item.sourceId] ?? "research"} className="desktop-icon__matte" />;
+}
+
+function ExternalRunBody({ item, busy, run }: { item: DesktopIconItem; busy: boolean; run: (action: string) => void }) {
+	const terminal = item.status === "done" || item.status === "failed";
+	return <>
+		<div className="desktop-icon-popup__eyebrow">DSH · {terminal ? "已结算" : "外部任务"}</div>
+		<strong>{item.title}</strong>
+		<p>{item.runtimeStatus?.summary || item.subtitle || (item.status === "failed" ? "任务失败或已中断" : "任务状态已更新")}</p>
+		{item.runtimeStatus && <div className="desktop-icon-popup__facts"><span>{item.runtimeStatus.phase}</span><span>{Math.max(0, Math.round(item.runtimeStatus.elapsedMs / 1000))} 秒</span><span>{item.subtitle}</span></div>}
+		<div className="desktop-icon-popup__actions">
+			{item.actions?.includes("cancel") && <button disabled={busy} className="danger" onClick={() => run("cancel")}>取消 DSH 任务</button>}
+			{!item.actions?.length && <small>DSH rc.8 未提供 Open、Retry、Resume、Approve 或 Send。</small>}
+		</div>
+	</>;
 }
 
 function previewText(item: DesktopIconItem): string {
@@ -535,6 +551,79 @@ function QuickStart({ workspaces, initialWorkspace = "", editJob = null, initial
     {error && <p role="alert" className="desktop-icon-popup__error">{error}</p>}
 		<div className="desktop-icon-popup__actions desktop-icon-popup__actions--quick"><button disabled={!draft.trim() || !preferences} onClick={send}>{!preferences ? "读取设置…" : "发送"}</button><button className="subtle" onClick={onClose}>取消</button>{preferences && <small className="desktop-icon-popup__submit-hint">{preferences.submitKey === "ctrl_enter" ? "Ctrl+Enter 发送" : "Enter 发送"}</small>}</div>
   </div>;
+}
+
+function DSHQuickStart({ workspaces, onChanged, onClose }: { workspaces: WidgetWorkspaceOption[]; onChanged: () => Promise<void>; onClose: () => void }) {
+	const pending = useMemo(() => {
+		try { return readExternalRunLaunch(localStorage); } catch { return null; }
+	}, []);
+	const [profile, setProfile] = useState<ExternalRunSnapshot | null>(null);
+	const [workspace, setWorkspace] = useState(pending?.workspace || "");
+	const choices = useMemo(() => {
+		const values: Array<{ name: string; root: string }> = [];
+		const add = (name: string, root: string) => {
+			root = root.trim();
+			if (root && !values.some((item) => item.root === root)) values.push({ name, root });
+		};
+		add("当前 Workspace", profile?.workspace || "");
+		workspaces.filter((item) => item.scope === "project" && item.root).forEach((item) => add(item.name, item.root || ""));
+		// A lost-response packet remains replayable even if its project was
+		// removed from the current tree before Desktop restarted.
+		if (pending?.workspace) add("待恢复 Workspace", pending.workspace);
+		return values;
+	}, [pending?.workspace, profile?.workspace, workspaces]);
+	useEffect(() => {
+		if (!workspace && profile?.workspace) setWorkspace(profile.workspace);
+	}, [profile?.workspace, workspace]);
+	const index = Math.max(0, choices.findIndex((choice) => choice.root === workspace));
+	const [prompt, setPrompt] = useState(pending?.prompt || "");
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState("");
+	const sent = useRef(false);
+	const load = useCallback(() => {
+		setError("");
+		return app.GetExternalRunSnapshot().then(setProfile).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+	}, []);
+	useEffect(() => { void load(); }, [load]);
+	const choice = choices[index];
+	const switchBy = (delta: number) => {
+		if (!choices.length) return;
+		setWorkspace(choices[(index + delta + choices.length) % choices.length].root);
+	};
+	const submit = async () => {
+		if (busy || sent.current || !profile?.dsh.ready || !choice?.root) return;
+		sent.current = true;
+		setBusy(true);
+		setError("");
+		try {
+			const packet = prepareExternalRunLaunch(localStorage, choice.root, prompt, () => requestID("dsh"));
+			const result = await app.LaunchDSHRun({ requestId: packet.requestId, workspace: packet.workspace, prompt: packet.prompt });
+			if (result.receipt.status !== "accepted" && result.receipt.status !== "already_applied") {
+				throw new Error(result.receipt.message || `DSH 启动失败：${result.receipt.status}`);
+			}
+			try { clearExternalRunLaunch(localStorage, packet.requestId); } catch { /* replay remains safe */ }
+			await onChanged();
+			onClose();
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setBusy(false);
+			sent.current = false;
+		}
+	};
+	const profileError = profile?.dsh.error || profile?.dsh.missing?.map((item) => item.detail).join("；") || profile?.error || "";
+	return <div className="desktop-icon-popup__quick desktop-icon-popup__dsh">
+		<div className="desktop-icon-popup__workspace"><button disabled={busy || choices.length < 2} onClick={() => switchBy(-1)}>Ctrl + ←</button><strong>{choice ? `${choice.name} · ${index + 1} / ${choices.length}` : "没有可用 Workspace"}</strong><button disabled={busy || choices.length < 2} onClick={() => switchBy(1)}>Ctrl + →</button></div>
+		<div className="desktop-icon-popup__quick-meta">
+			<div className="desktop-icon-popup__quick-chip-wrap"><button type="button" className="desktop-icon-popup__quick-chip" disabled><SquareTerminal /><span className="desktop-icon-popup__quick-chip-copy"><small>运行时</small><strong>{profile?.dsh.ready ? `DSH ${profile.dsh.version || "rc.8"}` : "DSH 未就绪"}</strong></span></button></div>
+			<div className="desktop-icon-popup__quick-chip-wrap"><button type="button" className="desktop-icon-popup__quick-chip" disabled><Folder /><span className="desktop-icon-popup__quick-chip-copy"><small>Workspace</small><strong>{choice?.name || "未选择"}</strong></span></button></div>
+		</div>
+		<div className="desktop-icon-popup__quick-composer"><textarea autoFocus value={prompt} disabled={busy} placeholder="告诉 DSH 在所选 Workspace 中完成什么…" onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submit(); } }} /></div>
+		<p className="desktop-icon-popup__dsh-warning">DSH 将按本地 cordis.yml 权限配置执行；当前 rc.8 仅支持取消，无法从 WorkGround2 恢复或批准。</p>
+		{profileError && <div role="alert" className="desktop-icon-popup__settings-error"><span>{profileError}</span><button type="button" className="subtle" onClick={() => void load()}>重试探针</button></div>}
+		{error && <p role="alert" className="desktop-icon-popup__error">{error}</p>}
+		<div className="desktop-icon-popup__actions desktop-icon-popup__actions--quick"><button disabled={busy || !choice?.root || !prompt.trim() || !profile?.dsh.ready} onClick={() => void submit()}>{busy ? "启动中…" : "启动 DSH"}</button><button className="subtle" disabled={busy} onClick={onClose}>取消</button><small>Ctrl+Enter 启动</small></div>
+	</div>;
 }
 
 function SearchPanel({ onClose, onPick }: { onClose: () => void; onPick: (item: DesktopIconSearchItem) => Promise<unknown> }) {
@@ -1171,6 +1260,9 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 			// the generic fixed action (which would exit widget mode).
 			setActiveID(item.id);
 		}
+		else if (item.kind === "fixed" && item.sourceId === "dsh") {
+			setActiveID(item.id);
+		}
     else setActiveID((current) => current === item.id ? "" : item.id);
     setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); setQuickOpen(false);
   };
@@ -1235,7 +1327,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		if (job?.phase === "accepted" && job.tabId) { void openQuickStartTask(job); return; }
 		openItem(item);
 	};
-	const doubleClick = (item: DesktopIconItem) => { timers.current?.cancel(); setAnchorMenuOpen(false); setQuickOpen(false); if (item.kind === "fixed") openItem(item); else if (isQuickStartJobItem(item)) openQuickStartJob(item); else void run(item, "open"); };
+	const doubleClick = (item: DesktopIconItem) => { timers.current?.cancel(); setAnchorMenuOpen(false); setQuickOpen(false); if (item.kind === "fixed" || item.kind === "external") openItem(item); else if (isQuickStartJobItem(item)) openQuickStartJob(item); else void run(item, "open"); };
 
   const rows = { top: visibleItems.filter((item) => item.position.row === "top"), bottom: visibleItems.filter((item) => item.position.row === "bottom") };
   const active = visibleItems.find((item) => item.id === activeID);
@@ -1278,7 +1370,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {item.activityCount ? <span className="desktop-icon__activity" aria-label={`${item.activityCount} 个活动任务`}>{item.activityCount}</span> : null}
       {!agentIcon && statusGlyph(item) && <span className="desktop-icon__status">{statusGlyph(item)}</span>}
     </button>
-		{menuID === item.id && <div className="desktop-icon-menu" role="menu"><button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}{item.retained && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}</div>}
+		{menuID === item.id && <div className="desktop-icon-menu" role="menu">{item.kind !== "external" && <button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>}{item.kind === "external" && <button role="menuitem" onClick={() => openItem(item)}>查看状态</button>}{item.kind === "external" && item.actions?.includes("cancel") && <button role="menuitem" onClick={() => void run(item, "cancel")}>取消任务</button>}{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}{item.retained && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}</div>}
   </div>;
 	};
 
@@ -1477,11 +1569,13 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} editJob={quickStartEditJob} initialDraft={quickDraftDecision.draft} submitJob={submitQuickStart} onClose={() => { setQuickStartEditJob(null); setActiveID(""); }} />}
       {active && active.sourceId === "search" && <SearchPanel onClose={() => setActiveID("")} onPick={(result) => run(active, "open_search", [result.id])} />}
       {active && active.sourceId === "workspace" && <WorkspaceManager onClose={() => setActiveID("")} onChanged={refresh} />}
-      {active && active.sourceId === "rooms" && <RoomsManager roomIconsVisible={roomIconsVisible} onRoomIconsVisibleChange={setRoomIconsVisible} onClose={() => setActiveID("")} onNewRoom={onNewRoom} onOpenRoom={onOpenRoom} />}
-      {active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
-      {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => run(active, action, values)} onClose={() => { setActiveID(""); setPreviewID(""); }} />}
-      {active && !active.notifications[0] && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
-      {active && !isQuickStartJobItem(active) && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
+		{active && active.sourceId === "rooms" && <RoomsManager roomIconsVisible={roomIconsVisible} onRoomIconsVisibleChange={setRoomIconsVisible} onClose={() => setActiveID("")} onNewRoom={onNewRoom} onOpenRoom={onOpenRoom} />}
+		{active && active.sourceId === "dsh" && <DSHQuickStart workspaces={workspaces} onChanged={refresh} onClose={() => setActiveID("")} />}
+		{active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
+		{active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => run(active, action, values)} onClose={() => { setActiveID(""); setPreviewID(""); }} />}
+		{active && active.kind === "external" && <ExternalRunBody item={active} busy={busy} run={(action) => void run(active, action)} />}
+		{active && active.kind !== "external" && !active.notifications[0] && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
+		{active && active.kind !== "external" && !isQuickStartJobItem(active) && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && active.sourceId !== "dsh" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
 
     </section>}
     {(error || quickError || quickJobs.storageError) && <div className="desktop-icon-toast" role="alert">{error}{error && (quickError || quickJobs.storageError) ? <span aria-hidden="true">；</span> : null}{quickError}{quickError && quickJobs.storageError ? <span aria-hidden="true">；</span> : null}{quickJobs.storageError}<button aria-label="关闭错误" onClick={() => { setError(""); setQuickError(""); quickJobs.clearStorageError(); }}><X /></button></div>}

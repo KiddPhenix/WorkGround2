@@ -304,20 +304,36 @@ export interface DesktopIconTaskRef {
   sessionPath?: string;
 }
 export interface DesktopIconItem {
-  id: string; kind: "room" | "person" | "task" | "workspace" | "fixed"; sourceId: string; title: string;
+	id: string; kind: "room" | "person" | "task" | "workspace" | "fixed" | "external"; sourceId: string; title: string;
   subtitle?: string; icon?: string; status: DesktopIconStatus; unreadCount: number; activityCount?: number; notifications: DesktopIconNotice[];
   runtimeStatus?: DesktopIconRuntime; position: DesktopIconPosition; revision: string; retained?: boolean;
   // 纯展示字段（Agent Icon）：稳定身份 seed 与 workspace 图标键；旧 retained
   // 数据可能缺 sessionId，前端按 sessionRef/sessionPath 稳定回退。
   sessionId?: string;
   workspaceIcon?: string;
-  sessionRef?: DesktopIconTaskRef;
+	sessionRef?: DesktopIconTaskRef;
+	actions?: Array<"launch" | "cancel" | "open" | "retry" | "resume" | "approve" | "send">;
+	sourceRevision?: number;
 }
 export interface DesktopIconSnapshot { items: DesktopIconItem[]; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
 export interface DesktopIconSearchItem { id: string; kind: "session" | "room" | "person" | "task" | "workspace"; title: string; subtitle?: string; sourceId: string; lastActivityAt?: number; }
 export interface DesktopIconSearchResult { items: DesktopIconSearchItem[]; error?: string; }
 export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
 export interface DesktopIconActionResult { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; error?: string; snapshot: DesktopIconSnapshot; }
+export interface ExternalRunCapabilities { cancel: boolean; open: boolean; retry: boolean; resume: boolean; approve: boolean; send: boolean; }
+export interface ExternalRunProjection {
+	id: string; source: "dsh" | "codex" | "claude"; nativeSessionId?: string; ownership: "managed" | "observed"; workspace?: string;
+	title?: string; state: "queued" | "starting" | "running" | "waiting_user" | "succeeded" | "failed" | "cancelled" | "interrupted" | "stale";
+	activity?: "thinking" | "tool" | "responding" | "background" | "idle"; activityLabel?: string; summary?: string;
+	capabilities: ExternalRunCapabilities; revision: number; createdAt: string; updatedAt: string;
+}
+export interface ExternalRunProfileView { id: string; ready: boolean; root?: string; version?: string; capabilities: ExternalRunCapabilities; missing?: Array<{ kind: string; detail: string }>; error?: string; }
+export interface ExternalRunSnapshot { runs: ExternalRunProjection[]; dsh: ExternalRunProfileView; workspace?: string; revision: string; error?: string; }
+export interface ExternalRunReceipt { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; runId?: string; eventId?: string; revision?: number; message?: string; }
+export interface ExternalRunLaunchInput { requestId: string; workspace?: string; prompt: string; }
+export interface ExternalRunLaunchResult { receipt: ExternalRunReceipt; run: ExternalRunProjection; snapshot: ExternalRunSnapshot; }
+export interface ExternalRunCancelInput { runId: string; requestId: string; }
+export interface ExternalRunActionResult { receipt: ExternalRunReceipt; run: ExternalRunProjection; snapshot: ExternalRunSnapshot; }
 export interface DesktopIconRect { x: number; y: number; width: number; height: number; }
 // DesktopIconDiagnosticsInput is one typed diagnostics record appended by the
 // icon widget for an idle-hover trace. It carries measurements and stable
@@ -390,6 +406,9 @@ export interface AppBindings extends WailsWorkBindings {
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
 	ListWidgetWorkspaces(): Promise<WidgetWorkspaceOption[]>;
 	GetDesktopIconSnapshot(): Promise<DesktopIconSnapshot>;
+	GetExternalRunSnapshot(): Promise<ExternalRunSnapshot>;
+	LaunchDSHRun(input: ExternalRunLaunchInput): Promise<ExternalRunLaunchResult>;
+	CancelExternalRun(input: ExternalRunCancelInput): Promise<ExternalRunActionResult>;
 	GetDesktopWorkspaceSlots(): Promise<number>;
 	DesktopIconSearch(query: string): Promise<DesktopIconSearchResult>;
 	ApplyDesktopIconAction(input: DesktopIconActionInput): Promise<DesktopIconActionResult>;
@@ -1419,9 +1438,17 @@ function makeMockApp(): AppBindings {
 		items: [
 			{ id: "conversation:room-design", kind: "room", sourceId: "room-design", title: "产品 Room", status: "unread", unreadCount: 2, position: { row: "top", zone: "conversation", order: 0 }, revision: `room-${widgetRevision}`, notifications: [{ id: "room-msg", revision: "2", kind: "message", priority: 3, title: "小组件讨论", body: "收到一条新消息", createdAt: t0, conversation: "room-design", readSequence: 2, options: [] }] },
 			{ id: "task:tab-wg2", kind: "task", sourceId: "tab-wg2", title: "桌面图标模式", subtitle: "WorkGround2", status: widgetScenario === "widget-running" ? "running" : "thinking", unreadCount: 0, runtimeStatus: { phase: widgetScenario === "widget-running" ? "Running" : "Thinking", summary: widgetScenario === "widget-running" ? "read_file 执行中" : "正在核对真实状态投影", elapsedMs: 84_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 0 }, revision: `task-${widgetRevision}`, notifications: [] },
+			{ id: "external:run-dsh-demo", kind: "external", sourceId: "run-dsh-demo", title: "DSH · WorkGround2", subtitle: "WorkGround2", status: "running", unreadCount: 0, runtimeStatus: { phase: "tool", summary: "DSH 正在执行", elapsedMs: 18_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 1 }, revision: `dsh-${widgetRevision}`, notifications: [], actions: ["cancel"] },
 			...(desktopWorkspaceSlots > 0 ? [{ id: "workspace:~/projects/WorkGround2", kind: "workspace", sourceId: "~/projects/WorkGround2", title: "WorkGround2", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "workspace", order: 0 }, revision: "workspace", notifications: [] } satisfies DesktopIconItem] : []),
 			...(["new", "delegate", "search"] as const).map((id, order) => ({ id: `fixed:${id}`, kind: "fixed" as const, sourceId: id, title: { new: "新建", delegate: "委托", search: "搜索" }[id], icon: id, status: "idle" as const, unreadCount: 0, position: { row: "bottom" as const, zone: "fixed" as const, order }, revision: `fixed-${id}`, notifications: [] })),
+			{ id: "fixed:dsh", kind: "fixed", sourceId: "dsh", title: "DSH", subtitle: "0.1.0-rc.8 · 快速启动", icon: "terminal", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "fixed", order: 3 }, revision: "fixed-dsh", notifications: [], actions: ["launch"] },
 		],
+	});
+	const mockExternalRunSnapshot = (): ExternalRunSnapshot => ({
+		workspace: "~/projects/WorkGround2",
+		revision: `external-${widgetRevision}`,
+		dsh: { id: "dsh-rc8", ready: true, root: "D:/Work/dsh", version: "0.1.0-rc.8", capabilities: { cancel: true, open: false, retry: false, resume: false, approve: false, send: false } },
+		runs: [{ id: "run-dsh-demo", source: "dsh", ownership: "managed", workspace: "~/projects/WorkGround2", title: "DSH · WorkGround2", state: "running", activity: "tool", activityLabel: "DSH 正在执行", capabilities: { cancel: true, open: false, retry: false, resume: false, approve: false, send: false }, revision: widgetRevision, createdAt: new Date(t0 - 18_000).toISOString(), updatedAt: new Date(t0).toISOString() }],
 	});
   // Mutable so MCP add/remove/retry are observable in browser dev.
   let capServers: ServerView[] = [
@@ -2631,6 +2658,20 @@ function makeMockApp(): AppBindings {
 			];
 		},
 		async GetDesktopIconSnapshot() { return mockDesktopIconSnapshot(); },
+		async GetExternalRunSnapshot() { return mockExternalRunSnapshot(); },
+		async LaunchDSHRun(input) {
+			if (!input.requestId || !input.prompt.trim()) throw new Error("requestId and prompt are required");
+			widgetRevision += 1;
+			const snapshot = mockExternalRunSnapshot();
+			return { receipt: { status: "accepted", runId: snapshot.runs[0].id, revision: snapshot.runs[0].revision }, run: snapshot.runs[0], snapshot };
+		},
+		async CancelExternalRun(input) {
+			if (!input.runId || !input.requestId) throw new Error("runId and requestId are required");
+			widgetRevision += 1;
+			const snapshot = mockExternalRunSnapshot();
+			const run = { ...snapshot.runs[0], state: "cancelled" as const, revision: widgetRevision };
+			return { receipt: { status: "accepted", runId: run.id, revision: run.revision }, run, snapshot: { ...snapshot, runs: [run] } };
+		},
 		async GetDesktopWorkspaceSlots() { return desktopWorkspaceSlots; },
 		async DesktopIconSearch(query) {
 			const needle = query.trim().toLowerCase();
