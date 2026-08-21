@@ -208,7 +208,7 @@ function DailyRoutinePanel({ workspaceRoot, onStartHere, onClose }: { workspaceR
 	};
 
 	return <div className="desktop-icon-popup__routines">
-		<div className="desktop-icon-popup__workspace-head"><strong>{t("dailyRoutine.title")}</strong><button type="button" onClick={onStartHere}>{t("dailyRoutine.startHere")}</button></div>
+		<div className="desktop-icon-popup__workspace-head"><strong>{t("dailyRoutine.title")}</strong></div>
 		{loading && <p className="desktop-icon-popup__workspace-note">{t("dailyRoutine.loading")}</p>}
 		{!loading && routines.length === 0 && <p className="desktop-icon-popup__workspace-note">{t("dailyRoutine.empty")}</p>}
 		{error && <div className="desktop-icon-popup__routine-error" role="alert"><span>{error}</span><button type="button" onClick={() => void load()}>{t("common.retry")}</button></div>}
@@ -218,7 +218,7 @@ function DailyRoutinePanel({ workspaceRoot, onStartHere, onClose }: { workspaceR
 				<div className="desktop-icon-popup__routine-actions"><button type="button" disabled={Boolean(busy[routine.id])} onClick={() => void run(routine)}>{busy[routine.id] === "run" ? t("dailyRoutine.starting") : t("dailyRoutine.run")}</button><button type="button" className="subtle" disabled={Boolean(busy[routine.id])} aria-label={t("dailyRoutine.renameAria", { name: routine.name })} onClick={() => { setRenaming(routine.id); setRenameDraft(routine.name); setError(""); }}><Pencil aria-hidden="true" /></button><button type="button" className="subtle danger" disabled={Boolean(busy[routine.id])} aria-label={t("dailyRoutine.deleteAria", { name: routine.name })} onClick={() => void remove(routine)}><Trash2 aria-hidden="true" /></button></div>
 			</>}
 		</div>)}</div>
-		<div className="desktop-icon-popup__workspace-foot"><button type="button" className="subtle" onClick={onClose}>{t("common.close")}</button></div>
+		<div className="desktop-icon-popup__workspace-foot"><button type="button" className="subtle" onClick={onClose}>{t("common.close")}</button><button type="button" onClick={onStartHere}>{t("dailyRoutine.startHere")}</button></div>
 	</div>;
 }
 
