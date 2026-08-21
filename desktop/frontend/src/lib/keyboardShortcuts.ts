@@ -26,8 +26,9 @@ export type ShortcutAction =
   | "topic.goto.8"
   | "topic.goto.9";
 
-type KeyboardShortcutEvent = Pick<globalThis.KeyboardEvent, "key"> &
-  Partial<Pick<globalThis.KeyboardEvent, "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "target">>;
+type KeyboardShortcutEvent = Partial<
+  Pick<globalThis.KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "target">
+>;
 
 export type ShortcutCombo = {
   key: string;
@@ -383,9 +384,10 @@ export function formatShortcutComboParts(combo: ShortcutCombo, platform: Shortcu
 }
 
 export function comboFromKeyboardEvent(event: KeyboardShortcutEvent): ShortcutCombo | null {
-  if (isModifierKey(event.key)) return null;
+  const key = typeof event.key === "string" ? event.key : "";
+  if (!key || isModifierKey(key)) return null;
   return normalizeCombo({
-    key: event.key,
+    key,
     ctrl: event.ctrlKey ?? false,
     meta: event.metaKey ?? false,
     alt: event.altKey ?? false,
