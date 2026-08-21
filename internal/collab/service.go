@@ -99,6 +99,17 @@ func (s *Service) CreateRoom(ctx context.Context, input CreateRoomInput) (Room, 
 }
 
 func (s *Service) Join(ctx context.Context, input JoinInput) (JoinResult, error) {
+	return s.join(ctx, input, false)
+}
+
+// RecoverHostMember rotates an existing member's connection session for the
+// locally authoritative Host. It is intentionally absent from the HTTP
+// handlers: remote members must continue through Join's resume-session check.
+func (s *Service) RecoverHostMember(ctx context.Context, input JoinInput) (JoinResult, error) {
+	return s.join(ctx, input, true)
+}
+
+func (s *Service) join(ctx context.Context, input JoinInput, recoverHost bool) (JoinResult, error) {
 	if err := ctx.Err(); err != nil {
 		return JoinResult{}, err
 	}
@@ -151,7 +162,11 @@ func (s *Service) Join(ctx context.Context, input JoinInput) (JoinResult, error)
 		s.store.mu.Unlock()
 		return JoinResult{}, fail(CodeConflict, "room member limit reached")
 	}
-	if exists && !s.sessionMatchesLocked(state, input.Member.ID, input.ResumeSession) {
+	if recoverHost && !exists {
+		s.store.mu.Unlock()
+		return JoinResult{}, fail(CodeNotFound, "host member does not exist")
+	}
+	if exists && !recoverHost && !s.sessionMatchesLocked(state, input.Member.ID, input.ResumeSession) {
 		s.store.mu.Unlock()
 		return JoinResult{}, fail(CodeResumeNeeded, ResumeRequiredMessage)
 	}
