@@ -77,6 +77,13 @@ type DesktopIconRect struct {
 	Height int `json:"height"`
 }
 
+// DesktopIconHitRegionsInput binds one hit-region snapshot to the native
+// surface generation whose client coordinates it was measured against.
+type DesktopIconHitRegionsInput struct {
+	Rects      []DesktopIconRect `json:"rects"`
+	Generation int64             `json:"generation"`
+}
+
 func normalizeDesktopIconRects(rects []DesktopIconRect, width, height int) []DesktopIconRect {
 	out := make([]DesktopIconRect, 0, min(len(rects), 64))
 	for _, rect := range rects {
@@ -98,12 +105,19 @@ func normalizeDesktopIconRects(rects []DesktopIconRect, width, height int) []Des
 
 // SetDesktopIconHitRegions makes only visible controls participate in native
 // hit testing, so transparent gaps remain part of the real desktop.
-func (a *App) SetDesktopIconHitRegions(rects []DesktopIconRect) error {
+func (a *App) SetDesktopIconHitRegions(input DesktopIconHitRegionsInput) error {
 	if a.ctx == nil {
 		return errors.New("desktop window is not ready")
 	}
 	a.widgetMu.Lock()
 	if !a.widgetMode || a.widgetStyle != "icons" {
+		a.widgetMu.Unlock()
+		return nil
+	}
+	// A bottom-right anchored resize changes the client origin. Requests
+	// measured against an older surface must never reinstall the old HRGN after
+	// SetDesktopIconSurface cleared it.
+	if input.Generation != a.widgetSurfaceGen {
 		a.widgetMu.Unlock()
 		return nil
 	}
@@ -117,7 +131,83 @@ func (a *App) SetDesktopIconHitRegions(rects []DesktopIconRect) error {
 	// The frontend reports physical WebView pixels using devicePixelRatio. Native
 	// code owns the final client-bound clamp; applying WindowGetSize/GetDpiForWindow
 	// here would mix Wails logical units into that physical coordinate contract.
-	return setDesktopIconHitRegions(rects)
+	return setDesktopIconHitRegions(input.Rects)
+}
+
+// DesktopIconSurfaceInput is one monotonic request to resize the native icon
+// canvas. Width/Height are the content's logical bounds (icons plus any open
+// transient surface) and Envelope is the safety margin added on every side so
+// content never sits on the transparent edge. Generation is the frontend's
+// request token; it is echoed back unchanged so late responses can be dropped.
+type DesktopIconSurfaceInput struct {
+	Width      int   `json:"width"`
+	Height     int   `json:"height"`
+	Envelope   int   `json:"envelope"`
+	Generation int64 `json:"generation"`
+}
+
+// DesktopIconSurfaceResult reports the geometry that actually took effect.
+type DesktopIconSurfaceResult struct {
+	Width      int   `json:"width"`
+	Height     int   `json:"height"`
+	X          int   `json:"x"`
+	Y          int   `json:"y"`
+	Generation int64 `json:"generation"`
+}
+
+func growDesktopIconSurfaceInput(input DesktopIconSurfaceInput, current WidgetWindowState) DesktopIconSurfaceInput {
+	input.Width = max(input.Width, current.Width-input.Envelope*2)
+	input.Height = max(input.Height, current.Height-input.Envelope*2)
+	return input
+}
+
+// SetDesktopIconSurface applies a bounded icon-surface geometry request and
+// returns the geometry that actually took effect. It is idempotent: repeating
+// the same request reapplies the same clamped bounds with no drift, and every
+// request is anchored to the current monitor work area's bottom-right corner.
+func (a *App) SetDesktopIconSurface(input DesktopIconSurfaceInput) (DesktopIconSurfaceResult, error) {
+	if a.ctx == nil {
+		return DesktopIconSurfaceResult{}, errors.New("desktop window is not ready")
+	}
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	if !a.widgetMode || a.widgetStyle != "icons" {
+		return DesktopIconSurfaceResult{}, errors.New("desktop icon surface is not active")
+	}
+	if input.Generation < a.widgetSurfaceGen {
+		state := a.widgetSurfaceState
+		return DesktopIconSurfaceResult{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y, Generation: input.Generation}, nil
+	}
+	if input.Generation == a.widgetSurfaceGen && a.widgetSurfaceGen > 0 {
+		state := a.widgetSurfaceState
+		return DesktopIconSurfaceResult{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y, Generation: input.Generation}, nil
+	}
+	// The native state is the final authority for monotonic growth, including a
+	// frontend remount that does not know how far an earlier instance expanded.
+	// Preserve each current axis before adding this request's envelope.
+	input = growDesktopIconSurfaceInput(input, a.widgetSurfaceState)
+	a.widgetRegionMu.Lock()
+	defer a.widgetRegionMu.Unlock()
+	state, err := applyDesktopIconSurface(a.ctx, input)
+	if err != nil {
+		return DesktopIconSurfaceResult{}, err
+	}
+	// A Win32 HRGN uses coordinates relative to the old client origin. Resizing
+	// a bottom-right anchored window moves that origin, so clear the old region
+	// before React mounts the prepared content; the normal hit-region sync will
+	// install the new precise union immediately after commit.
+	if err := clearWidgetWindowRegion(); err != nil {
+		return DesktopIconSurfaceResult{}, err
+	}
+	a.widgetSurfaceGen = input.Generation
+	a.widgetSurfaceState = state
+	return DesktopIconSurfaceResult{
+		Width:      state.Width,
+		Height:     state.Height,
+		X:          state.X,
+		Y:          state.Y,
+		Generation: input.Generation,
+	}, nil
 }
 
 // DesktopIconTaskRef is the typed session identity every task icon snapshot

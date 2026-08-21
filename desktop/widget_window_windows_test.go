@@ -57,11 +57,99 @@ func TestDefaultWidgetWindowStateUsesAbsoluteWorkArea(t *testing.T) {
 }
 
 func TestDefaultDesktopIconWindowStateUsesWorkAreaAndDPI(t *testing.T) {
+	// 125% DPI (120) on a negative-coordinate monitor: the canvas is bounded by
+	// the desktopIcon defaults and anchored to the work area's bottom-right.
 	work := w32Rect{Left: -1920, Top: 48, Right: 0, Bottom: 1080}
 	state := defaultDesktopIconWindowStateForWorkArea(work, 120)
-	want := WidgetWindowState{Width: 1536, Height: 826, X: -1920, Y: 48}
+	want := WidgetWindowState{Width: 1080, Height: 720, X: -1370, Y: 150}
 	if state != want {
 		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+}
+
+func TestDefaultDesktopIconWindowStateRegularScreen(t *testing.T) {
+	// 96 DPI full-HD work area: the canvas is desktopIconWidth×desktopIconHeight
+	// and sits at the bottom-right with the standard edge/bottom gaps.
+	work := w32Rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	state := defaultDesktopIconWindowStateForWorkArea(work, 96)
+	want := WidgetWindowState{Width: 1080, Height: 720, X: 824, Y: 336}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+	if state.X < int(work.Left) || state.Y < int(work.Top) ||
+		state.X+scaleForDPI(state.Width, 96) > int(work.Right) ||
+		state.Y+scaleForDPI(state.Height, 96) > int(work.Bottom) {
+		t.Fatalf("state %#v exceeds work area %#v", state, work)
+	}
+}
+
+func TestDefaultDesktopIconWindowStateClampsToSmallWorkArea(t *testing.T) {
+	// Work area smaller than the minimum target: the canvas shrinks to fit and
+	// never exceeds the monitor, even though it drops below desktopIconMinWidth
+	// / desktopIconMinHeight.
+	work := w32Rect{Left: 0, Top: 0, Right: 600, Bottom: 500}
+	state := defaultDesktopIconWindowStateForWorkArea(work, 96)
+	want := WidgetWindowState{Width: 600, Height: 500, X: 0, Y: 0}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+	if state.Width > int(work.Right-work.Left) || state.Height > int(work.Bottom-work.Top) {
+		t.Fatalf("state %#v exceeds work area %#v", state, work)
+	}
+}
+
+func TestDesktopIconSurfaceStateCanGrowPastDefault(t *testing.T) {
+	// The defaults are only the initial bounds. Dense/zoomed content grows past
+	// them while remaining anchored bottom-right with the standard gaps.
+	work := w32Rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	state := desktopIconSurfaceStateForWorkArea(work, 96, 1400, 900, 16)
+	want := WidgetWindowState{Width: 1432, Height: 932, X: 472, Y: 124}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+}
+
+func TestDesktopIconSurfaceStateClampsToWorkArea(t *testing.T) {
+	work := w32Rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	state := desktopIconSurfaceStateForWorkArea(work, 96, 2400, 1200, 16)
+	want := WidgetWindowState{Width: 1920, Height: 1080, X: 0, Y: 0}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+}
+
+func TestDesktopIconSurfaceStateRaisesToMin(t *testing.T) {
+	// Content smaller than the minimum canvas is raised to the minimum.
+	work := w32Rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	state := desktopIconSurfaceStateForWorkArea(work, 96, 500, 400, 16)
+	want := WidgetWindowState{Width: 640, Height: 540, X: 1264, Y: 516}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+}
+
+func TestDesktopIconSurfaceStateNegativeCoordinateHighDPI(t *testing.T) {
+	// 125% DPI (120) on a negative-coordinate monitor keeps the envelope and
+	// anchor correct.
+	work := w32Rect{Left: -1920, Top: 48, Right: 0, Bottom: 1080}
+	state := desktopIconSurfaceStateForWorkArea(work, 120, 600, 400, 16)
+	want := WidgetWindowState{Width: 640, Height: 540, X: -820, Y: 375}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+}
+
+func TestDesktopIconSurfaceStateClampsToWorkAreaBelowMinimum(t *testing.T) {
+	// A work area smaller than the minimum canvas shrinks the surface to the
+	// work area instead of exceeding it.
+	work := w32Rect{Left: 0, Top: 0, Right: 600, Bottom: 500}
+	state := desktopIconSurfaceStateForWorkArea(work, 96, 500, 400, 16)
+	want := WidgetWindowState{Width: 600, Height: 500, X: 0, Y: 0}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+	if state.Width > int(work.Right-work.Left) || state.Height > int(work.Bottom-work.Top) {
+		t.Fatalf("state %#v exceeds work area %#v", state, work)
 	}
 }
 

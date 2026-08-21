@@ -469,6 +469,10 @@ func (a *App) switchDesktopWidgetStyleLocked(style string) (string, error) {
 		return previous, errors.Join(err, rollback(oldState, alwaysOnTop))
 	}
 	a.widgetStyle = style
+	if style == "icons" {
+		a.widgetSurfaceGen = 0
+		a.widgetSurfaceState = normalized
+	}
 	return previous, nil
 }
 
@@ -563,6 +567,10 @@ func (a *App) applyEnterWidgetMode() error {
 		return err
 	}
 	a.widgetStyle = style
+	if style == "icons" {
+		a.widgetSurfaceGen = 0
+		a.widgetSurfaceState = state
+	}
 	return nil
 }
 
