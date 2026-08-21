@@ -14,6 +14,7 @@ import (
 
 	"workground2/internal/agent"
 	"workground2/internal/control"
+	"workground2/internal/provider"
 	"workground2/internal/unread"
 )
 
@@ -81,6 +82,29 @@ func TestDesktopIconWorkspacesRespectConfiguredSlotsAndPriority(t *testing.T) {
 	}
 	if got := desktopIconWorkspaces(tree, `D:\Work\old`, 2); len(got) != 2 || got[0].Name != "Pinned A" || got[1].Name != "Pinned B" {
 		t.Fatalf("two desktop workspace slots = %v, want pinned projects", got)
+	}
+}
+
+func TestDesktopIconWorkspacesKeepsPinnedTransientRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".WorkGround2"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !widgetIsTransientRoot(root, "shell") {
+		t.Fatalf("fixture root %s is not transient", root)
+	}
+	project := ProjectNode{Kind: "project", Root: root, Label: "WG2ADS"}
+	if spaces := desktopIconWorkspaces([]ProjectNode{project}, "", desktopWorkspacePinLimit); len(spaces) != 0 {
+		t.Fatalf("unpinned transient projection = %+v, want none", spaces)
+	}
+	project.Pinned = true
+	spaces := desktopIconWorkspaces([]ProjectNode{project}, "", desktopWorkspacePinLimit)
+	if len(spaces) != 1 {
+		t.Fatalf("desktopIconWorkspaces returned %d spaces, want only the pinned transient: %+v", len(spaces), spaces)
+	}
+	space := spaces[0]
+	if space.Root != root || space.Name != "WG2ADS" || !space.Pinned || space.Scope != widgetWorkspaceProject {
+		t.Fatalf("pinned transient projection = %+v, want root %s name WG2ADS pinned project", space, root)
 	}
 }
 
@@ -294,6 +318,27 @@ func TestBuildDesktopIconSnapshotAggregatesDelegatedActivity(t *testing.T) {
 	}
 }
 
+func TestBuildDesktopIconSnapshotProjectsRunningCLITaskOntoDelegate(t *testing.T) {
+	sources := []widgetSource{{meta: TabMeta{ID: "cli-task", SessionSource: "cli", RunningWork: true}}}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, nil, nil)
+	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
+	if delegate == nil || delegate.ActivityCount != 1 || delegate.Status != "running" {
+		t.Fatalf("delegate = %#v, want one running CLI task", delegate)
+	}
+	if findDesktopIconItem(snapshot.Items, "task:cli-task") != nil {
+		t.Fatal("CLI task received an independent task icon")
+	}
+}
+
+func TestBuildDesktopIconSnapshotLeavesDelegateIdleForStoppedCLITask(t *testing.T) {
+	sources := []widgetSource{{meta: TabMeta{ID: "cli-task", SessionSource: "cli"}}}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, nil, nil)
+	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
+	if delegate == nil || delegate.ActivityCount != 0 || delegate.Status != "idle" {
+		t.Fatalf("delegate = %#v, want stopped CLI task to stay idle", delegate)
+	}
+}
+
 func TestBuildDesktopIconSnapshotCountsRealRunningSubagents(t *testing.T) {
 	sources := []widgetSource{{
 		meta:       TabMeta{ID: "task-1", SessionID: "session-1", WorkspaceName: "WG2", TopicTitle: "父任务", RunningWork: true, ForegroundActive: true, TurnStartedAt: time.Now().Add(-time.Second).UnixMilli()},
@@ -443,31 +488,36 @@ func TestWidgetDelegationsAggregatesDeduplicatesAndSorts(t *testing.T) {
 	dir := t.TempDir()
 	parentPath := filepath.Join(dir, "parent.jsonl")
 	backgroundPath := filepath.Join(dir, "background.jsonl")
+	cliPath := filepath.Join(dir, "cli.jsonl")
 	writeRunningDelegationMeta(t, dir, "sa_20260102_030405_000000000_aabbccddeeff", "parent", "较早委托", time.Unix(10, 0))
 	writeRunningDelegationMeta(t, dir, "sa_20260102_030405_000000000_112233445566", "parent", "较新委托", time.Unix(20, 0))
 	parent := widgetSource{meta: TabMeta{ID: "parent-tab", SessionID: "parent-session", Scope: "global", TopicID: "parent-topic", TopicTitle: "父 Session", SessionPath: parentPath, RunningWork: true}, sessionDir: dir, branchID: "parent"}
 	background := widgetSource{meta: TabMeta{ID: "background-tab", SessionID: "background-session", Scope: "global", TopicID: "background-topic", TopicTitle: "后台 Session", SessionPath: backgroundPath, RunningWork: true, BackgroundOnly: true, TurnStartedAt: time.Unix(30, 0).UnixMilli()}, sessionDir: dir, branchID: "background", requestText: "后台兼容委托"}
+	cli := widgetSource{meta: TabMeta{ID: "cli-tab", SessionID: "cli-session", SessionSource: "cli", Scope: "global", TopicID: "cli-topic", TopicTitle: "CLI Session", SessionPath: cliPath, RunningWork: true, TurnStartedAt: time.Unix(40, 0).UnixMilli()}, sessionDir: dir, branchID: "cli", requestText: "外部 CLI 委托"}
 	app := &App{}
-	items, counts, err := app.widgetDelegations([]widgetSource{parent, parent, background})
+	items, counts, err := app.widgetDelegations([]widgetSource{parent, parent, background, cli})
 	if err != nil {
 		t.Fatalf("widgetDelegations: %v", err)
 	}
-	if len(items) != 3 || counts[newWidgetSubagentKey(dir, "parent")] != 2 {
+	if len(items) != 4 || counts[newWidgetSubagentKey(dir, "parent")] != 2 {
 		t.Fatalf("items=%+v counts=%v", items, counts)
 	}
-	if items[0].Kind != "background" || items[1].Content != "较新委托" || items[2].Content != "较早委托" {
+	if items[0].Kind != "cli" || items[1].Kind != "background" || items[2].Content != "较新委托" || items[3].Content != "较早委托" {
 		t.Fatalf("delegation sort = %+v", items)
 	}
-	if items[1].SessionRef == nil || items[1].SessionRef.SessionPath != parentPath || items[0].SessionRef == nil || items[0].SessionRef.SessionPath != backgroundPath {
+	if items[0].SessionRef == nil || items[0].SessionRef.SessionPath != cliPath || items[2].SessionRef == nil || items[2].SessionRef.SessionPath != parentPath || items[1].SessionRef == nil || items[1].SessionRef.SessionPath != backgroundPath {
 		t.Fatalf("delegation targets = %+v", items)
 	}
-	snapshot := buildDesktopIconSnapshot([]widgetSource{parent, parent, background}, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil, counts, items)
+	snapshot := buildDesktopIconSnapshot([]widgetSource{parent, parent, background, cli}, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil, counts, items)
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
-	if delegate == nil || delegate.ActivityCount != 3 || len(snapshot.Delegations) != 3 {
+	if delegate == nil || delegate.ActivityCount != 4 || len(snapshot.Delegations) != 4 {
 		t.Fatalf("delegate=%+v projection=%+v", delegate, snapshot.Delegations)
 	}
 	if findDesktopIconItem(snapshot.Items, "task:background-tab") != nil {
 		t.Fatal("BackgroundOnly delegation leaked into ordinary task icons")
+	}
+	if findDesktopIconItem(snapshot.Items, "task:cli-tab") != nil {
+		t.Fatal("CLI delegation leaked into ordinary task icons")
 	}
 }
 
@@ -706,6 +756,12 @@ func TestDesktopIconTaskContinueRecoveryStateMachine(t *testing.T) {
 	if _, err := desktopIconTurnNextStep([]string{"before", "other"}, 1, "continue", "accepted", false, "task conversation"); err == nil || !strings.Contains(err.Error(), "task conversation") {
 		t.Fatalf("conflicting continuation history = %v", err)
 	}
+	// The controller prepends transient blocks (e.g. response-language) to every
+	// submitted turn; confirmation must still match the raw continuation text.
+	prefixed := agent.WithResponseLanguage("continue", "zh")
+	if step, err := desktopIconTurnNextStep([]string{"before", prefixed}, 1, "continue", "accepted", false, "task conversation"); err != nil || step != desktopIconReplyConfirmStep {
+		t.Fatalf("prefixed continuation = step %q, err %v", step, err)
+	}
 }
 
 func TestDesktopIconReplyBusinessKeyReusesOldRequest(t *testing.T) {
@@ -749,28 +805,43 @@ func TestDesktopIconCorruptStateIsVisibleInSnapshot(t *testing.T) {
 	}
 }
 
-func TestPinNewDesktopIconTaskOrdersAppendsToEnd(t *testing.T) {
+func TestPinNewDesktopIconTaskOrdersPrependsNewestAndPreservesExistingOrder(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("WorkGround2_STATE_HOME", home)
 	app := &App{iconWidgetStateLoaded: true, iconWidgetState: desktopIconPersistedState{
 		Positions: map[string]DesktopIconPosition{
-			"task:old": {Row: "bottom", Zone: "running", Order: 0},
+			"task:old-a":  {Row: "bottom", Zone: "running", Order: 0},
+			"task:old-b":  {Row: "bottom", Zone: "running", Order: 8},
+			"task:capped": {Row: "bottom", Zone: "running", Order: 12},
+		},
+		Kept: map[string]desktopIconKept{
+			"task:kept": {ItemID: "task:kept", Order: 4},
 		},
 	}}
 	snapshot := DesktopIconSnapshot{Items: []DesktopIconItem{
-		{ID: "task:old", Kind: "task", Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: 0}},
-		{ID: "task:new", Kind: "task", Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: 5}},
+		{ID: "task:old-a", Kind: "task", Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: 0}},
+		{ID: "task:new-a", Kind: "task", Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: 5}},
+		{ID: "task:new-b", Kind: "task", Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: 6}},
+		{ID: "task:old-b", Kind: "task", Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: 8}},
 		{ID: "fixed:new", Kind: "fixed", Position: DesktopIconPosition{Row: "bottom", Zone: "fixed", Order: 0}},
 	}}
 	if !app.pinNewDesktopIconTaskOrdersLocked(snapshot) {
-		t.Fatal("new task icon was not pinned")
+		t.Fatal("new task icons were not pinned")
 	}
-	got, ok := app.iconWidgetState.Positions["task:new"]
-	if !ok || got.Row != "bottom" || got.Zone != "running" || got.Order != 1 {
-		t.Fatalf("pinned position = %+v ok=%v, want running/order 1", got, ok)
+	for id, want := range map[string]int{
+		"task:new-b":  0,
+		"task:new-a":  1,
+		"task:old-a":  2,
+		"task:old-b":  4,
+		"task:capped": 5,
+	} {
+		got, ok := app.iconWidgetState.Positions[id]
+		if !ok || got.Row != "bottom" || got.Zone != "running" || got.Order != want {
+			t.Fatalf("position %s = %+v ok=%v, want running/order %d", id, got, ok, want)
+		}
 	}
-	if old := app.iconWidgetState.Positions["task:old"]; old.Order != 0 {
-		t.Fatalf("existing pinned icon changed = %+v", old)
+	if kept := app.iconWidgetState.Kept["task:kept"]; kept.Order != 3 {
+		t.Fatalf("retained icon order = %d, want 3", kept.Order)
 	}
 	// Idempotent: a second call with no new unpinned tasks must be a no-op.
 	if app.pinNewDesktopIconTaskOrdersLocked(snapshot) {
@@ -1119,6 +1190,58 @@ func TestDesktopIconLegacyReceiptSettlesWithoutTrace(t *testing.T) {
 		t.Fatalf("legacy receipt did not settle: %+v", app.iconWidgetState.Applied[0])
 	}
 }
+
+// fakeTaskContinueCtrl is a minimal control.SessionAPI test double for task
+// continuation recovery: it only answers History and Running, which is all
+// advanceDesktopIconTaskContinue reads on the confirm path.
+type fakeTaskContinueCtrl struct {
+	control.SessionAPI
+	history []provider.Message
+	running bool
+}
+
+func (f fakeTaskContinueCtrl) History() []provider.Message { return f.history }
+func (f fakeTaskContinueCtrl) Running() bool               { return f.running }
+
+func TestDesktopIconTaskContinueRecoveryDefersUntilControllerReady(t *testing.T) {
+	app := newSummaryTestApp(t, nil, fakeCompletionSummaryGenerator{})
+	app.iconWidgetState.Applied = []desktopIconReceipt{{
+		RequestID: "req-continue", Intent: "intent", Status: "pending", Action: "continue",
+		ItemID: "task:task-1", TabID: "task-1", Text: "继续",
+		AppliedAt: time.Now().UnixMilli(),
+	}}
+
+	// First recovery: the completed task's controller has not been established
+	// yet (startup, empty tabs). This is a deferral, not a failure.
+	if err := app.recoverDesktopIconActionsLocked(); err != nil {
+		t.Fatalf("first recovery surfaced a boot-time deferral: %v", err)
+	}
+	if got := app.iconWidgetState.Applied[0].Status; got != "pending" {
+		t.Fatalf("not-ready continuation was marked %q, want pending", got)
+	}
+
+	// The controller becomes ready and its history already reflects the
+	// submitted continuation, so recovery should confirm (not resubmit) and
+	// settle the receipt.
+	app.tabs["task-1"] = &WorkspaceTab{ID: "task-1", Ctrl: fakeTaskContinueCtrl{
+		history: []provider.Message{{Role: provider.RoleUser, Content: "继续"}},
+	}}
+	if err := app.recoverDesktopIconActionsLocked(); err != nil {
+		t.Fatalf("second recovery after controller ready: %v", err)
+	}
+	if got := app.iconWidgetState.Applied[0].Status; got != "applied" {
+		t.Fatalf("continuation did not settle after controller ready: %q", got)
+	}
+
+	// An applied receipt must never resend: a third recovery is a no-op.
+	if err := app.recoverDesktopIconActionsLocked(); err != nil {
+		t.Fatalf("third recovery: %v", err)
+	}
+	if got := app.iconWidgetState.Applied[0].Status; got != "applied" {
+		t.Fatalf("applied receipt was mutated: %q", got)
+	}
+}
+
 func TestRememberDesktopIconTaskRetainsOpenedTask(t *testing.T) {
 	tab, _ := completionTestTab(t, 0)
 	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
@@ -1837,8 +1960,8 @@ func TestDesktopIconRoomOpenMissingRefKeepsActiveTab(t *testing.T) {
 }
 
 // TestBuildDesktopIconSnapshotRoomCarriesSessionRef pins that Room items carry
-// the backend-generated session identity while IM/person items keep their own
-// ResolveUnreadSession open route and never pick up a Room ref.
+// the backend-generated Room identity while unresolved IM/person items keep
+// their own ResolveUnreadSession open route and never pick up a Room ref.
 func TestBuildDesktopIconSnapshotRoomCarriesSessionRef(t *testing.T) {
 	sp := `D:\Work\rooms\room.jsonl`
 	state := UnreadState{Available: true, Summary: unread.Summary{Revision: 1, Conversations: []unread.Conversation{{
@@ -1857,7 +1980,85 @@ func TestBuildDesktopIconSnapshotRoomCarriesSessionRef(t *testing.T) {
 	snapshot = buildDesktopIconSnapshot(nil, state, nil, desktopIconPersistedState{}, 0, nil, refs, nil, nil)
 	person := findDesktopIconItem(snapshot.Items, "conversation:im:user-1")
 	if person == nil || person.SessionRef != nil {
-		t.Fatalf("person must not carry a Room session ref: %#v", person)
+		t.Fatalf("unresolved person must not carry a Room session ref: %#v", person)
+	}
+}
+
+func TestBuildDesktopIconSnapshotPersonReusesSessionAgentIdentity(t *testing.T) {
+	sp := `D:\sessions\im-user.jsonl`
+	sources := []widgetSource{{meta: TabMeta{
+		ID: "tab-im", SessionID: "session-im", Scope: "project", WorkspaceRoot: `D:\Work\WG2`,
+		TopicID: "topic-im", SessionPath: sp, ProjectIcon: "python",
+	}}}
+	conversation := unread.Conversation{
+		Key: "im:user-1", Source: unread.SourceIM, SessionID: "path:" + sp, Title: "user@example.com",
+		LatestSequence: 1, UnreadCount: 1, Items: []unread.Item{{ID: "message-1", Sequence: 1, Kind: "message", Priority: unread.PriorityNormal}},
+	}
+	state := UnreadState{Available: true, Summary: unread.Summary{Revision: 1, Conversations: []unread.Conversation{conversation}}}
+	treePresentations := desktopIconSessionPresentations(nil, []ProjectNode{{
+		Kind: "session", Root: `D:\Work\WG2`, TopicID: "topic-im", SessionID: "persisted-session-im",
+		SessionPath: sp, ProjectIcon: "python",
+	}})
+	restarted := buildDesktopIconSnapshotWithPresentations(nil, state, nil, desktopIconPersistedState{}, 0, nil, nil, nil, treePresentations, nil)
+	restartedPerson := findDesktopIconItem(restarted.Items, "conversation:im:user-1")
+	if restartedPerson == nil || restartedPerson.SessionID != "persisted-session-im" || restartedPerson.WorkspaceIcon != "python" || restartedPerson.SessionRef == nil || restartedPerson.SessionRef.SessionPath != sp {
+		t.Fatalf("restarted person session identity = %#v", restartedPerson)
+	}
+
+	// The idle session has no task row, but the IM row still gets its exact
+	// Agent Icon seed, workspace badge and durable session ref.
+	snapshot := buildDesktopIconSnapshot(sources, state, nil, desktopIconPersistedState{}, 0, nil, nil, nil, nil)
+	person := findDesktopIconItem(snapshot.Items, "conversation:im:user-1")
+	if person == nil || person.SessionID != "session-im" || person.WorkspaceIcon != "python" || person.SessionRef == nil || person.SessionRef.SessionPath != sp || person.ConversationSequence != 1 {
+		t.Fatalf("person session identity = %#v", person)
+	}
+
+	// Once the real task row is visible, path-level matching projects the same
+	// unread onto that row and suppresses the duplicate person icon.
+	sources[0].meta.RunningWork = true
+	snapshot = buildDesktopIconSnapshot(sources, state, nil, desktopIconPersistedState{}, 0, nil, nil, nil, nil)
+	if findDesktopIconItem(snapshot.Items, "conversation:im:user-1") != nil {
+		t.Fatal("path-bound IM row duplicated its visible session task icon")
+	}
+	task := findDesktopIconItem(snapshot.Items, "task:tab-im")
+	if task == nil || len(task.Notifications) != 1 || task.Notifications[0].Conversation != "im:user-1" {
+		t.Fatalf("task did not receive the path-bound IM notice: %#v", task)
+	}
+}
+
+func TestDesktopIconPersonRemoveIsDurableAndNewMessageReappears(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	store, err := unread.Open(filepath.Join(t.TempDir(), "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcceptIM(unread.IMInput{ConversationKey: "user-1", MessageID: "message-1", SessionID: "path:D:\\sessions\\im-user.jsonl", Title: "user@example.com", ReceivedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	app := newSummaryTestApp(t, nil, fakeCompletionSummaryGenerator{})
+	app.unreadStore = store
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, "conversation:im:user-1")
+	if item == nil || item.ConversationSequence != 1 {
+		t.Fatalf("person icon before remove = %#v", item)
+	}
+	input := DesktopIconActionInput{ItemID: item.ID, NoticeID: item.Notifications[0].ID, Revision: item.Revision, RequestID: "remove-person-1", Action: "remove"}
+	result := app.ApplyDesktopIconAction(input)
+	if result.Status != "accepted" || findDesktopIconItem(result.Snapshot.Items, item.ID) != nil {
+		t.Fatalf("remove result = status %q error %q items %+v", result.Status, result.Error, result.Snapshot.Items)
+	}
+	if app.UnreadState().Summary.TotalUnread != 0 || app.iconWidgetState.DismissedConversations["im:user-1"] != 1 {
+		t.Fatalf("remove watermarks = unread %+v dismissed %+v", app.UnreadState().Summary, app.iconWidgetState.DismissedConversations)
+	}
+	if duplicate := app.ApplyDesktopIconAction(input); duplicate.Status != "already_applied" {
+		t.Fatalf("duplicate remove = status %q error %q", duplicate.Status, duplicate.Error)
+	}
+
+	if _, err := store.AcceptIM(unread.IMInput{ConversationKey: "user-1", MessageID: "message-2", ReceivedAt: time.Now().Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	reappeared := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, item.ID)
+	if reappeared == nil || reappeared.ConversationSequence != 2 || reappeared.UnreadCount != 1 {
+		t.Fatalf("new message did not restore removed person icon: %#v", reappeared)
 	}
 }
 

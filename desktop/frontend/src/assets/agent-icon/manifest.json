@@ -21,98 +21,98 @@
     "taskTool"
   ],
   "identityRule": {
-    "headwear": "Choose exactly one hat or one hair style.",
+    "headwear": "Choose exactly one robot head module from compatibility slot A or B.",
     "stableSeed": "sessionId",
     "semantic": false
   },
   "hats": [
     {
       "id": "baseball-cap",
-      "label": "Baseball Cap",
+      "label": "Signal Antenna",
       "svg": "svg/hats/baseball-cap.svg",
       "png": "png/hats/baseball-cap.png"
     },
     {
       "id": "beanie",
-      "label": "Beanie",
+      "label": "Twin Antennae",
       "svg": "svg/hats/beanie.svg",
       "png": "png/hats/beanie.png"
     },
     {
       "id": "beret",
-      "label": "Beret",
+      "label": "Sensor Dome",
       "svg": "svg/hats/beret.svg",
       "png": "png/hats/beret.png"
     },
     {
       "id": "bucket-hat",
-      "label": "Bucket Hat",
+      "label": "Vent Crest",
       "svg": "svg/hats/bucket-hat.svg",
       "png": "png/hats/bucket-hat.png"
     },
     {
       "id": "fedora",
-      "label": "Fedora",
+      "label": "LED Status Bar",
       "svg": "svg/hats/fedora.svg",
       "png": "png/hats/fedora.png"
     },
     {
       "id": "bowler",
-      "label": "Bowler",
+      "label": "Radar Dish",
       "svg": "svg/hats/bowler.svg",
       "png": "png/hats/bowler.png"
     },
     {
       "id": "newsboy-cap",
-      "label": "Newsboy Cap",
+      "label": "Sensor Ears",
       "svg": "svg/hats/newsboy-cap.svg",
       "png": "png/hats/newsboy-cap.png"
     },
     {
       "id": "cowboy-hat",
-      "label": "Cowboy Hat",
+      "label": "Camera Turret",
       "svg": "svg/hats/cowboy-hat.svg",
       "png": "png/hats/cowboy-hat.png"
     },
     {
       "id": "sailor-cap",
-      "label": "Sailor Cap",
+      "label": "Communication Loop",
       "svg": "svg/hats/sailor-cap.svg",
       "png": "png/hats/sailor-cap.png"
     },
     {
       "id": "sun-hat",
-      "label": "Sun Hat",
+      "label": "Signal Nodes",
       "svg": "svg/hats/sun-hat.svg",
       "png": "png/hats/sun-hat.png"
     },
     {
       "id": "top-hat",
-      "label": "Top Hat",
+      "label": "Armor Fin",
       "svg": "svg/hats/top-hat.svg",
       "png": "png/hats/top-hat.png"
     },
     {
       "id": "crown",
-      "label": "Crown",
+      "label": "Stabilizer Fins",
       "svg": "svg/hats/crown.svg",
       "png": "png/hats/crown.png"
     },
     {
       "id": "party-hat",
-      "label": "Party Hat",
+      "label": "Emergency Beacon",
       "svg": "svg/hats/party-hat.svg",
       "png": "png/hats/party-hat.png"
     },
     {
       "id": "wizard-hat",
-      "label": "Wizard Hat",
+      "label": "Armor Crown",
       "svg": "svg/hats/wizard-hat.svg",
       "png": "png/hats/wizard-hat.png"
     },
     {
       "id": "flat-cap",
-      "label": "Flat Cap",
+      "label": "Receiver Pod",
       "svg": "svg/hats/flat-cap.svg",
       "png": "png/hats/flat-cap.png"
     }
@@ -120,91 +120,91 @@
   "hair": [
     {
       "id": "side-swept",
-      "label": "Side Swept",
+      "label": "Signal Blade",
       "svg": "svg/hair/side-swept.svg",
       "png": "png/hair/side-swept.png"
     },
     {
       "id": "quiff",
-      "label": "Quiff",
+      "label": "Audio Sensors",
       "svg": "svg/hair/quiff.svg",
       "png": "png/hair/quiff.png"
     },
     {
       "id": "mohawk",
-      "label": "Mohawk",
+      "label": "Vent Module",
       "svg": "svg/hair/mohawk.svg",
       "png": "png/hair/mohawk.png"
     },
     {
       "id": "twin-tufts",
-      "label": "Twin Tufts",
+      "label": "Hologram Projector",
       "svg": "svg/hair/twin-tufts.svg",
       "png": "png/hair/twin-tufts.png"
     },
     {
       "id": "single-curl",
-      "label": "Single Curl",
+      "label": "Lightning Rods",
       "svg": "svg/hair/single-curl.svg",
       "png": "png/hair/single-curl.png"
     },
     {
       "id": "slick-back",
-      "label": "Slick Back",
+      "label": "Crescent Scanner",
       "svg": "svg/hair/slick-back.svg",
       "png": "png/hair/slick-back.png"
     },
     {
       "id": "messy-spikes",
-      "label": "Messy Spikes",
+      "label": "Equalizer Panel",
       "svg": "svg/hair/messy-spikes.svg",
       "png": "png/hair/messy-spikes.png"
     },
     {
       "id": "bowl-cut",
-      "label": "Bowl Cut",
+      "label": "Siren Pair",
       "svg": "svg/hair/bowl-cut.svg",
       "png": "png/hair/bowl-cut.png"
     },
     {
       "id": "center-part",
-      "label": "Center Part",
+      "label": "Mechanical Ears",
       "svg": "svg/hair/center-part.svg",
       "png": "png/hair/center-part.png"
     },
     {
       "id": "wave",
-      "label": "Wave",
+      "label": "Energy Indicator",
       "svg": "svg/hair/wave.svg",
       "png": "png/hair/wave.png"
     },
     {
       "id": "top-knot",
-      "label": "Top Knot",
+      "label": "Dorsal Plates",
       "svg": "svg/hair/top-knot.svg",
       "png": "png/hair/top-knot.png"
     },
     {
       "id": "pompadour",
-      "label": "Pompadour",
+      "label": "Radar Eyes",
       "svg": "svg/hair/pompadour.svg",
       "png": "png/hair/pompadour.png"
     },
     {
       "id": "afro-puff",
-      "label": "Afro Puff",
+      "label": "V Crest",
       "svg": "svg/hair/afro-puff.svg",
       "png": "png/hair/afro-puff.png"
     },
     {
       "id": "lightning-fringe",
-      "label": "Lightning Fringe",
+      "label": "Network Array",
       "svg": "svg/hair/lightning-fringe.svg",
       "png": "png/hair/lightning-fringe.png"
     },
     {
       "id": "short-crop",
-      "label": "Short Crop",
+      "label": "Compass Pod",
       "svg": "svg/hair/short-crop.svg",
       "png": "png/hair/short-crop.png"
     }

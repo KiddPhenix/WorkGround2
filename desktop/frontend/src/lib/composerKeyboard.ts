@@ -90,3 +90,22 @@ export function isComposerSubmitKey(
   if (submitKey === "ctrl_enter") return event.ctrlKey || event.metaKey;
   return true;
 }
+
+// isComposerGuideKey reports whether an Enter keypress should immediately
+// steer the running turn instead of following the ordinary submit path.
+// While idle it always returns false so Shift+Enter keeps inserting a newline.
+export function isComposerGuideKey(
+  event: ComposerSubmitKeyEvent,
+  submitKey: ComposerSubmitKey,
+  composing: boolean,
+  running: boolean,
+): boolean {
+  if (event.key !== "Enter" || composing || event.altKey || !running) return false;
+  if (submitKey === "ctrl_enter") {
+    // Preserve the macOS Meta equivalence used by the ordinary submit path.
+    return (event.ctrlKey || event.metaKey) && event.shiftKey;
+  }
+  // Enter mode: plain Shift+Enter guides. Modified Shift+Enter remains outside
+  // the guide mapping and keeps its native textarea behavior.
+  return event.shiftKey && !event.ctrlKey && !event.metaKey;
+}

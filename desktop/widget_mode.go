@@ -791,7 +791,7 @@ func (a *App) widgetSubagentCounts(sources []widgetSource) (map[widgetSubagentKe
 
 // widgetDelegations builds the typed running-delegation projection consumed by
 // icon mode. Each session directory is scanned once, persisted sub-agents win
-// over the legacy BackgroundOnly signal for the same parent, and every target
+// over linked BackgroundOnly/CLI signals for the same parent, and every target
 // carries the exact session identity needed for navigation.
 func (a *App) widgetDelegations(sources []widgetSource) ([]DesktopIconDelegation, map[widgetSubagentKey]int, error) {
 	dirs := map[string]bool{}
@@ -857,16 +857,21 @@ func (a *App) widgetDelegations(sources []widgetSource) ([]DesktopIconDelegation
 
 	for _, source := range sources {
 		meta := source.meta
-		if !meta.BackgroundOnly || !meta.RunningWork {
+		isCLI := strings.EqualFold(strings.TrimSpace(meta.SessionSource), "cli")
+		if (!meta.BackgroundOnly && !isCLI) || !meta.RunningWork {
 			continue
 		}
 		if counts[newWidgetSubagentKey(source.sessionDir, source.branchID)] > 0 {
 			continue
 		}
+		kind, fallback := "background", "后台委托"
+		if isCLI {
+			kind, fallback = "cli", "CLI 委托"
+		}
 		item := DesktopIconDelegation{
-			ID:            "background:" + widgetRevision(firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID)), strings.TrimSpace(meta.SessionPath)),
-			Kind:          "background",
-			Content:       conciseWidgetText(firstNonEmpty(strings.TrimSpace(source.requestText), strings.TrimSpace(meta.ActivityText), strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "后台委托"), 120),
+			ID:            kind + ":" + widgetRevision(firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID)), strings.TrimSpace(meta.SessionPath)),
+			Kind:          kind,
+			Content:       conciseWidgetText(firstNonEmpty(strings.TrimSpace(source.requestText), strings.TrimSpace(meta.ActivityText), strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), fallback), 120),
 			Status:        "running",
 			SessionTitle:  firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "所属 Session"),
 			WorkspaceName: firstNonEmpty(strings.TrimSpace(meta.WorkspaceName), "WorkGround2"),

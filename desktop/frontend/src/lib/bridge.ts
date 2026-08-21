@@ -261,6 +261,8 @@ export interface WidgetConversationInput {
   model?: string;
   /** Per-send tool approval posture; empty = user default. */
   approvalMode?: string;
+  /** Frontend-only optimistic icon labels; backend merges authoritative titles. */
+  existingTitles?: string[];
 }
 
 export interface WidgetWorkspaceOption {
@@ -276,6 +278,7 @@ export interface WidgetConversationResult {
   status: "accepted" | "already_applied" | "retryable_error" | "invalid";
   error?: string;
   tabId?: string;
+  sessionName?: string;
   workspaceRoot?: string;
   workspaceName?: string;
   routeReason?: string;
@@ -313,9 +316,10 @@ export interface DesktopIconItem {
   appearanceSeed?: string;
   workspaceIcon?: string;
   sessionRef?: DesktopIconTaskRef;
+  conversationSequence?: number;
 }
 export interface DesktopIconDelegation {
-  id: string; kind: "subagent" | "background"; content: string; status: "running";
+  id: string; kind: "subagent" | "background" | "cli"; content: string; status: "running";
   sessionTitle: string; workspaceName?: string; updatedAt?: number; sessionRef?: DesktopIconTaskRef;
 }
 export interface DesktopIconSnapshot { items: DesktopIconItem[]; delegations: DesktopIconDelegation[]; delegationError?: string; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
