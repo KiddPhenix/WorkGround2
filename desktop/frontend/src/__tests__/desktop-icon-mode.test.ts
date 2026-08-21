@@ -7,7 +7,7 @@ import { CLICK_DELAY, DRAG_THRESHOLD, IconTimers, PREVIEW_CLOSE_DELAY, type Time
 import { desktopIconDragOrder, previewDesktopIconMove } from "../components/widget/desktopIconDrag";
 import { nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent } from "../components/widget/quickStartPreferences";
 import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTitle, WORKSPACE_PIN_LIMIT, workspacePinsFull } from "../components/widget/workspaceManager";
-import { applyRoomPins, pinnedRoomRows, ROOM_PIN_LIMIT, roomPinsFull, roomRows } from "../components/widget/roomsManager";
+import { applyRoomPins, normalizeRoomIcons, normalizeRoomPins, pinnedRoomRows, ROOM_PIN_LIMIT, roomPinsFull, roomRows } from "../components/widget/roomsManager";
 import { parseRoomIconVisibility, readRoomIconVisibility, ROOM_ICON_VISIBILITY_KEY, visibleDesktopIcons, writeRoomIconVisibility } from "../components/widget/roomIconVisibility";
 import { consumeRoomPopup, newRoomPopupState, parseRoomNotificationMode, readRoomNotificationMode, reconcileRoomPopups, ROOM_NOTIFICATION_MODE_KEY, roomAttentionLabel, writeRoomNotificationMode } from "../components/widget/roomNotifications";
 import { IDLE_HOVER_BURST_WINDOW_MS, IDLE_HOVER_HEALTHY_FRAMES, IDLE_HOVER_HEALTHY_GAP_MS, IDLE_HOVER_RECOVERY_WINDOW_MS, IDLE_HOVER_THRESHOLD_MS, IdleHoverTracer, type IdleHoverSensors } from "../components/widget/idleHoverTrace";
@@ -861,6 +861,10 @@ assert.deepEqual(roomRows([
   { key: "s", kind: "session", label: "child", sessionKind: "collaboration", topicId: "t2", sessionPath: "/tmp/s.jsonl" },
 ]), [], "collaboration topics without a topicId or sessionPath, and bare session nodes, never become Rooms");
 assert.deepEqual(roomRows([]), [], "an empty tree yields an empty Rooms list");
+assert.deepEqual(normalizeRoomPins(null), [], "a nil Go pin slice from the real Wails binding normalizes to an empty preference");
+assert.deepEqual(normalizeRoomPins({ topicIds: ["topic_a"] }), ["topic_a"], "the old persisted-state binding shape remains readable");
+assert.deepEqual(normalizeRoomIcons(null), {}, "a nil Go icon map keeps default Room glyphs");
+assert.deepEqual(applyRoomPins(roomRows(roomsTree), null).map((row) => row.topicId), ["topic_g", "topic_a"], "nil pin preferences never hide the authoritative local Room list");
 assert.equal(ROOM_PIN_LIMIT, 7, "desktop Room pins have seven slots independent of the four workspace slots");
 const desktopPinnedRooms = applyRoomPins(roomRows(roomsTree), ["topic_a", "stale", "topic_g", "topic_a"]);
 assert.deepEqual(desktopPinnedRooms.map((row) => [row.topicId, row.pinned]), [["topic_a", true], ["topic_g", true]], "desktop Room pin order overrides sidebar topic pins and ignores stale or duplicate ids");
@@ -953,7 +957,9 @@ assert.match(component, /<RoomsManager roomIconsVisible=\{roomIconsVisible\} onR
 
 // --- rooms manager dialog contract: authoritative load, safe mutations, no
 // optimistic writes, explicit placeholder ---
-assert.match(component, /Promise\.all\(\[app\.ListProjectTree\(\), app\.GetDesktopRoomPins\(\), app\.GetDesktopRoomIcons\(\)\]\)[\s\S]{0,200}applyRoomIcons\(applyRoomPins\(roomRows\(tree\), pins\), icons\)/, "RoomsManager loads tree rows, desktop pins and icon preferences together without mutating temporarily absent preferences");
+assert.match(component, /Promise\.allSettled\([\s\S]{0,700}app\.ListProjectTree\(\)[\s\S]{0,700}app\.GetDesktopRoomPins[\s\S]{0,700}app\.GetDesktopRoomIcons/, "RoomsManager settles the Room tree and optional preference bindings independently");
+assert.match(component, /treeResult\.status === "rejected"[\s\S]{0,900}normalizeRoomPins\(pinsResult\.value\)[\s\S]{0,900}normalizeRoomIcons\(iconsResult\.value\)[\s\S]{0,900}setRows\(applyRoomIcons\(applyRoomPins\(roomRows\(treeResult\.value\), pins\), icons\)\)/, "RoomsManager keeps the authoritative tree when nil, missing, old or malformed preference bindings fall back to defaults");
+assert.match(component, /Room 设置加载失败（已使用默认值）/, "preference degradation remains explicit after the Room list recovers");
 assert.match(component, /app\.OpenTopicSession\(row\.scope, row\.workspaceRoot, row\.topicId, row\.sessionPath\)[\s\S]+onOpenRoom\(meta\.id\)/, "opening a Room activates the backend tab and exits the widget focused on it");
 assert.match(component, /const targetPinned = !row\.pinned;[\s\S]+app\.SetDesktopRoomPinned\(row\.topicId, targetPinned\)[\s\S]+await reload\(\)[\s\S]+await onChanged\(\)/, "Room pin toggles use the desktop-specific idempotent API, reload rows and refresh the snapshot");
 assert.match(component, /Array\.from\(\{ length: ROOM_PIN_LIMIT \}/, "the Room manager always renders seven pin slots");

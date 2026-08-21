@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { applyRoomIcons, applyRoomPins, pinnedRoomRows, ROOM_PIN_LIMIT, roomPinsFull, type RoomRow } from "../components/widget/roomsManager";
+import { applyRoomIcons, applyRoomPins, normalizeRoomIcons, normalizeRoomPins, pinnedRoomRows, ROOM_PIN_LIMIT, roomPinsFull, roomRows, type RoomRow } from "../components/widget/roomsManager";
 
 function row(topicId: string, pinned = false): RoomRow {
   return { topicId, pinned, icon: "", label: topicId, scope: "global", workspaceRoot: "", sessionPath: `/rooms/${topicId}.jsonl` };
@@ -10,6 +10,21 @@ assert.deepEqual(pinnedRoomRows([row("a", true), row("b"), row("c", true)]).map(
 assert.equal(roomPinsFull(Array.from({ length: ROOM_PIN_LIMIT - 1 }, (_, index) => row(String(index), true))), false);
 assert.equal(roomPinsFull(Array.from({ length: ROOM_PIN_LIMIT }, (_, index) => row(String(index), true))), true);
 assert.equal(pinnedRoomRows(Array.from({ length: ROOM_PIN_LIMIT + 2 }, (_, index) => row(String(index), true))).length, ROOM_PIN_LIMIT);
+
+assert.deepEqual(normalizeRoomPins(null), [], "a nil Go slice serialized by Wails is an empty Room pin list");
+assert.deepEqual(
+  applyRoomPins([row("local-room")], null).map((item) => [item.topicId, item.pinned]),
+  [["local-room", false]],
+  "an empty pin store cannot abort projection or hide locally persisted Rooms",
+);
+assert.deepEqual(normalizeRoomPins({ TopicIDs: [" old-a ", "old-a", "old-b"] }), ["old-a", "old-b"], "old Wails state wrappers remain readable");
+assert.deepEqual(normalizeRoomIcons(null), {}, "a nil Go icon map falls back to default glyphs");
+assert.deepEqual(normalizeRoomIcons({ Icons: { room: "python" } }), { room: "python" }, "old icon state wrappers remain readable");
+assert.throws(() => normalizeRoomPins({ topicIds: [1] }), /非字符串 ID/, "malformed pin payloads remain explicit");
+assert.throws(() => normalizeRoomIcons({ room: 1 }), /图标设置格式无效/, "malformed icon payloads remain explicit");
+assert.deepEqual(roomRows({ Nodes: [{ Kind: "global_topic", Label: "旧 Room", TopicID: "old-room", SessionKind: "collaboration", SessionPath: "/rooms/old.jsonl" }] }), [
+  { topicId: "old-room", label: "旧 Room", pinned: false, icon: "", scope: "global", workspaceRoot: "", sessionPath: "/rooms/old.jsonl" },
+], "old Wails ProjectNode field casing is normalized at the Room list boundary");
 
 const projected = applyRoomPins(
   [row("tree-a", true), row("tree-b"), row("tree-c")],

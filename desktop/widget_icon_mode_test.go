@@ -121,6 +121,46 @@ func TestDesktopRoomNoticesUseExactMessageAuthorAndMentionPresentation(t *testin
 	}
 }
 
+func TestDesktopRoomNoticePresentationResolvesPathSessionAlias(t *testing.T) {
+	sessionPath := filepath.Join(t.TempDir(), "Room-Session.jsonl")
+	runtime := &desktopCollaboration{
+		ownerSessionID:   "room-session",
+		ownerSessionPath: sessionPath,
+		state: CollaborationState{Snapshot: collab.Snapshot{
+			Members: []collab.Member{{ID: "alice", Name: "Alice"}},
+			Timeline: []collab.TimelineItem{{
+				ID: "path-message", Sequence: 2, Type: collab.TimelineChat,
+				Chat: &collab.ChatMessage{ID: "path-message", AuthorID: "alice", Text: "exact path notification"},
+			}},
+		}},
+	}
+	app := &App{collaborations: map[string]*desktopCollaboration{"room-session": runtime}}
+	runtime.app = app
+	presentations := app.desktopRoomNoticePresentations()
+	pathSessionID := "path:" + sessionPath
+	conversation := unread.Conversation{
+		Key: "room:path-alias", Source: unread.SourceRoom, SessionID: pathSessionID, Title: "Path Room",
+		LatestSequence: 2, UnreadCount: 1,
+		Items: []unread.Item{{ID: "path-message", Sequence: 2, Kind: "chat", Priority: unread.PriorityNormal, OccurredAt: time.Now()}},
+	}
+	room := desktopIconRoomDescriptor{
+		TopicID: "topic-path", Title: "Path Room", SessionID: "room-session",
+		Ref: &DesktopIconTaskRef{SessionPath: sessionPath},
+	}
+	snapshot := buildDesktopIconSnapshotWithPresentations(
+		nil,
+		UnreadState{Available: true, Summary: unread.Summary{Revision: 1, TotalUnread: 1, Conversations: []unread.Conversation{conversation}}},
+		nil, desktopIconPersistedState{}, 0, presentations, nil, nil, nil, []desktopIconRoomDescriptor{room}, nil,
+	)
+	item := findDesktopIconItem(snapshot.Items, "room:topic-path")
+	if item == nil || item.UnreadCount != 1 || len(item.Notifications) != 1 {
+		t.Fatalf("path-backed Room projection = %#v", item)
+	}
+	if notice := item.Notifications[0]; notice.Body != "exact path notification" || notice.Title != "Alice · Path Room" {
+		t.Fatalf("path-backed Room notice = %+v", notice)
+	}
+}
+
 func TestDesktopRoomMentionNoticeKeepsOpenAndReplyActions(t *testing.T) {
 	sp := roomTestSession(t)
 	openApp := newRoomOpenTestApp(t, sp)

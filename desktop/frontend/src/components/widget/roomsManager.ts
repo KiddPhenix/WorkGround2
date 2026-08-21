@@ -1,4 +1,3 @@
-import type { ProjectNode } from "../../lib/types";
 import { projectIconKey, type ProjectIconKey } from "../../lib/projectIcons";
 
 // The Rooms management dialog reads its authoritative list from
@@ -17,6 +16,63 @@ export interface RoomRow {
 
 export const ROOM_PIN_LIMIT = 7;
 
+type BindingRecord = Record<string, unknown>;
+
+function bindingRecord(value: unknown): BindingRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as BindingRecord
+    : null;
+}
+
+function bindingArray(value: unknown, keys: string[], label: string): unknown[] {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value;
+  const record = bindingRecord(value);
+  if (record) {
+    for (const key of keys) {
+      const nested = record[key];
+      if (Array.isArray(nested)) return nested;
+      if (key in record && nested == null) return [];
+    }
+  }
+  throw new Error(`${label}返回格式无效`);
+}
+
+// Wails serializes a nil Go slice as null. Older local builds also exposed the
+// persisted state object instead of its topicIds array. Normalize both at the
+// binding boundary so an empty pin preference never hides the Room tree.
+export function normalizeRoomPins(value: unknown): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of bindingArray(value, ["topicIds", "TopicIDs", "pins", "Pins"], "Room 固定设置")) {
+    if (typeof entry !== "string") throw new Error("Room 固定设置包含非字符串 ID");
+    const topicId = entry.trim();
+    if (!topicId || seen.has(topicId)) continue;
+    seen.add(topicId);
+    result.push(topicId);
+  }
+  return result;
+}
+
+// Map payloads are normally plain objects. Accept the old {icons: {...}} state
+// wrapper and nil maps, while rejecting malformed data explicitly; callers can
+// then fall back to default glyphs without discarding the authoritative list.
+export function normalizeRoomIcons(value: unknown): Record<string, string> {
+  if (value == null) return {};
+  let record = bindingRecord(value);
+  if (!record) throw new Error("Room 图标设置返回格式无效");
+  const wrapped = bindingRecord(record.icons) ?? bindingRecord(record.Icons);
+  if (wrapped) record = wrapped;
+  const result: Record<string, string> = {};
+  for (const [rawTopicId, rawIcon] of Object.entries(record)) {
+    const topicId = rawTopicId.trim();
+    if (!topicId) continue;
+    if (typeof rawIcon !== "string") throw new Error(`Room ${topicId} 的图标设置格式无效`);
+    result[topicId] = rawIcon;
+  }
+  return result;
+}
+
 export function pinnedRoomRows(rows: RoomRow[]): RoomRow[] {
   return rows.filter((row) => row.pinned).slice(0, ROOM_PIN_LIMIT);
 }
@@ -29,11 +85,11 @@ export function roomPinsFull(rows: RoomRow[]): boolean {
 // projection. It deliberately ignores ProjectNode.pinned, whose meaning is
 // sidebar topic ordering. Pinned rows follow the persisted desktop pin order;
 // all remaining Rooms retain their authoritative tree order.
-export function applyRoomPins(rows: RoomRow[], pinnedTopicIds: string[]): RoomRow[] {
+export function applyRoomPins(rows: RoomRow[], pinnedTopicIds: unknown): RoomRow[] {
   const byTopic = new Map(rows.map((row) => [row.topicId, row]));
   const pinned = new Set<string>();
   const ordered: RoomRow[] = [];
-  for (const topicId of pinnedTopicIds) {
+  for (const topicId of normalizeRoomPins(pinnedTopicIds)) {
     if (pinned.size >= ROOM_PIN_LIMIT) break;
     const row = byTopic.get(topicId);
     if (!row || pinned.has(topicId)) continue;
@@ -48,8 +104,9 @@ export function applyRoomPins(rows: RoomRow[], pinnedTopicIds: string[]): RoomRo
 
 // applyRoomIcons joins the independent desktop icon preferences without
 // pruning preferences for topics that are temporarily absent from the tree.
-export function applyRoomIcons(rows: RoomRow[], icons: Record<string, string>): RoomRow[] {
-  return rows.map((row) => ({ ...row, icon: projectIconKey(icons[row.topicId]) }));
+export function applyRoomIcons(rows: RoomRow[], icons: unknown): RoomRow[] {
+  const normalized = normalizeRoomIcons(icons);
+  return rows.map((row) => ({ ...row, icon: projectIconKey(normalized[row.topicId]) }));
 }
 
 // roomRows projects collaboration Rooms from the backend tree, walking it in
@@ -59,29 +116,35 @@ export function applyRoomIcons(rows: RoomRow[], icons: Record<string, string>): 
 // Work and plain sessions never match. Duplicate topicIds collapse to the
 // first occurrence so row identity matches the backend mutation key
 // (RenameTopic / SetTopicPinned / TrashTopic are all topicId-keyed).
-export function roomRows(tree: ProjectNode[]): RoomRow[] {
+export function roomRows(tree: unknown): RoomRow[] {
   const rows: RoomRow[] = [];
   const seen = new Set<string>();
-  const walk = (nodes: ProjectNode[]) => {
-    for (const node of nodes) {
-      if ((node.kind === "topic" || node.kind === "global_topic") && node.sessionKind === "collaboration") {
-        const topicId = node.topicId?.trim() ?? "";
-        const sessionPath = node.sessionPath?.trim() ?? "";
+  const walk = (value: unknown) => {
+    const nodes = bindingArray(value, ["nodes", "Nodes", "items", "Items", "tree", "Tree", "projectTree", "ProjectTree"], "Room 列表");
+    for (const rawNode of nodes) {
+      const node = bindingRecord(rawNode);
+      if (!node) throw new Error("Room 列表包含无效节点");
+      const kind = String(node.kind ?? node.Kind ?? "");
+      const sessionKind = String(node.sessionKind ?? node.SessionKind ?? "");
+      if ((kind === "topic" || kind === "global_topic") && sessionKind === "collaboration") {
+        const topicId = String(node.topicId ?? node.TopicID ?? "").trim();
+        const sessionPath = String(node.sessionPath ?? node.SessionPath ?? "").trim();
         if (topicId && sessionPath && !seen.has(topicId)) {
           seen.add(topicId);
-          const global = node.kind === "global_topic";
+          const global = kind === "global_topic";
           rows.push({
             topicId,
-            label: node.label || "Room",
-            pinned: Boolean(node.pinned),
+            label: String(node.label ?? node.Label ?? "") || "Room",
+            pinned: Boolean(node.pinned ?? node.Pinned),
             icon: "",
             scope: global ? "global" : "project",
-            workspaceRoot: global ? "" : (node.root ?? ""),
+            workspaceRoot: global ? "" : String(node.root ?? node.Root ?? ""),
             sessionPath,
           });
         }
       }
-      if (node.children?.length) walk(node.children);
+      const children = node.children ?? node.Children;
+      if (children != null) walk(children);
     }
   };
   walk(tree);

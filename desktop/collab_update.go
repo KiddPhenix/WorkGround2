@@ -8,9 +8,11 @@ import (
 )
 
 const (
-	collaborationUpdateInterval = 60 * time.Second
-	collaborationUpdateJitter   = 12 * time.Second
-	collaborationUpdateTimeout  = 30 * time.Second
+	collaborationUpdateInterval      = 60 * time.Second
+	collaborationUpdateJitter        = 12 * time.Second
+	collaborationUpdateTimeout       = 30 * time.Second
+	collaborationInitialUpdateMin    = 250 * time.Millisecond
+	collaborationInitialUpdateSpread = 5 * time.Second
 )
 
 // startUpdateLoop installs the low-frequency reconciliation fallback for one
@@ -60,6 +62,31 @@ func (c *desktopCollaboration) waitUpdateLoop() {
 
 func (c *desktopCollaboration) updateLoop(ctx context.Context, done chan<- struct{}) {
 	defer close(done)
+	// Reconcile once on residency. Waiting for the first one-minute tick leaves
+	// a restored Room icon backed only by its stale persisted snapshot, which
+	// makes incoming unread delivery depend on a frontend-tab readiness race.
+	// A small stable spread avoids reconnecting every restored Room at once.
+	initial := collaborationInitialUpdateDelay(c.ownerSessionID)
+	if c.initialUpdateDelay != nil {
+		initial = c.initialUpdateDelay()
+	}
+	if initial > 0 {
+		timer := time.NewTimer(initial)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		case <-timer.C:
+		}
+	}
+	updateCtx, cancel := context.WithTimeout(ctx, collaborationUpdateTimeout)
+	_ = c.updateConnection(updateCtx)
+	cancel()
 	for {
 		timer := time.NewTimer(c.nextUpdateDelay())
 		select {
@@ -77,6 +104,11 @@ func (c *desktopCollaboration) updateLoop(ctx context.Context, done chan<- struc
 		_ = c.updateConnection(updateCtx)
 		cancel()
 	}
+}
+
+func collaborationInitialUpdateDelay(sessionID string) time.Duration {
+	sum := sha256.Sum256([]byte(sessionID))
+	return collaborationInitialUpdateMin + time.Duration(binary.BigEndian.Uint64(sum[8:16])%uint64(collaborationInitialUpdateSpread))
 }
 
 func (c *desktopCollaboration) nextUpdateDelay() time.Duration {

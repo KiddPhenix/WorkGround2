@@ -24,6 +24,7 @@ import (
 	"workground2/internal/fileutil"
 	"workground2/internal/memory"
 	"workground2/internal/skill"
+	"workground2/internal/unread"
 )
 
 type semanticIntentSession struct {
@@ -1518,13 +1519,17 @@ func TestRestoreCollaborationRuntimesDeduplicatesRecoveryCaches(t *testing.T) {
 
 	starts := 0
 	var startedRuntime *desktopCollaboration
-	app.restoreCollaborationRuntimesWith(func(runtime *desktopCollaboration, restoredSessionID string) {
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.restoreCollaborationRuntimesWithRooms(entries, stateDir, func(runtime *desktopCollaboration, restoredSessionID string) {
 		starts++
 		startedRuntime = runtime
 		if restoredSessionID != sessionID {
 			t.Fatalf("restored SessionID = %q, want %q", restoredSessionID, sessionID)
 		}
-	})
+	}, collaborationLiveRooms{sessionRuntimeKey(parent): struct{}{}})
 	if starts != 1 {
 		t.Fatalf("startup restore starts = %d, want exactly 1 for duplicate owner caches", starts)
 	}
@@ -1540,6 +1545,120 @@ func TestRestoreCollaborationRuntimesDeduplicatesRecoveryCaches(t *testing.T) {
 	state := runtime.snapshot()
 	if state.Mode != "host" || state.Host != "0.0.0.0" || state.Port != 49853 || state.Room != "stable-room" {
 		t.Fatalf("restored Host authority = %+v", state)
+	}
+}
+
+func TestRestoreCollaborationRuntimesKeepsCompleteOffTabRoomResidentForUnread(t *testing.T) {
+	supportDir := t.TempDir()
+	t.Setenv("WorkGround2_STATE_HOME", supportDir)
+	stateDir := filepath.Join(supportDir, "desktop-collaboration-v2")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(supportDir, "projects", "room-project", "sessions", "off-tab-room.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(sessionPath, agent.BranchMeta{
+		ID: "off-tab-room", Scope: "project", WorkspaceRoot: filepath.Dir(filepath.Dir(sessionPath)),
+		TopicID: "topic-off-tab", TopicTitle: "Off-tab Room", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionID := "session-off-tab-room"
+	createdAt := time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC)
+	persisted := collaborationPersistedState{
+		Mode: "client", Host: "127.0.0.1", Port: 49853, Room: "room-off-tab", RoomName: "Off-tab Room",
+		MemberID: "self", AgentID: "self-agent", SessionID: sessionID, SessionPath: sessionPath,
+		Snapshot: collab.Snapshot{
+			Room:           collab.Room{ID: "room-off-tab", Name: "Off-tab Room", CreatedAt: createdAt, LatestSequence: 1},
+			LatestSequence: 1,
+			Timeline: []collab.TimelineItem{{
+				ID: "baseline", Sequence: 1, Type: collab.TimelineChat,
+				Chat: &collab.ChatMessage{ID: "baseline", AuthorID: "other", Text: "cached baseline", CreatedAt: createdAt},
+			}},
+		},
+	}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistPath := filepath.Join(stateDir, collaborationSessionStateName(collaborationPersistenceKey(sessionID, sessionPath)))
+	if err := os.WriteFile(persistPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stalePath := filepath.Join(filepath.Dir(sessionPath), "left-room.jsonl")
+	if err := os.WriteFile(stalePath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(stalePath, agent.BranchMeta{
+		ID: "left-room", Scope: "project", WorkspaceRoot: filepath.Dir(filepath.Dir(stalePath)),
+		TopicID: "topic-left", TopicTitle: "Left Room", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stale := persisted
+	stale.SessionID = "session-left-room"
+	stale.SessionPath = stalePath
+	stale.Room = "room-left"
+	staleData, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stalePersistPath := filepath.Join(stateDir, collaborationSessionStateName(collaborationPersistenceKey(stale.SessionID, stalePath)))
+	if err := os.WriteFile(stalePersistPath, staleData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := unread.Open(filepath.Join(supportDir, "unread-test.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.unreadStore = store
+	starts := 0
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.restoreCollaborationRuntimesWithRooms(entries, stateDir, func(runtime *desktopCollaboration, restoredSessionID string) {
+		starts++
+		if restoredSessionID != sessionID {
+			t.Fatalf("restored SessionID = %q, want %q", restoredSessionID, sessionID)
+		}
+	}, collaborationLiveRooms{sessionRuntimeKey(sessionPath): struct{}{}})
+	defer app.closeCollaborations()
+
+	app.collaborationMu.Lock()
+	runtime := app.collaborations[sessionID]
+	staleRuntime := app.collaborations[stale.SessionID]
+	app.collaborationMu.Unlock()
+	if starts != 0 || runtime == nil || staleRuntime != nil {
+		t.Fatalf("off-tab Room restore starts=%d live=%p stale=%p", starts, runtime, staleRuntime)
+	}
+	if runtime.ownerSessionPath != sessionRuntimeKey(sessionPath) || runtime.persistPath != persistPath {
+		t.Fatalf("off-tab Room identity path=%q persist=%q, want %q and %q", runtime.ownerSessionPath, runtime.persistPath, sessionRuntimeKey(sessionPath), persistPath)
+	}
+	if got := app.UnreadState().Summary; got.TotalUnread != 0 || len(got.Conversations) != 1 || got.Conversations[0].LatestSequence != 1 {
+		t.Fatalf("cached Room baseline = %+v", got)
+	}
+
+	runtime.mu.Lock()
+	runtime.state.Snapshot.LatestSequence = 2
+	runtime.state.Snapshot.Room.LatestSequence = 2
+	runtime.state.Snapshot.Timeline = append(runtime.state.Snapshot.Timeline, collab.TimelineItem{
+		ID: "new-off-tab", Sequence: 2, Type: collab.TimelineChat,
+		Chat: &collab.ChatMessage{ID: "new-off-tab", AuthorID: "other", Text: "new while tab closed", CreatedAt: createdAt.Add(time.Minute)},
+	})
+	runtime.mu.Unlock()
+	runtime.observeUnread()
+	got := app.UnreadState().Summary
+	if got.TotalUnread != 1 || len(got.Conversations) != 1 || got.Conversations[0].SessionID != sessionID || got.Conversations[0].Items[0].ID != "new-off-tab" {
+		t.Fatalf("off-tab Room unread = %+v", got)
 	}
 }
 
@@ -2085,6 +2204,15 @@ func TestCollaborationRoomUpdateDelayIsLowFrequencyAndJittered(t *testing.T) {
 	if collaborationRoomUpdateDelay("session-a") == collaborationRoomUpdateDelay("session-b") {
 		t.Fatal("Room update delay has no per-Session jitter")
 	}
+	for _, sessionID := range []string{"session-a", "session-b", "session-c"} {
+		delay := collaborationInitialUpdateDelay(sessionID)
+		if delay < collaborationInitialUpdateMin || delay >= collaborationInitialUpdateMin+collaborationInitialUpdateSpread {
+			t.Fatalf("initial update delay for %q = %v, want short bounded spread", sessionID, delay)
+		}
+	}
+	if collaborationInitialUpdateDelay("session-a") == collaborationInitialUpdateDelay("session-b") {
+		t.Fatal("initial Room update delay has no per-Session jitter")
+	}
 }
 
 func TestCollaborationAutomaticUpdateRestoresPersistedClient(t *testing.T) {
@@ -2217,6 +2345,7 @@ func TestCollaborationUpdateLoopStopsWithRuntime(t *testing.T) {
 		return nil, &collaborationTransportError{message: "offline", retryable: true}
 	}
 	c.updateDelay = func() time.Duration { return time.Millisecond }
+	c.initialUpdateDelay = func() time.Duration { return 0 }
 	c.startUpdateLoop(context.Background())
 	for range 2 {
 		select {
@@ -2231,6 +2360,38 @@ func TestCollaborationUpdateLoopStopsWithRuntime(t *testing.T) {
 	if calls.Load() != afterClose {
 		t.Fatalf("Room update continued after close: before=%d after=%d", afterClose, calls.Load())
 	}
+}
+
+func TestCollaborationUpdateLoopReconcilesBeforeFirstLowFrequencyTick(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	persisted := collaborationPersistedState{
+		Mode: "client", Host: "127.0.0.1", Port: 39170, Room: "room-ready-race",
+		MemberID: "member-a", MemberName: "Alice", AgentID: "agent-a", AgentName: "Alice Agent", SessionID: "session-ready-race",
+		Snapshot: collab.Snapshot{Room: collab.Room{ID: "room-ready-race", Name: "Ready Race"}},
+	}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.persistPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.loadPersisted()
+
+	called := make(chan struct{}, 1)
+	c.openJoin = func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error) {
+		called <- struct{}{}
+		return nil, &collaborationTransportError{message: "offline", retryable: true}
+	}
+	c.updateDelay = func() time.Duration { return time.Hour }
+	c.initialUpdateDelay = func() time.Duration { return 0 }
+	c.startUpdateLoop(context.Background())
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("resident Room waited for the first low-frequency tick before reconciliation")
+	}
+	c.close()
 }
 
 func TestCollaborationUpdateRestartsStoppedConnectionLoop(t *testing.T) {

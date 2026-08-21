@@ -98,7 +98,9 @@ func (a *App) GetDesktopRoomPins() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append([]string(nil), state.TopicIDs...), nil
+	pins := make([]string, len(state.TopicIDs))
+	copy(pins, state.TopicIDs)
+	return pins, nil
 }
 
 // GetDesktopRoomIcons returns the persisted per-topic Room icon preferences.

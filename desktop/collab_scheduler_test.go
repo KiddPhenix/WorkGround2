@@ -662,8 +662,27 @@ func TestSchedulerStartupResidencyRestoresRuntime(t *testing.T) {
 	}
 }
 
+func TestSchedulerOffTabTransportResidencyDoesNotQueueAgentRun(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent help", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.startAgentHook = nil
+	c.agentReady = func(string) (bool, error) { return false, nil }
+
+	c.scheduler.scheduleOnce(context.Background(), c, wakeSignal)
+	c.mu.RLock()
+	starts := len(c.starts)
+	queued := len(c.queuedRuns)
+	c.mu.RUnlock()
+	if starts != 0 || queued != 0 {
+		t.Fatalf("off-tab scheduler queued Agent work: starts=%d queued=%d", starts, queued)
+	}
+}
+
 func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
 	app := NewApp()
+	defer app.closeCollaborations()
 	sessionPath := filepath.Join(t.TempDir(), "inactive-room.jsonl")
 	sessionID := "session_scheduler_restore_registered"
 	tab := &WorkspaceTab{ID: "inactive-room", SessionID: sessionID, SessionPath: sessionPath}
@@ -675,7 +694,10 @@ func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
 	writeState := func(name, id string) string {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), name)
-		data, err := json.Marshal(collaborationPersistedState{SessionID: id, SessionPath: sessionPath})
+		data, err := json.Marshal(collaborationPersistedState{
+			Mode: "client", Host: "127.0.0.1", Room: "room-stale-check",
+			SessionID: id, SessionPath: sessionPath,
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -685,7 +707,8 @@ func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
 		return path
 	}
 
-	app.restoreOneCollaboration(writeState("registered.json", sessionID))
+	noopStart := func(*desktopCollaboration, string) {}
+	app.restoreOneCollaborationWithRooms(writeState("registered.json", sessionID), noopStart, collaborationLiveRooms{sessionRuntimeKey(sessionPath): struct{}{}})
 	app.collaborationMu.Lock()
 	registered := app.collaborations[sessionID]
 	app.collaborationMu.Unlock()
@@ -694,7 +717,7 @@ func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
 	}
 
 	staleID := "session_scheduler_restore_stale"
-	app.restoreOneCollaboration(writeState("stale.json", staleID))
+	app.restoreOneCollaborationWithRooms(writeState("stale.json", staleID), noopStart, collaborationLiveRooms{})
 	app.collaborationMu.Lock()
 	stale := app.collaborations[staleID]
 	app.collaborationMu.Unlock()

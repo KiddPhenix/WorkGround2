@@ -101,6 +101,15 @@ func (s *collaborationScheduler) scheduleOnce(ctx context.Context, c *desktopCol
 	agentID := state.AgentID
 	sessionID := state.SessionID
 	config := state.AgentConfig
+	// Transport/unread residency intentionally outlives the local Controller.
+	// Do not turn an off-tab Room message into a queued Agent command; the same
+	// snapshot is reconsidered after the workspace becomes ready.
+	if c.startAgentHook == nil && c.agentReady != nil {
+		ready, err := c.agentReady(sessionID)
+		if err != nil || !ready {
+			return
+		}
+	}
 
 	// Build the set of already-handled references from existing agent runs.
 	handledRefs := buildSchedulerHandledRefs(snapshot, memberID)

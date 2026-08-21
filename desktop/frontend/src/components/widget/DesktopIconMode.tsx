@@ -20,7 +20,7 @@ import { IdleHoverTracer } from "./idleHoverTrace";
 import { QUICK_DRAFT_KEY, cleanupConsumedDraft, clearConsumedDraftMarker, createQuickStartOpenTaskGate, decideConsumedDraft, isQuickStartJobItem, mergeQuickStartItems, quickStartJobItem, quickStartJobPromptLabel, quickStartJobRequestIDFromItem, quickStartJobStateLabel, quickStartJobWorkspaceLabel, recordConsumedDraftMarker, useWidgetQuickStartJobs, type QuickStartConsumedDraftDecision, type QuickStartJob, type QuickStartJobIntent, type WidgetQuickStartJobsApi } from "./widgetQuickStartJobs";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
 import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTitle, WORKSPACE_PIN_LIMIT, workspacePinsFull, type WorkspaceRow } from "./workspaceManager";
-import { applyRoomIcons, applyRoomPins, pinnedRoomRows, ROOM_PIN_LIMIT, roomPinsFull, roomRows, type RoomRow } from "./roomsManager";
+import { applyRoomIcons, applyRoomPins, normalizeRoomIcons, normalizeRoomPins, pinnedRoomRows, ROOM_PIN_LIMIT, roomPinsFull, roomRows, type RoomRow } from "./roomsManager";
 import { readRoomIconVisibility, visibleDesktopIcons, writeRoomIconVisibility } from "./roomIconVisibility";
 import { consumeRoomPopup, newRoomPopupState, readRoomNotificationMode, reconcileRoomPopups, roomAttentionLabel, writeRoomNotificationMode, type RoomNotificationMode } from "./roomNotifications";
 import { isWorkspaceMatteIcon, projectIconKey, WORKSPACE_MATTE_ICON_OPTIONS, type ProjectIconKey, type WorkspaceMatteIconKey } from "../../lib/projectIcons";
@@ -955,8 +955,41 @@ function RoomsManager({ roomIconsVisible, onRoomIconsVisibleChange, notification
     setLoading(true);
     setError("");
     try {
-      const [tree, pins, icons] = await Promise.all([app.ListProjectTree(), app.GetDesktopRoomPins(), app.GetDesktopRoomIcons()]);
-      setRows(applyRoomIcons(applyRoomPins(roomRows(tree), pins), icons));
+      // Preference bindings were introduced after the Room tree binding. Old
+      // binaries may omit them, and nil Go slices/maps arrive through Wails as
+      // null. Keep the authoritative Room list usable while surfacing degraded
+      // pin/icon preferences as a retryable warning.
+      const [treeResult, pinsResult, iconsResult] = await Promise.allSettled([
+        Promise.resolve().then(() => app.ListProjectTree()),
+        Promise.resolve().then(() => {
+          const load = app.GetDesktopRoomPins;
+          if (typeof load !== "function") throw new Error("当前 Desktop 未提供 Room 固定设置接口");
+          return load();
+        }),
+        Promise.resolve().then(() => {
+          const load = app.GetDesktopRoomIcons;
+          if (typeof load !== "function") throw new Error("当前 Desktop 未提供 Room 图标设置接口");
+          return load();
+        }),
+      ]);
+      if (treeResult.status === "rejected") throw treeResult.reason;
+      const warnings: string[] = [];
+      let pins: string[] = [];
+      let icons: Record<string, string> = {};
+      if (pinsResult.status === "fulfilled") {
+        try { pins = normalizeRoomPins(pinsResult.value); }
+        catch (cause) { warnings.push(cause instanceof Error ? cause.message : String(cause)); }
+      } else {
+        warnings.push(pinsResult.reason instanceof Error ? pinsResult.reason.message : String(pinsResult.reason));
+      }
+      if (iconsResult.status === "fulfilled") {
+        try { icons = normalizeRoomIcons(iconsResult.value); }
+        catch (cause) { warnings.push(cause instanceof Error ? cause.message : String(cause)); }
+      } else {
+        warnings.push(iconsResult.reason instanceof Error ? iconsResult.reason.message : String(iconsResult.reason));
+      }
+      setRows(applyRoomIcons(applyRoomPins(roomRows(treeResult.value), pins), icons));
+      if (warnings.length > 0) setError(`Room 设置加载失败（已使用默认值）：${warnings.join("；")}`);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setLoading(false); }
   }, []);

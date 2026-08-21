@@ -1023,6 +1023,7 @@ func (a *App) desktopRoomNoticePresentations() desktopRoomNoticePresentations {
 	for _, runtime := range runtimes {
 		runtime.mu.RLock()
 		sessionID := firstNonEmpty(runtime.ownerSessionID, runtime.state.SessionID)
+		sessionKeys := desktopIconRoomSessionKeys(sessionID, &DesktopIconTaskRef{SessionPath: runtime.ownerSessionPath})
 		authors := map[string]string{}
 		for _, member := range runtime.state.Snapshot.Members {
 			authors[member.ID] = firstNonEmpty(strings.TrimSpace(member.Name), strings.TrimSpace(member.ID))
@@ -1033,7 +1034,9 @@ func (a *App) desktopRoomNoticePresentations() desktopRoomNoticePresentations {
 		for _, item := range runtime.state.Snapshot.Timeline {
 			presentation := desktopRoomTimelinePresentation(item, authors)
 			if strings.TrimSpace(presentation.Body) != "" {
-				addDesktopRoomNoticePresentation(out, sessionID, desktopRoomTimelineItemID(item), presentation)
+				for _, key := range sessionKeys {
+					addDesktopRoomNoticePresentation(out, key, desktopRoomTimelineItemID(item), presentation)
+				}
 			}
 		}
 		runtime.mu.RUnlock()
