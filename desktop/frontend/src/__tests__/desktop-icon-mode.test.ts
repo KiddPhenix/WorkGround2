@@ -12,7 +12,22 @@ import { parseRoomIconVisibility, readRoomIconVisibility, ROOM_ICON_VISIBILITY_K
 import { IDLE_HOVER_BURST_WINDOW_MS, IDLE_HOVER_HEALTHY_FRAMES, IDLE_HOVER_HEALTHY_GAP_MS, IDLE_HOVER_RECOVERY_WINDOW_MS, IDLE_HOVER_THRESHOLD_MS, IdleHoverTracer, type IdleHoverSensors } from "../components/widget/idleHoverTrace";
 import type { DesktopIconDiagnosticsInput, DesktopIconItem } from "../lib/bridge";
 import { isWorkspaceMatteIcon, projectIconKey, WORKSPACE_MATTE_ICON_OPTIONS } from "../lib/projectIcons";
+import { canRenameTaskIcon } from "../components/widget/desktopIconRename";
 import type { ProjectNode } from "../lib/types";
+
+// --- rename eligibility: a task icon is only renameable when it carries a
+// usable SessionRef.SessionPath, matching the backend rename gate so the menu
+// never presents a guaranteed-failure entry ---
+const taskIcon = (overrides: Partial<DesktopIconItem> = {}): DesktopIconItem => ({
+  id: "task:1", kind: "task", sourceId: "s", title: "任务", status: "idle", unreadCount: 0,
+  notifications: [], position: { row: "bottom", zone: "running", order: 0 }, revision: "r",
+  ...overrides,
+});
+assert.equal(canRenameTaskIcon(taskIcon({ sessionRef: { scope: "global", sessionPath: "sp-1" } })), true, "task with a session path can rename");
+assert.equal(canRenameTaskIcon(taskIcon({ sessionRef: { scope: "global", sessionPath: "   " } })), false, "blank session path cannot rename");
+assert.equal(canRenameTaskIcon(taskIcon({ sessionRef: { scope: "global" } })), false, "task without a session path cannot rename");
+assert.equal(canRenameTaskIcon(taskIcon({ sessionRef: undefined })), false, "task without a sessionRef cannot rename");
+assert.equal(canRenameTaskIcon(taskIcon({ kind: "workspace", sessionRef: { scope: "global", sessionPath: "sp-1" } })), false, "non-task icons never rename");
 
 assert.equal(quickStartModelLabel("deepseek-pro/deepseek-v4-pro"), "deepseek-v4-pro", "QuickStart shows the selected model name without a redundant provider prefix");
 assert.equal(quickStartModelLabel(""), "未配置", "QuickStart exposes a missing default model explicitly");
@@ -52,6 +67,18 @@ const workspaceKeys = ["auto", "project:D:/Work/A", "project:D:/Work/B", "global
 assert.equal(quickStartWorkspaceIndex(workspaceKeys, "project:D:/Work/B", "project:D:/Work/A", "global"), 2, "pending retry wins over requested and remembered workspaces");
 assert.equal(quickStartWorkspaceIndex(workspaceKeys, "", "project:D:/Work/A", "global"), 1, "source workspace wins over remembered selection");
 assert.equal(quickStartWorkspaceIndex(workspaceKeys, "", "", "global"), 3, "QuickStart remembers its last workspace");
+
+// --- workspace icon "在此发起" must beat the remembered idle preference ---
+// The clicked root can arrive with a differently-cased drive letter and `/`
+// vs `\` separators; matching still returns the authoritative candidate index.
+const winKeys = ["auto", "project:D:\\Work", "project:D:\\Work\\WG2广告", "global"];
+assert.equal(quickStartWorkspaceIndex(winKeys, "", "project:d:/Work/WG2广告", "project:D:\\Work"), 2, "the clicked workspace wins over the remembered one even with drive-case and separator differences");
+assert.equal(quickStartWorkspaceIndex(winKeys, "", "project:d:\\Work\\WG2广告", "project:D:/Work"), 2, "a backslash clicked root still matches the authoritative candidate");
+assert.equal(quickStartWorkspaceIndex(["auto"], "", "project:d:/Work/WG2广告", "project:D:\\Work"), 0, "an empty candidate list safely shows auto until the list arrives");
+assert.equal(quickStartWorkspaceIndex(winKeys, "", "project:d:/Work/WG2广告", "project:D:\\Work"), 2, "the first recompute after a late-arriving candidate list selects the clicked workspace");
+assert.equal(quickStartWorkspaceIndex(winKeys, "project:D:\\Work", "project:d:/Work/WG2广告", "global"), 1, "an explicit pending edit intent still wins over the clicked workspace for an idempotent retry");
+assert.equal(quickStartWorkspaceIndex(winKeys, "", "project:z:/missing", "project:D:\\Work"), 1, "a clicked target absent from the candidate list falls back to the remembered workspace");
+assert.equal(quickStartWorkspaceIndex(winKeys, "", "project:z:/missing", ""), 0, "no valid target falls back to auto");
 
 const dragItems: DesktopIconItem[] = [0, 1, 2].map((order) => ({
   id: `task:${order}`, kind: "task", sourceId: String(order), title: String(order), status: "idle", unreadCount: 0,
@@ -741,7 +768,7 @@ assert.match(component, /catch \(cause\) \{\s*\/\/ The row stays[\s\S]+setError\
 assert.match(component, /WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]{0,400}<WorkspaceMatteIcon icon=\{option\.key\}/, "the workspace editor exposes every matte PNG through one typed catalog");
 assert.match(component, /await app\.SetProjectIcon\(row\.root, icon\)[\s\S]{0,100}await reload\(\)[\s\S]{0,100}await onChanged\(\)[\s\S]{0,100}setIconEditing\(null\)/, "a successful icon assignment persists, reloads the manager, and refreshes the widget snapshot before closing");
 assert.match(component, /item\.kind === "workspace" && <button[\s\S]{0,160}openWorkspaceIconEditor\(item\)[\s\S]{0,160}>修改图标<\/button>/, "a workspace icon context menu exposes 修改图标 for the clicked workspace");
-assert.match(component, /<DailyRoutinePanel[\s\S]{0,180}onStartHere=\{\(\) => \{ setQuickWorkspace\(`project:\$\{active\.sourceId\}`\); setPopupAnchorID\(active\.id\); setActiveID\("fixed:new"\); \}\}/, "workspace 日常 panel keeps 在此发起 anchored to the clicked project icon");
+assert.match(component, /<DailyRoutinePanel[\s\S]{0,220}onStartHere=\{\(\) => \{ setQuickWorkspace\(`project:\$\{active\.sourceId\}`\); setQuickStartEditJob\(null\); setPopupAnchorID\(active\.id\); setActiveID\("fixed:new"\); \}\}/, "workspace 日常 panel keeps 在此发起 anchored to the clicked project, clears stale edit intent, and preselects its workspace");
 assert.match(component, /itemRefs\.current\.get\(popupAnchorID\) \|\| itemRefs\.current\.get\(popupItem\.id\)/, "popup placement prefers the explicit workspace anchor over the fixed 新建 icon");
 assert.match(component, /<QuickStart[\s\S]{0,300}initialWorkspace=\{quickWorkspace\}/, "the anchored QuickStart receives the selected workspace");
 assert.match(component, /openWorkspaceIconEditor[\s\S]{0,180}setWorkspaceIconRoot\(item\.sourceId\)[\s\S]{0,120}setActiveID\("fixed:workspace"\)/, "workspace context editing carries the clicked root into the shared manager");

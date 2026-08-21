@@ -23,6 +23,7 @@ import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTit
 import { roomRows, type RoomRow } from "./roomsManager";
 import { readRoomIconVisibility, visibleDesktopIcons, writeRoomIconVisibility } from "./roomIconVisibility";
 import { isWorkspaceMatteIcon, WORKSPACE_MATTE_ICON_OPTIONS, type ProjectIconKey, type WorkspaceMatteIconKey } from "../../lib/projectIcons";
+import { canRenameTaskIcon } from "./desktopIconRename";
 import { WorkspaceMatteIcon } from "./WorkspaceMatteIcon";
 import { useT } from "../../lib/i18n";
 import "./desktop-icon-mode.css";
@@ -1309,7 +1310,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       // Escape inside the resident continuation input stays local (the
       // textarea stops propagation as well): it must never close the popup.
       if (event.key === "Escape" && !(event.target instanceof HTMLElement && event.target.closest(".desktop-icon-popup__continue"))) { closeTransient(); }
-		if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") { event.preventDefault(); setQuickWorkspace(""); setPopupAnchorID(""); setActiveID("fixed:new"); }
+		if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") { event.preventDefault(); setQuickWorkspace(""); setQuickStartEditJob(null); setPopupAnchorID(""); setActiveID("fixed:new"); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   }, [closeTransient]);
@@ -1349,7 +1350,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
   const openItem = (item: DesktopIconItem) => {
     cancelTransientTimers();
     setPopupAnchorID("");
-    if (item.kind === "fixed" && item.sourceId === "new") { setQuickWorkspace(""); setActiveID(item.id); }
+    if (item.kind === "fixed" && item.sourceId === "new") { setQuickWorkspace(""); setQuickStartEditJob(null); setActiveID(item.id); }
 		else if (item.kind === "fixed" && item.sourceId === "search") {
 			setActiveID(item.id);
 		}
@@ -1528,7 +1529,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 			</div> : <>
 				<button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>
 				{item.kind === "workspace" && <button role="menuitem" onClick={() => openWorkspaceIconEditor(item)}>修改图标</button>}
-				{item.kind === "task" && <><button role="menuitem" onClick={() => startSessionRename(item)}>改名</button><button role="menuitem" disabled={busy} onClick={() => void createRoutine(item)}>{busy && routineExtractRequests.current.has(item.sessionRef?.sessionPath || item.sourceId) ? t("dailyRoutine.extracting") : t("dailyRoutine.make")}</button><button role="menuitem" disabled={busy} onClick={() => void finishMenuAction(item, "randomize_icon")}>换个样子</button></>}
+				{item.kind === "task" && <><button role="menuitem" disabled={!canRenameTaskIcon(item)} title={canRenameTaskIcon(item) ? undefined : "该任务没有可改名的 Session"} onClick={() => startSessionRename(item)}>改名</button><button role="menuitem" disabled={busy} onClick={() => void createRoutine(item)}>{busy && routineExtractRequests.current.has(item.sessionRef?.sessionPath || item.sourceId) ? t("dailyRoutine.extracting") : t("dailyRoutine.make")}</button><button role="menuitem" disabled={busy} onClick={() => void finishMenuAction(item, "randomize_icon")}>换个样子</button></>}
 				{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}
 				{(item.retained || item.kind === "person") && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}
 			</>}
@@ -1733,7 +1734,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {active && active.sourceId === "delegate" && <DelegationPanel items={snapshot.delegations || []} error={snapshot.delegationError} busy={busy} onClose={() => setActiveID("")} onPick={(item) => run(active, "open_delegation", [item.id])} />}
       {active && active.sourceId === "workspace" && <WorkspaceManager initialIconRoot={workspaceIconRoot} onClose={() => { setWorkspaceIconRoot(""); setActiveID(""); }} onChanged={refresh} />}
       {active && active.sourceId === "rooms" && <RoomsManager roomIconsVisible={roomIconsVisible} onRoomIconsVisibleChange={setRoomIconsVisible} onClose={() => setActiveID("")} onNewRoom={onNewRoom} onOpenRoom={onOpenRoom} />}
-	  {active && active.kind === "workspace" && <DailyRoutinePanel key={active.sourceId} workspaceRoot={active.sourceId} onStartHere={() => { setQuickWorkspace(`project:${active.sourceId}`); setPopupAnchorID(active.id); setActiveID("fixed:new"); }} onClose={() => setActiveID("")} />}
+	  {active && active.kind === "workspace" && <DailyRoutinePanel key={active.sourceId} workspaceRoot={active.sourceId} onStartHere={() => { setQuickWorkspace(`project:${active.sourceId}`); setQuickStartEditJob(null); setPopupAnchorID(active.id); setActiveID("fixed:new"); }} onClose={() => setActiveID("")} />}
       {active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
       {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => run(active, action, values)} onClose={() => { setActiveID(""); setPreviewID(""); }} />}
       {active && !active.notifications[0] && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
