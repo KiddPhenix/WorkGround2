@@ -253,7 +253,9 @@ function realTask(id: string): DesktopIconItem {
 	const fixed: DesktopIconItem = { id: "fixed:new", kind: "fixed", sourceId: "new", title: "新建", status: "idle", unreadCount: 0, notifications: [], position: { row: "bottom", zone: "fixed", order: 0 }, revision: "1" };
 	const opt = quickStartJobItem({ requestId: "r1", intent, phase: "running", createdAt: 1, updatedAt: 1 });
 	const merged = mergeQuickStartItems([task, workspace, fixed], [opt]);
-	assert.deepEqual(merged.map((item) => item.id), ["task:t1", "workspace:w", "opt:r1", "fixed:new"], "optimistic icons render after real tasks/workspaces but before the fixed bar");
+	assert.deepEqual(merged.map((item) => item.id), ["opt:r1", "task:t1", "workspace:w", "fixed:new"], "the newest optimistic Session stays at the far-left edge of the bottom row");
+	const newer = quickStartJobItem({ requestId: "r2", intent, phase: "running", createdAt: 2, updatedAt: 2 });
+	assert.deepEqual(mergeQuickStartItems([task, workspace, fixed], [newer, opt]).map((item) => item.id), ["opt:r2", "opt:r1", "task:t1", "workspace:w", "fixed:new"], "simultaneous optimistic Sessions remain newest-first at the left edge");
 	assert.deepEqual(mergeQuickStartItems([fixed], []), [fixed], "no jobs means no merge (same reference)");
 	assert.equal(mergeQuickStartItems([], [opt]).length, 1, "an empty snapshot still renders the optimistic icon");
 }
@@ -433,6 +435,7 @@ function realTask(id: string): DesktopIconItem {
 	if (!first.ok || !second.ok) throw new Error("submit failed");
 	assert.notEqual(first.requestId, second.requestId, "each submit owns a fresh requestId");
 	assert.equal(calls.length, 2, "both jobs dispatch independently");
+	assert.deepEqual(calls[1].existingTitles, [quickStartJobPromptLabel(intent)], "a later naming request sees other frontend-only optimistic icon labels");
 
 	// Double dispatch of the SAME requestId (resume/retry while in flight).
 	runner.retry(first.requestId);

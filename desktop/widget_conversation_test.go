@@ -31,7 +31,7 @@ func TestRetryWidgetConversationRetriesFiveTimesWithSameInput(t *testing.T) {
 		t.Fatalf("calls = %d, want 6 (initial + 5 retries)", len(calls))
 	}
 	for i, got := range calls {
-		if got != input {
+		if !reflect.DeepEqual(got, input) {
 			t.Fatalf("call %d input = %+v, want %+v", i, got, input)
 		}
 	}

@@ -279,6 +279,10 @@ type App struct {
 	completionSummaryGen      completionSummaryGenerator
 	completionSummaryInFlight map[string]*completionSummaryCall
 
+	// widgetSessionNameGen is the test seam for QuickStart's one-shot session
+	// naming call. Nil uses the configured provider selected for the new turn.
+	widgetSessionNameGen widgetSessionNameGenerator
+
 	sessionRefs    work.SessionRefStore
 	sessionRefsErr error
 	purgeSession   func(dir, path string) error // test seam for durable cleanup recovery

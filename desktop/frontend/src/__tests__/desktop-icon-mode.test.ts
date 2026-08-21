@@ -610,7 +610,7 @@ assert.match(component, /desktop-icon-popup__ok"[\s\S]{0,160}onClick=\{onClose\}
 assert.match(component, /desktop-icon-popup__ok"\s*onClick=\{onClose\}/, "OK is not gated by busy: the class is directly followed by the local-close handler");
 assert.doesNotMatch(component, /desktop-icon-popup__ok[\s\S]{0,200}run\("ok"\)/, "OK never dispatches a backend ok action");
 assert.doesNotMatch(component, /\[\"ok\", \"dismiss\", \"later\", \"open\", \"reply\"\]/, "ok is no longer a backend-acknowledged action that closes the popup");
-assert.match(component, /\[\"dismiss\", \"later\", \"open\", \"reply\", \"continue\"\]/, "dismiss/open/continue close the popup after a successful backend roundtrip");
+assert.match(component, /\[\"dismiss\", \"later\", \"open\", \"reply\", \"continue\", \"remove\"\]/, "dismiss/open/continue/remove close the popup after a successful backend roundtrip");
 assert.match(component, /onClose=\{\(\) => \{ setActiveID\(""\);\s*setPreviewID\(""\);\s*\}\}/, "OK closes the popup and its hover preview together");
 // The continuation is a resident editable textarea on every completion
 // notice: no collapsed 对话框 trigger, no expanded/collapsed dialog state.
@@ -673,7 +673,7 @@ assert.match(component, /active\.sourceId === "workspace" && <WorkspaceManager/,
 assert.match(component, /active\.sourceId !== "workspace"/, "the generic fixed popup fallback explicitly excludes the workspace icon");
 assert.match(component, /const reload = useCallback\(async \(\) => \{[\s\S]+app\.ListProjectTree\(\)[\s\S]+projectWorkspaceRows\(tree\)/, "the manager loads its authoritative workspace list from ListProjectTree");
 assert.match(component, /app\.PickWorkspace\(\)[\s\S]+if \(root\) await reload\(\)/, "a successful workspace pick reloads and keeps the dialog open; a cancelled picker is a no-op");
-assert.match(component, /app\.SetProjectPinned\(row\.root, !row\.pinned\)[\s\S]+await reload\(\)/, "Pin toggles through SetProjectPinned then reloads the authoritative list");
+assert.match(component, /const targetPinned = !row\.pinned;[\s\S]+app\.SetProjectPinned\(row\.root, targetPinned\)[\s\S]+await reload\(\)[\s\S]+await onChanged\(\)/, "Pin toggles through SetProjectPinned with an explicit target for the row root, reloads the authoritative list, and refreshes the widget snapshot so the bottom icons reconcile immediately");
 assert.match(component, /Promise\.all\(\[app\.ListProjectTree\(\), app\.GetDesktopWorkspaceSlots\(\)\]\)/, "workspace rows and the persisted desktop count load together");
 assert.match(component, /await app\.SetDesktopWorkspaceSlots\(slots\)[\s\S]{0,120}await onChanged\(\)[\s\S]{0,120}setWorkspaceSlots\(slots\)/, "changing the 0-4 desktop count persists and refreshes before committing local UI state, so refresh failures remain retryable");
 assert.match(component, /length: WORKSPACE_PIN_LIMIT \+ 1[\s\S]{0,300}aria-pressed=\{workspaceSlots === slots\}/, "the workspace manager exposes every desktop count from zero through four");
@@ -1153,6 +1153,16 @@ assert.equal(
   false,
   "QuickStart optimistic items keep the legacy Bot icon until a real session forms",
 );
+assert.equal(
+  isAgentIconItem({ id: "conversation:im:user-1", kind: "person", sourceId: "im:user-1", title: "user", status: "unread", unreadCount: 1, notifications: [], position: { row: "top", zone: "conversation", order: 0 }, revision: "r", sessionId: "session-1" }),
+  true,
+  "a personal IM row with resolved session identity reuses that session's Agent Icon",
+);
+assert.equal(
+  isAgentIconItem({ id: "conversation:im:legacy", kind: "person", sourceId: "im:legacy", title: "legacy", status: "unread", unreadCount: 1, notifications: [], position: { row: "top", zone: "conversation", order: 0 }, revision: "r" }),
+  false,
+  "an unresolved personal IM row keeps the generic Users fallback",
+);
 
 // 静态源码契约（本仓库既有做法，如 workbench-layout.test.ts）：真实 task 的
 // 图标框内只有 Agent Icon（frame/headwear/eyes/badge/tool），旧 Bot、状态
@@ -1160,6 +1170,7 @@ assert.equal(
 {
   const mode = readFileSync(resolve(testDir, "../components/widget/DesktopIconMode.tsx"), "utf8");
   assert.match(mode, /if \(item\.kind === "task"\) return agentViewModel \? <AgentIcon viewModel=\{agentViewModel\} \/> : <Bot \/>;/, "task branch renders AgentIcon for real tasks, Bot for QuickStart");
+  assert.match(mode, /if \(item\.kind === "person"\) return agentViewModel \? <AgentIcon viewModel=\{agentViewModel\} \/> : <Users \/>;/, "resolved personal IM rows render the corresponding session AgentIcon with a safe Users fallback");
   assert.match(mode, /!agentIcon && \(item\.status === "running" \|\| item\.status === "thinking"\)/, "old running/thinking motion corners are suppressed for Agent Icon items");
   assert.match(mode, /!agentIcon && statusGlyph\(item\)/, "old status glyph overlay is suppressed for Agent Icon items");
   assert.match(mode, /desktop-icon__art\$\{agentIcon \? " desktop-icon__art--agent" : ""\}/, "real task icons opt into the transparent Agent Icon art surface");
@@ -1171,6 +1182,8 @@ assert.equal(
   assert.match(mode, /onDoubleClick=\{\(\) => doubleClick\(item\)\}/, "doubleClick handler unchanged");
   assert.match(mode, /void run\(item, "open"\)/, "run(item, \"open\") path unchanged");
   assert.match(mode, /item\.kind === "fixed" \? openItem\(item\) : void run\(item, "open"\)/, "menu open path unchanged");
+  assert.match(mode, /item\.retained \|\| item\.kind === "person"/, "personal IM rows expose the same remove menu action as retained session icons");
+  assert.match(mode, /item\.kind === "person" && <button disabled=\{busy\} className="danger" onClick=\{\(\) => run\("remove"\)\}>移除<\/button>/, "personal IM popup exposes an explicit remove action");
 }
 
 // bridge 快照类型携带 Agent Icon 展示字段（sessionId/workspaceIcon/sessionRef）。

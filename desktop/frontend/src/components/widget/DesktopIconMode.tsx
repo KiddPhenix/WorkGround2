@@ -97,7 +97,7 @@ function statusGlyph(item: DesktopIconItem) {
 
 function itemGlyph(item: DesktopIconItem, agentViewModel?: AgentIconViewModel) {
   if (item.kind === "room") return <MessageCircle />;
-  if (item.kind === "person") return <Users />;
+  if (item.kind === "person") return agentViewModel ? <AgentIcon viewModel={agentViewModel} /> : <Users />;
   // 真实 task/session 使用可组合 Agent Icon（身份/任务/徽标/状态眼睛）；
   // QuickStart 乐观条目尚未形成真实 session，保留旧 Bot 图标。
   if (item.kind === "task") return agentViewModel ? <AgentIcon viewModel={agentViewModel} /> : <Bot />;
@@ -196,6 +196,7 @@ function NoticeBody({ item, notice, busy, run, onClose }: { item: DesktopIconIte
       {(needsAnswer || notice.kind === "needs_confirm") && <button disabled={busy} className="subtle" onClick={() => run("later")}>稍后处理</button>}
 		{notice.kind === "message" && (item.kind === "room" || item.kind === "person") && <button disabled={busy || !reply.trim()} onClick={() => run("reply", [reply.trim()])}>回复</button>}
 		{notice.kind === "message" && <button disabled={busy} onClick={() => run("open")}>打开会话</button>}
+		{notice.kind === "message" && item.kind === "person" && <button disabled={busy} className="danger" onClick={() => run("remove")}>移除</button>}
     </div>
 	{completion && <div className="desktop-icon-popup__continue" aria-busy={busy}>
 		<label><span className="sr-only">继续当前任务</span><textarea value={followup} disabled={busy} readOnly={Boolean(failedFollowup)} placeholder="告诉 WorkGround2 接下来要完成什么…" aria-label="继续当前任务" aria-describedby={failedFollowup ? "desktop-icon-followup-error" : "desktop-icon-followup-hint"} onChange={(event) => setFollowup(event.target.value)} onKeyDown={(event) => {
@@ -626,8 +627,13 @@ function WorkspaceManager({ onClose, onChanged }: { onClose: () => void; onChang
     setPinning(row.root);
     setError("");
     try {
-      await app.SetProjectPinned(row.root, !row.pinned);
+      // Pin toggles to an explicit target state for this exact workspace: the
+      // backend write is idempotent on retry, and the snapshot refresh is
+      // always triggered so the bottom desktop icons reconcile immediately.
+      const targetPinned = !row.pinned;
+      await app.SetProjectPinned(row.root, targetPinned);
       await reload();
+      await onChanged();
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setPinning(null); }
   };
@@ -933,7 +939,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		return result;
 	};
 	const optimisticItems = useMemo(
-		() => Object.values(quickJobs.jobs).sort((a, b) => a.createdAt - b.createdAt).map(quickStartJobItem),
+		() => Object.values(quickJobs.jobs).sort((a, b) => b.createdAt - a.createdAt).map(quickStartJobItem),
 		[quickJobs.jobs],
 	);
 	// activeQuickStartDrafts maps normalized prompts to their real requestId.
@@ -1106,7 +1112,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
     try {
       const result = await app.ApplyDesktopIconAction(input);
       setSnapshot(result.snapshot);
-		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue"].includes(action)) setActiveID(""); }
+		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue", "remove"].includes(action)) setActiveID(""); }
 		else { if (result.status === "stale" || result.status === "invalid") actionRequests.current.delete(intent); setError(result.error || "操作失败，可安全重试"); }
 		return result.status;
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return "retryable_error"; }
@@ -1278,7 +1284,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {item.activityCount ? <span className="desktop-icon__activity" aria-label={`${item.activityCount} 个活动任务`}>{item.activityCount}</span> : null}
       {!agentIcon && statusGlyph(item) && <span className="desktop-icon__status">{statusGlyph(item)}</span>}
     </button>
-		{menuID === item.id && <div className="desktop-icon-menu" role="menu"><button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}{item.retained && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}</div>}
+		{menuID === item.id && <div className="desktop-icon-menu" role="menu"><button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}{(item.retained || item.kind === "person") && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}</div>}
   </div>;
 	};
 

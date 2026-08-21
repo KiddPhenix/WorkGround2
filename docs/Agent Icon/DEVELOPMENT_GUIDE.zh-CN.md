@@ -33,8 +33,8 @@
 | 画布 | 64×64，透明背景（`manifest.canvas`，`viewBox="0 0 64 64"`） |
 | 图层顺序 | `frame` → `headwear` → `eyes` → `workspaceBadge` → `taskTool`（后层在上，DOM 顺序即叠加顺序） |
 | 外壳边框色（frames） | 9：`violet` `cobalt` `cyan` `teal` `green` `lime` `amber` `orange` `coral` |
-| 帽子（hats） | 15：`baseball-cap` `beanie` `beret` `bucket-hat` `fedora` `bowler` `newsboy-cap` `cowboy-hat` `sailor-cap` `sun-hat` `top-hat` `crown` `party-hat` `wizard-hat` `flat-cap` |
-| 头发（hair） | 15：`side-swept` `quiff` `mohawk` `twin-tufts` `single-curl` `slick-back` `messy-spikes` `bowl-cut` `center-part` `wave` `top-knot` `pompadour` `afro-puff` `lightning-fringe` `short-crop` |
+| 头部模块 A（历史目录 `hats`） | 15 个机器人天线、传感器、散热鳍、信号灯等模块；为兼容稳定 seed 保留原文件 id 与目录名 |
+| 头部模块 B（历史目录 `hair`） | 15 个机器人扫描器、机械耳、装甲冠、网络阵列等模块；为兼容稳定 seed 保留原文件 id 与目录名 |
 | 任务工具（tools） | 24（见 §5.4） |
 | 状态眼睛（eyes） | 5：`running` `problem` `success` `failure` `cleanup`，每状态 6 帧（共 30 帧），另有横向 sprite `sprites/eyes/<status>.png`（384×64，第 n 帧位于 x = n×64） |
 | 模板 | `templates/workspace-badge.png`（左下徽标模板）、`templates/neutral-led-grid.png`（中性眼睛/占位） |

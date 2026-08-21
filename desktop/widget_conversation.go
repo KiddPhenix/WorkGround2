@@ -58,6 +58,9 @@ type WidgetConversationInput struct {
 	Workspace    string `json:"workspace,omitempty"`
 	Model        string `json:"model,omitempty"`
 	ApprovalMode string `json:"approvalMode,omitempty"`
+	// ExistingTitles carries frontend-only optimistic icon labels. The backend
+	// adds authoritative snapshot titles before generating and validating.
+	ExistingTitles []string `json:"existingTitles,omitempty"`
 }
 
 // WidgetConversationResult reports the chosen workspace and an explicit,
@@ -66,6 +69,7 @@ type WidgetConversationResult struct {
 	Status          string         `json:"status"`
 	Error           string         `json:"error,omitempty"`
 	TabID           string         `json:"tabId,omitempty"`
+	SessionName     string         `json:"sessionName,omitempty"`
 	WorkspaceRoot   string         `json:"workspaceRoot,omitempty"`
 	WorkspaceName   string         `json:"workspaceName,omitempty"`
 	RouteReason     string         `json:"routeReason,omitempty"`
@@ -85,6 +89,7 @@ type widgetConversationReceipt struct {
 	RouteReason        string `json:"routeReason"`
 	RouteReasonCode    string `json:"routeReasonCode,omitempty"`
 	TabID              string `json:"tabId,omitempty"`
+	SessionName        string `json:"sessionName,omitempty"`
 	Status             string `json:"status"`
 	Error              string `json:"error,omitempty"`
 	UpdatedAt          int64  `json:"updatedAt"`
@@ -234,6 +239,24 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 			return a.widgetConversationResult("retryable_error", fmt.Errorf("保存新对话路由: %w", err), receipt)
 		}
 	}
+	if strings.TrimSpace(receipt.SessionName) == "" {
+		receipt.Status = "naming"
+		receipt.Error = ""
+		if err := a.saveWidgetConversationReceipt(receipt); err != nil {
+			return a.widgetConversationResult("retryable_error", fmt.Errorf("保存会话命名状态: %w", err), receipt)
+		}
+		name, err := a.generateUniqueWidgetSessionName(prompt, receipt.WorkspaceRoot, receipt.Model, input.ExistingTitles)
+		if err != nil {
+			receipt.Error = err.Error()
+			_ = a.saveWidgetConversationReceipt(receipt)
+			return a.widgetConversationResult("retryable_error", err, receipt)
+		}
+		receipt.SessionName = name
+		receipt.Status = "named"
+		if err := a.saveWidgetConversationReceipt(receipt); err != nil {
+			return a.widgetConversationResult("retryable_error", fmt.Errorf("保存会话名称: %w", err), receipt)
+		}
+	}
 
 	if receipt.TabID == "" {
 		meta, err := a.EnsureBlankTab(receipt.Scope, receipt.WorkspaceRoot)
@@ -248,6 +271,12 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 		if err := a.saveWidgetConversationReceipt(receipt); err != nil {
 			return a.widgetConversationResult("retryable_error", fmt.Errorf("保存新对话状态: %w", err), receipt)
 		}
+	}
+	if err := a.applyWidgetSessionName(receipt.TabID, receipt.SessionName); err != nil {
+		receipt.Status = "created"
+		receipt.Error = err.Error()
+		_ = a.saveWidgetConversationReceipt(receipt)
+		return a.widgetConversationResult("retryable_error", fmt.Errorf("应用会话名称: %w", err), receipt)
 	}
 	if err := a.applyWidgetConversationDefaults(receipt.TabID, receipt.Model, receipt.ToolApprovalMode); err != nil {
 		receipt.Status = "created"
@@ -283,6 +312,14 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 		_ = a.saveWidgetConversationReceipt(receipt)
 		return a.widgetConversationResult("retryable_error", fmt.Errorf("发送新对话: %w", err), receipt)
 	}
+	// SubmitToTab may apply a pending model by rebuilding the controller onto a
+	// new session path. Reapply the same persisted name to that final path; the
+	// operation is idempotent, and a failure remains retryable under submitting.
+	if err := a.applyWidgetSessionName(receipt.TabID, receipt.SessionName); err != nil {
+		receipt.Error = err.Error()
+		_ = a.saveWidgetConversationReceipt(receipt)
+		return a.widgetConversationResult("retryable_error", fmt.Errorf("收敛会话名称: %w", err), receipt)
+	}
 	receipt.Status = "submitted"
 	receipt.Error = ""
 	if err := a.saveWidgetConversationReceipt(receipt); err != nil {
@@ -307,7 +344,7 @@ func (a *App) applyWidgetConversationDefaults(tabID, model, approvalMode string)
 
 func (a *App) widgetConversationResult(status string, err error, receipt widgetConversationReceipt) WidgetConversationResult {
 	result := WidgetConversationResult{
-		Status: status, TabID: receipt.TabID, WorkspaceRoot: receipt.WorkspaceRoot,
+		Status: status, TabID: receipt.TabID, SessionName: receipt.SessionName, WorkspaceRoot: receipt.WorkspaceRoot,
 		WorkspaceName: receipt.WorkspaceName, RouteReason: receipt.RouteReason, RouteReasonCode: receipt.RouteReasonCode,
 		Snapshot: a.GetWidgetSnapshot(),
 	}
