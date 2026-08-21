@@ -37,6 +37,16 @@ type RPCError struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
+// Error renders the code and message so *RPCError satisfies error. Data is
+// intentionally omitted: it may carry provider or tool payloads that must not
+// enter diagnostic strings or persisted state.
+func (e *RPCError) Error() string {
+	if e == nil {
+		return "dsh: <nil rpc error>"
+	}
+	return fmt.Sprintf("dsh: json-rpc error %d: %s", e.Code, e.Message)
+}
+
 // Frame is one JSON-RPC 2.0 message. Payloads are kept as json.RawMessage or
 // typed safe fields (see the typed structs below), never as opaque strings.
 type Frame struct {

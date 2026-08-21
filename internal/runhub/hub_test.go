@@ -304,7 +304,7 @@ func TestLaunchBackfillFailureReturnsRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := AgentRun{
-		ID: deriveRunID("req-1"), Source: SourceDSH, Ownership: OwnershipManaged,
+		ID: DeriveRunID("req-1"), Source: SourceDSH, Ownership: OwnershipManaged,
 		State: StateQueued, Activity: ActivityIdle, Revision: 1,
 		LastSeenAt: time.Now(), CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
@@ -346,6 +346,59 @@ func TestSubscribeNotifiesCreatedAndUpdated(t *testing.T) {
 	h.Report(RunEvent{EventID: "evt-run", RunID: run.ID, Type: EventRunning})
 	if c := <-ch; c.Kind != ChangeUpdated || c.Run.State != StateRunning {
 		t.Fatalf("second change = %+v", c)
+	}
+}
+
+func TestRecoverBindingsSettlesOrphansWithoutRestarting(t *testing.T) {
+	h, dir := newTestHub(t)
+
+	// A running run with a persisted binding becomes interrupted.
+	_, running := h.Launch(LaunchIntent{RequestID: "req-running", Source: SourceDSH})
+	h.Report(RunEvent{EventID: "evt-run", RunID: running.ID, Type: EventRunning})
+	if err := h.store.SaveBinding(BindingRecord{
+		RunID:   running.ID,
+		Binding: RunnerBinding{RunID: running.ID, NativeSessionID: "sess-running", ProtocolVersion: "2.0", ProcessRef: "fake", Attempt: 1},
+		State:   StateRunning, SavedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A queued run with no binding becomes stale.
+	_, queued := h.Launch(LaunchIntent{RequestID: "req-queued", Source: SourceDSH})
+
+	n, err := h.RecoverBindings()
+	if err != nil {
+		t.Fatalf("RecoverBindings: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("RecoverBindings settled %d, want 2", n)
+	}
+	if got, _ := h.Get(running.ID); got.State != StateInterrupted {
+		t.Fatalf("running orphan state = %s, want interrupted", got.State)
+	}
+	if got, _ := h.Get(queued.ID); got.State != StateStale {
+		t.Fatalf("queued orphan state = %s, want stale", got.State)
+	}
+
+	// Re-running is idempotent and never revives a terminal run.
+	n, err = h.RecoverBindings()
+	if err != nil || n != 0 {
+		t.Fatalf("second RecoverBindings = (%d, %v), want (0, nil)", n, err)
+	}
+	if got, _ := h.Get(running.ID); got.State != StateInterrupted {
+		t.Fatalf("state regressed to %s", got.State)
+	}
+
+	// A fresh reload also remembers the settlements and stays idempotent.
+	h2, err := New(dir)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got, _ := h2.Get(running.ID); got.State != StateInterrupted {
+		t.Fatalf("reloaded orphan state = %s", got.State)
+	}
+	if n, _ := h2.RecoverBindings(); n != 0 {
+		t.Fatalf("reload RecoverBindings settled %d, want 0", n)
 	}
 }
 

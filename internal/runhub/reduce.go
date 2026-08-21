@@ -63,14 +63,14 @@ func Reduce(run AgentRun, evt RunEvent) (AgentRun, error) {
 		next.Source = evt.Source
 	}
 
-	ts := evt.OccurredAt
+	ts := evt.OccurredAt.Round(0)
 	if ts.IsZero() {
-		ts = time.Now()
+		ts = time.Now().Round(0)
 	}
 	if ts.After(next.LastSeenAt) {
 		next.LastSeenAt = ts
 	}
-	next.UpdatedAt = time.Now()
+	next.UpdatedAt = time.Now().Round(0)
 	next.Revision++
 	return next, nil
 }

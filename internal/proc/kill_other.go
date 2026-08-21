@@ -43,3 +43,8 @@ func StartTracked(cmd *exec.Cmd) (uintptr, error) {
 
 // KillTracked terminates cmd's process tree; the handle is unused off Windows.
 func KillTracked(cmd *exec.Cmd, _ uintptr) { KillTree(cmd) }
+
+// ReleaseTracked releases any resource StartTracked reserved for cmd after the
+// child has already exited naturally. It is a no-op off Windows, where there is
+// no Job Object handle to close.
+func ReleaseTracked(_ uintptr) {}

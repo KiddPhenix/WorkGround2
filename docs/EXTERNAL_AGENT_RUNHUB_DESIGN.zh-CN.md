@@ -2,7 +2,7 @@
 
 ## 1. 文档状态
 
-- 状态：设计确认，首阶段实现中
+- 状态：P0/P1/P2 已完成，P3 待办
 - 分支：`developping/external-agent-runhub+2026-08-20`
 - 首个适配目标：DeepSeek Harness（DSH）
 - 后续目标：Codex、Claude Code
@@ -345,6 +345,7 @@ internal/runhub/
 internal/runhub/dsh/
   probe.go
   process.go
+  client.go
   protocol.go
   runner.go
   map.go
@@ -355,7 +356,7 @@ internal/runhub/dsh/
 
 ## 15. 实施阶段
 
-### P0：能力探针与无密钥协议夹具
+### P0：能力探针与无密钥协议夹具（已完成）
 
 - 锁定 rc.8 验证基线。
 - Probe Node、DSH 入口、配置、serverInfo 和能力。
@@ -364,7 +365,7 @@ internal/runhub/dsh/
 
 验收：默认测试不访问外部模型；失败明确指出 provider、版本和缺失能力。
 
-### P1：RunHub 核心
+### P1：RunHub 核心（已完成）
 
 - 实现模型、Reducer、Store、Inbox 和幂等回执。
 - 覆盖重复、乱序、迟到、终态单调、崩溃重载和损坏输入。
@@ -372,15 +373,18 @@ internal/runhub/dsh/
 
 验收：相同 requestId 只产生一个 Run；重复 eventId 不增加 Revision 或重复通知。
 
-### P2：DSH Managed Runner
+### P2：DSH Managed Runner（已完成）
 
-- 实现进程所有权和 JSON-RPC 客户端。
-- 完成 messageId 区间关联和事件映射。
-- 实现 Cancel、意外退出、绑定持久化和重启恢复语义。
+- 实现进程所有权（`process.go`，`internal/proc` 进程树/Job Object）和 JSON-RPC 客户端（`client.go`，请求按 id 关联、通知按序分发、坏帧/传输关闭收敛）。
+- 完成 `probe → process → initialize → session/prompt` 启动链路与 `RunnerBinding` 持久化；session id 由 RunID 确定、可重试，messageId 只归属本次 prompt。
+- 事件映射（`map.go`）：`turn/start`、`assistant/chunk`、`tool/call`、`tool/result`、`turn/end`、`session.status`；只持久化清洗后的摘要与工具名。
+- Cancel 幂等升级（shutdown → 关闭 stdin → 终止进程树）与意外退出结算，取消优先于竞态退出。
+- 核心补齐 binding 持久化与 `Hub.RecoverBindings()`（重启后未完成 binding 归 interrupted/stale，不自动重启）；`DeriveRunID` 导出供 Runner 复用。
+- `RunnerConfig.Env` 透传完整子进程环境（`exec.Cmd.Env` 语义，nil 继承父进程），托管 runner 应只注入 DSH 需要的 `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`/`DSH_SESSION_ROOT` 等，避免把父进程秘密整体泄漏给 runtime。
 
-验收：成功、模型失败、进程崩溃、取消和 Desktop 重启均得到明确状态，且不会重复启动。
+验收：成功、模型失败、进程崩溃、取消和 Desktop 重启均得到明确状态，且不会重复启动；默认测试不访问网络/模型，使用 fake JSON-RPC child/process 覆盖成功、错误 response、坏帧、崩溃、取消升级、重复取消、错误 session/message、重启恢复、重复启动。另有 opt-in 真实 runtime smoke（见 16.2），驱动 rc.8 `dsh-jsonrpc-agent` 覆盖 probe→process→initialize→session/prompt→事件/终态→shutdown/cleanup。
 
-### P3：Desktop 投影与快速启动
+### P3：Desktop 投影与快速启动（待办）
 
 - 图标小组件合并外部 RunProjection。
 - 支持当前 Workspace 快速启动和显式 Workspace 覆盖。
@@ -421,6 +425,16 @@ internal/runhub/dsh/
 - 显式环境变量或 build tag 才调用真实 DSH。
 - 跳过时输出启用方式。
 - 外部调用失败显示 provider、model、协议阶段和安全错误。
+
+真实 runtime smoke（`internal/runhub/dsh/smoke_test.go`）默认跳过，设置 `DSH_SMOKE_ROOT` 指向 rc.8 checkout 后启用：
+
+```powershell
+$env:DSH_SMOKE_ROOT='D:\Work\dsh'
+go test ./internal/runhub/dsh/ -run TestDSHRealRuntime -count=1 -v
+```
+
+- `TestDSHRealRuntimeInitializeShutdown`：keyless 启动真实 runtime，probe → initialize → shutdown → 干净退出，不访问模型。
+- `TestDSHRealRuntimePrompt`：完整 Managed Runner + 进程内 loopback mock model（复刻 DSH keyless-smoke fixture，`finish_reason: "stop"`），覆盖 probe → 启动 → initialize → session/prompt → 事件映射 → `succeeded` 终态 → summary → shutdown → 干净退出。mock 只监听 127.0.0.1，不接触真实网络/模型/凭据。
 
 ### 16.3 交付门禁
 

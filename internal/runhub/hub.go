@@ -152,7 +152,7 @@ func (h *Hub) Launch(intent LaunchIntent) (Receipt, AgentRun) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	id := deriveRunID(intent.RequestID)
+	id := DeriveRunID(intent.RequestID)
 	if run, ok := h.runs[id]; ok {
 		if err := h.ensureLaunchReceipt(intent, run); err != nil {
 			return Receipt{Status: ReceiptRetryable, RunID: id, Message: err.Error()}, AgentRun{}
@@ -160,7 +160,7 @@ func (h *Hub) Launch(intent LaunchIntent) (Receipt, AgentRun) {
 		return Receipt{Status: ReceiptAlreadyApplied, RunID: id, Revision: run.Revision}, run
 	}
 
-	now := time.Now()
+	now := time.Now().Round(0)
 	run := AgentRun{
 		ID:         id,
 		Source:     intent.Source,
@@ -222,6 +222,9 @@ func (h *Hub) Report(evt RunEvent) (Receipt, AgentRun) {
 	if err := ValidateEvent(evt); err != nil {
 		return Receipt{Status: ReceiptInvalid, EventID: evt.EventID, Message: err.Error()}, AgentRun{}
 	}
+	// Strip the monotonic clock reading so the durable round-trip (JSON strips it)
+	// compares equal to the in-memory event during reconcile and log repair.
+	evt.OccurredAt = evt.OccurredAt.Round(0)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -392,6 +395,65 @@ func (h *Hub) List(f Filter) []RunProjection {
 	return out
 }
 
+// RecoverBindings settles every managed run that was left non-terminal when the
+// previous owner exited. It never restarts a process: runs that were actively
+// running (or waiting on the user) are marked interrupted, and runs still
+// queued or starting are marked stale. Event ids are deterministic, so the call
+// is idempotent and safe to re-run after a reload. It returns how many runs it
+// newly settled.
+func (h *Hub) RecoverBindings() (int, error) {
+	bound, err := h.store.ListBindings()
+	if err != nil {
+		return 0, err
+	}
+	hasBinding := make(map[RunID]bool, len(bound))
+	for _, rec := range bound {
+		hasBinding[rec.RunID] = true
+	}
+
+	h.mu.Lock()
+	snapshot := make([]AgentRun, 0, len(h.runs))
+	for _, r := range h.runs {
+		snapshot = append(snapshot, r)
+	}
+	h.mu.Unlock()
+	sort.Slice(snapshot, func(i, j int) bool { return snapshot[i].ID < snapshot[j].ID })
+
+	settled := 0
+	for _, run := range snapshot {
+		if run.Ownership != OwnershipManaged || run.State.IsTerminal() {
+			continue
+		}
+		typ := EventStale
+		if hasBinding[run.ID] && (run.State == StateRunning || run.State == StateWaitingUser) {
+			typ = EventInterrupted
+		}
+		evt := RunEvent{
+			EventID:    recoverEventID(run.ID),
+			RunID:      run.ID,
+			Source:     run.Source,
+			OccurredAt: time.Now(),
+			Type:       typ,
+		}
+		rec, _ := h.Report(evt)
+		switch rec.Status {
+		case ReceiptAccepted:
+			settled++
+		case ReceiptAlreadyApplied, ReceiptStale:
+			// Already terminal from a prior recovery or a concurrent settle.
+		case ReceiptInvalid, ReceiptRetryable:
+			return settled, fmt.Errorf("runhub: recover run %q: %s", run.ID, rec.Message)
+		default:
+			return settled, fmt.Errorf("runhub: recover run %q: unexpected receipt %q", run.ID, rec.Status)
+		}
+	}
+	return settled, nil
+}
+
+func recoverEventID(id RunID) EventID {
+	return EventID("recover:" + string(id))
+}
+
 // Subscribe returns a change channel and a cancel func. Notifications are
 // dropped (never blocking) for a consumer that stops draining; consumers can
 // always re-List to recover the full projection.
@@ -428,9 +490,10 @@ func (h *Hub) broadcast(kind ChangeKind, run AgentRun) {
 	}
 }
 
-// deriveRunID maps a launch request id to a stable run id, making Launch
-// structurally idempotent without relying on a separate claim file.
-func deriveRunID(requestID string) RunID {
+// DeriveRunID maps a launch request id to a stable run id, making Launch
+// structurally idempotent without relying on a separate claim file. Runners
+// derive the same id so their binding and events address the run Launch created.
+func DeriveRunID(requestID string) RunID {
 	sum := sha256.Sum256([]byte(requestID))
 	return RunID("run_" + hex.EncodeToString(sum[:16]))
 }
