@@ -1795,7 +1795,7 @@ func TestRememberDesktopIconTaskSameSessionRefreshesNotDuplicates(t *testing.T) 
 	}
 }
 
-func TestDesktopIconOpenWorkspaceActivatesSelectedWorkspace(t *testing.T) {
+func TestDesktopIconOpenWorkspaceCreatesOnceAndRetriesExit(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	rootA := t.TempDir()
 	rootB := t.TempDir()
@@ -1815,7 +1815,7 @@ func TestDesktopIconOpenWorkspaceActivatesSelectedWorkspace(t *testing.T) {
 		tabs:                  map[string]*WorkspaceTab{tabA.ID: tabA, tabB.ID: tabB},
 		tabOrder:              []string{tabA.ID, tabB.ID},
 		activeTabID:           tabA.ID,
-		ctx:                   context.Background(),
+		ctx:                   nil,
 		widgetMode:            true,
 		widgetStyle:           "icons",
 		iconWidgetStateLoaded: true,
@@ -1831,17 +1831,56 @@ func TestDesktopIconOpenWorkspaceActivatesSelectedWorkspace(t *testing.T) {
 	}
 	app.widgetTaskbarToggle = func(bool) error { return nil }
 	app.runtimeEvents.emit = func(context.Context, string, ...interface{}) {}
+	app.projectTreeChangedHook = func() {}
+	app.readyHook = func() {}
+	t.Cleanup(func() {
+		app.mu.RLock()
+		tabs := make([]*WorkspaceTab, 0, len(app.tabs))
+		for _, tab := range app.tabs {
+			tabs = append(tabs, tab)
+		}
+		app.mu.RUnlock()
+		for _, tab := range tabs {
+			app.closeTabRuntime(tab)
+		}
+	})
 
 	snapshot := app.GetDesktopIconSnapshot()
 	item := findDesktopIconItem(snapshot.Items, "workspace:"+rootB)
 	if item == nil {
 		t.Fatalf("workspace B icon missing: %+v", snapshot.Items)
 	}
-	result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+	input := DesktopIconActionInput{
 		ItemID: item.ID, Revision: item.Revision, RequestID: "open-workspace-b", Action: "open",
-	})
-	if result.Status != "accepted" {
-		t.Fatalf("open workspace B status = %q error %q", result.Status, result.Error)
+	}
+	failed := app.ApplyDesktopIconAction(input)
+	if failed.Status != "retryable_error" || !strings.Contains(failed.Error, "desktop window is not ready") {
+		t.Fatalf("first workspace open = %+v, want explicit retryable exit failure", failed)
+	}
+	if len(app.tabs) != 1 {
+		t.Fatalf("single-surface workspace open left %d visible tabs after failed exit, want only the new tab", len(app.tabs))
+	}
+	createdID := app.activeTabID
+	if createdID == tabA.ID || createdID == tabB.ID {
+		t.Fatalf("workspace open reused old tab %q", createdID)
+	}
+	if created := app.tabs[createdID]; created == nil || created.createRequestID != input.RequestID {
+		t.Fatalf("created workspace session request identity = %+v, want %q", created, input.RequestID)
+	}
+	// Simulate a crash gap: the tab snapshot was persisted, while the widget
+	// receipt still has no TabID. Recovery must resolve the existing tab by the
+	// same creation request instead of creating another session.
+	app.iconWidgetState.Applied[len(app.iconWidgetState.Applied)-1].TabID = ""
+	if err := app.saveDesktopIconStateLocked(); err != nil {
+		t.Fatalf("persist crash-gap receipt: %v", err)
+	}
+	app.ctx = context.Background()
+	result := app.ApplyDesktopIconAction(input)
+	if result.Status != "already_applied" {
+		t.Fatalf("workspace open retry status = %q error %q", result.Status, result.Error)
+	}
+	if len(app.tabs) != 1 || app.activeTabID != createdID {
+		t.Fatalf("workspace open retry created/switched session: tabs=%d active=%q want %q", len(app.tabs), app.activeTabID, createdID)
 	}
 	active := app.activeTab()
 	if active == nil || normalizeProjectRoot(active.WorkspaceRoot) != normalizeProjectRoot(rootB) {
@@ -1850,6 +1889,13 @@ func TestDesktopIconOpenWorkspaceActivatesSelectedWorkspace(t *testing.T) {
 			got = active.WorkspaceRoot
 		}
 		t.Fatalf("active workspace = %q, want %q", got, rootB)
+	}
+	if active.SessionPath == "" || (active.sessionKind != "" && active.sessionKind != agent.SessionKindNormal) || active.workID != "" || active.workRequestID != "" {
+		t.Fatalf("workspace open did not create an ordinary blank session: %+v", active)
+	}
+	duplicate := app.ApplyDesktopIconAction(input)
+	if duplicate.Status != "already_applied" || len(app.tabs) != 1 || app.activeTabID != createdID {
+		t.Fatalf("duplicate workspace open was not idempotent: result=%+v tabs=%d active=%q", duplicate, len(app.tabs), app.activeTabID)
 	}
 }
 

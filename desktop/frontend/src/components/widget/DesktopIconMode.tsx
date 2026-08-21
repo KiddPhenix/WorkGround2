@@ -880,6 +880,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
   const [renamingID, setRenamingID] = useState("");
   const [renameDraft, setRenameDraft] = useState("");
   const [workspaceIconRoot, setWorkspaceIconRoot] = useState("");
+  const [popupAnchorID, setPopupAnchorID] = useState("");
   const [draggingID, setDraggingID] = useState("");
   const [dragPreview, setDragPreview] = useState<{ itemId: string; order: number } | null>(null);
   const [anchorMenuOpen, setAnchorMenuOpen] = useState(false);
@@ -1001,7 +1002,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	// precedes the state clearing.
 	const closeTransient = useCallback(() => {
 		cancelTransientTimers();
-		setActiveID(""); setPreviewID(""); setMenuID(""); setRenamingID(""); setRenameDraft(""); setWorkspaceIconRoot(""); setDraggingID(""); setDragPreview(null); setAnchorMenuOpen(false); setQuickOpen(false);
+		setActiveID(""); setPreviewID(""); setMenuID(""); setRenamingID(""); setRenameDraft(""); setWorkspaceIconRoot(""); setPopupAnchorID(""); setDraggingID(""); setDragPreview(null); setAnchorMenuOpen(false); setQuickOpen(false);
 	}, [cancelTransientTimers]);
 
 	// Share one in-flight snapshot request across every caller. Polling waits for
@@ -1129,7 +1130,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       // Escape inside the resident continuation input stays local (the
       // textarea stops propagation as well): it must never close the popup.
       if (event.key === "Escape" && !(event.target instanceof HTMLElement && event.target.closest(".desktop-icon-popup__continue"))) { closeTransient(); }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") { event.preventDefault(); setQuickWorkspace(""); setActiveID("fixed:new"); }
+		if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") { event.preventDefault(); setQuickWorkspace(""); setPopupAnchorID(""); setActiveID("fixed:new"); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   }, [closeTransient]);
@@ -1168,6 +1169,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 
   const openItem = (item: DesktopIconItem) => {
     cancelTransientTimers();
+    setPopupAnchorID("");
     if (item.kind === "fixed" && item.sourceId === "new") { setQuickWorkspace(""); setActiveID(item.id); }
 		else if (item.kind === "fixed" && item.sourceId === "search") {
 			setActiveID(item.id);
@@ -1277,13 +1279,13 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	}, [desktopZoom, popupItem]);
 	const popupStyle = useMemo(() => {
     if (!popupItem) return {};
-    const node = itemRefs.current.get(popupItem.id); if (!node) return {};
+		const node = itemRefs.current.get(popupAnchorID) || itemRefs.current.get(popupItem.id); if (!node) return {};
 		const rect = scaleIconRect(node.getBoundingClientRect(), desktopZoom);
 		const fallbackWidth = active ? 330 : Math.min(300, viewport.width - 20);
 		const width = popupWidth || fallbackWidth;
 		const placed = placeIconPopup(rect, viewport.width, viewport.height, width);
 		return { left: `${placed.left}px`, bottom: `${placed.bottom}px`, "--arrow-left": `${placed.arrowLeft}px`, "--popup-max-height": `${placed.maxHeight}px` } as CSSProperties;
-	}, [active, desktopZoom, popupItem, popupWidth, snapshot.revision, viewport.height, viewport.width]);
+	}, [active, desktopZoom, popupAnchorID, popupItem, popupWidth, snapshot.revision, viewport.height, viewport.width]);
 	const finishMenuAction = async (item: DesktopIconItem, action: string, values: string[] = []) => {
 		const status = await run(item, action, values);
 		if (status === "accepted" || status === "already_applied") {
@@ -1521,14 +1523,14 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		{popupItem && <section ref={popupRef} className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}`} style={popupStyle} role={active ? "dialog" : "status"} aria-label={active ? `${popupItem.title} 操作` : undefined} aria-live={popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => timers.current?.clearPreviewClose()} onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) closePreviewSoon(); }}>
       <span className="desktop-icon-popup__arrow" aria-hidden="true" />
       {!active && <p tabIndex={0} aria-label={`${popupItem.title}，${previewText(popupItem)}`} onFocus={() => timers.current?.clearPreviewClose()} onBlur={closePreviewSoon}>{previewText(popupItem)}</p>}
-      {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} editJob={quickStartEditJob} initialDraft={quickDraftDecision.draft} submitJob={submitQuickStart} onClose={() => { setQuickStartEditJob(null); setActiveID(""); }} />}
+      {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} editJob={quickStartEditJob} initialDraft={quickDraftDecision.draft} submitJob={submitQuickStart} onClose={() => { setQuickStartEditJob(null); setPopupAnchorID(""); setActiveID(""); }} />}
       {active && active.sourceId === "search" && <SearchPanel onClose={() => setActiveID("")} onPick={(result) => run(active, "open_search", [result.id])} />}
       {active && active.sourceId === "workspace" && <WorkspaceManager initialIconRoot={workspaceIconRoot} onClose={() => { setWorkspaceIconRoot(""); setActiveID(""); }} onChanged={refresh} />}
       {active && active.sourceId === "rooms" && <RoomsManager roomIconsVisible={roomIconsVisible} onRoomIconsVisibleChange={setRoomIconsVisible} onClose={() => setActiveID("")} onNewRoom={onNewRoom} onOpenRoom={onOpenRoom} />}
       {active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
       {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => run(active, action, values)} onClose={() => { setActiveID(""); setPreviewID(""); }} />}
       {active && !active.notifications[0] && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
-      {active && !isQuickStartJobItem(active) && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
+      {active && !isQuickStartJobItem(active) && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setPopupAnchorID(active.id); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
 
     </section>}
     {(error || quickError || quickJobs.storageError) && <div className="desktop-icon-toast" role="alert">{error}{error && (quickError || quickJobs.storageError) ? <span aria-hidden="true">；</span> : null}{quickError}{quickError && quickJobs.storageError ? <span aria-hidden="true">；</span> : null}{quickJobs.storageError}<button aria-label="关闭错误" onClick={() => { setError(""); setQuickError(""); quickJobs.clearStorageError(); }}><X /></button></div>}

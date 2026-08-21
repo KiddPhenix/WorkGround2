@@ -238,6 +238,7 @@ type desktopIconReceipt struct {
 	ItemID        string `json:"itemId,omitempty"`
 	TabID         string `json:"tabId,omitempty"`
 	SessionPath   string `json:"sessionPath,omitempty"`
+	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
 	Conversation  string `json:"conversation,omitempty"`
 	ReadSequence  uint64 `json:"readSequence,omitempty"`
 	Text          string `json:"text,omitempty"`
@@ -1797,6 +1798,22 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 			return a.desktopIconActionErrorLocked("invalid", errors.New("requestId was already used for another action"))
 		}
 		if receipt.Status == "pending" {
+			if input.Action == "open" && receipt.Action == "open_workspace" && receipt.WorkspaceRoot != "" {
+				if receipt.TabID == "" {
+					if err := a.createDesktopIconWorkspaceSessionLocked(receipt); err != nil {
+						return a.desktopIconActionErrorLocked("retryable_error", err)
+					}
+				}
+				if err := a.exitDesktopIconModeLocked(receipt.TabID); err != nil {
+					return a.desktopIconActionErrorLocked("retryable_error", err)
+				}
+				receipt.Status = "applied"
+				if err := a.saveDesktopIconStateLocked(); err != nil {
+					receipt.Status = "pending"
+					return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish workspace open: %w", err))
+				}
+				return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconSnapshotLocked()}
+			}
 			if input.Action == "continue" && receipt.Text != "" {
 				progress, err := a.advanceDesktopIconTaskContinue(receipt)
 				if err != nil {
@@ -1955,6 +1972,33 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 		}
 		return DesktopIconActionResult{Status: "accepted", Snapshot: snapshot}
 	}
+	if input.Action == "open" && item.Kind == "workspace" {
+		if strings.TrimSpace(item.SourceID) == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("workspace icon has no target"))
+		}
+		before := cloneDesktopIconState(a.iconWidgetState)
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{
+			RequestID: input.RequestID, Intent: intent, Status: "pending", Action: "open_workspace", ItemID: item.ID,
+			WorkspaceRoot: item.SourceID, AppliedAt: time.Now().UnixMilli(),
+		})
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetState = before
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("prepare workspace open: %w", err))
+		}
+		receipt := &a.iconWidgetState.Applied[len(a.iconWidgetState.Applied)-1]
+		if err := a.createDesktopIconWorkspaceSessionLocked(receipt); err != nil {
+			return a.desktopIconActionErrorLocked("retryable_error", err)
+		}
+		if err := a.exitDesktopIconModeLocked(receipt.TabID); err != nil {
+			return a.desktopIconActionErrorLocked("retryable_error", err)
+		}
+		receipt.Status = "applied"
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			receipt.Status = "pending"
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish workspace open: %w", err))
+		}
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+	}
 	if input.Action == "rename" {
 		if item.Kind != "task" || item.SessionRef == nil || strings.TrimSpace(item.SessionRef.SessionPath) == "" || len(input.Values) != 1 || strings.TrimSpace(input.Values[0]) == "" {
 			return a.desktopIconActionErrorLocked("invalid", errors.New("task session path and non-empty title are required"))
@@ -2024,6 +2068,26 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 	return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
 }
 
+// createDesktopIconWorkspaceSessionLocked performs only the creation phase of
+// a recoverable workspace open. Once TabID is persisted, every retry resumes
+// the window exit against that same session and never creates another one.
+// Caller holds iconWidgetMu.
+func (a *App) createDesktopIconWorkspaceSessionLocked(receipt *desktopIconReceipt) error {
+	scope, root := "project", strings.TrimSpace(receipt.WorkspaceRoot)
+	if root == widgetWorkspaceGlobal {
+		scope, root = "global", ""
+	}
+	meta, err := a.CreateBlankSession(CreateBlankSessionInput{Scope: scope, WorkspaceRoot: root, RequestID: receipt.RequestID})
+	if err != nil {
+		return fmt.Errorf("create workspace session: %w", err)
+	}
+	receipt.TabID = meta.ID
+	if err := a.saveDesktopIconStateLocked(); err != nil {
+		return fmt.Errorf("record workspace session: %w", err)
+	}
+	return nil
+}
+
 func (a *App) applyDesktopIconActionLocked(item DesktopIconItem, notice *DesktopIconNotice, input DesktopIconActionInput) error {
 	switch input.Action {
 	case "open":
@@ -2062,11 +2126,7 @@ func (a *App) applyDesktopIconActionLocked(item DesktopIconItem, notice *Desktop
 			return a.exitDesktopIconModeLocked(meta.ID)
 		}
 		if item.Kind == "workspace" {
-			tabID, err := a.activateDesktopIconWorkspace(item.SourceID)
-			if err != nil {
-				return err
-			}
-			return a.exitDesktopIconModeLocked(tabID)
+			return errors.New("workspace open must use the recoverable creation path")
 		}
 		return a.exitDesktopIconModeLocked("")
 	case "stop":

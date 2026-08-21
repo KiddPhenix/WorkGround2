@@ -320,6 +320,7 @@ export interface DesktopIconSearchResult { items: DesktopIconSearchItem[]; error
 export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
 export interface DesktopIconActionResult { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; error?: string; snapshot: DesktopIconSnapshot; }
 export interface DesktopIconRect { x: number; y: number; width: number; height: number; }
+export interface CreateBlankSessionInput { scope: string; workspaceRoot: string; requestId: string; }
 // DesktopIconDiagnosticsInput is one typed diagnostics record appended by the
 // icon widget for an idle-hover trace. It carries measurements and stable
 // widget markers only — never task content, prompts, icon titles or user
@@ -761,6 +762,7 @@ export interface AppBindings extends WailsWorkBindings {
   OpenLinkedSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
   CreateWorkSession(input: { scope: string; workspaceRoot: string; requestId: string; tabId?: string }): Promise<{ tabMeta: TabMeta; workView?: unknown; duplicate: boolean; error?: string; recoverable: boolean }>;
   CreateReusableWorkSession(tabID: string, input: { flowId: string; values?: Record<string, unknown>; requestId: string }): Promise<import("../work/types").CreateReusableWorkSessionResult>;
+  CreateBlankSession(input: CreateBlankSessionInput): Promise<TabMeta>;
   EnsureBlankTab(scope: string, workspaceRoot: string): Promise<TabMeta>;
   ActivateTopic(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
   ActivateLinkedSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
@@ -1129,7 +1131,7 @@ function bridgeBreadcrumb(method: string): string {
   if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion)/.test(method))
     return `skill ${method}`;
   if (/^(MinimiseMainWindow|ToggleMaximiseMainWindow|IsMainWindowMaximised|CloseMainWindow|DismissMainWindow)$/.test(method)) return `window ${method}`;
-  if (/^(OpenProjectTab|OpenGlobalTab|OpenTopicSession|OpenLinkedSession|EnsureBlankTab|ActivateTopic|ActivateLinkedSession|EnsureBlankSurface|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace)/.test(method))
+  if (/^(OpenProjectTab|OpenGlobalTab|OpenTopicSession|OpenLinkedSession|CreateBlankSession|EnsureBlankTab|ActivateTopic|ActivateLinkedSession|EnsureBlankSurface|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace)/.test(method))
     return `nav ${method}`;
   return "";
 }
@@ -2356,6 +2358,7 @@ function makeMockApp(): AppBindings {
     setMockTabRunning(currentMockTurnTabId(), false);
     emit({ kind: "turn_done" });
   };
+  const mockBlankCreates = new Map<string, { target: string; tabId: string }>();
   let mockTabs: TabMeta[] = freshMock ? [
     {
       id: "tab_global",
@@ -4954,6 +4957,21 @@ function makeMockApp(): AppBindings {
       }
       const topic = await this.CreateTopic(targetScope, targetRoot, "");
       return targetScope === "global" ? this.OpenGlobalTab(topic.id) : this.OpenProjectTab(targetRoot, topic.id);
+    },
+    async CreateBlankSession(input: CreateBlankSessionInput) {
+      const targetScope = input.scope === "project" && input.workspaceRoot ? "project" : "global";
+      const targetRoot = targetScope === "project" ? input.workspaceRoot : "";
+      const target = `${targetScope}:${targetRoot}`;
+      const prior = mockBlankCreates.get(input.requestId);
+      if (prior && prior.target !== target) throw new Error("requestId was already used for another blank-session target");
+      if (prior) {
+        const existing = mockTabs.find((tab) => tab.id === prior.tabId);
+        if (existing) { setMockActiveTab(existing.id); return { ...existing, active: true }; }
+      }
+      const topic = await this.CreateTopic(targetScope, targetRoot, "");
+      const tab = targetScope === "global" ? await this.OpenGlobalTab(topic.id) : await this.OpenProjectTab(targetRoot, topic.id);
+      mockBlankCreates.set(input.requestId, { target, tabId: tab.id });
+      return tab;
     },
     async ActivateTopic(scope: string, workspaceRoot: string, topicID: string, sessionPath: string) {
       const tab = sessionPath

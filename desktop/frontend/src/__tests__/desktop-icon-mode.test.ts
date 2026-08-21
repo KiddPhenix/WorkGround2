@@ -581,7 +581,7 @@ assert.doesNotMatch(component, /desktop-icon-anchor[^>]*onPointerDown/, "the anc
 assert.match(component, /const cancelTransientTimers = useCallback\(\(\) => \{[\s\S]*timers\.current\?\.cancel\(\);[\s\S]*drag\.current = null;[\s\S]*\}, \[\]\)/, "the central timer cancel clears every scheduled click/hover/preview and the in-flight drag");
 const closeTransientSource = component.slice(component.indexOf("const closeTransient = useCallback"), component.indexOf("// Share one in-flight snapshot request"));
 assert.ok(closeTransientSource.indexOf("cancelTransientTimers();") >= 0 && closeTransientSource.indexOf("cancelTransientTimers();") < closeTransientSource.indexOf('setActiveID("")'), "the central close path cancels timers before clearing transient state");
-for (const clear of ['setActiveID("")', 'setPreviewID("")', 'setMenuID("")', 'setRenamingID("")', 'setRenameDraft("")', 'setWorkspaceIconRoot("")', 'setDraggingID("")', "setDragPreview(null)", "setAnchorMenuOpen(false)", "setQuickOpen(false)"]) {
+for (const clear of ['setActiveID("")', 'setPreviewID("")', 'setMenuID("")', 'setRenamingID("")', 'setRenameDraft("")', 'setWorkspaceIconRoot("")', 'setPopupAnchorID("")', 'setDraggingID("")', "setDragPreview(null)", "setAnchorMenuOpen(false)", "setQuickOpen(false)"]) {
   assert.ok(closeTransientSource.includes(clear), `the central close path clears ${clear}`);
 }
 assert.match(component, /const toggleQuick = \(\) => \{[\s\S]*closeTransient\(\);[\s\S]*const next = !quickOpen;[\s\S]*setQuickOpen\(next\);[\s\S]*if \(next && topmostReadFailed\) setTopmostAttempt\(\(attempt\) => attempt \+ 1\);/, "anchor left-click closes every transient surface through the central path before toggling the toolbar, and reopening retries a failed always-on-top read");
@@ -689,7 +689,7 @@ assert.match(css, /\.desktop-icon-popup__continue textarea\s*\{[^}]*min-height:\
 assert.match(component, /"--popup-max-height": `\$\{placed\.maxHeight\}px`/, "popup placement binds the computed anchor-space max-height to the popup box");
 assert.match(component, /const \[viewport, setViewport\] = useState\(\(\) => widgetViewportSize\(window\.innerWidth, window\.innerHeight, 1\)\)/, "viewport state owns both logical width and height");
 assert.match(component, /const onResize = \(\) => \{[\s\S]{0,180}widgetViewportSize\(window\.innerWidth, window\.innerHeight, desktopZoom\)[\s\S]{0,180}current\.width === next\.width && current\.height === next\.height/, "one resize path updates both logical axes and skips unchanged rerenders");
-assert.match(component, /placeIconPopup\(rect, viewport\.width, viewport\.height, width\)[\s\S]{0,220}\[active, desktopZoom, popupItem, popupWidth, snapshot\.revision, viewport\.height, viewport\.width\]/, "popup placement reacts to height-only viewport resizes");
+assert.match(component, /placeIconPopup\(rect, viewport\.width, viewport\.height, width\)[\s\S]{0,260}\[active, desktopZoom, popupAnchorID, popupItem, popupWidth, snapshot\.revision, viewport\.height, viewport\.width\]/, "popup placement reacts to height-only viewport resizes and explicit source-anchor changes");
 assert.match(backend, /Status:\s*\"pending\", Action:\s*\"continue\"/, "task continuation persists a pending receipt before delivery");
 assert.match(backend, /advanceDesktopIconTaskContinue[\s\S]+tryDesktopIconReply/, "task continuation uses the acknowledged and recoverable user-turn pipeline");
 assert.match(css, /\.desktop-icon-popup__actions button:not\(:disabled\):hover/, "action buttons keep an accessible hover state");
@@ -720,6 +720,9 @@ assert.match(component, /catch \(cause\) \{\s*\/\/ The row stays[\s\S]+setError\
 assert.match(component, /WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]{0,400}<WorkspaceMatteIcon icon=\{option\.key\}/, "the workspace editor exposes every matte PNG through one typed catalog");
 assert.match(component, /await app\.SetProjectIcon\(row\.root, icon\)[\s\S]{0,100}await reload\(\)[\s\S]{0,100}await onChanged\(\)[\s\S]{0,100}setIconEditing\(null\)/, "a successful icon assignment persists, reloads the manager, and refreshes the widget snapshot before closing");
 assert.match(component, /item\.kind === "workspace" && <button[\s\S]{0,160}openWorkspaceIconEditor\(item\)[\s\S]{0,160}>修改图标<\/button>/, "a workspace icon context menu exposes 修改图标 for the clicked workspace");
+assert.match(component, /active\.kind === "workspace" && <button onClick=\{\(\) => \{ setQuickWorkspace\(`project:\$\{active\.sourceId\}`\); setPopupAnchorID\(active\.id\); setActiveID\("fixed:new"\); \}\}>在此发起<\/button>/, "workspace 在此发起 preselects the clicked project while preserving that icon as the QuickStart anchor");
+assert.match(component, /itemRefs\.current\.get\(popupAnchorID\) \|\| itemRefs\.current\.get\(popupItem\.id\)/, "popup placement prefers the explicit workspace anchor over the fixed 新建 icon");
+assert.match(component, /<QuickStart[\s\S]{0,300}initialWorkspace=\{quickWorkspace\}/, "the anchored QuickStart receives the selected workspace");
 assert.match(component, /openWorkspaceIconEditor[\s\S]{0,180}setWorkspaceIconRoot\(item\.sourceId\)[\s\S]{0,120}setActiveID\("fixed:workspace"\)/, "workspace context editing carries the clicked root into the shared manager");
 assert.match(component, /<WorkspaceManager initialIconRoot=\{workspaceIconRoot\}[\s\S]{0,180}onChanged=\{refresh\}/, "the workspace manager receives the clicked root and refreshes the live desktop snapshot through its parent-owned entry");
 assert.match(component, /Keep the palette open[\s\S]{0,220}setError\(cause instanceof Error \? cause\.message : String\(cause\)\)/, "an icon write failure stays visible and retryable without closing the palette");
@@ -860,6 +863,11 @@ assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__rooms\)/, "th
 
 // --- App coordination: monotonic signal, exit-before-open, tab-focus exit ---
 const appSource = readFileSync(resolve(import.meta.dirname, "../App.tsx"), "utf8");
+const controllerSource = readFileSync(resolve(import.meta.dirname, "../lib/useController.ts"), "utf8");
+assert.match(appSource, /const createProjectSession = useCallback\(async \(scope: string, workspaceRoot: string\)[\s\S]{0,260}await createBlankSession\("project", workspaceRoot, `blank-session-\$\{crypto\.randomUUID\(\)\}`, singleSurfaceLayout\)/, "each window-mode workspace new intent generates a stable request ID and routes through the shared creator");
+assert.match(appSource, /onCreateTopic=\{createProjectSession\}/, "every project-tree variant uses the shared workspace session creator");
+assert.match(controllerSource, /app\.CreateBlankSession\(\{ scope, workspaceRoot, requestId \}\)/, "the frontend sends the typed blank-session intent without exposing internal tab fields");
+assert.match(controllerSource, /if \(singleSurface\) \{[\s\S]{0,180}statesRef\.current\.delete\(id\)/, "single-surface creation drops stale invisible controller state after the backend prunes tabs");
 assert.match(appSource, /const \[collabDialogSignal, setCollabDialogSignal\] = useState\(0\)/, "the root App owns a monotonic collaboration-dialog signal that starts at 0");
 assert.match(appSource, /widgetCoordinator\.exit\(\)\.then\(\(\) => setCollabDialogSignal\(\(count\) => count \+ 1\)\)/, "the Rooms 新增 signal is bumped only after the widget exit succeeds");
 assert.match(appSource, /widgetCoordinator\.exit\(tabID\)/, "opening an existing Room exits the widget and focuses the returned tab");

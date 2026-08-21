@@ -2568,6 +2568,22 @@ export function useController() {
     return meta;
   }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);
 
+  const createBlankSession = useCallback(async (scope: string, workspaceRoot: string, requestId: string, singleSurface = false): Promise<TabMeta> => {
+    const meta = await app.CreateBlankSession({ scope, workspaceRoot, requestId });
+    if (singleSurface) {
+      for (const id of Array.from(statesRef.current.keys())) {
+        if (id !== meta.id) statesRef.current.delete(id);
+      }
+    }
+    setActiveTabId(meta.id);
+    activeTabIdRef.current = meta.id;
+    confirmBackendActiveTab(meta.id);
+    dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
+    void loadSessionDataForTab(meta.id, true, "open-topic");
+    seedOpenTabRuntime(meta);
+    return meta;
+  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);
+
   const ensureBlankSurface = useCallback(async (scope: string, workspaceRoot: string): Promise<TabMeta> => {
     const meta = await app.EnsureBlankSurface(scope, workspaceRoot);
     for (const id of Array.from(statesRef.current.keys())) {
@@ -2630,7 +2646,7 @@ export function useController() {
     loadOlderHistory,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, setModel, setEffort, setTokenMode,
     fetchMemory, remember, forget, saveDoc, pinMemory,
-    switchTab, openProjectTab, openGlobalTab, openTopicSession, openLinkedSession, ensureBlankTab, activateTopic, activateLinkedSession, ensureBlankSurface, closeTab, reorderTabs, retryTabStartup,
+    switchTab, openProjectTab, openGlobalTab, openTopicSession, openLinkedSession, createBlankSession, ensureBlankTab, activateTopic, activateLinkedSession, ensureBlankSurface, closeTab, reorderTabs, retryTabStartup,
     syncActiveTab: syncActiveTabFromBackend,
   };
 }
