@@ -1546,7 +1546,9 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
     // Drag start must cancel any pending click/hover/preview so a delayed open
     // or preview cannot resurrect while the pointer is down or mid-drag.
     timers.current?.cancel();
-    drag.current = { item, x: event.clientX, y: event.clientY, moved: false, targetOrder: item.position.order };
+    // Screen coordinates stay stable when the first focused preview expands
+    // the bottom-right-anchored native window underneath this pointer stream.
+    drag.current = { item, x: event.screenX, y: event.screenY, moved: false, targetOrder: item.position.order };
     setAnchorMenuOpen(false);
     setQuickOpen(false);
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -1554,10 +1556,10 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
   const pointerMove = (event: ReactPointerEvent) => {
     const current = drag.current;
     if (!current) return;
-    if (Math.hypot(event.clientX - current.x, event.clientY - current.y) > DRAG_THRESHOLD) {
+    if (Math.hypot(event.screenX - current.x, event.screenY - current.y) > DRAG_THRESHOLD) {
 		timers.current?.cancel(); current.moved = true; setPreviewID(""); setDraggingID(current.item.id);
 		const count = displayItems.filter((candidate) => candidate.position.row === current.item.position.row && candidate.position.zone === current.item.position.zone).length;
-		const order = desktopIconDragOrder(current.item.position.order, current.x, event.clientX, count);
+		const order = desktopIconDragOrder(current.item.position.order, current.x, event.screenX, count);
 		if (order !== current.targetOrder) { current.targetOrder = order; setDragPreview({ itemId: current.item.id, order }); }
 	}
   };

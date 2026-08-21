@@ -8,6 +8,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| 小组件重启后首次点击误移动 | `done` | `developping/widget-first-click-drag+2026-08-21` | `Codex` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.test.ts` | 调整功能：首次点击使图标获焦并打开预览时，右下锚定的透明画布会首次扩张；拖拽位移现统一使用屏幕坐标，窗口原点变化不会再导致 viewport client 坐标跳变并误判为图标拖动。图标专项与 TypeScript 检查通过。 |
 | 小组件异步弹窗命中区域重同步 | `done` | `developping/widget-popup-region-resync+2026-08-21` | `Codex` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.test.ts` | 调整功能：透明画布已扩张时，新弹窗会在异步 render gate 后才挂载；命中区域观察器现随 overlay ready 状态重启并观察真实弹窗节点，后续列表增高由 ResizeObserver 持续同步，避免原生窗口区域沿用初始小弹窗矩形而裁切顶部。图标专项与 TypeScript 检查通过。 |
 | 小组件管理弹窗自然高度 | `done` | `developping/widget-popup-natural-height+2026-08-21` | `Codex` | `desktop/frontend/src/components/widget/desktop-icon-mode.css`、`desktop-icon-mode.test.ts` | 调整功能：工作区、Room 与日常管理弹窗按实际内容自然增高，将 620px 仅作为上限；异步数据增长到上限后仍由内部列表滚动，内容不会越过透明画布边界。图标专项、CSS 检查与 TypeScript 检查通过。 |
 | 小组件异步管理弹窗稳定边界 | `done` | `developping/widget-popup-async-growth+2026-08-21` | `Codex` | `desktop/frontend/src/components/widget/desktop-icon-mode.css`、`desktop-icon-mode.test.ts` | 调整功能：工作区、Room 与日常管理弹窗在异步列表返回前预留稳定高度；数据加载后列表只在内部滚动，不再向上撑出透明 WebView2 边界。短视口继续按图标锚点上方可用空间收敛，原生画布保持只扩张；底部箭头和阴影不参与内容裁切。图标专项、CSS 检查与 TypeScript 检查通过。 |
