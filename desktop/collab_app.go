@@ -632,7 +632,14 @@ type collaborationPersistedRun struct {
 
 func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	sessionID = strings.TrimSpace(sessionID)
-	var sessionPath, sessionTitle, workspaceRoot string
+	sessionPath, sessionTitle, workspaceRoot := collaborationSessionOwner(app, sessionID)
+	return newDesktopCollaborationForSession(app, sessionID, sessionPath, sessionTitle, workspaceRoot)
+}
+
+func collaborationSessionOwner(app *App, sessionID string) (sessionPath, sessionTitle, workspaceRoot string) {
+	if app == nil {
+		return "", "", ""
+	}
 	if tab := app.sessionByID(sessionID); tab != nil {
 		app.mu.RLock()
 		sessionPath = collaborationOwnerSessionPath(tab.currentSessionPath())
@@ -640,7 +647,7 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 		workspaceRoot = normalizeProjectRoot(tab.WorkspaceRoot)
 		app.mu.RUnlock()
 	}
-	return newDesktopCollaborationForSession(app, sessionID, sessionPath, sessionTitle, workspaceRoot)
+	return sessionPath, sessionTitle, workspaceRoot
 }
 
 // newDesktopCollaborationForSession also supports a persisted Room whose tab
@@ -763,16 +770,35 @@ func (a *App) collaborationRuntime(sessionID string) (*desktopCollaboration, err
 	if sessionID == "" {
 		return nil, fmt.Errorf("sessionId is required")
 	}
+	sessionPath, sessionTitle, workspaceRoot := collaborationSessionOwner(a, sessionID)
 	a.collaborationMu.Lock()
-	defer a.collaborationMu.Unlock()
 	if a.collaborations == nil {
 		a.collaborations = make(map[string]*desktopCollaboration)
 	}
 	if runtime := a.collaborations[sessionID]; runtime != nil {
+		a.collaborationMu.Unlock()
 		return runtime, nil
 	}
-	runtime := newDesktopCollaboration(a, sessionID)
+	var replaced []*desktopCollaboration
+	if sessionPath != "" {
+		seen := make(map[*desktopCollaboration]bool)
+		for ownerID, runtime := range a.collaborations {
+			if runtime == nil || runtime.ownerSessionPath != sessionPath {
+				continue
+			}
+			delete(a.collaborations, ownerID)
+			if !seen[runtime] {
+				seen[runtime] = true
+				replaced = append(replaced, runtime)
+			}
+		}
+	}
+	runtime := newDesktopCollaborationForSession(a, sessionID, sessionPath, sessionTitle, workspaceRoot)
 	a.collaborations[sessionID] = runtime
+	a.collaborationMu.Unlock()
+	for _, stale := range replaced {
+		stale.close()
+	}
 	runtime.startUpdateLoop(a.bootContext())
 	return runtime, nil
 }

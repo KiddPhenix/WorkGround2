@@ -412,6 +412,38 @@ func TestCollaborationRuntimesAreIsolatedPerSession(t *testing.T) {
 	app.closeCollaborations()
 }
 
+func TestCollaborationRuntimeReplacesStaleOwnerForSameSessionPath(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	sessionPath := filepath.Join(t.TempDir(), "room.jsonl")
+	app := &App{}
+	oldTab := &WorkspaceTab{ID: "old-tab", SessionID: "old-runtime-id", SessionPath: sessionPath}
+	newTab := &WorkspaceTab{ID: "new-tab", SessionID: "new-runtime-id", SessionPath: sessionPath}
+	app.trackSession(oldTab)
+	app.trackSession(newTab)
+
+	oldRuntime, err := app.collaborationRuntime(oldTab.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRuntime, err := app.collaborationRuntime(newTab.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.closeCollaborations()
+
+	if newRuntime == oldRuntime {
+		t.Fatal("SessionID rotation reused a runtime bound to the stale Agent identity")
+	}
+	if newRuntime.ownerSessionID != newTab.SessionID || newRuntime.ownerSessionPath != sessionRuntimeKey(sessionPath) {
+		t.Fatalf("replacement owner = %q / %q", newRuntime.ownerSessionID, newRuntime.ownerSessionPath)
+	}
+	app.collaborationMu.Lock()
+	defer app.collaborationMu.Unlock()
+	if app.collaborations[oldTab.SessionID] != nil || app.collaborations[newTab.SessionID] != newRuntime || len(app.collaborations) != 1 {
+		t.Fatalf("runtime registry did not converge: %+v", app.collaborations)
+	}
+}
+
 func testConnection(peer collaborationPeer, mode, sessionID string) *collaborationConnection {
 	snapshot := collab.Snapshot{
 		Room: collab.Room{ID: "room-a", Name: "Room A", LatestSequence: 2}, LatestSequence: 2,
