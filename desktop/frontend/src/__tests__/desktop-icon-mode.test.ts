@@ -598,7 +598,7 @@ assert.doesNotMatch(component, /desktop-icon-collapse[^>]*onPointerDown/, "the t
 assert.doesNotMatch(component, /anchorPointerDown|anchorPointerMove|endClusterDrag|clusterDrag|clampClusterAnchor|viewportLogical|anchorN|setPointerCapture\(event\.pointerId\)[\s\S]{0,80}anchor/, "the anchor has no hand-written pointer-move drag and no normalized cluster position");
 const anchorRule = css.match(/\.desktop-icon-anchor\s*\{[^}]*\}/)?.[0] ?? "";
 const anchorImageRule = css.match(/\.desktop-icon-anchor img\s*\{[^}]*\}/)?.[0] ?? "";
-assert.match(anchorImageRule, /animation:\s*desktop-icon-anchor-keepalive 54000s ease-in-out infinite/, "the anchor image keeps a fifteen-hour compositor transform active while the widget is idle");
+assert.match(anchorImageRule, /animation:\s*desktop-icon-anchor-keepalive 180s steps\(1, end\) infinite/, "the anchor image changes transform once every ninety seconds without continuous interpolation");
 assert.match(anchorImageRule, /will-change:\s*transform/, "the anchor keepalive owns a compositor transform layer");
 assert.match(css, /@keyframes desktop-icon-anchor-keepalive\s*\{[\s\S]*translate3d\(0, -\.6px, 0\)[\s\S]*translate3d\(0, \.6px, 0\)/, "the keepalive moves only a subpixel amount around the stationary anchor");
 assert.match(css, /prefers-reduced-motion:\s*reduce[\s\S]*\.desktop-icon-anchor img\s*\{\s*animation:\s*none;/, "the experimental anchor keepalive respects reduced-motion preferences");
