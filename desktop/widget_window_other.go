@@ -42,8 +42,8 @@ func applyDesktopIconSurface(_ context.Context, input DesktopIconSurfaceInput) (
 	input.Height = max(0, input.Height)
 	input.Envelope = max(0, input.Envelope)
 	return WidgetWindowState{
-		Width:  min(desktopIconWidth, max(desktopIconMinWidth, input.Width+input.Envelope*2)),
-		Height: min(desktopIconHeight, max(desktopIconMinHeight, input.Height+input.Envelope*2)),
+		Width:  max(desktopIconMinWidth, input.Width+input.Envelope*2),
+		Height: max(desktopIconMinHeight, input.Height+input.Envelope*2),
 	}, nil
 }
 

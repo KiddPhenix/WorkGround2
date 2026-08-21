@@ -988,6 +988,26 @@ func TestNormalizeDesktopIconRectsClampsAndDropsInvalid(t *testing.T) {
 	}
 }
 
+func TestDesktopIconHitRegionsIgnoreStaleSurface(t *testing.T) {
+	app := &App{ctx: context.Background(), widgetMode: true, widgetStyle: "icons", widgetSurfaceGen: 8}
+	if err := app.SetDesktopIconHitRegions(DesktopIconHitRegionsInput{
+		Rects:      []DesktopIconRect{{X: 10, Y: 10, Width: 20, Height: 20}},
+		Generation: 7,
+	}); err != nil {
+		t.Fatalf("stale hit region should be ignored: %v", err)
+	}
+}
+
+func TestDesktopIconSurfaceInputPreservesCurrentAxes(t *testing.T) {
+	input := growDesktopIconSurfaceInput(
+		DesktopIconSurfaceInput{Width: 700, Height: 900, Envelope: 32, Generation: 9},
+		WidgetWindowState{Width: 1080, Height: 720},
+	)
+	if input.Width != 1016 || input.Height != 900 || input.Generation != 9 {
+		t.Fatalf("input = %#v, want width preserved and larger height retained", input)
+	}
+}
+
 func TestDesktopIconCompletionReceiptCarriesRecoveryIdentity(t *testing.T) {
 	receipt := desktopIconReceipt{RequestID: "request-1", Intent: "intent", Status: "pending", Action: "dismiss", ItemID: "task:tab-1", TabID: "tab-1"}
 	if receipt.Status != "pending" || receipt.Action != "dismiss" || receipt.ItemID == "" || receipt.TabID == "" {

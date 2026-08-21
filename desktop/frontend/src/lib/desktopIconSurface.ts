@@ -7,29 +7,28 @@ export interface IconSurfaceApply { (input: DesktopIconSurfaceInput): Promise<De
 export interface IconSurfaceCoordinatorOptions {
 	apply: IconSurfaceApply;
 	envelope?: number;
-	shrinkDelayMs?: number;
+	initialBounds?: IconSurfaceBounds;
 	initialGeneration?: number;
-	schedule?: (fn: () => void, ms: number) => () => void;
 	onError?: (err: unknown) => void;
+	onApplied?: (result: DesktopIconSurfaceResult) => void;
 }
 
 export interface IconSurfaceCoordinator {
 	// prepare is the render gate: native growth is confirmed before the caller
 	// exposes new icons or transient UI. Superseded requests resolve false.
 	prepare(bounds: IconSurfaceBounds): Promise<boolean>;
-	// settle records the stable icon-only target. Growth is immediate; shrink
-	// waits until the layout is stable and every transient surface is closed.
+	// settle grows for stable icon layout changes. A surface never shrinks during
+	// one icon-mode lifetime; exiting icon mode resets it to the initial bounds.
 	settle(bounds: IconSurfaceBounds): void;
-	setOverlay(open: boolean): void;
-	setLayoutStable(stable: boolean): void;
 	current(): DesktopIconSurfaceResult | null;
 	dispose(): void;
 }
 
 const clean = (value: number) => Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
 const normalize = (bounds: IconSurfaceBounds): IconSurfaceBounds => ({ width: clean(bounds.width), height: clean(bounds.height) });
-const equal = (a: IconSurfaceBounds, b: IconSurfaceBounds) => a.width === b.width && a.height === b.height;
 const grows = (next: IconSurfaceBounds, current: IconSurfaceBounds) => next.width > current.width || next.height > current.height;
+const covers = (outer: IconSurfaceBounds, inner: IconSurfaceBounds) => outer.width >= inner.width && outer.height >= inner.height;
+const union = (a: IconSurfaceBounds, b: IconSurfaceBounds): IconSurfaceBounds => ({ width: Math.max(a.width, b.width), height: Math.max(a.height, b.height) });
 
 // Pure intent geometry. Runtime text, animation frames and DOM measurements do
 // not participate, so visual updates cannot create a resize/reflow loop.
@@ -43,100 +42,79 @@ export function desktopIconLayoutBounds(items: DesktopIconItem[], collapsed: boo
 		const widths = items.filter((item) => item.position.row === row).map((item) => item.status === "running" || item.status === "thinking" ? 80 : 62);
 		return widths.reduce((sum, width) => sum + width, 0) + Math.max(0, widths.length - 1) * 6;
 	};
-	const usableWidth = 1016; // 1080 native max minus the 32px envelope on both sides.
 	const topWidth = rowWidth("top");
 	const bottomWidth = rowWidth("bottom");
-	const lines = (width: number) => width > 0 ? Math.ceil(width / usableWidth) : 0;
-	const contentWidth = Math.min(usableWidth, Math.max(minContent.width, topWidth, bottomWidth));
-	const contentHeight = Math.max(minContent.height, (lines(topWidth) + lines(bottomWidth)) * 78 + 52);
+	// Extra room covers zone margins, shadows, labels and rounding at non-100%
+	// DPI/cluster zoom. Native code owns the final work-area clamp.
+	const contentWidth = Math.max(minContent.width, topWidth, bottomWidth) + 96;
+	const contentHeight = Math.max(minContent.height, (topWidth > 0 ? 78 : 0) + (bottomWidth > 0 ? 78 : 0) + 52) + 64;
 	return { width: Math.ceil(contentWidth * zoom), height: Math.ceil(contentHeight * zoom) };
 }
 
 // A transient surface gets the whole bounded canvas. Popup contents never need
 // to mount once merely to be measured.
-export const DESKTOP_ICON_OVERLAY_BOUNDS: IconSurfaceBounds = { width: 1016, height: 656 };
+export const DESKTOP_ICON_OVERLAY_BOUNDS: IconSurfaceBounds = { width: 1216, height: 836 };
+const DESKTOP_ICON_INITIAL_BOUNDS: IconSurfaceBounds = { width: 1016, height: 656 };
 
 export function createIconSurfaceCoordinator(options: IconSurfaceCoordinatorOptions): IconSurfaceCoordinator {
 	const envelope = Math.max(0, options.envelope ?? 32);
-	const shrinkDelayMs = Math.max(0, options.shrinkDelayMs ?? 1000);
-	const schedule = options.schedule ?? ((fn, ms) => {
-		const handle = window.setTimeout(fn, ms);
-		return () => window.clearTimeout(handle);
-	});
-	let appliedBounds: IconSurfaceBounds = { width: 0, height: 0 };
-	let target: IconSurfaceBounds = { width: 0, height: 0 };
+	let appliedBounds = normalize(options.initialBounds ?? { width: 0, height: 0 });
+	let requestedBounds = appliedBounds;
+	let pendingBounds: IconSurfaceBounds = { width: 0, height: 0 };
+	let pending: Promise<boolean> | null = null;
 	let actual: DesktopIconSurfaceResult | null = null;
 	let generation = Math.max(0, Math.trunc(options.initialGeneration ?? 0));
-	let overlayOpen = false;
-	let layoutStable = true;
 	let disposed = false;
-	let shrinkCancel: (() => void) | null = null;
 
-	const cancelShrink = () => { shrinkCancel?.(); shrinkCancel = null; };
 	const apply = async (bounds: IconSurfaceBounds, token: number): Promise<boolean> => {
 		try {
 			const result = await options.apply({ ...bounds, envelope, generation: token });
 			if (disposed || token !== generation || result.generation !== token) return false;
 			actual = result;
 			appliedBounds = bounds;
+			options.onApplied?.(result);
 			return true;
 		} catch (cause) {
 			if (!disposed && token === generation) options.onError?.(cause);
 			return false;
 		}
 	};
-	const scheduleShrink = () => {
-		if (disposed || overlayOpen || !layoutStable || equal(target, appliedBounds)) return;
-		cancelShrink();
-		shrinkCancel = schedule(() => {
-			shrinkCancel = null;
-			if (disposed || overlayOpen || !layoutStable || equal(target, appliedBounds)) return;
-			const token = ++generation;
-			void apply(target, token);
-		}, shrinkDelayMs);
+	const request = (bounds: IconSurfaceBounds): Promise<boolean> => {
+		const current = apply(bounds, ++generation);
+		pendingBounds = bounds;
+		pending = current;
+		void current.finally(() => { if (pending === current) pending = null; });
+		return current;
 	};
-
 	return {
 		async prepare(bounds) {
 			if (disposed) return false;
 			const next = normalize(bounds);
-			target = next;
-			cancelShrink();
-			if (!grows(next, appliedBounds)) return true;
-			// A render gate may need more width but less height (or vice versa).
-			// Never shrink the other axis as part of that expansion.
-			const safe = { width: Math.max(next.width, appliedBounds.width), height: Math.max(next.height, appliedBounds.height) };
-			const ready = await apply(safe, ++generation);
-			if (ready) scheduleShrink();
-			return ready;
+			requestedBounds = union(requestedBounds, next);
+			if (covers(appliedBounds, next)) return true;
+			if (pending && covers(pendingBounds, requestedBounds)) return pending;
+			return request(requestedBounds);
 		},
 		settle(bounds) {
 			if (disposed) return;
 			const next = normalize(bounds);
-			if (equal(next, target)) { scheduleShrink(); return; }
-			target = next;
-			cancelShrink();
-			if (grows(next, appliedBounds)) void apply(next, ++generation);
-			else scheduleShrink();
-		},
-		setOverlay(open) {
-			overlayOpen = open;
-			if (open) cancelShrink(); else scheduleShrink();
-		},
-		setLayoutStable(stable) {
-			layoutStable = stable;
-			if (!stable) cancelShrink(); else scheduleShrink();
+			requestedBounds = union(requestedBounds, next);
+			if (!grows(requestedBounds, appliedBounds)) return;
+			if (pending && covers(pendingBounds, requestedBounds)) return;
+			void request(requestedBounds);
 		},
 		current: () => actual,
-		dispose() { disposed = true; generation += 1; cancelShrink(); },
+		dispose() { disposed = true; generation += 1; },
 	};
 }
 
-export function useDesktopIconSurface(onError?: (err: unknown) => void): IconSurfaceCoordinator {
+export function useDesktopIconSurface(onError?: (err: unknown) => void, onApplied?: (result: DesktopIconSurfaceResult) => void): IconSurfaceCoordinator {
 	const ref = useRef<IconSurfaceCoordinator | null>(null);
 	if (ref.current === null) ref.current = createIconSurfaceCoordinator({
 		apply: (input) => app.SetDesktopIconSurface(input),
+		initialBounds: DESKTOP_ICON_INITIAL_BOUNDS,
 		onError,
+		onApplied,
 		// A React remount inside the same native icon-mode lifetime must not
 		// restart below the backend's last monotonic token.
 		initialGeneration: Date.now() * 1000 + Math.floor(Math.random() * 1000),

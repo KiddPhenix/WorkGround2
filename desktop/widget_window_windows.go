@@ -403,9 +403,9 @@ func defaultDesktopIconWindowStateForWorkArea(work w32Rect, dpi uint32) WidgetWi
 }
 
 // desktopIconSurfaceStateForWorkArea clamps a requested icon-surface content
-// size (plus its safety envelope) to the icon canvas bounds and anchors it at
-// the work area's bottom-right corner. It never returns a surface larger than
-// the work area, so the transparent WebView2 canvas stays bounded.
+// size (plus its safety envelope) to the current work area and anchors it at
+// the bottom-right corner. The 1080x720 constants are only the initial size:
+// dense/zoomed icon rows and tall management popups may grow beyond them.
 func desktopIconSurfaceStateForWorkArea(work w32Rect, dpi uint32, width, height, envelope int) WidgetWindowState {
 	width = max(0, width)
 	height = max(0, height)
@@ -414,8 +414,8 @@ func desktopIconSurfaceStateForWorkArea(work w32Rect, dpi uint32, width, height,
 	contentHeight := height + envelope*2
 	logicalWidth := scaleToDefaultDPI(int(work.Right-work.Left), dpi)
 	logicalHeight := scaleToDefaultDPI(int(work.Bottom-work.Top), dpi)
-	targetWidth := min(desktopIconWidth, max(desktopIconMinWidth, contentWidth))
-	targetHeight := min(desktopIconHeight, max(desktopIconMinHeight, contentHeight))
+	targetWidth := max(desktopIconMinWidth, contentWidth)
+	targetHeight := max(desktopIconMinHeight, contentHeight)
 	targetWidth = min(targetWidth, logicalWidth)
 	targetHeight = min(targetHeight, logicalHeight)
 	return WidgetWindowState{

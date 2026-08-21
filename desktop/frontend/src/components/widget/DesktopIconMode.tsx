@@ -1275,12 +1275,17 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	const popupRef = useRef<HTMLElement>(null);
 	const [popupWidth, setPopupWidth] = useState(0);
 	const regionKey = useRef("");
+	const regionErrorKey = useRef("");
 	const regionQueue = useRef<Promise<void>>(Promise.resolve());
 	const [collapsed, setCollapsed] = useState(readCollapsedState);
 	const exitRequest = useRef(false);
+	const [surfaceGeneration, setSurfaceGeneration] = useState(0);
 	// surface owns the native icon-canvas bounds: every caller funnels through
-	// it, so growth is immediate and shrinkage is deferred/cancellable.
-	const surface = useDesktopIconSurface((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+	// it, so growth is immediate and the surface never shrinks until mode exit.
+	const surface = useDesktopIconSurface(
+		(cause) => setError(cause instanceof Error ? cause.message : String(cause)),
+		(result) => setSurfaceGeneration((current) => current === result.generation ? current : result.generation),
+	);
 	const [overlayReadyKey, setOverlayReadyKey] = useState("");
 
 	// cancelTransientTimers cancels every scheduled click/hover/preview and the
@@ -1398,13 +1403,17 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		let frame = 0;
 		let alive = true;
 		const report = (rects: ReturnType<typeof iconHitRect>[]) => {
-			const key = rects.map((rect) => `${rect.x},${rect.y},${rect.width},${rect.height}`).join(";");
+			const key = `${surfaceGeneration}|${rects.map((rect) => `${rect.x},${rect.y},${rect.width},${rect.height}`).join(";")}`;
 			if (!key || key === regionKey.current) return;
 			regionKey.current = key;
-			const next = regionQueue.current.catch(() => {}).then(() => app.SetDesktopIconHitRegions(rects));
-			regionQueue.current = next.catch((cause) => {
+			const next = regionQueue.current.catch(() => {}).then(() => app.SetDesktopIconHitRegions({ rects, generation: surfaceGeneration }));
+			regionQueue.current = next.then(() => { regionErrorKey.current = ""; }, (cause) => {
 				if (regionKey.current === key) regionKey.current = "";
-				if (alive) setError(cause instanceof Error ? cause.message : String(cause));
+				const message = cause instanceof Error ? cause.message : String(cause);
+				if (alive && regionErrorKey.current !== message) {
+					regionErrorKey.current = message;
+					setError(message);
+				}
 			});
 		};
 		const sync = () => {
@@ -1422,7 +1431,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		sync(); window.addEventListener("resize", sync);
 		void document.fonts?.ready.then(() => { if (alive) sync(); });
 		return () => { alive = false; cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener("resize", sync); };
-	}, [activeID, menuID, previewID, snapshot.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems, roomIconsVisible]);
+	}, [activeID, menuID, previewID, snapshot.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems, roomIconsVisible, surfaceGeneration]);
 
 	// Surface size comes from the next layout intent, never from animated DOM.
 	// A transient key is only render-ready after native expansion succeeds.
@@ -1430,18 +1439,15 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	const overlayKey = activeID ? `active:${activeID}` : menuID ? `menu:${menuID}` : previewID ? `preview:${previewID}` : anchorMenuOpen ? "anchor-menu" : quickOpen ? "quick" : "";
 	const overlayReady = Boolean(overlayKey && overlayReadyKey === overlayKey);
 	useEffect(() => {
-		surface.setLayoutStable(!draggingID && !dragPreview);
 		surface.settle(layoutBounds);
-	}, [dragPreview, draggingID, layoutBounds, surface]);
+	}, [layoutBounds, surface]);
 	useEffect(() => {
 		let alive = true;
 		if (!overlayKey) {
 			setOverlayReadyKey("");
-			surface.setOverlay(false);
 			surface.settle(layoutBounds);
 			return () => { alive = false; };
 		}
-		surface.setOverlay(true);
 		void surface.prepare(DESKTOP_ICON_OVERLAY_BOUNDS).then((ready) => {
 			if (alive && ready) setOverlayReadyKey(overlayKey);
 		});

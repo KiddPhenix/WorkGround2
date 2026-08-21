@@ -98,12 +98,21 @@ func TestDefaultDesktopIconWindowStateClampsToSmallWorkArea(t *testing.T) {
 	}
 }
 
-func TestDesktopIconSurfaceStateClampsToMax(t *testing.T) {
-	// Content larger than the canvas defaults is clamped to desktopIconWidth×
-	// desktopIconHeight and anchored bottom-right with the standard gaps.
+func TestDesktopIconSurfaceStateCanGrowPastDefault(t *testing.T) {
+	// The defaults are only the initial bounds. Dense/zoomed content grows past
+	// them while remaining anchored bottom-right with the standard gaps.
 	work := w32Rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
 	state := desktopIconSurfaceStateForWorkArea(work, 96, 1400, 900, 16)
-	want := WidgetWindowState{Width: 1080, Height: 720, X: 824, Y: 336}
+	want := WidgetWindowState{Width: 1432, Height: 932, X: 472, Y: 124}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+}
+
+func TestDesktopIconSurfaceStateClampsToWorkArea(t *testing.T) {
+	work := w32Rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	state := desktopIconSurfaceStateForWorkArea(work, 96, 2400, 1200, 16)
+	want := WidgetWindowState{Width: 1920, Height: 1080, X: 0, Y: 0}
 	if state != want {
 		t.Fatalf("state = %#v, want %#v", state, want)
 	}

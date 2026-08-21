@@ -1,15 +1,11 @@
 // Run: tsx src/__tests__/desktop-icon-surface.test.ts
 import assert from "node:assert/strict";
-import { createIconSurfaceCoordinator, desktopIconLayoutBounds, type IconSurfaceBounds } from "../lib/desktopIconSurface";
+import { createIconSurfaceCoordinator, DESKTOP_ICON_OVERLAY_BOUNDS, desktopIconLayoutBounds, type IconSurfaceBounds } from "../lib/desktopIconSurface";
 import type { DesktopIconItem, DesktopIconSurfaceInput, DesktopIconSurfaceResult } from "../lib/bridge";
 
 const response = (input: DesktopIconSurfaceInput): DesktopIconSurfaceResult => ({ width: input.width + input.envelope * 2, height: input.height + input.envelope * 2, x: 0, y: 0, generation: input.generation });
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 const bounds = (width: number, height: number): IconSurfaceBounds => ({ width, height });
-function scheduler() {
-	const timers: (() => void)[] = [];
-	return { schedule(fn: () => void) { timers.push(fn); return () => { const i = timers.indexOf(fn); if (i >= 0) timers.splice(i, 1); }; }, fire() { while (timers.length) timers.shift()!(); }, pending: () => timers.length };
-}
 function deferred() {
 	let resolve!: (value: DesktopIconSurfaceResult) => void;
 	let reject!: (cause: unknown) => void;
@@ -37,31 +33,34 @@ async function testFailureDoesNotCommit() {
 	assert.match(error, /resize failed/);
 }
 
-async function testShrinkIsDelayedAndCancelled() {
+async function testSurfaceOnlyGrows() {
 	const calls: DesktopIconSurfaceInput[] = [];
-	const timer = scheduler();
-	const coordinator = createIconSurfaceCoordinator({ apply: async (input) => { calls.push(input); return response(input); }, schedule: timer.schedule });
+	const applied: number[] = [];
+	const coordinator = createIconSurfaceCoordinator({ apply: async (input) => { calls.push(input); return response(input); }, onApplied: (result) => applied.push(result.generation) });
 	await coordinator.prepare(bounds(800, 600));
 	coordinator.settle(bounds(400, 300));
-	assert.equal(timer.pending(), 1);
+	await flush();
+	assert.deepEqual(calls.map((call) => call.width), [800], "a smaller stable layout never shrinks the native surface");
 	coordinator.settle(bounds(900, 650));
-	assert.equal(timer.pending(), 0, "a new icon growth cancels stale shrink");
 	await flush();
 	assert.deepEqual(calls.map((call) => call.width), [800, 900]);
+	coordinator.settle(bounds(700, 500));
+	await flush();
+	assert.deepEqual(calls.map((call) => call.width), [800, 900], "the maximum survives after transient content closes");
+	assert.deepEqual(applied, [1, 2], "every accepted native generation is observable by hit-region sync");
 }
 
-async function testOverlayBlocksShrink() {
+async function testInitialNativeSurfaceDoesNotShrink() {
 	const calls: DesktopIconSurfaceInput[] = [];
-	const timer = scheduler();
-	const coordinator = createIconSurfaceCoordinator({ apply: async (input) => { calls.push(input); return response(input); }, schedule: timer.schedule });
-	await coordinator.prepare(bounds(800, 600));
-	coordinator.setOverlay(true);
-	coordinator.settle(bounds(400, 300));
-	assert.equal(timer.pending(), 0);
-	coordinator.setOverlay(false);
-	assert.equal(timer.pending(), 1);
-	timer.fire(); await flush();
-	assert.deepEqual(calls.map((call) => call.width), [800, 400]);
+	const coordinator = createIconSurfaceCoordinator({
+		apply: async (input) => { calls.push(input); return response(input); },
+		initialBounds: bounds(1016, 656),
+	});
+	coordinator.settle(bounds(600, 500));
+	assert.equal(await coordinator.prepare(bounds(800, 600)), true);
+	assert.deepEqual(calls, [], "mounting content inside the initial native canvas does not resize it downward");
+	assert.equal(await coordinator.prepare(bounds(1216, 836)), true);
+	assert.deepEqual(calls.map((call) => [call.width, call.height]), [[1216, 836]]);
 }
 
 async function testSupersededPrepareCannotCommit() {
@@ -83,10 +82,13 @@ const running = desktopIconLayoutBounds([item("one", "bottom", "running")], fals
 assert.deepEqual(running, narrow, "status decoration inside the native minimum does not resize the surface");
 const crowded = desktopIconLayoutBounds(Array.from({ length: 9 }, (_, index) => item(String(index), "bottom")), false);
 assert.ok(crowded.width > narrow.width, "new icons expand once the stable minimum envelope is exceeded");
+const zoomed = desktopIconLayoutBounds(Array.from({ length: 9 }, (_, index) => item(String(index), "bottom")), false, 1.5);
+assert.ok(zoomed.width > 1016, "zoomed dense rows can grow beyond the former 1080px native cap");
+assert.ok(DESKTOP_ICON_OVERLAY_BOUNDS.width >= 1200 && DESKTOP_ICON_OVERLAY_BOUNDS.height >= 800, "management popups reserve a larger surface before mounting");
 
 await testPrepareGatesCommit();
 await testFailureDoesNotCommit();
-await testShrinkIsDelayedAndCancelled();
-await testOverlayBlocksShrink();
+await testSurfaceOnlyGrows();
+await testInitialNativeSurfaceDoesNotShrink();
 await testSupersededPrepareCannotCommit();
 process.stdout.write("desktop icon surface coordinator tests passed\n");

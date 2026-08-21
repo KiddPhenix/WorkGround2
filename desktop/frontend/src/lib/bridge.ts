@@ -330,6 +330,7 @@ export interface DesktopIconSearchResult { items: DesktopIconSearchItem[]; error
 export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
 export interface DesktopIconActionResult { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; error?: string; snapshot: DesktopIconSnapshot; }
 export interface DesktopIconRect { x: number; y: number; width: number; height: number; }
+export interface DesktopIconHitRegionsInput { rects: DesktopIconRect[]; generation: number; }
 // DesktopIconSurfaceInput is one monotonic native-canvas resize request. Width
 // and height are the content's logical bounds, envelope is the safety margin
 // added on every side, and generation is the coordinator's request token.
@@ -423,7 +424,7 @@ export interface AppBindings extends WailsWorkBindings {
 	RunDailyRoutine(input: { workspaceRoot: string; routineId: string; requestId: string }): Promise<DailyRoutineResult>;
 	RenameDailyRoutine(input: { workspaceRoot: string; routineId: string; name: string }): Promise<DailyRoutineResult>;
 	DeleteDailyRoutine(input: { workspaceRoot: string; routineId: string }): Promise<DailyRoutineResult>;
-	SetDesktopIconHitRegions(rects: DesktopIconRect[]): Promise<void>;
+	SetDesktopIconHitRegions(input: DesktopIconHitRegionsInput): Promise<void>;
 	SetDesktopIconSurface(input: DesktopIconSurfaceInput): Promise<DesktopIconSurfaceResult>;
 	SetDesktopWorkspaceSlots(slots: number): Promise<void>;
 	SetDesktopRoomPinned(topicID: string, pinned: boolean): Promise<void>;
@@ -2698,11 +2699,11 @@ function makeMockApp(): AppBindings {
 		async DeleteDailyRoutine() { return { status: "accepted" }; },
 		async SetDesktopIconHitRegions() {},
 		async SetDesktopIconSurface(input) {
-			// Mock mirrors the backend clamp: bounded by the icon defaults and
-			// anchored bottom-right of a virtual 1920×1080 work area.
-			const width = Math.min(1080, Math.max(640, input.width + input.envelope * 2));
-			const height = Math.min(720, Math.max(540, input.height + input.envelope * 2));
-			return { width, height, x: 1920 - width - 16, y: 1080 - height - 24, generation: input.generation };
+			// Mock mirrors the backend clamp: bounded by and anchored to the
+			// bottom-right of a virtual 1920×1080 work area.
+			const width = Math.min(1920, Math.max(640, input.width + input.envelope * 2));
+			const height = Math.min(1080, Math.max(540, input.height + input.envelope * 2));
+			return { width, height, x: Math.max(0, 1920 - width - 16), y: Math.max(0, 1080 - height - 24), generation: input.generation };
 		},
 		async SetDesktopWorkspaceSlots(slots: number) {
 			if (!Number.isInteger(slots) || slots < 0 || slots > 4) throw new Error("desktop workspace slots must be between 0 and 4");
