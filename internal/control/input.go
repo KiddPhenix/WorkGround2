@@ -107,10 +107,9 @@ func StripReferencedContextPrefix(content string) string {
 	return s
 }
 
-// IsSyntheticUserMessage returns true if the content matches one of the known
-// synthetic user messages injected by the controller or agent loop (plan
-// approval, stream recovery, readiness retry, etc.). These should not be shown
-// in the chat UI.
+// IsSyntheticUserMessage recognizes legacy sessions and raw controller inputs
+// that predate provider.Message.Origin. New persisted messages use the typed
+// flag; text matching remains only for migration and pre-run classification.
 func IsSyntheticUserMessage(content string) bool {
 	trimmed := strings.TrimSpace(agent.StripTransientUserBlocks(content))
 	if trimmed == planApprovedMessage {
@@ -124,27 +123,37 @@ func IsSyntheticUserMessage(content string) bool {
 	return false
 }
 
-// syntheticPrefixes must be kept in sync with the synthetic user messages
-// injected by the controller (planApprovedMessage, goal loop turns), agent loop
-// (streamRecoveryMessage, finalReadinessRetryMessage, emptyFinalRetryMessage,
-// executorHandoffRetryMessage in internal/agent/agent.go), and compaction
-// folds (internal/agent/compact.go), which store summaries as user-role
-// messages the chat UI must never render as user bubbles (#3653).
+// syntheticPrefixes keeps old sessions hidden and lets pre-run classifiers skip
+// host-generated turns. New history rendering relies on Message.Origin, so a
+// wording change can no longer leak an internal instruction into the chat UI.
 var syntheticPrefixes = []string{
 	"Plan approved — plan mode is off",
+	"Plan approved — execute now.",
 	"Host final-answer readiness check failed",
 	"You are already in the executor phase",
+	"Executor phase: act now with the available tools.",
+	"The tool schema is still attached to this executor request.",
 	"The previous assistant response was interrupted while a tool call",
 	"The previous assistant response was interrupted during streaming",
 	"The previous assistant response was interrupted before visible",
 	"The previous assistant response finished without any visible answer",
+	"This turn has been purely reading context for many rounds.",
+	"Recent rounds only gathered context.",
+	"Do not call any more tools — your tool-call round limit",
+	"Tool-round limit reached",
 	"<compaction-summary>",
 	"Summary of the later conversation (compacted from here on):",
 	"Summary of earlier conversation (compacted up to here):",
 	"Continue pursuing the active goal.",
+	"Continue the active goal now.",
 	"The agent signaled goal completion and all tasks are marked done.",
+	"Final self-check before completion.",
 	"Goal signaled complete but issues remain:",
+	"Goal is not complete. Fix the remaining issues now.",
 	"No tool calls in recent turns.",
+	"The goal is idle. Act now or report a real blocker.",
+	"Perform the mandatory final quality pass now.",
+	"Run the final quality pass now.",
 }
 
 // Compose applies the plan-mode marker to a turn's text when plan mode is on,
@@ -155,6 +164,7 @@ func (c *Controller) Compose(text string) string {
 }
 
 func (c *Controller) compose(text string, includeHookContext bool) string {
+	vocabularyInput := text
 	c.mu.Lock()
 	plan := c.planMode
 	responseLanguage := c.responseLanguage
@@ -213,6 +223,13 @@ func (c *Controller) compose(text string, includeHookContext bool) string {
 	}
 	if includeHookContext {
 		if block := c.drainHookContextBlock(); block != "" {
+			text = block + "\n\n" + text
+		}
+	}
+	// Dynamic vocabulary definitions ride only the matching turn. This keeps
+	// learned terms useful immediately without changing the cache-stable prefix.
+	if c.vocabulary != nil {
+		if block := c.vocabulary.Context(vocabularyInput, 5); block != "" {
 			text = block + "\n\n" + text
 		}
 	}

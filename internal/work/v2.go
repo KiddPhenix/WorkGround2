@@ -404,6 +404,11 @@ type ApplyDefinitionInput struct {
 	Revision         int64  `json:"revision"`
 	ExpectedRevision int64  `json:"expectedRevision"`
 	RequestID        string `json:"requestId"`
+	// deferWake is package-private so ordinary Controller/front-end callers
+	// cannot accidentally commit a run without waking it. RunReusableFlow uses
+	// the split phase to bind the durable Work identity before the DAG runs;
+	// restart scheduling recovery closes the commit-to-wake crash window.
+	deferWake bool
 }
 
 // RetryWorkNodeRequest retries a failed or invalidated task node.

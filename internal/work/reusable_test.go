@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReusableFlowV1PersistsAndRunsIdempotently(t *testing.T) {
@@ -142,6 +143,117 @@ func TestReusableFlowV2FreezesDefinitionAndSeedsInputs(t *testing.T) {
 	if source.ReusableFlowID != "" || source.RerunOf != "" {
 		t.Fatalf("source provenance mutated = %+v", source)
 	}
+}
+
+func TestReusableFlowV2DispatchReturnsBeforeDAGAndConverges(t *testing.T) {
+	store := newTestFileWorkStore(t)
+	svc := NewService(store, nil, nil)
+	ctx := context.Background()
+
+	view, err := svc.BeginWorkPlanning(ctx, BeginWorkPlanningInput{
+		SessionID: "reusable-async-session", RequestID: "reusable-async-source",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := v2def(view.Work.ID, 2)
+	candidate.Goal = "制作第一卷小说"
+	candidate.InputSpecs[0].Label = "主题"
+	candidate.InputSpecs[0].DefaultValue = json.RawMessage(`"海洋"`)
+	// No artifact slots: completion depends only on node runtimes.
+	candidate.ArtifactSlots = nil
+	created, err := svc.CreateCandidateRevision(ctx, view.Work.ID, candidate, "reusable-async-candidate", view.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := store.LoadState(view.Work.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApplyDefinition(ctx, ApplyDefinitionInput{
+		WorkID: view.Work.ID, Revision: created.Revision,
+		ExpectedRevision: state.Revision, RequestID: "reusable-async-apply",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	flow, err := svc.SaveReusableFlow(ctx, SaveReusableFlowInput{
+		SourceWorkID: view.Work.ID, Name: "异步流程",
+		VariableKeys: []string{"goal", "input:is1"}, RequestID: "save-reusable-async",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requestID := "run-reusable-async"
+	workID := workIDForRequest(requestID + "/work")
+	runID := workflowRunID(workID, requestID+"/apply")
+	executor := &coordinatorExecutor{
+		blockRun: runID,
+		started:  make(chan TaskExecuteInput, 1),
+		release:  make(chan struct{}),
+	}
+	svc.SetTaskExecutor(executor)
+	input := RunReusableFlowInput{
+		FlowID: flow.ID,
+		Values: map[string]json.RawMessage{
+			"goal":      json.RawMessage(`"制作第二卷小说"`),
+			"input:is1": json.RawMessage(`"山地"`),
+		},
+		RequestID: requestID,
+	}
+
+	startedAt := time.Now()
+	run, err := svc.RunReusableFlow(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The DAG executor is blocked, so a prompt return proves the create/apply
+	// returned before foreground node execution could block.
+	if run.Work == nil || run.Work.ID != workID || run.Run == nil {
+		t.Fatalf("reusable async run = %+v", run)
+	}
+	select {
+	case <-executor.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reusable DAG wake was never dispatched")
+	}
+	if elapsed := time.Since(startedAt); elapsed > 3*time.Second {
+		t.Fatalf("RunReusableFlow blocked on the DAG for %v", elapsed)
+	}
+	// Release the DAG and await durable completion.
+	close(executor.release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		current, _, loadErr := store.LoadState(workID, "")
+		if loadErr == nil && current.State == WorkCompleted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reusable run did not complete: err=%v state=%v", loadErr, currentStateName(store, workID, loadErr))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// A restart with the same request converges to the same Work (and the
+	// Session binding derives from the same request ID), never a new Work.
+	restarted := NewService(store, nil, nil)
+	restarted.SetTaskExecutor(&fakeRunnerExecutor{})
+	replay, err := restarted.RunReusableFlow(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replay.Duplicate || replay.Work == nil || replay.Work.ID != workID {
+		t.Fatalf("reusable replay = %+v", replay)
+	}
+}
+
+func currentStateName(store *FileWorkStore, workID string, loadErr error) WorkState {
+	if loadErr == nil {
+		if current, _, err := store.LoadState(workID, ""); err == nil {
+			return current.State
+		}
+	}
+	return ""
 }
 
 func TestReusableFlowRejectsFixedFieldOverride(t *testing.T) {
@@ -317,5 +429,46 @@ func TestReusableFlowV1PreservesCurrentStructure(t *testing.T) {
 	// 源 Cornerstone 未被修改
 	if len(after.Work.Cornerstones) != 1 || after.Work.Cornerstones[0].ID != sourceCsID {
 		t.Fatal("source cornerstone was mutated")
+	}
+}
+
+// TestReusableRunCommitted guards the host rollback probe: before a
+// RunReusableFlow commits, ReusableRunCommitted is false; after a committed
+// run (or replay), it is true; an unknown requestID is false, not an error.
+func TestReusableRunCommitted(t *testing.T) {
+	f := newRunnerFixture(t)
+	ctx := context.Background()
+	const requestID = "run-committed-probe"
+	if committed, err := f.svc.ReusableRunCommitted(ctx, requestID); err != nil || committed {
+		t.Fatalf("pre-commit probe = (%v, %v), want (false, nil)", committed, err)
+	}
+
+	bp := testBlueprint("blueprint:reusable-committed", 1, testWorkflow("draft", "write"))
+	bp.InputSchema = json.RawMessage(`{"type":"object","properties":{"topic":{"type":"string","title":"主题"}},"required":["topic"]}`)
+	f.registerBlueprint(t, bp)
+	source, err := f.svc.Create(ctx, CreateWorkInput{
+		BlueprintRef: BlueprintRef{ID: bp.ID, SchemaVersion: SchemaVersion, Version: 1},
+		Name:         "提交探测", Prompt: "写一份报告", RequestID: "run-committed-source",
+		Inputs: map[string]any{"topic": "报告主题"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow, err := f.svc.SaveReusableFlow(ctx, SaveReusableFlowInput{
+		SourceWorkID: source.ID, Name: "提交探测", VariableKeys: []string{"prompt"}, RequestID: "save-committed-probe",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.RunReusableFlow(ctx, RunReusableFlowInput{
+		FlowID: flow.ID, Values: map[string]json.RawMessage{"prompt": json.RawMessage(`"报告"`)}, RequestID: requestID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if committed, err := f.svc.ReusableRunCommitted(ctx, requestID); err != nil || !committed {
+		t.Fatalf("post-commit probe = (%v, %v), want (true, nil)", committed, err)
+	}
+	if committed, err := f.svc.ReusableRunCommitted(ctx, "run-never-started"); err != nil || committed {
+		t.Fatalf("unknown request probe = (%v, %v), want (false, nil)", committed, err)
 	}
 }

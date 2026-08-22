@@ -643,6 +643,28 @@ func TestSubmitMissingSlashPathDiagnosticStartsTurn(t *testing.T) {
 	}
 }
 
+func TestSubmitBuiltinRebuildVocabularyStartsSkillTurn(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	events := make(chan event.Event, 4)
+	store := skill.New(skill.Options{HomeDir: t.TempDir(), ProjectRoot: t.TempDir()})
+	c := New(Options{
+		AutoPlan:   "off",
+		Runner:     runner,
+		SkillStore: store,
+		Skills:     store.List(),
+		Sink: event.FuncSink(func(e event.Event) {
+			events <- e
+		}),
+	})
+
+	c.Submit("/rebuild_vocabulary")
+	waitForTurnDone(t, events)
+
+	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "rebuild_vocabulary tool") {
+		t.Fatalf("rebuild_vocabulary should start the built-in Skill turn, inputs=%q", runner.inputs)
+	}
+}
+
 func TestSubmitUnknownSlashCommandStillReportsNotice(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	events := make(chan event.Event, 4)
@@ -1053,7 +1075,27 @@ func TestIsSyntheticUserMessage(t *testing.T) {
 		},
 		{
 			name:  "executor handoff",
-			input: "You are already in the executor phase. The planner's read-only limitations do not apply to you.",
+			input: "The tool schema is still attached to this executor request. Use your available tools now.",
+			want:  true,
+		},
+		{
+			name:  "read only convergence current",
+			input: "Recent rounds only gathered context. Reassess the requested outcome now.",
+			want:  true,
+		},
+		{
+			name:  "read only convergence legacy",
+			input: "This turn has been purely reading context for many rounds. Start implementation now.",
+			want:  true,
+		},
+		{
+			name:  "tool round limit current",
+			input: "Tool-round limit reached (agent.max_steps). Do not call more tools.",
+			want:  true,
+		},
+		{
+			name:  "tool round limit legacy",
+			input: "Do not call any more tools — your tool-call round limit (agent.max_steps) has been reached.",
 			want:  true,
 		},
 		{

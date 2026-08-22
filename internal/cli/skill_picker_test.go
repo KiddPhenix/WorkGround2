@@ -299,7 +299,7 @@ func TestSkillPickerSourceView(t *testing.T) {
 	if !strings.Contains(out, "Sources") && !strings.Contains(out, "来源") {
 		t.Fatalf("source view missing title:\n%s", out)
 	}
-	if !strings.Contains(out, ".WorkGround2") {
+	if !strings.Contains(out, ".workground2") {
 		t.Fatalf("source view should show root path:\n%s", out)
 	}
 }

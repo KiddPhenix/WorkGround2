@@ -1888,7 +1888,7 @@ export function useController() {
     });
   }, [dispatchTo, retainStartupSends, submitToBackend]);
 
-  const sendToTab = useCallback(async (tabId: string, displayText: string, submitText = displayText, originalText?: string) => {
+  const beginSendToTab = useCallback((tabId: string, displayText: string, submitText = displayText, originalText?: string): Promise<void> | undefined => {
     if (!tabId) throw new Error("workspace is still starting");
     const display = displayText.trim();
     const submit = submitText.trim();
@@ -1902,15 +1902,34 @@ export function useController() {
     dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq });
     invalidateCache();
     try {
-      const submitPromise = submitToBackend(tabId, display, submit, original);
-      void submitPromise.catch((error) => {
-        dispatchTo(tabId, { type: "send_failed", error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
-      });
+      return submitToBackend(tabId, display, submit, original);
     } catch (error) {
       dispatchTo(tabId, { type: "send_failed", error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
       throw error;
     }
   }, [dispatchTo, enqueueStartupSend, submitToBackend]);
+
+  const reportSendFailure = useCallback((tabId: string, error: unknown) => {
+    dispatchTo(tabId, { type: "send_failed", error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
+  }, [dispatchTo]);
+
+  // Normal sends resolve after optimistic dispatch. Queue draining waits for
+  // Desktop bridge acceptance so a rejected item can stay visible and retryable.
+  const sendToTab = useCallback(async (tabId: string, displayText: string, submitText = displayText, originalText?: string) => {
+    const submitted = beginSendToTab(tabId, displayText, submitText, originalText);
+    if (submitted) void submitted.catch((error) => reportSendFailure(tabId, error));
+  }, [beginSendToTab, reportSendFailure]);
+
+  const sendToTabConfirmed = useCallback(async (tabId: string, displayText: string, submitText = displayText, originalText?: string) => {
+    const submitted = beginSendToTab(tabId, displayText, submitText, originalText);
+    if (!submitted) return;
+    try {
+      await submitted;
+    } catch (error) {
+      reportSendFailure(tabId, error);
+      throw error;
+    }
+  }, [beginSendToTab, reportSendFailure]);
 
   useEffect(() => {
     if (!activeTabId) return;
@@ -2606,7 +2625,7 @@ export function useController() {
     state: activeState,
     activeTabId,
     activeSessionId,
-    send, sendToTab, runShell, steer, notice, cancel, approve, answerQuestion, setControllerMode, setCollaborationMode, setToolApprovalMode, setGoal, clearGoal,
+    send, sendToTab, sendToTabConfirmed, runShell, steer, notice, cancel, approve, answerQuestion, setControllerMode, setCollaborationMode, setToolApprovalMode, setGoal, clearGoal,
     newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, openChannelTab, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     loadOlderHistory,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, setModel, setEffort, setTokenMode,

@@ -671,6 +671,79 @@ func TestGatewayNumericApprovalShortcutActiveWithoutPendingSendsGuidance(t *test
 	}
 }
 
+func TestGatewayDecisionHandlerInterceptsAuthorizedReply(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	called := false
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{AllowAll: true},
+		HandleDecision: func(msg InboundMessage) (string, bool, error) {
+			called = true
+			if msg.ConnectionID != "weixin-owner" {
+				t.Fatalf("connection = %q", msg.ConnectionID)
+			}
+			return "已记录主人回答", true, nil
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	binding := AdapterBinding{ID: "weixin-owner", Domain: "weixin", Platform: PlatformWeixin, Adapter: adapter}
+	gw.handleMessage(context.Background(), binding, InboundMessage{ChatType: ChatDM, ChatID: "owner", UserID: "allowed", MessageID: "answer-1", Text: "/answer D-1 2"})
+	if !called {
+		t.Fatal("decision handler was not called")
+	}
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || sent[0].Text != "已记录主人回答" {
+		t.Fatalf("sent = %#v", sent)
+	}
+	if gw.sessions.ActiveCount() != 0 {
+		t.Fatal("decision reply must not start a normal bot session")
+	}
+	if len(gw.controllers) != 0 {
+		t.Fatal("decision reply must not build a controller")
+	}
+}
+
+func TestGatewaySendToAdapterDoesNotCreateSession(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{IgnoreSelfMessages: true}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	binding := AdapterBinding{ID: "weixin-owner", Domain: "weixin", Platform: PlatformWeixin, Adapter: adapter}
+	gw.adapters = []AdapterBinding{binding}
+
+	result, err := gw.SendTextToAdapter(context.Background(), "weixin-owner", "weixin", "owner", ChatDM, "【通知】任务完成。")
+	if err != nil {
+		t.Fatalf("send notification: %v", err)
+	}
+	if result.MessageID == "" {
+		t.Fatal("notification send returned no message id")
+	}
+	if gw.sessions.ActiveCount() != 0 || len(gw.controllers) != 0 {
+		t.Fatal("notification send must not create or resume a session")
+	}
+}
+
+func TestGatewayDecisionHandlerRejectsNonApprover(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	called := false
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{
+			Enabled:   true,
+			Users:     map[Platform][]string{PlatformWeixin: {"ordinary"}},
+			Approvers: map[Platform][]string{PlatformWeixin: {"owner"}},
+		},
+		HandleDecision: func(InboundMessage) (string, bool, error) { called = true; return "", true, nil },
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	binding := AdapterBinding{ID: "weixin-owner", Platform: PlatformWeixin, Adapter: adapter}
+	gw.handleMessage(context.Background(), binding, InboundMessage{ChatType: ChatDM, ChatID: "owner-chat", UserID: "ordinary", MessageID: "answer-2", Text: "/answer D-ABC 1"})
+	if called {
+		t.Fatal("non-approver reached decision handler")
+	}
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "没有回答主人决策的权限") {
+		t.Fatalf("sent = %#v", sent)
+	}
+}
+
 func TestGatewayApproveWithoutSessionSendsGuidance(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw := NewGateway(GatewayConfig{}, nil, logger)
@@ -901,6 +974,76 @@ func TestGatewayApprovalReplyUnblocksWedgedTurn(t *testing.T) {
 	case <-ctrl.done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("deadlock: /approve reply was not delivered while the turn blocked on approval")
+	}
+}
+
+func TestGatewayAcceptInboundRunsBeforeCommandsAndStopsDuplicates(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	calls := 0
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{AllowAll: true},
+		AcceptInbound: func(msg InboundMessage) (InboundAcceptance, error) {
+			calls++
+			if msg.ReceivedAt.IsZero() {
+				t.Fatal("AcceptInbound received no timestamp")
+			}
+			return InboundAcceptance{Duplicate: calls > 1}, nil
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformFeishu, "fake-feishu")
+	binding := AdapterBinding{ID: "feishu", Platform: PlatformFeishu, Adapter: adapter}
+	msg := InboundMessage{ChatType: ChatDM, ChatID: "chat", UserID: "user", MessageID: "message-1", Text: "/help"}
+
+	gw.handleMessage(context.Background(), binding, msg)
+	gw.handleMessage(context.Background(), binding, msg)
+
+	if calls != 2 {
+		t.Fatalf("AcceptInbound calls = %d, want 2", calls)
+	}
+	if sent := adapter.sentMessages(); len(sent) != 1 || !strings.Contains(sent[0].Text, "可用命令") {
+		t.Fatalf("sent = %+v, want one help response", sent)
+	}
+}
+
+func TestGatewayAcceptInboundFailureLeavesMessageRetryable(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{AllowAll: true},
+		AcceptInbound: func(InboundMessage) (InboundAcceptance, error) {
+			return InboundAcceptance{}, errors.New("disk unavailable")
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	binding := AdapterBinding{ID: "weixin", Platform: PlatformWeixin, Adapter: adapter}
+	gw.handleMessage(context.Background(), binding, InboundMessage{ChatType: ChatDM, ChatID: "chat", UserID: "user", MessageID: "message-1", Text: "/help"})
+
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "未读状态保存失败") {
+		t.Fatalf("sent = %+v, want persistence failure response", sent)
+	}
+}
+
+func TestGatewayDoesNotAcceptSelfOrUnauthorizedInbound(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	calls := 0
+	gw := NewGateway(GatewayConfig{
+		IgnoreSelfMessages: true,
+		SelfUserIDs:        map[Platform][]string{PlatformQQ: {"self"}},
+		Allowlist: AllowlistConfig{
+			Enabled: true,
+			Users:   map[Platform][]string{PlatformQQ: {"allowed"}},
+		},
+		AcceptInbound: func(InboundMessage) (InboundAcceptance, error) {
+			calls++
+			return InboundAcceptance{}, nil
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformQQ, "fake-qq")
+	binding := AdapterBinding{ID: "qq", Platform: PlatformQQ, Adapter: adapter}
+	gw.handleMessage(context.Background(), binding, InboundMessage{ChatType: ChatDM, ChatID: "chat", UserID: "self", MessageID: "self-1", Text: "/help"})
+	gw.handleMessage(context.Background(), binding, InboundMessage{ChatType: ChatDM, ChatID: "chat", UserID: "stranger", MessageID: "stranger-1", Text: "/help"})
+	if calls != 0 {
+		t.Fatalf("AcceptInbound calls = %d, want 0", calls)
 	}
 }
 
@@ -1763,4 +1906,167 @@ func TestBotSessionDirUsesProjectWorkspaceRoot(t *testing.T) {
 	if got == "" || got == botSessionDir("") {
 		t.Fatalf("project session dir = %q, want project-specific dir", got)
 	}
+}
+
+// TestGatewayRefreshAccessAdmitsApprovedUserOnNextMessage verifies the
+// refresh-on-miss path: an access check that fails against the startup snapshot
+// is retried once after reloading the persisted snapshot, so an external
+// approval takes effect on the next message without a gateway restart. Follow-up
+// checks hit the refreshed snapshot and do not reload again.
+func TestGatewayRefreshAccessAdmitsApprovedUserOnNextMessage(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var mu sync.Mutex
+	refreshCount := 0
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{Enabled: true, Users: map[Platform][]string{PlatformFeishu: {}}},
+		RefreshAccess: func() (AccessSnapshot, error) {
+			mu.Lock()
+			refreshCount++
+			mu.Unlock()
+			return AccessSnapshot{ConnectionAccess: map[string]AccessConfig{
+				"feishu-main": {Enabled: true, Users: []string{"ou_user_1"}},
+			}}, nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{
+		Platform:     PlatformFeishu,
+		ConnectionID: "feishu-main",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "ou_user_1",
+	}
+	if !gw.checkAllowlist(PlatformFeishu, msg) {
+		t.Fatal("user not admitted after refresh-on-miss")
+	}
+	mu.Lock()
+	got := refreshCount
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("refresh called %d times for first message, want exactly 1", got)
+	}
+	// Follow-up message hits the refreshed snapshot; no extra disk reload.
+	if !gw.checkAllowlist(PlatformFeishu, msg) {
+		t.Fatal("user not admitted on follow-up message")
+	}
+	mu.Lock()
+	got = refreshCount
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("refresh called %d times after follow-up, want still 1", got)
+	}
+}
+
+// TestGatewayRefreshAccessFailureKeepsDenialAndRetryable verifies a failed
+// reload keeps the previous (denying) snapshot and the check stays denied;
+// the next message can retry the reload instead of being wedged.
+func TestGatewayRefreshAccessFailureKeepsDenialAndRetryable(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var mu sync.Mutex
+	fail := true
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{Enabled: true}, AccessRefreshCooldown: -1,
+		RefreshAccess: func() (AccessSnapshot, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if fail {
+				return AccessSnapshot{}, errors.New("disk unavailable")
+			}
+			return AccessSnapshot{ConnectionAccess: map[string]AccessConfig{
+				"feishu-main": {Enabled: true, Users: []string{"ou_user_1"}},
+			}}, nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{
+		Platform:     PlatformFeishu,
+		ConnectionID: "feishu-main",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "ou_user_1",
+	}
+	if gw.checkAllowlist(PlatformFeishu, msg) {
+		t.Fatal("user admitted although refresh failed; want fail closed")
+	}
+	// Reload recovers: the next message retries and is admitted.
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	if !gw.checkAllowlist(PlatformFeishu, msg) {
+		t.Fatal("user not admitted after refresh recovers")
+	}
+}
+
+func TestGatewayRefreshAccessReloadsGlobalAllowlist(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{Enabled: true}, AccessRefreshCooldown: -1,
+		RefreshAccess: func() (AccessSnapshot, error) {
+			return AccessSnapshot{Allowlist: AllowlistConfig{
+				Enabled: true,
+				Users: map[Platform][]string{
+					PlatformFeishu: {"ou_user_1"},
+				},
+			}}, nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, UserID: "ou_user_1"}
+	if !gw.checkAllowlist(PlatformFeishu, msg) {
+		t.Fatal("legacy/global allowlist grant did not take effect after refresh")
+	}
+}
+
+func TestGatewayRefreshAccessCanClearLastConnectionGrant(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{
+		ConnectionAccess: map[string]AccessConfig{
+			"feishu-main": {Enabled: true, Users: []string{"ou_user_1"}},
+		},
+		Allowlist: AllowlistConfig{Enabled: true}, AccessRefreshCooldown: -1,
+		RefreshAccess: func() (AccessSnapshot, error) {
+			return AccessSnapshot{Allowlist: AllowlistConfig{Enabled: true}}, nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{Platform: PlatformFeishu, ConnectionID: "feishu-main", ChatType: ChatDM, UserID: "ou_user_1"}
+	if !gw.checkAllowlistOnce(PlatformFeishu, msg) {
+		t.Fatal("initial connection grant missing")
+	}
+	if !gw.refreshAccessSnapshot() {
+		t.Fatal("successful empty snapshot was not applied")
+	}
+	if gw.checkAllowlistOnce(PlatformFeishu, msg) {
+		t.Fatal("removed connection grant remained active after refresh")
+	}
+}
+
+// TestGatewayRefreshAccessConcurrentSafe hammers checkAllowlist and
+// refreshAccessSnapshot from concurrent goroutines; run with -race to prove
+// the snapshot swap is data-race free.
+func TestGatewayRefreshAccessConcurrentSafe(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{Enabled: true}, AccessRefreshCooldown: -1,
+		RefreshAccess: func() (AccessSnapshot, error) {
+			return AccessSnapshot{ConnectionAccess: map[string]AccessConfig{
+				"feishu-main": {Enabled: true, Users: []string{"ou_user_1"}},
+			}}, nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{
+		Platform:     PlatformFeishu,
+		ConnectionID: "feishu-main",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "ou_user_1",
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				gw.checkAllowlist(PlatformFeishu, msg)
+				gw.refreshAccessSnapshot()
+			}
+		}()
+	}
+	wg.Wait()
 }

@@ -318,6 +318,21 @@ func ProjectSessionDir(workspaceRoot string) string {
 	return filepath.Join(base, "projects", WorkspaceSlug(root), "sessions")
 }
 
+// ProjectVocabularyDir is the private, per-workspace state directory for terms
+// learned from conversations. Authored/shared terms remain in
+// <workspace>/.WorkGround2/vocabulary.toml.
+func ProjectVocabularyDir(workspaceRoot string) string {
+	base := MemoryUserDir()
+	root := strings.TrimSpace(workspaceRoot)
+	if base == "" || root == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return filepath.Join(base, "projects", WorkspaceSlug(root), "vocabulary")
+}
+
 // MemoryCompilerDir is the project-scoped state directory for the Memory v5
 // execution compiler. Empty means persistent compiler state is unavailable.
 func MemoryCompilerDir(workspaceRoot string) string {
@@ -347,6 +362,27 @@ func CacheDir() string {
 		return ""
 	}
 	return dir
+}
+
+// BrowserStateDir is the per-user browser runtime directory holding the shared
+// browser endpoint record and launch lock. Empty when the user state dir can't
+// be resolved, which disables cross-controller browser reuse.
+func BrowserStateDir() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "browser")
+}
+
+// BrowserProfileDir is the per-user persistent automation profile directory
+// used by the shared browser. It is distinct from any default browser profile.
+func BrowserProfileDir() string {
+	dir := BrowserStateDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "profile")
 }
 
 // MemoryUserDir returns the WorkGround2 user state root (…/WorkGround2), under which

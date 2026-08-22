@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -303,20 +304,44 @@ func (a *App) CreateReusableWorkSession(sourceTabID string, input CreateReusable
 		return result, nil
 	}
 	scope := strings.TrimSpace(source.Scope)
-	workspaceRoot := source.WorkspaceRoot
+	sourceCtrl := source.Ctrl
 	a.mu.RUnlock()
 	if scope == "" {
 		scope = "global"
 	}
-	if scope == "project" {
-		workspaceRoot = normalizeProjectRoot(workspaceRoot)
+
+	// Route the new Session by the source Controller's actual workspace, not
+	// by tab metadata: SaveReusableFlow persisted the flow inside the source
+	// Controller's Work store, and tab metadata can briefly drift from the
+	// controller's real workspace. The new Session still runs the flow through
+	// its own Controller (RunReusableFlow below); only the routing target is
+	// taken from the authoritative Controller.
+	actualRoot, ok := safeControllerWorkspaceRoot(sourceCtrl)
+	if !ok {
+		result.Error = "source Work Session workspace is unavailable"
+		result.Recoverable = true
+		return result, nil
+	}
+	var workspaceRoot string
+	switch scope {
+	case "project":
+		workspaceRoot = normalizeProjectRoot(actualRoot)
 		if workspaceRoot == "" {
-			result.Error = "source Work Session workspace is unavailable"
+			result.Error = "source Work Session workspace conflicts with its project scope"
+			result.Recoverable = true
 			return result, nil
 		}
-	} else {
-		scope = "global"
+	case "global":
+		if normalizeProjectRoot(actualRoot) != normalizeProjectRoot(globalWorkspaceRoot()) {
+			result.Error = "source Work Session workspace conflicts with its global scope"
+			result.Recoverable = true
+			return result, nil
+		}
 		workspaceRoot = ""
+	default:
+		result.Error = fmt.Sprintf("source Work Session has unsupported scope %q", scope)
+		result.Recoverable = true
+		return result, nil
 	}
 
 	createWorkSessionMu.Lock()
@@ -367,12 +392,24 @@ func (a *App) CreateReusableWorkSession(sourceTabID string, input CreateReusable
 		result.TabMeta = a.tabMeta(tab, false)
 		result.Error = fmt.Sprintf("run reusable flow: %v", err)
 		result.Recoverable = true
+		if a.rollbackFailedReusableSession(tab, requestID, duplicate, err) {
+			// The Session was created by this call and the run failed before
+			// committing any Work — nothing to recover, so drop it cleanly.
+			result.TabMeta = TabMeta{}
+			result.Recoverable = false
+			result.Error = fmt.Sprintf("run reusable flow: %v；已回滚本次新建的空 Session，可直接重试", err)
+		}
 		return result, nil
 	}
 	if run == nil || run.Work == nil {
 		result.TabMeta = a.tabMeta(tab, false)
 		result.Error = "reusable flow completed without a Work"
 		result.Recoverable = true
+		if a.rollbackFailedReusableSession(tab, requestID, duplicate, nil) {
+			result.TabMeta = TabMeta{}
+			result.Recoverable = false
+			result.Error = "reusable flow completed without a Work；已回滚本次新建的空 Session，可直接重试"
+		}
 		return result, nil
 	}
 	if err := a.bindWorkSession(tab, requestID, run.Work.ID); err != nil {
@@ -393,6 +430,44 @@ func (a *App) CreateReusableWorkSession(sourceTabID string, input CreateReusable
 	result.Run = run
 	result.Duplicate = duplicate || run.Duplicate
 	return result, nil
+}
+
+// rollbackFailedReusableSession removes the empty Work Session this call
+// created when RunReusableFlow failed before committing any Work. It reuses the
+// existing topic trash entry (tab, session artifacts, topic titles/index are
+// all maintained) instead of deleting files directly. It returns true only
+// when the rollback happened: the Session is gone and nothing needs recovery.
+// Sessions that existed before this call (duplicate), runs that already
+// committed a Work, or rollback failures keep the Session as the recovery
+// entry (return false) so retry with the same requestId resumes safely.
+func (a *App) rollbackFailedReusableSession(tab *WorkspaceTab, requestID string, duplicate bool, runErr error) bool {
+	if tab == nil || duplicate {
+		return false
+	}
+	wc, err := a.resolveWorkController(tab.ID)
+	if err != nil {
+		slog.Warn("desktop: reusable session rollback: controller unavailable; keeping recovery entry", "tab", tab.ID, "request", requestID, "error", err)
+		return false
+	}
+	committed, err := wc.ReusableRunCommitted(a.bootContext(), requestID)
+	if err != nil {
+		slog.Warn("desktop: reusable session rollback: commit probe failed; keeping recovery entry", "tab", tab.ID, "request", requestID, "error", err)
+		return false
+	}
+	if committed {
+		slog.Warn("desktop: reusable session rollback: Work committed for request; keeping recovery entry", "tab", tab.ID, "request", requestID, "run_error", runErr)
+		return false
+	}
+	topicID := strings.TrimSpace(tab.TopicID)
+	if topicID == "" {
+		slog.Warn("desktop: reusable session rollback: topic missing; keeping recovery entry", "tab", tab.ID)
+		return false
+	}
+	if err := a.TrashTopic(topicID); err != nil {
+		slog.Warn("desktop: reusable session rollback: trash topic failed; keeping recovery entry", "tab", tab.ID, "topic", topicID, "error", err)
+		return false
+	}
+	return true
 }
 
 // workSessionTab resolves the caller-owned blank Session that should be

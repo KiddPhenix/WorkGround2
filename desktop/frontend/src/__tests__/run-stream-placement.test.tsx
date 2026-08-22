@@ -17,7 +17,7 @@ function run(runId: string, turnId: string, status: RunRecord["status"], started
     sessionId: "session-1",
     turnId,
     status,
-    events: [{ eventId: `${runId}:event`, content: runId, status: status === "failed" ? "failed" : "completed" }],
+    events: [{ eventId: `${runId}:event`, kind: "generic", content: runId, status: status === "failed" ? "failed" : "completed" }],
     expanded: false,
     startedAt,
     completedAt: startedAt + 1_000,

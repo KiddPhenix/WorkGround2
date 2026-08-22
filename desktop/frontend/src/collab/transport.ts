@@ -82,6 +82,7 @@ export function normalizeCollaborationMember(value: unknown): CollaborationMembe
       id: text(agentRaw.id ?? agentRaw.ID ?? raw.agentId ?? raw.AgentID, `${id}-agent`),
       name: text(agentRaw.name ?? agentRaw.Name ?? raw.agentName ?? raw.AgentName, t("collab.defaultAgent")),
       avatar: text(agentRaw.avatar ?? agentRaw.Avatar ?? raw.agentAvatar ?? raw.AgentAvatar) || undefined,
+      role: text(agentRaw.role ?? agentRaw.Role ?? raw.agentRole ?? raw.AgentRole) || undefined,
       status: (text(agentRaw.status ?? agentRaw.Status ?? raw.agentStatus ?? raw.AgentStatus, "idle").replace("waiting_approval", "waiting") || "idle") as CollaborationMember["agent"]["status"],
       sessionId: text(agentRaw.sessionId ?? agentRaw.SessionID ?? raw.sessionId ?? raw.SessionID) || undefined,
     },
@@ -215,7 +216,7 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
   for (const member of members) member.isSelf = member.id === selfMemberId;
   const self = members.find((member) => member.id === selfMemberId);
   const configRaw = record(raw.agentConfig ?? raw.AgentConfig);
-  const mode = text(configRaw.recognitionMode ?? configRaw.RecognitionMode, "off");
+  const mode = text(configRaw.recognitionMode ?? configRaw.RecognitionMode, "interval");
   const peerInterval = number(configRaw.agentResponseIntervalSeconds ?? configRaw.AgentResponseIntervalSeconds, 30);
   const clockTurns = number(configRaw.agentClockTurns ?? configRaw.AgentClockTurns, 12);
   const clockWoundAt = text(configRaw.agentClockWoundAt ?? configRaw.AgentClockWoundAt);
@@ -228,7 +229,7 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
     agentClockTurns: Math.min(100, Math.max(1, clockTurns)),
     agentClockUnlimited: bool(configRaw.agentClockUnlimited ?? configRaw.AgentClockUnlimited),
     agentClockWoundAt: Number.isFinite(Date.parse(clockWoundAt)) ? clockWoundAt : undefined,
-    recognitionMode: mode === "message" || mode === "interval" ? mode : "off",
+    recognitionMode: mode === "message" || mode === "off" ? mode : "interval",
     contextRefs: list(configRaw.contextRefs ?? configRaw.ContextRefs).map((item) => text(item)).filter(Boolean),
   };
 
@@ -280,6 +281,7 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
     : undefined;
   return {
     status: (text(raw.status ?? raw.Status, roomName ? "connected" : "disconnected") || "disconnected") as CollaborationState["status"],
+    protocolVersion: number(raw.protocolVersion ?? raw.ProtocolVersion) === 2 ? 2 : undefined,
     mode: (text(raw.mode ?? raw.Mode) || undefined) as CollaborationState["mode"],
     room: roomName
       ? {
@@ -373,6 +375,7 @@ function normalizeRouteInput(value: unknown): CollaborationRouteInput {
   const raw = record(value);
   return {
     id: text(raw.id ?? raw.ID) || undefined,
+    protocolVersion: number(raw.protocolVersion ?? raw.ProtocolVersion) === 2 ? 2 : undefined,
     kind: text(raw.kind ?? raw.Kind) === "relay" ? "relay" : "lan",
     host: text(raw.host ?? raw.Host) || undefined,
     port: number(raw.port ?? raw.Port) || undefined,
@@ -488,6 +491,12 @@ export function createWailsCollaborationTransport(sessionID: string): Collaborat
       agents.set(member.id, member.agent.name);
       if (member.agent.id) agents.set(member.agent.id, member.agent.name);
     }
+    // Old persisted states or serialisation edge cases may omit selfSessionId
+    // even when a Room is bound. Backfill it from the transport's owner session
+    // so CollaborationWorkspace.ownsRoom deterministically recognises the Room.
+    if (!state.selfSessionId && (state.mode === "host" || state.mode === "client") && state.room) {
+      state.selfSessionId = sessionID;
+    }
     return state;
   };
   return {
@@ -529,6 +538,7 @@ export function createWailsCollaborationTransport(sessionID: string): Collaborat
     revokeFile: async (fileID) => normalizeCollaborationAction(await app.RevokeCollaborationFile({ sessionID, fileID }), names, agents),
     openFile: (fileID) => app.OpenCollaborationFile({ sessionID, fileID }),
     revealFile: (fileID) => app.RevealCollaborationFile({ sessionID, fileID }),
+    previewFile: (fileID) => app.PreviewCollaborationFile({ sessionID, fileID }),
     subscribeState: (listener) => onCollaborationState((payload) => {
       const raw = record(payload);
       if (text(raw.sessionId ?? raw.SessionID) !== sessionID) return;
@@ -554,7 +564,7 @@ const mockRuntimes = new Map<string, MockCollaborationRuntime>();
 function mockRuntime(sessionID: string): MockCollaborationRuntime {
   let runtime = mockRuntimes.get(sessionID);
   if (!runtime) {
-    runtime = { stateListeners: new Set(), eventListeners: new Set(), sequence: 4, state: { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [], toolApprovalMode: "ask", agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "off" } } };
+    runtime = { stateListeners: new Set(), eventListeners: new Set(), sequence: 4, state: { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [], toolApprovalMode: "ask", agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "interval" } } };
     mockRuntimes.set(sessionID, runtime);
   }
   return runtime;
@@ -562,9 +572,9 @@ function mockRuntime(sessionID: string): MockCollaborationRuntime {
 
 const now = () => new Date().toISOString();
 const sampleMembers = (selfName: string, agentName: string, sessionID: string): CollaborationMember[] => [
-  { id: "planner", name: "林策划", role: "策划", online: true, agent: { id: "planner-agent", name: "策划 Agent", status: "idle" } },
-  { id: "artist", name: "周美术", role: "美术", online: true, agent: { id: "artist-agent", name: "美术 Agent", status: "idle" } },
-  { id: "self", name: selfName, role: "程序", online: true, isSelf: true, agent: { id: "self-agent", name: agentName, status: "idle", sessionId: sessionID } },
+  { id: "planner", name: "林策划", role: "策划", online: true, agent: { id: "planner-agent", name: "策划 Agent", role: "策划", status: "idle" } },
+  { id: "artist", name: "周美术", role: "美术", online: true, agent: { id: "artist-agent", name: "美术 Agent", role: "美术", status: "idle" } },
+  { id: "self", name: selfName, role: "程序", online: true, isSelf: true, agent: { id: "self-agent", name: agentName, role: "程序", status: "idle", sessionId: sessionID } },
 ];
 
 function sampleTimeline(): CollaborationTimelineItem[] {
@@ -598,7 +608,7 @@ function connectMock(runtime: MockCollaborationRuntime, input: HostCollaboration
     members: sampleMembers(input.memberName || "陈程序", input.agentName || "程序 Agent", input.sessionID),
     timeline: sampleTimeline(),
     toolApprovalMode: "ask",
-    agentConfig: { alias: input.agentName || "程序 Agent", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "off" },
+    agentConfig: { alias: input.agentName || "程序 Agent", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "interval" },
   };
   runtime.sequence = 4;
   emitMockState(runtime);

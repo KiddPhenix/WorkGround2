@@ -1,4 +1,4 @@
-import { applyRunWireEvent, projectRunHistory, resetRunProjection, stripRunAnsi } from "../lib/runEvents";
+import { applyRunWireEvent, classifyRunEventKind, projectRunHistory, resetRunProjection, stripRunAnsi } from "../lib/runEvents";
 import { useRunStore } from "../store/run";
 
 let passed = 0;
@@ -11,12 +11,17 @@ function ok(value: boolean, label: string) {
 useRunStore.setState({ runs: {} });
 resetRunProjection();
 
+ok(classifyRunEventKind("browser_click", "#submit") === "browser", "browser_* tools use the dedicated browser scene");
+ok(classifyRunEventKind("mcp__browser__navigate", "https://example.com") === "browser", "browser MCP tools use the dedicated browser scene");
+ok(classifyRunEventKind("shell", "go test ./...") === "test", "test shell commands use the test scene");
+ok(classifyRunEventKind("shell", "go build ./...") === "command", "non-test shell commands use the command scene");
+
 applyRunWireEvent("tab-1", { kind: "notice", text: "background" });
 ok(Object.keys(useRunStore.getState().runs).length === 0, "unrelated background events do not create phantom runs");
 
 applyRunWireEvent("tab-1", { kind: "turn_started" }, "turn:1");
-applyRunWireEvent("tab-1", { kind: "tool_dispatch", tool: { id: "t1", name: "read_file", args: "a.go", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
-applyRunWireEvent("tab-1", { kind: "tool_result", tool: { id: "t1", name: "read_file", output: "ok", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
+applyRunWireEvent("tab-1", { kind: "tool_dispatch", tool: { id: "t1", name: "read_file", args: "a.go", readOnly: true } });
+applyRunWireEvent("tab-1", { kind: "tool_result", tool: { id: "t1", name: "read_file", output: "ok", readOnly: true } });
 
 let runs = Object.values(useRunStore.getState().runs);
 ok(runs.length === 1, "one controller turn creates one run");
@@ -55,10 +60,10 @@ ok(historyRuns[1]?.status === "failed", "hydrated tool errors remain visible");
 // ── complete_step overrides turn_done error ────────────────────────────────
 
 applyRunWireEvent("tab-cs-override", { kind: "turn_started" });
-applyRunWireEvent("tab-cs-override", { kind: "tool_dispatch", tool: { id: "cs1", name: "read_file", args: "a.go", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
-applyRunWireEvent("tab-cs-override", { kind: "tool_result", tool: { id: "cs1", name: "read_file", output: "ok", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
-applyRunWireEvent("tab-cs-override", { kind: "tool_dispatch", tool: { id: "cs2", name: "complete_step", args: '{"step":"done","result":"ok","evidence":[{"kind":"manual","summary":"verified"}]}', readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
-applyRunWireEvent("tab-cs-override", { kind: "tool_result", tool: { id: "cs2", name: "complete_step", output: "Step done", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
+applyRunWireEvent("tab-cs-override", { kind: "tool_dispatch", tool: { id: "cs1", name: "read_file", args: "a.go", readOnly: true } });
+applyRunWireEvent("tab-cs-override", { kind: "tool_result", tool: { id: "cs1", name: "read_file", output: "ok", readOnly: true } });
+applyRunWireEvent("tab-cs-override", { kind: "tool_dispatch", tool: { id: "cs2", name: "complete_step", args: '{"step":"done","result":"ok","evidence":[{"kind":"manual","summary":"verified"}]}', readOnly: true } });
+applyRunWireEvent("tab-cs-override", { kind: "tool_result", tool: { id: "cs2", name: "complete_step", output: "Step done", readOnly: true } });
 applyRunWireEvent("tab-cs-override", { kind: "turn_done", err: "some error" });
 let csRuns = Object.values(useRunStore.getState().runs).filter((r) => r.sessionId === "tab-cs-override");
 ok(csRuns.length === 1, "complete_step: creates one run");
@@ -68,8 +73,8 @@ ok(!csRuns[0]?.errorMessage, "complete_step: errorMessage is cleared despite tur
 // ── complete_step result stepLabel is not error-like ───────────────────────
 
 applyRunWireEvent("tab-cs-label", { kind: "turn_started" });
-applyRunWireEvent("tab-cs-label", { kind: "tool_dispatch", tool: { id: "csl1", name: "complete_step", args: '{"step":"A"}', readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
-applyRunWireEvent("tab-cs-label", { kind: "tool_result", tool: { id: "csl1", name: "complete_step", output: "signed off", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
+applyRunWireEvent("tab-cs-label", { kind: "tool_dispatch", tool: { id: "csl1", name: "complete_step", args: '{"step":"A"}', readOnly: true } });
+applyRunWireEvent("tab-cs-label", { kind: "tool_result", tool: { id: "csl1", name: "complete_step", output: "signed off", readOnly: true } });
 applyRunWireEvent("tab-cs-label", { kind: "turn_done" });
 const csLabelRuns = Object.values(useRunStore.getState().runs).filter((r) => r.sessionId === "tab-cs-label");
 ok(csLabelRuns.length === 1, "complete_step label: creates one run");
@@ -77,7 +82,7 @@ const csResultEvent = csLabelRuns[0]?.events.find((e) => e.stepLabel === "步骤
 ok(csResultEvent !== undefined, "complete_step label: stepLabel is '步骤确认完成' not 'complete_step 完成'");
 
 applyRunWireEvent("tab-cs-newly", { kind: "turn_started" });
-applyRunWireEvent("tab-cs-newly", { kind: "tool_result", tool: { id: "csn1", name: "complete_step", err: 'todo 2 "CSS test" is newly completed', readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
+applyRunWireEvent("tab-cs-newly", { kind: "tool_result", tool: { id: "csn1", name: "complete_step", err: 'todo 2 "CSS test" is newly completed', readOnly: true } });
 applyRunWireEvent("tab-cs-newly", { kind: "turn_done", err: "complete_step rejected" });
 const newlyRun = Object.values(useRunStore.getState().runs).find((run) => run.sessionId === "tab-cs-newly");
 ok(newlyRun?.status === "completed", "complete_step newly-completed sentinel settles the run as completed");
@@ -93,16 +98,16 @@ ok(historyCompleteRun?.status === "completed", "hydrated complete_step sentinel 
 // ── selectedStepIndex auto-advances with live events ───────────────────────
 
 applyRunWireEvent("tab-auto", { kind: "turn_started" });
-applyRunWireEvent("tab-auto", { kind: "tool_dispatch", tool: { id: "a1", name: "read_file", args: "a.go", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
-applyRunWireEvent("tab-auto", { kind: "tool_result", tool: { id: "a1", name: "read_file", output: "ok", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
+applyRunWireEvent("tab-auto", { kind: "tool_dispatch", tool: { id: "a1", name: "read_file", args: "a.go", readOnly: true } });
+applyRunWireEvent("tab-auto", { kind: "tool_result", tool: { id: "a1", name: "read_file", output: "ok", readOnly: true } });
 let autoRuns = Object.values(useRunStore.getState().runs).filter((r) => r.sessionId === "tab-auto");
 ok(autoRuns[0]?.selectedStepIndex === 1, "auto-advance: selectedStepIndex follows latest unique step");
 
 // ── setRunSelectedStep freezes selection; new events keep it ───────────────
 
 useRunStore.getState().setRunSelectedStep(autoRuns[0].runId, 0);
-applyRunWireEvent("tab-auto", { kind: "tool_dispatch", tool: { id: "a2", name: "shell", args: "go test", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
-applyRunWireEvent("tab-auto", { kind: "tool_result", tool: { id: "a2", name: "shell", output: "ok", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
+applyRunWireEvent("tab-auto", { kind: "tool_dispatch", tool: { id: "a2", name: "shell", args: "go test", readOnly: true } });
+applyRunWireEvent("tab-auto", { kind: "tool_result", tool: { id: "a2", name: "shell", output: "ok", readOnly: true } });
 autoRuns = Object.values(useRunStore.getState().runs).filter((r) => r.sessionId === "tab-auto");
 ok(autoRuns[0]?.selectedStepIndex === 0, "freeze: selectedStepIndex stays on the older step");
 ok(autoRuns[0]?.events.length === 3, "freeze: one event accumulates per tool call");
@@ -127,19 +132,29 @@ ok(progressRun?.events[1]?.content.includes("first chunk") === true, "tool progr
 ok(progressRun?.events[1]?.content.includes("second chunk") === true, "tool progress appends later chunks");
 ok(progressRun?.events[1]?.stepLabel !== "进度", "tool progress keeps the tool label");
 ok(progressRun?.events[1]?.status === "running", "tool progress keeps the step running");
+ok(progressRun?.events[1]?.kind === "test", "tool progress keeps the dispatch visual kind");
+ok(progressRun?.events[1]?.toolName === "bash", "tool progress keeps the source tool name");
+ok(progressRun?.events[1]?.args === '{"command":"go test ./..."}', "tool progress keeps the original arguments");
 
 applyRunWireEvent("tab-progress", { kind: "tool_result", tool: { id: "p1", name: "bash", output: "all passed", readOnly: true } });
 progressRun = Object.values(useRunStore.getState().runs).find((r) => r.sessionId === "tab-progress");
 ok(progressRun?.events.length === 2, "tool result updates the existing tool step");
 ok(progressRun?.events[1]?.content === "all passed", "tool result replaces progress with the final output");
 ok(progressRun?.events[1]?.status === "completed", "completed tool no longer shows a running spinner");
+ok(progressRun?.events[1]?.kind === "test" && progressRun.events[1]?.args?.includes("go test") === true, "tool result keeps scene metadata during its idempotent update");
+
+applyRunWireEvent("tab-browser", { kind: "turn_started" });
+applyRunWireEvent("tab-browser", { kind: "tool_dispatch", tool: { id: "b1", name: "browser_navigate", args: '{"url":"https://example.com"}', readOnly: false } });
+applyRunWireEvent("tab-browser", { kind: "tool_result", tool: { id: "b1", name: "browser_navigate", output: "页面已加载", readOnly: false } });
+const browserRun = Object.values(useRunStore.getState().runs).find((r) => r.sessionId === "tab-browser");
+ok(browserRun?.events[browserRun.events.length - 1]?.kind === "browser", "browser result stays in the dedicated browser scene");
 
 const ansiLog = "\u001b[31mFAIL\u001b[0m suite\n\u001b]0;title\u0007details";
 ok(stripRunAnsi(ansiLog) === "FAIL suite\ndetails", "ANSI terminal controls are removed from run logs");
 applyRunWireEvent("tab-progress", { kind: "tool_dispatch", tool: { id: "p2", name: "bash", args: "test", readOnly: true } });
 applyRunWireEvent("tab-progress", { kind: "tool_progress", tool: { id: "p2", name: "bash", output: "\u001b[31mFAIL\u001b[0m", readOnly: true } });
 progressRun = Object.values(useRunStore.getState().runs).find((r) => r.sessionId === "tab-progress");
-ok(progressRun?.events.at(-1)?.content === "FAIL", "streamed run output stores clean text");
+ok(progressRun?.events[progressRun.events.length - 1]?.content === "FAIL", "streamed run output stores clean text");
 
 // ── starting a newer run collapses an older manually-expanded run ──────────
 

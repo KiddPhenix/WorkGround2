@@ -40,11 +40,11 @@ func availableTool() ToolCapability {
 
 // ── Registry: builtins ─────────────────────────────────────────────────────
 
-func TestNewBlueprintRegistry_HasFourBuiltins(t *testing.T) {
+func TestNewBlueprintRegistry_HasNineBuiltins(t *testing.T) {
 	r := NewBlueprintRegistry()
 	all := r.List()
-	if len(all) != 4 {
-		t.Fatalf("expected 4 built-in blueprints, got %d", len(all))
+	if len(all) != 9 {
+		t.Fatalf("expected 9 built-in blueprints, got %d", len(all))
 	}
 	ids := make(map[string]bool)
 	for _, bp := range all {
@@ -53,7 +53,7 @@ func TestNewBlueprintRegistry_HasFourBuiltins(t *testing.T) {
 			t.Errorf("builtin %s source = %s, want system", bp.ID, bp.Source)
 		}
 	}
-	wantIDs := []string{"blueprint:blank", "blueprint:code-review", "blueprint:info-organize", "blueprint:report"}
+	wantIDs := []string{"blueprint:blank", "blueprint:code-review", "blueprint:info-organize", "blueprint:report", "blueprint:image-compile", "blueprint:script-writing", "blueprint:financial-budget", "blueprint:git-release", "blueprint:annual-event"}
 	for _, id := range wantIDs {
 		if !ids[id] {
 			t.Errorf("missing builtin blueprint %s", id)
@@ -165,8 +165,8 @@ func TestMultiVersionLookup(t *testing.T) {
 func TestListBySource(t *testing.T) {
 	r := NewBlueprintRegistry()
 	sys := r.ListBySource(BlueprintSystem)
-	if len(sys) != 4 {
-		t.Fatalf("system blueprints = %d, want 4", len(sys))
+	if len(sys) != 9 {
+		t.Fatalf("system blueprints = %d, want 9", len(sys))
 	}
 	usr := r.ListBySource(BlueprintUser)
 	if len(usr) != 0 {
@@ -184,8 +184,8 @@ func TestLoadFromDir_ValidIndex(t *testing.T) {
 	}
 
 	all := r.List()
-	if len(all) != 6 {
-		t.Fatalf("expected 6 blueprints after load, got %d", len(all))
+	if len(all) != 11 {
+		t.Fatalf("expected 11 blueprints after load, got %d", len(all))
 	}
 
 	bp, err := r.LookupLatest("blueprint:my-review")
@@ -357,8 +357,8 @@ func TestLoadFromDir_FutureSchemaVersion(t *testing.T) {
 func TestLoadFromDir_TransactionalFailurePreservesRegistry(t *testing.T) {
 	r := NewBlueprintRegistry()
 	before := r.List()
-	if len(before) != 4 {
-		t.Fatalf("expected 4 builtins, got %d", len(before))
+	if len(before) != 9 {
+		t.Fatalf("expected 9 builtins, got %d", len(before))
 	}
 
 	dir := t.TempDir()
@@ -366,7 +366,7 @@ func TestLoadFromDir_TransactionalFailurePreservesRegistry(t *testing.T) {
 	r.LoadFromDir(dir) // should fail
 
 	after := r.List()
-	if len(after) != 4 {
+	if len(after) != 9 {
 		t.Fatalf("failed load mutated registry: %d → %d", len(before), len(after))
 	}
 }

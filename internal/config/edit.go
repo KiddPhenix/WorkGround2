@@ -240,7 +240,7 @@ func (c *Config) SetDesktopSessionBackground(next DesktopSessionBackgroundConfig
 	mode := normalizeSessionBackgroundMode(next.Mode)
 	if mode == "" {
 		if strings.TrimSpace(next.Mode) != "" {
-			return fmt.Errorf("desktop Session background mode %q: must be pattern|solid|custom", next.Mode)
+			return fmt.Errorf("desktop Session background mode %q: must be pattern|solid|waves|aurora|nebula|starfield|blackhole|moonclouds|biolume|dunes|custom", next.Mode)
 		}
 		if next.Enabled || len(next.Sources) > 0 {
 			mode = SessionBackgroundModeCustom
@@ -1076,7 +1076,8 @@ func (c *Config) saveProjectIncremental(path string) error {
 		delta = fmt.Sprintf("config_version = %d\n", configVersion(c)) + delta
 	}
 	removePlugins := len(c.Plugins) == 0 && tomlBodyHasSection(body, "plugins")
-	if strings.TrimSpace(delta) == "" && !removePlugins {
+	removeSkills := skillsEmpty(c.Skills) && tomlBodyHasSection(body, "skills")
+	if strings.TrimSpace(delta) == "" && !removePlugins && !removeSkills {
 		return nil // no changes to write
 	}
 
@@ -1087,7 +1088,17 @@ func (c *Config) saveProjectIncremental(path string) error {
 	if removePlugins {
 		body = removeTOMLSection(body, "plugins")
 	}
+	if removeSkills {
+		body = removeTOMLSection(body, "skills")
+	}
 	return writeConfigFile(path, body)
+}
+
+// skillsEmpty reports whether the Skills section carries no user state that
+// needs to be persisted.
+func skillsEmpty(s SkillsConfig) bool {
+	return len(s.Paths) == 0 && len(s.ExcludedPaths) == 0 &&
+		len(s.DisabledSkills) == 0 && s.MaxDepth == 0
 }
 
 // mergeTOMLDelta parses delta into named TOML blocks and merges each into body

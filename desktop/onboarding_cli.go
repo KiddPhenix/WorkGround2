@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -342,28 +343,28 @@ func darwinCLICommandCandidates(preset onboardingLocalCLIPreset, home string) []
 		return uniqueCLIStrings(out)
 	}
 	if preset.ID == "codex" {
-		out = append(out, filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex"))
+		out = append(out, path.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex"))
 	}
 	for _, root := range []string{
-		filepath.Join(home, ".local", "bin"),
-		filepath.Join(home, ".npm-global", "bin"),
-		filepath.Join(home, "Library", "pnpm"),
-		filepath.Join(home, ".bun", "bin"),
-		filepath.Join(home, ".volta", "bin"),
-		filepath.Join(home, ".yarn", "bin"),
-		filepath.Join(home, ".asdf", "shims"),
-		filepath.Join(home, ".local", "share", "mise", "shims"),
-		filepath.Join(home, ".nix-profile", "bin"),
-		filepath.Join(home, ".opencode", "bin"),
-		filepath.Join(home, ".kiro", "bin"),
+		path.Join(home, ".local", "bin"),
+		path.Join(home, ".npm-global", "bin"),
+		path.Join(home, "Library", "pnpm"),
+		path.Join(home, ".bun", "bin"),
+		path.Join(home, ".volta", "bin"),
+		path.Join(home, ".yarn", "bin"),
+		path.Join(home, ".asdf", "shims"),
+		path.Join(home, ".local", "share", "mise", "shims"),
+		path.Join(home, ".nix-profile", "bin"),
+		path.Join(home, ".opencode", "bin"),
+		path.Join(home, ".kiro", "bin"),
 	} {
 		out = appendCLICommandPaths(out, root, commandNames)
 	}
 	for _, pattern := range []string{
-		filepath.Join(home, ".nvm", "versions", "node", "*", "bin"),
-		filepath.Join(home, ".local", "share", "node-*", "bin"),
-		filepath.Join(home, ".local", "share", "fnm", "node-versions", "*", "installation", "bin"),
-		filepath.Join(home, "Library", "Application Support", "fnm", "node-versions", "*", "installation", "bin"),
+		path.Join(home, ".nvm", "versions", "node", "*", "bin"),
+		path.Join(home, ".local", "share", "node-*", "bin"),
+		path.Join(home, ".local", "share", "fnm", "node-versions", "*", "installation", "bin"),
+		path.Join(home, "Library", "Application Support", "fnm", "node-versions", "*", "installation", "bin"),
 	} {
 		matches, _ := filepath.Glob(pattern)
 		sort.Sort(sort.Reverse(sort.StringSlice(matches)))
@@ -375,8 +376,11 @@ func darwinCLICommandCandidates(preset onboardingLocalCLIPreset, home string) []
 }
 
 func appendCLICommandPaths(out []string, root string, commandNames []string) []string {
+	// darwinCLICommandCandidates only produces candidate paths for the macOS
+	// preset; join with the POSIX separator so the candidates are identical
+	// regardless of the host platform (tests and runtime).
 	for _, command := range commandNames {
-		out = append(out, filepath.Join(root, command))
+		out = append(out, path.Join(root, command))
 	}
 	return out
 }

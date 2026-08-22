@@ -98,24 +98,21 @@ func openRelayCollaborationPeer(ctx context.Context, route CollaborationRouteInp
 }
 
 func relayConfigForRoute(route CollaborationRouteInput) (config.RelayConfig, error) {
-	if strings.TrimSpace(route.RelayID) != "" {
-		relay, err := collaborationRelayByID(route.RelayID)
+	if strings.TrimSpace(route.URL) != "" {
+		relay, err := collaborationRelayByURL(route.URL)
 		if err == nil {
-			if route.URL != "" && !strings.EqualFold(strings.TrimSpace(route.URL), strings.TrimSpace(relay.URL)) {
-				return config.RelayConfig{}, fmt.Errorf("Relay %q URL differs from the trusted Settings entry", route.RelayID)
-			}
 			return relay, nil
 		}
-		if route.URL == "" {
-			return config.RelayConfig{}, err
-		}
+		// An invitation may carry an unconfigured WSS route. Plaintext routes
+		// still require an explicit trusted Settings entry for the same URL.
+		return config.RelayConfig{ID: route.RelayID, Name: route.RelayID, URL: route.URL, Enabled: true}, nil
 	}
-	if strings.TrimSpace(route.URL) == "" {
-		return config.RelayConfig{}, fmt.Errorf("Relay route URL is required")
+	if strings.TrimSpace(route.RelayID) != "" {
+		// Legacy persisted routes may omit the URL. ID lookup remains only as a
+		// compatibility path; IDs are local labels and are not cross-client trust keys.
+		return collaborationRelayByID(route.RelayID)
 	}
-	// An invitation may carry an unconfigured WSS route. Plaintext routes still
-	// require an explicit trusted Settings entry with allow_insecure enabled.
-	return config.RelayConfig{ID: route.RelayID, Name: route.RelayID, URL: route.URL, Enabled: true}, nil
+	return config.RelayConfig{}, fmt.Errorf("Relay route URL is required")
 }
 
 func (p *relayCollaborationPeer) readLoop() {
@@ -219,6 +216,21 @@ func (p *relayCollaborationPeer) Snapshot(ctx context.Context) (collab.Snapshot,
 	return value, err
 }
 
+func (p *relayCollaborationPeer) SnapshotManifest(ctx context.Context) (collab.SnapshotManifest, error) {
+	var value collab.SnapshotManifest
+	err := p.call(ctx, "collab.snapshot_manifest", struct{ Room, Session string }{p.room, p.session}, &value)
+	return value, err
+}
+
+func (p *relayCollaborationPeer) SnapshotChunk(ctx context.Context, snapshotID string, index int) (collab.SnapshotChunk, error) {
+	var value collab.SnapshotChunk
+	err := p.call(ctx, "collab.snapshot_chunk", struct {
+		Room, Session, SnapshotID string
+		Index                     int
+	}{p.room, p.session, snapshotID, index}, &value)
+	return value, err
+}
+
 func (p *relayCollaborationPeer) Events(ctx context.Context, after uint64) ([]collab.RoomEvent, error) {
 	var value []collab.RoomEvent
 	err := p.call(ctx, "collab.events", struct {
@@ -292,7 +304,7 @@ func joinRelayCollaborationPeer(ctx context.Context, route CollaborationRouteInp
 		return nil, collab.JoinResult{}, collab.Snapshot{}, "", fmt.Errorf("join Room through Relay: %w", err)
 	}
 	peer.room, peer.member, peer.session = room, joined.Member.ID, joined.ConnectionSession
-	snapshot, err := peer.Snapshot(ctx)
+	snapshot, err := fetchCollaborationSnapshot(ctx, peer)
 	if err != nil {
 		_ = peer.Close(context.Background())
 		return nil, collab.JoinResult{}, collab.Snapshot{}, "", fmt.Errorf("load Room snapshot through Relay: %w", err)

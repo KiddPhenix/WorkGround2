@@ -391,9 +391,18 @@ func TestV2InputScope_OldRunSameSpecCannotSatisfyCurrentRun_FileStore(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The old run's input must not satisfy the new run under its old identity.
+	// ApplyDefinition carries compatible user values into the new run as their
+	// own input objects (new input ID, new RunID) — never as the old run's
+	// submitted record.
+	carried := findV2TaskInput(projection.V2Inputs, applied.Intent.RunID, taskID, "topic")
+	if carried == nil || carried.ID == old.ID || carried.RunID != applied.Intent.RunID ||
+		carried.State != InputSubmitted || string(carried.Value) != `"old"` {
+		t.Fatalf("old-run input was not re-carried for current run: old=%+v carried=%+v", old, carried)
+	}
 	runtime := projection.V2TaskRuntimes[taskID]
-	if runtime == nil || runtime.State != TaskWaitingInput || executor.callCount() != 0 {
-		t.Fatalf("old-run input released current task: runtime=%+v calls=%d", runtime, executor.callCount())
+	if runtime == nil || runtime.State != TaskCompleted || executor.callCount() != 1 {
+		t.Fatalf("carried input did not release current task: runtime=%+v calls=%d", runtime, executor.callCount())
 	}
 }
 
@@ -914,5 +923,158 @@ func TestV2KeptRuntime_BatchFailureHasNoHalfProjectionAndRetries_FileStore(t *te
 	taskID, _ := DeriveTaskID(result.Intent.RunID, "n1")
 	if runtime := replayed.V2TaskRuntimes[taskID]; runtime == nil || runtime.State != TaskCompleted {
 		t.Fatalf("retry/restart lost kept projection: %+v", runtime)
+	}
+}
+
+func TestV2CustomInput_SurvivesWorkflowPatchAndReplay_FileStore(t *testing.T) {
+	definition := coordinatorDefinition(
+		[]NodeDef{
+			{ID: "n1", Title: "策划方案"},
+			{ID: "n2", Title: "执行任务", DependsOn: []string{"n1"}, BlockIDs: []string{"b1"}},
+		},
+		nil,
+	)
+	h := newCoordinatorHarness(t, definition)
+
+	// Add a custom work-information input.
+	inputSvc := NewInputService(h.store, h.svc.cornerstones)
+	_, state, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	customReq := AddCustomWorkInputRequest{
+		WorkID: h.work, RunID: h.run, InputID: "custom-location",
+		Name: "地点", Kind: InputText, Value: json.RawMessage(`"北京"`),
+		DefinitionRevision: h.def.Revision,
+		ExpectedRevision:   state.Revision,
+		RequestID:          "add-custom-" + t.Name(),
+	}
+	customResult, err := inputSvc.AddCustomInput(context.Background(), customReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if customResult.Input == nil || customResult.Input.CustomSpec == nil ||
+		customResult.Input.CustomSpec.Label != "地点" {
+		t.Fatalf("unexpected custom input result: %+v", customResult.Input)
+	}
+
+	// Count custom inputs before the patch.
+	beforeProj, err := h.store.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customCountBefore := 0
+	for _, input := range beforeProj.V2Inputs {
+		if input.CustomSpec != nil && input.TaskID == "work-information" {
+			customCountBefore++
+			if string(input.Value) != `"北京"` || input.State != InputSubmitted {
+				t.Fatalf("custom input state wrong before patch: %+v", input)
+			}
+		}
+	}
+	if customCountBefore != 1 {
+		t.Fatalf("expected 1 custom input before patch, got %d", customCountBefore)
+	}
+
+	// Set up patch planner and block for the discussion target.
+	now := time.Now().UTC()
+	blockPayload, _ := json.Marshal(BlockInstance{
+		ID: "b1", Kind: "markdown", SchemaVersion: 1, Revision: 1,
+		Title: "讨论块", Status: BlockReady, Data: json.RawMessage(`{"content":"old"}`),
+		Source:   BlockSource{Provider: "test", Mode: "snapshot"},
+		Fallback: BlockFallback{Summary: "讨论"}, CreatedAt: now, UpdatedAt: now,
+	})
+	_, state, _ = h.store.LoadState(h.work, "")
+	blockEvent := newServiceEvent(h.work, "block-"+t.Name(), EventBlockUpserted, blockPayload, now)
+	blockEvent.BaseRevision, blockEvent.Revision = state.Revision, state.Revision+1
+	if _, err := h.store.CommitEvent(h.work, blockEvent); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := &reuseExecutor{}
+	h.svc.SetTaskExecutor(executor)
+	h.svc.SetV2PatchPlanner(reusePatchPlanner{})
+	if _, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	current, state, _ := h.store.LoadState(h.work, "")
+	preview, err := h.svc.PreviewV2WorkPatch(context.Background(), PreviewWorkPatchInput{
+		WorkID: h.work, RunID: h.run, TaskID: "n2", BlockID: "b1",
+		SessionID: "discussion", Instruction: "change successor",
+		DefinitionRevision: current.V2CurrentRevision, BlockRevision: current.Blocks[0].Revision,
+		Scope: PatchWorkflow, RequestID: "preview-" + t.Name(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, _ = h.store.LoadState(h.work, "")
+	applyInput := ApplyWorkPatchInput{
+		WorkID: h.work, PatchID: preview.Preview.ID, PreviewDigest: preview.Preview.Digest,
+		Scope: PatchWorkflow, ExpectedRevision: state.Revision, RequestID: "patch-apply-" + t.Name(),
+	}
+	result, err := h.svc.ApplyV2WorkPatch(context.Background(), applyInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = result
+
+	// Verify custom input survived the workflow patch.
+	afterProj, err := h.store.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customCountAfter := 0
+	for _, input := range afterProj.V2Inputs {
+		if input.CustomSpec != nil && input.TaskID == "work-information" {
+			customCountAfter++
+			if string(input.Value) != `"北京"` || input.State != InputSubmitted {
+				t.Fatalf("custom input corrupted after patch: %+v", input)
+			}
+		}
+	}
+	if customCountAfter != 1 {
+		t.Fatalf("custom input was lost or duplicated by workflow patch: before=%d after=%d",
+			customCountBefore, customCountAfter)
+	}
+
+	// Idempotent replay must not duplicate the custom input.
+	beforeReplayInputs := len(afterProj.V2Inputs)
+	beforeReplayRuntimes := len(afterProj.V2TaskRuntimes)
+	beforeReplayRuns := len(afterProj.Runs)
+	replayedResult, err := h.svc.ApplyV2WorkPatch(context.Background(), applyInput)
+	if err != nil || replayedResult == nil || !replayedResult.Duplicate {
+		t.Fatalf("workflow patch replay failed: result=%+v err=%v", replayedResult, err)
+	}
+	afterReplay, err := h.store.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterReplay.V2Inputs) != beforeReplayInputs ||
+		len(afterReplay.V2TaskRuntimes) != beforeReplayRuntimes ||
+		len(afterReplay.Runs) != beforeReplayRuns {
+		t.Fatalf("replay duplicated state: inputs %d→%d runtimes %d→%d runs %d→%d",
+			beforeReplayInputs, len(afterReplay.V2Inputs),
+			beforeReplayRuntimes, len(afterReplay.V2TaskRuntimes),
+			beforeReplayRuns, len(afterReplay.Runs))
+	}
+
+	// Reopen and verify custom input survives restart.
+	reopened, err := NewFileWorkStore(h.store.workDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := reopened.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customCountRestart := 0
+	for _, input := range restarted.V2Inputs {
+		if input.CustomSpec != nil && input.TaskID == "work-information" {
+			customCountRestart++
+		}
+	}
+	if customCountRestart != 1 {
+		t.Fatalf("custom input lost after store reopen: got %d", customCountRestart)
 	}
 }

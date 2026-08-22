@@ -62,7 +62,7 @@ func (c *desktopCollaboration) openRelayHost(ctx context.Context, conn *collabor
 		return nil, route, err
 	}
 	route.URL, route.Priority = relay.URL, relay.Priority
-	identity, keyRef, err := c.loadRelayAuthorityKey(conn.room)
+	identity, keyRef, err := c.loadRoomAuthorityKey(conn.room)
 	if err != nil {
 		route.Status, route.LastError, route.Retryable = "failed", err.Error(), true
 		return nil, route, err
@@ -122,7 +122,7 @@ func (c *desktopCollaboration) openRelayHost(ctx context.Context, conn *collabor
 	publicRoomID := stableCollaborationID("room-public", base64.RawURLEncoding.EncodeToString(publicKey)+"\x00"+conn.room)
 	host := &collaborationRelayHost{runtime: c, roomConn: conn, relay: relay, socket: socket, tunnelID: bound.TunnelID, identity: identity, publicRoomID: publicRoomID, sessions: map[string]*relayHostSession{}, pending: map[string]chan relayRPCResult{}, done: make(chan struct{})}
 	relayFiles := &relayHostFilePeer{host: host, room: conn.room, member: conn.memberID, session: conn.connectionSession}
-	if conn.filePeer == nil {
+	if !collaborationFilePeerAvailable(conn.filePeer) {
 		conn.filePeer = relayFiles
 	} else {
 		conn.filePeer = &fallbackCollaborationFilePeer{primary: conn.filePeer, fallback: relayFiles}
@@ -157,7 +157,7 @@ func normalizeRoomVisibility(value string) string {
 	}
 }
 
-func (c *desktopCollaboration) loadRelayAuthorityKey(room string) (ed25519.PrivateKey, string, error) {
+func (c *desktopCollaboration) loadRoomAuthorityKey(room string) (ed25519.PrivateKey, string, error) {
 	ref := collaborationRelayAuthorityRef(room)
 	if encoded := c.getSecret(ref); encoded != "" {
 		data, err := base64.RawURLEncoding.DecodeString(encoded)
@@ -173,6 +173,16 @@ func (c *desktopCollaboration) loadRelayAuthorityKey(room string) (ed25519.Priva
 		return nil, ref, fmt.Errorf("save Room authority key: %w", err)
 	}
 	return private, ref, nil
+}
+
+func (c *desktopCollaboration) prepareRoomAuthority(conn *collaborationConnection) error {
+	identity, keyRef, err := c.loadRoomAuthorityKey(conn.room)
+	if err != nil {
+		return err
+	}
+	conn.authorityKeyRef = keyRef
+	conn.hostKey = base64.RawURLEncoding.EncodeToString(identity.Public().(ed25519.PublicKey))
+	return nil
 }
 
 func collaborationRelayAuthorityRef(room string) string {
@@ -352,6 +362,25 @@ func (h *collaborationRelayHost) dispatchRPC(ctx context.Context, peerID string,
 		}
 		input.Room = h.authorityRoom(input.Room)
 		value, err := service.Snapshot(ctx, input.Room, input.Session)
+		return encode(value, err)
+	case "collab.snapshot_manifest":
+		var input struct{ Room, Session string }
+		if err := json.Unmarshal(request.Body, &input); err != nil {
+			return nil, toRelayRPCError(err)
+		}
+		input.Room = h.authorityRoom(input.Room)
+		value, err := service.SnapshotManifest(ctx, input.Room, input.Session)
+		return encode(value, err)
+	case "collab.snapshot_chunk":
+		var input struct {
+			Room, Session, SnapshotID string
+			Index                     int
+		}
+		if err := json.Unmarshal(request.Body, &input); err != nil {
+			return nil, toRelayRPCError(err)
+		}
+		input.Room = h.authorityRoom(input.Room)
+		value, err := service.SnapshotChunk(ctx, input.Room, input.Session, input.SnapshotID, input.Index)
 		return encode(value, err)
 	case "collab.events":
 		var input struct {

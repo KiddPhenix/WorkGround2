@@ -107,11 +107,15 @@ func (s *patchFaultStore) CommitEvents(workID string, events []WorkEvent) ([]int
 		defer func() { _ = releaseStoreLease(workPath) }()
 		return s.FileWorkStore.CommitEvents(workID, events)
 	case "second-event":
+		// Revision-chain tampering is no longer a failure: 60425c825 made the
+		// store rebase service events onto the authoritative chain. Simulate a
+		// batch that fails mid-way by making the second event rejected by the
+		// reducer (invalid payload) so the atomic batch aborts.
 		corrupt := append([]WorkEvent(nil), events...)
 		if len(corrupt) < 2 {
 			return nil, errors.New("test fault requires a multi-event batch")
 		}
-		corrupt[1].BaseRevision++
+		corrupt[1].Payload = json.RawMessage(`{"broken":`)
 		return s.FileWorkStore.CommitEvents(workID, corrupt)
 	default:
 		return nil, errors.New("unknown patch fault mode")
@@ -386,6 +390,15 @@ func TestPatchPendingDefinitionTaskPreviewAndApply(t *testing.T) {
 		h.planner.last.Task.ID != taskID || h.planner.last.Task.Name != "n2" {
 		t.Fatalf("planner pending task context=%+v", h.planner.last)
 	}
+	afterPreview, _, err := h.store.LoadState(h.workID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range afterPreview.Blocks {
+		if block.ID == input.BlockID {
+			t.Fatalf("workflow preview persisted virtual discussion block: %+v", block)
+		}
+	}
 	apply := ApplyWorkPatchInput{
 		WorkID: h.workID, PatchID: preview.Preview.ID, PreviewDigest: preview.Preview.Digest,
 		Scope: PatchWorkflow, ExpectedRevision: preview.Revision, RequestID: "apply-pending-definition-task",
@@ -403,6 +416,19 @@ func TestPatchPendingDefinitionTaskPreviewAndApply(t *testing.T) {
 	}
 	if applied.Nodes[1].Title != "Updated pending node" {
 		t.Fatalf("pending node title=%q", applied.Nodes[1].Title)
+	}
+	reopened, err := NewFileWorkStore(h.dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _, err := reopened.LoadState(h.workID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range reloaded.Blocks {
+		if block.ID == input.BlockID {
+			t.Fatalf("workflow apply persisted virtual discussion block: %+v", block)
+		}
 	}
 	replay, err := h.service.ApplyWorkPatch(context.Background(), apply)
 	if err != nil || !replay.Duplicate || replay.WorkRevision != result.WorkRevision {

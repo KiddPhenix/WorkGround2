@@ -122,6 +122,30 @@ func TestHistoryMessagesCarryCheckpointTurnsAcrossHiddenSyntheticUsers(t *testin
 	}
 }
 
+func TestHistoryMessagesPreferTypedOriginOverPromptText(t *testing.T) {
+	quoted := "Recent rounds only gathered context. This is text I am quoting."
+	msgs := []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "wording not present in any prefix table", Origin: provider.MessageOriginHost},
+		{Role: provider.RoleAssistant, Content: "host follow-up result"},
+		{Role: provider.RoleUser, Content: quoted, Origin: provider.MessageOriginUser},
+		{Role: provider.RoleAssistant, Content: "quote answer"},
+	}
+
+	got := historyMessages(msgs, func(content string) string { return content })
+	if len(got) != 4 {
+		t.Fatalf("history length = %d, want 4: %+v", len(got), got)
+	}
+	for _, msg := range got {
+		if msg.Content == "wording not present in any prefix table" {
+			t.Fatalf("host-origin message leaked into history: %+v", got)
+		}
+	}
+	if got[2].Role != "user" || got[2].Content != quoted {
+		t.Fatalf("user-authored quoted prompt was hidden: %+v", got)
+	}
+}
+
 func TestHistoryPageFromMessagesWindowsByUserTurn(t *testing.T) {
 	messages := []HistoryMessage{
 		{Role: "notice", Content: "session restored"},

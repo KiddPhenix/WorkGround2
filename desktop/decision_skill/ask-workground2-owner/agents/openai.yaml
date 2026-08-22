@@ -1,0 +1,5 @@
+interface:
+  display_name: "询问 WorkGround2 主人"
+  short_description: "通过全局主人通道发送持久问题或仅通知消息"
+  brand_color: "#D97757"
+  default_prompt: "Use $ask-workground2-owner to ask for a durable decision or send the owner a standalone notification."

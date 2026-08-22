@@ -1247,6 +1247,7 @@ model = "x"
 				"bash":                false,
 				"read_file":           true,
 				"memory":              true,
+				"rebuild_vocabulary":  false,
 				"remember":            false,
 				"connect_tool_source": tc.tokenMode == TokenModeEconomy,
 			} {
@@ -1321,6 +1322,16 @@ func defaultFullBootToolNames() []string {
 		"ask",
 		"bash",
 		"bash_output",
+		"browser_attach",
+		"browser_click",
+		"browser_close",
+		"browser_navigate",
+		"browser_open",
+		"browser_scroll",
+		"browser_state",
+		"browser_tab",
+		"browser_type",
+		"browser_upload",
 		"code_index",
 		"complete_step",
 		"delete_range",
@@ -1344,12 +1355,14 @@ func defaultFullBootToolNames() []string {
 		"move_file",
 		"multi_edit",
 		"notebook_edit",
+		"notify_me",
 		"parallel_tasks",
 		"read_file",
 		"read_only_skill",
 		"read_only_task",
 		"read_session",
 		"read_skill",
+		"rebuild_vocabulary",
 		"remember",
 		"request_help",
 		"research",
@@ -1386,6 +1399,7 @@ func economyBootToolNames() []string {
 		"multi_edit",
 		"read_file",
 		"read_session",
+		"rebuild_vocabulary",
 		"remember",
 		"slash_command",
 		"todo_write",
@@ -1452,6 +1466,7 @@ command = "WorkGround2-missing-mockmcp"
 		"multi_edit",
 		"read_file",
 		"read_session",
+		"rebuild_vocabulary",
 		"remember",
 		"slash_command",
 		"todo_write",
@@ -2260,6 +2275,75 @@ model = "x"
 	}
 	if requestHasTool(reqs[0], "draw_image") {
 		t.Fatalf("draw_image exposed by host while external draw AddOn is installed; tools=%v", toolSchemaNames(reqs[0].Tools))
+	}
+}
+
+func TestBuildBridgesRealDSHTodoTool(t *testing.T) {
+	dshRoot := strings.TrimSpace(os.Getenv("DSH_COMPAT_TEST_ROOT"))
+	if dshRoot == "" {
+		t.Skip("set DSH_COMPAT_TEST_ROOT to a deepseek-harness checkout")
+	}
+	isolateConfigHome(t)
+	home := robustTempDir(t)
+	t.Setenv("WorkGround2_HOME", home)
+	t.Setenv("DSH_RUNTIME_ANCHOR", filepath.Join(dshRoot, "apps", "cli", "package.json"))
+	workspace := robustTempDir(t)
+	t.Chdir(workspace)
+	writeFile(t, workspace, "WorkGround2.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+`)
+	bundleRoot := filepath.Join(dshRoot, "packages", "bundle", "base")
+	if err := pluginpkg.Upsert(home, pluginpkg.InstalledPlugin{
+		Name:         "dsh-base",
+		Source:       bundleRoot,
+		Root:         bundleRoot,
+		Version:      "test",
+		ManifestKind: "dsh",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("dsh-bridge",
+		testutil.Turn{ToolCalls: []provider.ToolCall{{
+			ID:        "dsh-todo-1",
+			Name:      "dsh__dsh_base__todo_write",
+			Arguments: `{"todos":[{"content":"bridge through WG2","status":"in_progress"}]}`,
+		}}},
+		testutil.Turn{Text: "done"},
+	)
+	setBootTokenProfileTestProvider(t, prov)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	ctrl, err := Build(ctx, Options{Sink: event.Discard, WorkspaceRoot: workspace})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	if err := ctrl.Run(ctx, "verify DSH bridge"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	requests := prov.Requests()
+	if len(requests) != 2 || !requestHasTool(requests[0], "dsh__dsh_base__todo_write") {
+		t.Fatalf("DSH tool not exposed; requests=%d tools=%v", len(requests), toolSchemaNames(requests[0].Tools))
+	}
+	foundResult := false
+	for _, message := range requests[1].Messages {
+		if message.Role == provider.RoleTool && strings.Contains(message.Content, "1 in progress") {
+			foundResult = true
+		}
+	}
+	if !foundResult {
+		t.Fatalf("bridged todo result missing from second request: %+v", requests[1].Messages)
 	}
 }
 
@@ -3072,7 +3156,7 @@ func TestPluginSpecsDoNotTrustCodeGraphToolsForOtherServers(t *testing.T) {
 	}
 }
 
-func TestBuildMigratesLegacyEagerTierToBackground(t *testing.T) {
+func TestBuildNormalizesLegacyEagerTierInMemoryWithoutRewritingConfig(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -3112,12 +3196,12 @@ tier = "eager"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "\ntier") {
-		t.Fatalf("legacy eager tier should be removed during load:\n%s", raw)
+	if !strings.Contains(string(raw), `tier = "eager"`) {
+		t.Fatalf("boot must not rewrite the user's legacy eager tier:\n%s", raw)
 	}
 }
 
-func TestBuildMigratesLegacyLazyTierToBackground(t *testing.T) {
+func TestBuildNormalizesLegacyLazyTierInMemoryWithoutRewritingConfig(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -3157,8 +3241,8 @@ tier = "lazy"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "\ntier") {
-		t.Fatalf("legacy lazy tier should be removed during load:\n%s", raw)
+	if !strings.Contains(string(raw), `tier = "lazy"`) {
+		t.Fatalf("boot must not rewrite the user's legacy lazy tier:\n%s", raw)
 	}
 }
 

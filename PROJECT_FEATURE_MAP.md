@@ -45,6 +45,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-10
 
+### DecisionBroker 全局主人决策通道
+- Location: `docs/DECISION_BROKER_DESIGN.zh-CN.md`, `internal/decision`, `desktop/decision_app.go`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/components/DecisionCenter.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/decision_skill`
+- Summary: 状态 `done`，分支 `developping/decision-entry-sidebar+2026-08-16`；应用级 Broker 汇聚跨 workspace/Agent 的长期人类决策，统一桌面与微信抢答、全局串行、静默策略、原子持久化、审计和可重试投递；已连接 Bot 可一键设为问答通道；`ask` 进入全局问答队列，`notify` 直接进入历史并复用持久 outbox，不占用问答槽；微信用户侧隐藏 Decision ID、命令协议和原始远端 ID；遮挡内容的右下角固定入口已移到侧边栏收起按钮旁，以纯图标打开主人决策。
+- Keywords: DecisionBroker, Owner Inbox, Decision Center, human decision, Ask, Notify, Weixin, resolve, defer, waiting_decision, decision skill
+- Source: user-requested+verified-by-search
+- Updated: 2026-08-16
+
 ### Desktop AI 协作导出
 - Location: `desktop/ai_collaboration_app.go`, `desktop/ai_collaboration_app_test.go`, `desktop/ai_collaboration_skill/`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/lib/types.ts`
 - Summary: Desktop 内嵌版本化 `workground2-worker` Skill Bundle；复制提示词导出逐字节一致的 `SKILL.md`、`references/cli.md`、完整 `scripts/dispatch.ps1`、manifest 与 SHA-256，自动安装复用同一份内容并只向全局 `AGENTS.md` 写入精简运行规则。更新过程原子落盘、manifest 最后写入，未知或用户修改内容先保存 `.bak.N`，重复执行安全。安装/创建/更新 Skill 和生成设计文件必须由 Codex 直接完成，导出提示词和 Skill 均明确禁止调度 WorkGround2。
@@ -59,12 +66,26 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-14
 
+### Desktop 外部 Session 模型选择
+- Location: `desktop/remote_api.go`, `desktop/tabs.go`, `internal/config/load.go`, `internal/config/config.go`, `internal/boot/boot.go`
+- Summary: `/api/v1/session/new` 不接收 model；新外部 Session 以 workspace 合并配置的 `default_model` 启动，恢复既有 Session 时优先使用可解析的持久化模型，失效引用按有效默认模型和首个已配置 Provider 回退。
+- Keywords: desktop new, external session, default_model, LoadForRoot, ResolveModelWithFallback, BranchMeta
+- Source: verified-by-search
+- Updated: 2026-08-12
+
 ### Desktop 异步派发握手
 - Location: `desktop/remote_api.go`, `desktop/tabs.go`, `desktop/app.go`, `desktop/ai_collaboration_skill/scripts/dispatch.ps1`
 - Summary: 外部 Session 创建后立即返回可查询的 starting SessionID；启动期任务持久排队，Controller Ready 后幂等重放；Worker 派发与 PollOnly 拆成短命令快照。
 - Keywords: desktop new, starting, pendingRemoteInput, SessionID, PollOnly, dispatch.ps1
 - Source: verified-by-search
 - Updated: 2026-08-03
+
+### Desktop 普通 Session 消息队列
+- Location: `desktop/frontend/src/store/composerQueue.ts`, `desktop/frontend/src/components/Composer.tsx`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/components/desktop-ui/IrisInfoComponents.tsx`
+- Summary: 普通 Session 运行中消息按 session 入队，Controller 空闲且无决策门控时 FIFO 自动提交；后端拒绝时保留错误并支持重试。
+- Keywords: ordinary session, composerQueue, QueueTray, sendToTabConfirmed, FIFO, retry
+- Source: verified-by-search
+- Updated: 2026-08-13
 
 ### Draw AddOn 画图工具
 - Location: `pkg/drawaddon`, `internal/boot/boot.go`, `desktop/draw_addon_app.go`, `desktop/frontend/src/lib/types.ts`, `desktop/frontend/src/lib/bridge.ts`, `D:\Work\wg2addons\draw-tool`, `docs/addons/draw-addon-design.md`
@@ -79,6 +100,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: serve, SSE, /events, /submit, /approve, browser UI
 - Source: verified-by-search
 - Updated: 2026-07-03
+
+### LLM 后台任务等待
+- Location: `internal/tool/builtin/bgjobs.go`, `internal/jobs/jobs.go`, `internal/agent/agent.go`
+- Summary: 模型通过结构化 `wait` 工具调用等待当前 Session 的后台 job；Job 完成关闭 done channel，等待结果写回工具消息后 Agent 继续下一轮模型请求，纯文本“等待”不会自动续跑。
+- Keywords: wait, waitJob, WaitForSession, background job, done channel, tool loop
+- Source: verified-by-search
+- Updated: 2026-08-12
 
 ### MCP 插件系统
 - Location: `internal/plugin/plugin.go`, `internal/plugin`, `cmd/WorkGround2-plugin-example/main.go`, `docs/PLUGIN_PACKAGES.md`
@@ -122,17 +150,24 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
-### Room 我的 Agent 任务队列
-- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/collab_persist.go`, `internal/collab/store.go`, `desktop/frontend/src/collab`
-- Summary: Desktop 协作运行时持久化最多 20 个 Personal Agent 等待任务；统一就绪唤醒在 Controller 空闲、重连和重启恢复后幂等续跑，Room 状态从全部活跃 Run 投影，主人可关闭排队项。
-- Keywords: Room, Personal Agent, 任务队列, queuedTasks, queueWaiting, activeAgentStatus, CancelCollaborationQueuedTask
-- Source: verified-by-search
+### Room @Agent 自动触发去重
+- Location: `desktop/frontend/src/collab/state.ts`, `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/__tests__/collaboration.test.tsx`
+- Summary: 带问号的显式 `@成员/@Agent` 消息只由 mention 链路启动一次本机 Agent；自动回答问题扫描识别结构化目标 ID 并跳过，避免同一消息生成运行中与排队中两个任务。
+- Keywords: Room, Agent, mention, autoRespondQuestions, mentionMemberIds, mentionAgentIds, dedupe
+- Source: user-stated+verified-by-search
 - Updated: 2026-08-04
 
-### Room Host Session 重启可见性
-- Location: `internal/agent/save.go`, `desktop/collab_app.go`, `desktop/tabs.go`, `desktop/collab_session_test.go`
-- Summary: 已绑定 Room 的 collaboration Session 即使本地对话轮次仍为 0，也作为持久业务 Session 进入 Session List；普通空白 Session 继续隐藏，Host Room 在进程重启且未恢复原 tab 时仍可从原 Workspace/topic 找回。
-- Keywords: Room, Host, restart, Session List, collaboration Session, empty transcript
+### Room Agent 审批模式与确认详情
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`
+- Summary: “我的 Agent”可切换普通 Session 同源的 ask/auto/yolo 工具审批模式；待处理 Approval/Ask 只投影到主人本机，工具审批显示工具、对象和原因，Agent 提问显示真实问题与选项并可直接作答。
+- Keywords: Room, Agent, approval mode, PendingInteraction, ApprovalModal, AskCard, local-only prompt
+- Source: user-stated+verified-by-search
+- Updated: 2026-08-04
+
+### Room Agent 等待确认决策
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`, `desktop/frontend/src/collab/useCollabController.ts`
+- Summary: waiting_approval 卡片按所属 Session/Run ID 直接回答当前 Controller pending interaction；同意或拒绝均续接原执行且不创建新的 Agent 排队任务。
+- Keywords: Room, Agent, waiting_approval, RespondCollaborationAgentRun, PendingInteraction, 同意, 拒绝
 - Source: verified-by-search
 - Updated: 2026-08-04
 
@@ -143,26 +178,19 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: user-stated+verified-by-search
 - Updated: 2026-08-04
 
-### Room 我的 Agent 当前运行与停止
-- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/collab/transport.ts`, `desktop/frontend/src/collab/collab.css`
-- Summary: “我的 Agent”面板常驻显示当前本地 Run 的运行、等待确认和停止中阶段，以及指令、可公开进度、开始时间和同 Session 队列数；停止按 Session/Run ID 精确取消所属 Controller，重复调用幂等，失败回滚可重试，完成后发布 cancelled 并继续队列。
-- Keywords: Room, Personal Agent, currentRun, stopping, StopCollaborationAgentRun, idempotent cancel, queue continuation
-- Source: user-stated+verified-by-tests
-- Updated: 2026-08-05
-
-### Room Agent 等待确认决策
-- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`, `desktop/frontend/src/collab/useCollabController.ts`
-- Summary: waiting_approval 卡片按所属 Session/Run ID 直接回答当前 Controller pending interaction；同意或拒绝均续接原执行且不创建新的 Agent 排队任务。
-- Keywords: Room, Agent, waiting_approval, RespondCollaborationAgentRun, PendingInteraction, 同意, 拒绝
+### Room Host Session 重启可见性
+- Location: `internal/agent/save.go`, `desktop/collab_app.go`, `desktop/tabs.go`, `desktop/collab_session_test.go`
+- Summary: 已绑定 Room 的 collaboration Session 即使本地对话轮次仍为 0，也作为持久业务 Session 进入 Session List；普通空白 Session 继续隐藏，Host Room 在进程重启且未恢复原 tab 时仍可从原 Workspace/topic 找回。
+- Keywords: Room, Host, restart, Session List, collaboration Session, empty transcript
 - Source: verified-by-search
 - Updated: 2026-08-04
 
-### Room @Agent 自动触发去重
-- Location: `desktop/frontend/src/collab/state.ts`, `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/__tests__/collaboration.test.tsx`
-- Summary: 带问号的显式 `@成员/@Agent` 消息只由 mention 链路启动一次本机 Agent；自动回答问题扫描识别结构化目标 ID 并跳过，避免同一消息生成运行中与排队中两个任务。
-- Keywords: Room, Agent, mention, autoRespondQuestions, mentionMemberIds, mentionAgentIds, dedupe
-- Source: user-stated+verified-by-search
-- Updated: 2026-08-04
+### Room Relay-only 文件接收恢复
+- Location: `desktop/collab_transport.go`, `desktop/collab_relay_host.go`, `desktop/collab_relay_file.go`, `desktop/collab_file_transfer.go`
+- Summary: Relay-only Host 不再把 typed-nil HTTP 文件通道误装入 fallback；文件下载 Panic 会记录栈、隔离为可手动重试的失败，并可靠释放自动接收锁与并发槽，避免持久化传输让 Desktop 启动循环崩溃。
+- Keywords: Room, Relay-only, auto receive, typed nil, fallback, panic recovery, waiting_sender
+- Source: user-stated+verified-by-reproduction
+- Updated: 2026-08-11
 
 ### Room 主人命令授权边界
 - Location: `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/__tests__/collaboration.test.tsx`, `desktop/collab_agent.go`
@@ -171,12 +199,33 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: user-stated+verified-by-search
 - Updated: 2026-08-04
 
-### Room Agent 审批模式与确认详情
-- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`
-- Summary: “我的 Agent”可切换普通 Session 同源的 ask/auto/yolo 工具审批模式；待处理 Approval/Ask 只投影到主人本机，工具审批显示工具、对象和原因，Agent 提问显示真实问题与选项并可直接作答。
-- Keywords: Room, Agent, approval mode, PendingInteraction, ApprovalModal, AskCard, local-only prompt
-- Source: user-stated+verified-by-search
+### Room 导出连接路由选择
+- Location: `desktop/collab_app.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/invite.ts`
+- Summary: Room Host 导出连接的地址枚举、Relay/LAN 路由选择和邀请字符串编码入口。
+- Keywords: Room, export connection, CollaborationInvite, Relay, LAN, inviteString
+- Source: verified-by-search
+- Updated: 2026-08-10
+
+### Room 小文件自动接收与图片直显
+- Location: `desktop/collab_file_transfer.go`, `desktop/collab_relay_file.go`, `desktop/collab_relay_crypto.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`, `desktop/frontend/src/__tests__/collaboration.test.tsx`
+- Summary: Room 中严格小于 1 MiB 的他人文件按 Session workspace 和可信 Room 实例自动接收到 .workground2/attachments/room，完成 SHA 校验后可供 Agent 以相对 @ 路径引用；静态图片经内容校验后在文件卡内有界懒加载直显。
+- Keywords: Room, auto receive, attachments, PreviewCollaborationFile, roomAttachmentRefs, Relay HostKey, CollaborationTimeline
+- Source: verified-by-search
+- Updated: 2026-08-07
+
+### Room 我的 Agent 任务队列
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/collab_persist.go`, `internal/collab/store.go`, `desktop/frontend/src/collab`
+- Summary: Desktop 协作运行时持久化最多 20 个 Personal Agent 等待任务；统一就绪唤醒在 Controller 空闲、重连和重启恢复后幂等续跑，Room 状态从全部活跃 Run 投影，主人可关闭排队项。
+- Keywords: Room, Personal Agent, 任务队列, queuedTasks, queueWaiting, activeAgentStatus, CancelCollaborationQueuedTask
+- Source: verified-by-search
 - Updated: 2026-08-04
+
+### Room 我的 Agent 当前运行与停止
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/collab/transport.ts`, `desktop/frontend/src/collab/collab.css`
+- Summary: “我的 Agent”面板常驻显示当前本地 Run 的运行、等待确认和停止中阶段，以及指令、可公开进度、开始时间和同 Session 队列数；停止按 Session/Run ID 精确取消所属 Controller，重复调用幂等，失败回滚可重试，完成后发布 cancelled 并继续队列。
+- Keywords: Room, Personal Agent, currentRun, stopping, StopCollaborationAgentRun, idempotent cancel, queue continuation
+- Source: user-stated+verified-by-tests
+- Updated: 2026-08-05
 
 ### Session 持久化、后台任务与回滚
 - Location: `internal/store/session.go`, `internal/agent/save.go`, `internal/agent/session.go`, `internal/agent/session_lease.go`, `internal/agent/session_removal.go`, `internal/agent/recovery_gc.go`, `internal/checkpoint/checkpoint.go`, `internal/jobs/jobs.go`, `internal/control/controller.go`, `internal/control/checkpoint.go`, `internal/control/session_lease_keeper.go`, `internal/boot/boot.go`, `internal/cli/session_lease.go`, `internal/acp/service.go`, `internal/serve/serve.go`, `desktop/tabs.go`, `desktop/app.go`, `desktop/settings_app.go`, `desktop/sessions.go`, `desktop/recovery_gc.go`
@@ -255,6 +304,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-08-01
 
+### Work 模式模型路由
+- Location: `internal/boot/boot.go`, `WorkGround2.toml`, `desktop/work_chat.go`
+- Summary: Work Session、结构规划、输入推断、Patch 规划和任务执行均由 Controller 启动时解析的模型 Provider 驱动；结构规划/输入推断在配置独立 planner_model 时改用 Planner，其余仍用执行模型。
+- Keywords: Work mode, default_model, planner_model, workDefinitionProv, execProv, TaskExecutorAdapter
+- Source: verified-by-search
+- Updated: 2026-08-17
+
 ### Work 结构化产物能力预执行
 - Location: `internal/work/ports.go`, `internal/work/scheduler_v2.go`, `internal/agent/agent.go`, `internal/control/controller.go`, `internal/control/taskexec.go`
 - Summary: 带能力要求（如 image_generation）的 ArtifactSlot 在 TaskExecutor 主模型运行前，通过标准 Agent 工具路径串行执行 request_help preflight；SlotPreflight 由 ArtifactSlotDef + CapabilityProducer 自动生成，失败结果可观察并允许主模型 fallback；无能力槽保持旧路径。
@@ -296,6 +352,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: performance.longtask, PerformancePressure, recordPerformanceLog, LogWarning
 - Source: verified-by-search
 - Updated: 2026-08-07
+
+### 总体未读数据层（Room / IM）
+- Location: `internal/unread`, `internal/bot/gateway.go`, `desktop/unread_app.go`, `desktop/collab_app.go`, `desktop/collab_transport.go`, `desktop/bot_runtime_app.go`
+- Summary: 统一未读仓库位于 internal/unread；Room 通过 Snapshot Sequence 投影，Desktop IM 在网关处理前持久化并按 MessageID 去重，后端提供 Summary、单调已读游标和 unread:state 事件。
+- Keywords: unread, Room, IM, AcceptInbound, MarkUnreadRead, UnreadState
+- Source: verified-by-search
+- Updated: 2026-08-08
 
 ### 权限与沙盒
 - Location: `internal/permission/permission.go`, `internal/sandbox/sandbox.go`, `internal/tool/builtin`

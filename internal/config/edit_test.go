@@ -1954,6 +1954,34 @@ func TestSetDesktopSessionBackgroundDefaultsAndRoundTrip(t *testing.T) {
 	if solid := solidDecoded.DesktopSessionBackground(); solid.Mode != SessionBackgroundModeSolid || solid.Enabled {
 		t.Fatalf("solid background round trip = %#v", solid)
 	}
+
+	for _, mode := range []string{
+		SessionBackgroundModeWaves,
+		SessionBackgroundModeAurora,
+		SessionBackgroundModeNebula,
+		SessionBackgroundModeStarfield,
+		SessionBackgroundModeBlackhole,
+		SessionBackgroundModeMoonclouds,
+		SessionBackgroundModeBiolume,
+		SessionBackgroundModeDunes,
+	} {
+		t.Run(mode, func(t *testing.T) {
+			if err := cfg.SetDesktopSessionBackground(DesktopSessionBackgroundConfig{Mode: mode}); err != nil {
+				t.Fatal(err)
+			}
+			rendered := RenderTOMLForScope(cfg, RenderScopeUser)
+			if !strings.Contains(rendered, `mode = "`+mode+`"`) {
+				t.Fatalf("%s background mode missing from rendered config:\n%s", mode, rendered)
+			}
+			var decoded Config
+			if _, err := toml.Decode(rendered, &decoded); err != nil {
+				t.Fatalf("decode %s background config: %v", mode, err)
+			}
+			if got := decoded.DesktopSessionBackground(); got.Mode != mode || got.Enabled {
+				t.Fatalf("%s background round trip = %#v", mode, got)
+			}
+		})
+	}
 }
 
 func TestSetDesktopSessionBackgroundRejectsInvalidValuesWithoutMutation(t *testing.T) {
@@ -1961,6 +1989,9 @@ func TestSetDesktopSessionBackgroundRejectsInvalidValuesWithoutMutation(t *testi
 	before := cfg.DesktopSessionBackground()
 	for _, input := range []DesktopSessionBackgroundConfig{
 		{Mode: "animated"},
+		{Mode: "embers"},
+		{Mode: "silk"},
+		{Mode: "raincity"},
 		{RotateSeconds: 29},
 		{RotateSeconds: 86_401},
 		{Sources: []DesktopSessionBackgroundSource{{Kind: "url", Path: "https://example.com/a.png"}}},
@@ -1972,5 +2003,18 @@ func TestSetDesktopSessionBackgroundRejectsInvalidValuesWithoutMutation(t *testi
 		if got := cfg.DesktopSessionBackground(); !reflect.DeepEqual(got, before) {
 			t.Fatalf("invalid input mutated config: got %#v want %#v", got, before)
 		}
+	}
+}
+
+func TestDesktopSessionBackgroundMigratesRemovedDynamicModes(t *testing.T) {
+	for _, mode := range []string{"embers", "silk", "raincity"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := Default()
+			cfg.Desktop.SessionBackground.Mode = mode
+
+			if got := cfg.DesktopSessionBackground().Mode; got != SessionBackgroundModePattern {
+				t.Fatalf("removed mode %q normalized to %q, want %q", mode, got, SessionBackgroundModePattern)
+			}
+		})
 	}
 }

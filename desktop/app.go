@@ -36,6 +36,7 @@ import (
 	"workground2/internal/botruntime"
 	"workground2/internal/config"
 	"workground2/internal/control"
+	"workground2/internal/decision"
 	"workground2/internal/event"
 	"workground2/internal/evidence"
 	"workground2/internal/fileref"
@@ -46,6 +47,7 @@ import (
 	"workground2/internal/plugin"
 	"workground2/internal/provider"
 	"workground2/internal/skill"
+	"workground2/internal/unread"
 	"workground2/internal/work"
 )
 
@@ -130,6 +132,11 @@ type App struct {
 	sharedHosts   map[string]*sharedPluginHost
 	sharedHostsMu sync.Mutex
 
+	// dshWorkbenches are opt-in, isolated React 18 browser surfaces. They are
+	// process-owned and never share a DOM or mutable state tree with WG2.
+	dshWorkbenchMu sync.Mutex
+	dshWorkbenches map[string]*dshWorkbench
+
 	// tabsSaveMu serializes writes to desktop-tabs.json and its fixed .tmp path.
 	tabsSaveMu             sync.Mutex
 	tabsSaveVersion        uint64 // protected by mu; assigned when collecting a snapshot
@@ -145,10 +152,30 @@ type App struct {
 	trayReady           bool
 	tray                *desktopTray
 
-	mediaTokens *mediaTokenStore
-	background  *sessionBackgroundService
-	botInstalls map[string]*botInstallSession
-	botRuntime  *desktopBotRuntime
+	mediaTokens     *mediaTokenStore
+	background      *sessionBackgroundService
+	botInstalls     map[string]*botInstallSession
+	botRuntime      *desktopBotRuntime
+	decisionBroker  *decision.Broker
+	decisionErr     error
+	decisionCancel  context.CancelFunc
+	decisionApplyMu sync.Mutex
+	decisionSending atomic.Bool
+	ownerIdleProbe  func() (time.Duration, error) // nil uses the platform probe
+	ownerNow        func() time.Time              // nil uses time.Now
+
+	unreadMu           sync.RWMutex
+	unreadStore        *unread.Store
+	unreadErr          error
+	unreadBadgeMu      sync.Mutex
+	unreadBadgeTarget  int
+	unreadBadgeRunning bool
+	// unreadRestoreMu serializes trash restores triggered by unread fallback
+	// navigation so concurrent clicks cannot interleave RestoreSession with a
+	// sibling's meta load (Windows file-lock races) or double-restore.
+	unreadRestoreMu sync.Mutex
+	// sessionDirsOverride replaces knownSessionDirs() when non-nil (test-only).
+	sessionDirsOverride []string
 
 	metrics atomic.Pointer[metricsAggregator] // non-nil only when desktop.metrics is opted in; swapped live by SetDesktopMetrics
 
@@ -186,8 +213,10 @@ type App struct {
 	// collaborations owns one isolated Room runtime per collaboration Session.
 	// It has its own lock so network reconnects and Wails calls never contend
 	// with tab selection; each runtime owns its connection, outbox and Agent runs.
-	collaborationMu sync.Mutex
-	collaborations  map[string]*desktopCollaboration
+	collaborationMu    sync.Mutex
+	collaborations     map[string]*desktopCollaboration
+	collaborationLANMu sync.Mutex
+	collaborationLAN   *collaborationLANHost
 
 	configRebuildNeeded atomic.Bool // set by deferred config saves when a turn is running
 
@@ -390,12 +419,20 @@ func NewApp() *App {
 		background:       newSessionBackgroundService(),
 		botInstalls:      map[string]*botInstallSession{},
 		botRuntime:       newDesktopBotRuntime(),
+		dshWorkbenches:   map[string]*dshWorkbench{},
 	}
 	root := strings.TrimSpace(config.MemoryUserDir())
+	decisionPath := ""
+	if root != "" {
+		decisionPath = filepath.Join(root, "decision-broker-v1.json")
+	}
+	a.decisionBroker, a.decisionErr = decision.Open(decisionPath)
 	if root == "" {
 		a.sessionRefsErr = errors.New("session ref data directory is unavailable")
+		a.unreadErr = errors.New("unread data directory is unavailable")
 		return a
 	}
+	a.unreadStore, a.unreadErr = unread.Open(filepath.Join(root, "unread-v1.json"))
 	a.sessionRefs, a.sessionRefsErr = work.NewFileSessionRefStore(
 		filepath.Join(root, "work-session-refs-v1.json"),
 		work.WithRetention(30*24*time.Hour),
@@ -433,6 +470,7 @@ func (a *App) startup(ctx context.Context) {
 
 	a.goSafe("startSessionWatcher", a.startSessionWatcher)
 	a.goSafe("startRemoteAPI", a.startRemoteAPI)
+	a.startDecisionRuntime()
 
 	go a.restoreOrBuildTabs()
 	a.goSafe("refreshBotRuntime", a.refreshBotRuntime)
@@ -727,6 +765,8 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	a.stopDecisionRuntime()
+	a.closeDSHWorkbenches()
 	a.closeCollaborations()
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
@@ -799,6 +839,12 @@ func (a *App) domReady(_ context.Context) {
 	}
 
 	runtime.WindowShow(a.ctx)
+	// Explorer registers the taskbar button only after the native window is
+	// visible. Apply the persisted total after that registration point.
+	a.goSafe("initialUnreadBadge", func() {
+		time.Sleep(500 * time.Millisecond)
+		a.scheduleUnreadBadge(a.UnreadState().Summary.TotalUnread)
+	})
 }
 
 // --- bound command surface (frontend → controller) ---
@@ -1451,6 +1497,12 @@ func (a *App) AnswerQuestionForTab(tabID, id string, answers []QuestionAnswer) {
 	for i, an := range answers {
 		out[i] = event.AskAnswer{QuestionID: an.QuestionID, Selected: an.Selected}
 	}
+	if handled, err := a.resolveAskThroughDecision(tabID, id, out, "WorkGround2 桌面端"); handled {
+		if err != nil {
+			slog.Warn("desktop: answer global decision", "ask", id, "err", err)
+		}
+		return
+	}
 	ctrl.AnswerQuestion(id, out)
 }
 
@@ -1522,6 +1574,9 @@ func (a *App) answerPendingQuestionForTab(tabID, id string, answers []QuestionAn
 		return fmt.Errorf("unknown question %q", questionID)
 	}
 
+	if handled, err := a.resolveAskThroughDecision(tabID, pending.Ask.ID, out, "WorkGround2 桌面端"); handled {
+		return err
+	}
 	ctrl.AnswerQuestion(pending.Ask.ID, out)
 	return nil
 }
@@ -1953,6 +2008,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	}
 	a.mu.Unlock()
 	if installed {
+		a.bindWorkUnreadObserver(newCtrl)
 		if err := a.rotateSessionID(tab); err != nil {
 			return err
 		}
@@ -4135,7 +4191,7 @@ func collectJSONLUserPrompts(path string, info os.FileInfo, resolveUserContent f
 			if text == "" {
 				continue
 			}
-			if control.IsSyntheticUserMessage(text) {
+			if rec.Origin == provider.MessageOriginHost || (rec.Origin == "" && control.IsSyntheticUserMessage(text)) {
 				continue
 			}
 			at := fallbackAt
@@ -4821,7 +4877,7 @@ func historyCheckpointTurns(msgs []provider.Message, resolveUserContent func(str
 		if _, isSteer := agent.SteerText(msg.Content); isSteer {
 			continue
 		}
-		if control.IsSyntheticUserMessage(resolveUserContent(msg.Content)) {
+		if hiddenSyntheticUser(msg, resolveUserContent) {
 			continue
 		}
 		turn, ok := checkpointTurns[index]
@@ -4868,7 +4924,7 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 				continue
 			}
 			content = skill.RedactProtectedContent(resolveUserContent(m.Content))
-			if control.IsSyntheticUserMessage(content) {
+			if m.Origin == provider.MessageOriginHost || (m.Origin == "" && control.IsSyntheticUserMessage(content)) {
 				continue
 			}
 			if turn, ok := checkpointTurns[index]; ok {
@@ -4972,7 +5028,18 @@ func isVisibleHistoryUser(msg provider.Message, resolveUserContent func(string) 
 	if _, isSteer := agent.SteerText(msg.Content); isSteer {
 		return false
 	}
-	return !control.IsSyntheticUserMessage(resolveUserContent(msg.Content))
+	return !hiddenSyntheticUser(msg, resolveUserContent)
+}
+
+func hiddenSyntheticUser(msg provider.Message, resolveUserContent func(string) string) bool {
+	switch msg.Origin {
+	case provider.MessageOriginHost:
+		return true
+	case provider.MessageOriginUser:
+		return false
+	default:
+		return control.IsSyntheticUserMessage(resolveUserContent(msg.Content))
+	}
 }
 
 func providerMessagesForVisibleTurnRange(msgs []provider.Message, resolveUserContent func(string) string, startTurn, endTurn int) ([]provider.Message, []int) {
@@ -5453,6 +5520,7 @@ type previewEventRecord struct {
 	UpdatedAtSnake   json.RawMessage           `json:"updated_at"`
 	Text             string                    `json:"text"`
 	Content          string                    `json:"content"`
+	Origin           provider.MessageOrigin    `json:"origin"`
 	Reasoning        string                    `json:"reasoning"`
 	ReasoningContent string                    `json:"reasoningContent"`
 	MemoryCitations  []provider.MemoryCitation `json:"memoryCitations"`
@@ -6093,7 +6161,7 @@ type CommandInfo struct {
 	Name        string `json:"name"` // without the leading slash
 	Description string `json:"description"`
 	Hint        string `json:"hint,omitempty"` // argument hint, if any
-	Kind        string `json:"kind"`           // "builtin" | "custom" | "mcp"
+	Kind        string `json:"kind"`           // "builtin" | "skill" | "custom" | "mcp"
 }
 
 // Commands lists the slash commands available this session — built-in actions,
@@ -7918,6 +7986,7 @@ func (a *App) applyModelForTabLocked(tab *WorkspaceTab, name string) error {
 	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	a.bindWorkUnreadObserver(newCtrl)
 	if oldCtrl != nil {
 		oldCtrl.Close()
 	}
@@ -8042,6 +8111,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	a.bindWorkUnreadObserver(newCtrl)
 	if oldCtrl != nil {
 		oldCtrl.Close()
 	}
@@ -8141,6 +8211,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	a.bindWorkUnreadObserver(newCtrl)
 	if oldCtrl != nil {
 		oldCtrl.Close()
 	}

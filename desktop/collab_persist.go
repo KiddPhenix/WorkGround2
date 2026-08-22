@@ -132,6 +132,19 @@ func (c *desktopCollaboration) loadPersisted() {
 	}
 	var p collaborationPersistedState
 	err := readPersistFile(c.persistPath, &p)
+	adoptedRecovery := false
+	if os.IsNotExist(err) {
+		var adoptErr error
+		adoptedRecovery, adoptErr = c.adoptRecoveryV2Cache()
+		if adoptErr != nil {
+			c.state.LastError = "load collaboration state: " + adoptErr.Error()
+			c.state.Retryable = true
+			return
+		}
+		if adoptedRecovery {
+			err = readPersistFile(c.persistPath, &p)
+		}
+	}
 	adoptedV2 := false
 	if os.IsNotExist(err) {
 		adoptedV2, err = c.adoptLegacyV2Cache()
@@ -160,7 +173,8 @@ func (c *desktopCollaboration) loadPersisted() {
 	identityChanged := false
 	if c.ownerSessionPath != "" {
 		persistedPath := sessionRuntimeKey(p.SessionPath)
-		if persistedPath != "" && persistedPath != c.ownerSessionPath {
+		persistedOwnerPath := collaborationOwnerSessionPath(persistedPath)
+		if persistedPath != "" && persistedOwnerPath != c.ownerSessionPath {
 			c.state.LastError = "load collaboration state: cached Room belongs to another session path"
 			c.state.Retryable = true
 			return
@@ -226,9 +240,23 @@ func (c *desktopCollaboration) loadPersisted() {
 			transfer.PartPath = transfer.Destination + ".wg2part"
 		}
 		if transfer.Status == "downloading" || transfer.Status == "negotiating" || transfer.Status == "verifying" {
-			transfer.Status = "paused"
-			transfer.Error = "应用已重启，可继续接收"
+			if transfer.Automatic && !transfer.PausedByUser {
+				transfer.Status = "waiting_sender"
+				transfer.Error = "应用已重启，连接后将自动继续"
+			} else {
+				transfer.Status = "paused"
+				transfer.Error = "应用已重启，可继续接收"
+			}
 			transfer.Retryable = true
+		}
+		if c.transfers == nil {
+			c.transfers = map[string]*CollaborationFileTransfer{}
+		}
+		if previous := c.transfers[transfer.FileID]; previous != nil {
+			if c.transferArchive == nil {
+				c.transferArchive = map[string]*CollaborationFileTransfer{}
+			}
+			c.transferArchive[collaborationTransferArchiveKey(previous.RoomInstance, previous.FileID)] = previous
 		}
 		c.transfers[transfer.FileID] = &transfer
 	}
@@ -246,6 +274,7 @@ func (c *desktopCollaboration) loadPersisted() {
 		Routes:        append([]CollaborationRouteState(nil), p.Routes...),
 		Advertisement: p.Advertisement,
 	}
+	c.rebuildFileOffersLocked(c.state.Snapshot)
 	if queueTruncated {
 		c.state.LastError = "collaboration Agent queue exceeded 20 tasks and was truncated during recovery"
 		c.state.Retryable = false
@@ -254,9 +283,64 @@ func (c *desktopCollaboration) loadPersisted() {
 		c.state.Status = "failed"
 		c.state.Retryable = true
 	}
-	if migrated || adoptedV2 || identityChanged {
+	if migrated || adoptedRecovery || adoptedV2 || identityChanged {
 		c.persistLocked()
 	}
+}
+
+// adoptRecoveryV2Cache migrates a cache written before recovery branches were
+// canonicalised to their original logical Session path. Candidates already
+// prove the same owner through branch metadata, so choosing the newest complete
+// Room record is deterministic and cannot attach an unrelated Room by title.
+func (c *desktopCollaboration) adoptRecoveryV2Cache() (bool, error) {
+	if c.ownerSessionPath == "" {
+		return false, nil
+	}
+	dir := filepath.Dir(c.persistPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	targetName := filepath.Base(c.persistPath)
+	type candidate struct {
+		path    string
+		modTime time.Time
+	}
+	var best candidate
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == targetName || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var value collaborationPersistedState
+		if readPersistFile(path, &value) != nil || !hasPersistedRoom(value) {
+			continue
+		}
+		persistedPath := sessionRuntimeKey(value.SessionPath)
+		if persistedPath == "" || persistedPath == c.ownerSessionPath || collaborationOwnerSessionPath(persistedPath) != c.ownerSessionPath {
+			continue
+		}
+		info, statErr := entry.Info()
+		if statErr != nil {
+			continue
+		}
+		if best.path == "" || info.ModTime().After(best.modTime) {
+			best = candidate{path: path, modTime: info.ModTime()}
+		}
+	}
+	if best.path == "" {
+		return false, nil
+	}
+	if err := os.Rename(best.path, c.persistPath); err != nil {
+		if _, statErr := os.Stat(c.persistPath); statErr == nil {
+			return true, nil
+		}
+		return false, fmt.Errorf("migrate recovered Room cache: %w", err)
+	}
+	return true, nil
 }
 
 // adoptLegacyV2Cache moves the one old SessionID-keyed cache that can be
@@ -378,6 +462,7 @@ func (c *desktopCollaboration) persistLocked() {
 		value.HostCapabilityRefs = cloneStringMap(c.conn.hostCapabilityRefs)
 		value.GuestCapabilityRefs = cloneStringMap(c.conn.guestCapabilityRefs)
 		value.HostKey = c.conn.hostKey
+		value.ProtocolVersion = c.conn.protocolVersion
 		value.ConnectionSecretRef = collaborationSecretRef(c.state.Host, c.state.Port, c.state.Room, c.state.MemberID)
 		if c.getSecret(value.ConnectionSecretRef) != c.conn.connectionSession {
 			if err := c.setSecret(value.ConnectionSecretRef, c.conn.connectionSession); err != nil {
@@ -416,6 +501,9 @@ func (c *desktopCollaboration) persistLocked() {
 }
 
 func (c *desktopCollaboration) repairPersisted(value collaborationPersistedState) collaborationPersistedState {
+	if value.ProtocolVersion == 0 {
+		value.ProtocolVersion = collaborationProtocolV1
+	}
 	if value.ReachabilityVersion == 0 {
 		value.LANEnabled = value.Mode == "host" && value.Port > 0
 		value.PreferLAN = true

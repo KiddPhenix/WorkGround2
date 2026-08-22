@@ -791,12 +791,11 @@ func TestV2WailsGetWatchRecoverUsesSchema2_FileWorkStore(t *testing.T) {
 	select {
 	case event := <-emitted:
 		if event.SchemaVersion != work.WorkViewSchemaVersionV2 ||
-			event.Type != work.ViewDelta ||
 			event.Object.WorkID != planning.Work.ID {
 			t.Fatalf("WatchWork event = %+v", event)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("WatchWork did not receive schema2 production delta")
+		t.Fatal("WatchWork did not receive schema2 production event")
 	}
 
 	view, err := app.GetWork("test", planning.Work.ID)
@@ -1017,6 +1016,9 @@ func TestV2WailsBeginPlanningTypedDuplicateAndConflict_FileWorkStore(t *testing.
 	})
 	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
 	app.setTestCtrl(ctrl, "test")
+	if tab := app.tabs["test"]; tab != nil {
+		tab.SessionPath = filepath.Join(t.TempDir(), "wails-begin.jsonl")
+	}
 	input := work.BeginWorkPlanningInput{SessionID: "wails-begin", RequestID: "wails-begin"}
 	first, err := app.BeginWorkPlanning("test", input)
 	if err != nil || first.Result == nil || first.Duplicate || !first.Committed {
@@ -2282,4 +2284,276 @@ func TestV2HistoricalZeroTime_FileWorkStoreRestartAppGetWork(t *testing.T) {
 		t.Fatalf("App.GetWork DTO does NOT natively contain zero-time serialization; DTO snippet: %.200s", string(dto))
 	}
 	t.Log("historical zero-time natively survives FileWorkStore restart + App.GetWork: OK")
+}
+
+// openProjectWorkTab opens a ready project tab whose Controller owns the given
+// workspace root. It mirrors how the UI opens a real project Session.
+func openProjectWorkTab(t *testing.T, app *App, root, title string) *WorkspaceTab {
+	t.Helper()
+	topic, err := app.CreateTopic("project", root, title)
+	if err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	meta, err := app.OpenProjectTab(root, topic.ID)
+	if err != nil {
+		t.Fatalf("open project tab: %v", err)
+	}
+	return waitForTabReady(t, app, meta.ID)
+}
+
+// saveReusableFlowInTab freezes a Work inside the tab's own Controller, the
+// same path the UI "再次运行" dialog uses before creating a new Session.
+func saveReusableFlowInTab(t *testing.T, app *App, tabID, name, requestID string) *work.ReusableFlow {
+	t.Helper()
+	created, err := app.CreateWork(tabID, work.CreateWorkInput{
+		BlueprintRef: work.BlueprintRef{ID: "blueprint:blank", SchemaVersion: work.SchemaVersion, Version: 1},
+		Name:         name, Prompt: "把调研结论整理成一份报告", RequestID: requestID + "-create",
+	})
+	if err != nil {
+		t.Fatalf("CreateWork: %v", err)
+	}
+	flow, err := app.SaveReusableFlow(tabID, work.SaveReusableFlowInput{
+		SourceWorkID: created.ID, Name: name, VariableKeys: []string{"prompt"}, RequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("SaveReusableFlow: %v", err)
+	}
+	return flow
+}
+
+// TestCreateReusableWorkSessionRoutesBySourceControllerWorkspace guards the
+// "再次运行" flow against tab metadata drifting from the source Controller's
+// real workspace. The flow is saved in the Controller's Work store, so the new
+// Session must be routed by the Controller workspace, never by stale metadata.
+func TestCreateReusableWorkSessionRoutesBySourceControllerWorkspace(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	// The source Controller genuinely owns projectA; the tab metadata later
+	// drifts to projectB. The flow lives in projectA's Work store.
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	source := openProjectWorkTab(t, app, projectA, "源项目")
+	flow := saveReusableFlowInTab(t, app, source.ID, "常用流程", "reusable-source-1")
+
+	// Simulate tab metadata drifting away from the Controller's real workspace.
+	app.mu.Lock()
+	source.WorkspaceRoot = projectB
+	app.mu.Unlock()
+
+	result, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: flow.ID, RequestID: "reusable-session-1",
+	})
+	if err != nil {
+		t.Fatalf("CreateReusableWorkSession: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("CreateReusableWorkSession error: %s", result.Error)
+	}
+	if result.Run == nil || result.Run.Work == nil || result.Run.Work.ReusableFlowID != flow.ID {
+		t.Fatalf("reusable run = %+v", result.Run)
+	}
+	target := app.tabByID(result.TabMeta.ID)
+	if target == nil {
+		t.Fatalf("target tab %q not found", result.TabMeta.ID)
+	}
+	// The new Session must be routed to the Controller's actual workspace
+	// (projectA), never the drifted metadata root (projectB).
+	if got := normalizeProjectRoot(target.WorkspaceRoot); got != normalizeProjectRoot(projectA) {
+		t.Fatalf("target workspace root = %q, want %q", got, projectA)
+	}
+	if got, ok := safeControllerWorkspaceRoot(target.Ctrl); !ok || normalizeProjectRoot(got) != normalizeProjectRoot(projectA) {
+		t.Fatalf("target controller workspace = (%q, %v), want %q", got, ok, projectA)
+	}
+
+	// The same requestId resumes the same target Session (idempotent retry).
+	retry, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: flow.ID, RequestID: "reusable-session-1",
+	})
+	if err != nil || retry.Error != "" {
+		t.Fatalf("retry = %+v, %v", retry, err)
+	}
+	if !retry.Duplicate || retry.TabMeta.ID != result.TabMeta.ID {
+		t.Fatalf("retry did not resume: first=%q retry=%q duplicate=%v", result.TabMeta.ID, retry.TabMeta.ID, retry.Duplicate)
+	}
+}
+
+// TestCreateReusableWorkSessionProjectAndGlobalUnchanged verifies the normal
+// project and global routing paths keep working when metadata is consistent.
+func TestCreateReusableWorkSessionProjectAndGlobalUnchanged(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	t.Run("project", func(t *testing.T) {
+		project := t.TempDir()
+		source := openProjectWorkTab(t, app, project, "项目")
+		flow := saveReusableFlowInTab(t, app, source.ID, "项目流程", "reusable-project")
+		result, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+			FlowID: flow.ID, RequestID: "reusable-project-session",
+		})
+		if err != nil || result.Error != "" {
+			t.Fatalf("CreateReusableWorkSession = %+v, %v", result, err)
+		}
+		if result.Run == nil || result.Run.Work == nil || result.Run.Work.ReusableFlowID != flow.ID {
+			t.Fatalf("project reusable run = %+v", result.Run)
+		}
+		target := app.tabByID(result.TabMeta.ID)
+		if target == nil || target.Scope != "project" || normalizeProjectRoot(target.WorkspaceRoot) != normalizeProjectRoot(project) {
+			t.Fatalf("target = %+v, want project scope %q", target, project)
+		}
+	})
+
+	t.Run("global", func(t *testing.T) {
+		tab, err := app.ensureBlankBackgroundTab("global", "")
+		if err != nil {
+			t.Fatalf("ensure blank global Session: %v", err)
+		}
+		waitForTabReady(t, app, tab.ID)
+		flow := saveReusableFlowInTab(t, app, tab.ID, "全局流程", "reusable-global")
+		result, err := app.CreateReusableWorkSession(tab.ID, CreateReusableWorkSessionInput{
+			FlowID: flow.ID, RequestID: "reusable-global-session",
+		})
+		if err != nil || result.Error != "" {
+			t.Fatalf("CreateReusableWorkSession = %+v, %v", result, err)
+		}
+		if result.Run == nil || result.Run.Work == nil || result.Run.Work.ReusableFlowID != flow.ID {
+			t.Fatalf("global reusable run = %+v", result.Run)
+		}
+		target := app.tabByID(result.TabMeta.ID)
+		if target == nil || target.Scope != "global" {
+			t.Fatalf("target = %+v, want global scope", target)
+		}
+	})
+}
+
+// TestCreateReusableWorkSessionFlowNotFoundRollsBackEmptySession reproduces
+// the orphan bug: a deterministic pre-commit failure ("flow not found") left a
+// session_kind=work Session with workRequestID but no workID that the user
+// could not delete. A Session created by this call must be rolled back cleanly
+// (tab, topic title, session artifacts) so nothing is left behind.
+func TestCreateReusableWorkSessionFlowNotFoundRollsBackEmptySession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	project := t.TempDir()
+	source := openProjectWorkTab(t, app, project, "源项目")
+	sessionDir := desktopSessionDir(project)
+	before, err := agent.ListSessions(sessionDir)
+	if err != nil {
+		t.Fatalf("list sessions before: %v", err)
+	}
+
+	const requestID = "reusable-missing-flow"
+	result, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: "flow-does-not-exist", RequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("CreateReusableWorkSession: %v", err)
+	}
+	if result.Error == "" {
+		t.Fatalf("expected deterministic error, got %+v", result)
+	}
+	if result.Recoverable {
+		t.Fatalf("rolled-back failure must not claim a recovery entry: %+v", result)
+	}
+	if result.TabMeta.ID != "" {
+		t.Fatalf("rolled-back Session must not return TabMeta: %+v", result.TabMeta)
+	}
+
+	// No runtime tab may keep the failed Work request binding.
+	app.mu.RLock()
+	for id, tab := range app.tabs {
+		if tab != nil && tab.workRequestID == requestID {
+			t.Errorf("tab %q still holds failed work request %q", id, requestID)
+		}
+	}
+	app.mu.RUnlock()
+
+	// No new session file survives outside the trash, and the "New Work" topic
+	// title is gone.
+	after, err := agent.ListSessions(sessionDir)
+	if err != nil {
+		t.Fatalf("list sessions after: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("session count changed by failed run: before=%d after=%d", len(before), len(after))
+	}
+	trashed, err := listTrashedSessionFiles(sessionDir)
+	if err != nil {
+		t.Fatalf("list trash: %v", err)
+	}
+	if len(trashed) == 0 {
+		t.Fatal("rolled-back session did not land in the session trash")
+	}
+	for topicID, title := range loadTopicTitles(project) {
+		if title == "New Work" {
+			t.Errorf("topic %q title %q survived the rollback", topicID, title)
+		}
+	}
+
+	// Retrying with the same requestId is a fresh, clean attempt: it fails the
+	// same way without accumulating another session.
+	retry, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: "flow-does-not-exist", RequestID: requestID,
+	})
+	if err != nil || retry.Error == "" || retry.Recoverable {
+		t.Fatalf("retry = %+v, %v; want clean deterministic failure", retry, err)
+	}
+	afterRetry, err := agent.ListSessions(sessionDir)
+	if err != nil {
+		t.Fatalf("list sessions after retry: %v", err)
+	}
+	if len(afterRetry) != len(before) {
+		t.Fatalf("retry accumulated sessions: before=%d after=%d", len(before), len(afterRetry))
+	}
+}
+
+// TestCreateReusableWorkSessionKeepsRecoveryEntryWhenWorkCommitted guards the
+// no-misdelete rule: when a Work for the requestId was already committed, a
+// failing RunReusableFlow (requestId reused with a different flow) must keep
+// the Session as the retry/recovery entry instead of rolling it back.
+func TestCreateReusableWorkSessionKeepsRecoveryEntryWhenWorkCommitted(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	project := t.TempDir()
+	source := openProjectWorkTab(t, app, project, "源项目")
+	flowOne := saveReusableFlowInTab(t, app, source.ID, "流程一", "reusable-keep-1")
+	flowTwo := saveReusableFlowInTab(t, app, source.ID, "流程二", "reusable-keep-2")
+
+	const requestID = "reusable-committed-session"
+	first, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: flowOne.ID, RequestID: requestID,
+	})
+	if err != nil || first.Error != "" {
+		t.Fatalf("first run = %+v, %v", first, err)
+	}
+	bound := app.tabByID(first.TabMeta.ID)
+	if bound == nil || bound.workID == "" || bound.workRequestID != requestID {
+		t.Fatalf("first run did not bind a Work: %+v", bound)
+	}
+
+	// Reusing the requestId with a different flow is a deterministic failure
+	// AFTER the Work was committed (ErrWorkRequestIDConflict). The Session must
+	// stay as the recovery entry.
+	second, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: flowTwo.ID, RequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if second.Error == "" || !second.Recoverable {
+		t.Fatalf("conflict failure must stay recoverable: %+v", second)
+	}
+	if second.TabMeta.ID != first.TabMeta.ID {
+		t.Fatalf("recovery entry changed: first=%q second=%q", first.TabMeta.ID, second.TabMeta.ID)
+	}
+	kept := app.tabByID(first.TabMeta.ID)
+	if kept == nil || kept.workRequestID != requestID || kept.workID == "" {
+		t.Fatalf("recovery Session was damaged: %+v", kept)
+	}
 }

@@ -21,6 +21,7 @@ import type {
   CollaborationAgentRunResponse,
   CollaborationToolApprovalMode,
   CollaborationFileTransfer,
+  CollaborationFilePreview,
   StartCollaborationAgentInput,
   UpdateCollaborationAgentConfigInput,
   UpdateCollaborationProfileInput,
@@ -54,13 +55,18 @@ import type {
   CollaborationSettingsView,
   ContextInfo,
   ContextPanelInfo,
+  DecisionSkillExportResult,
   DirEntry,
   DesktopStartupSettingsView,
+	DecisionCreateInput,
+	DecisionResolveInput,
+	DecisionStateView,
   DroppedItem,
   DrawAddonGenerateInput,
   DrawAddonProviderInput,
   DrawAddonProviderView,
   DrawAddonTaskView,
+	DSHWorkbenchView,
   EffortInfo,
   FilePreview,
   HistoryMessage,
@@ -80,6 +86,9 @@ import type {
   PluginInstallOptions,
   PluginView,
   ProjectNode,
+  MarkUnreadReadInput,
+  ResolvedSession,
+  UnreadState,
   PromptHistoryEntry,
   PromptHistoryResult,
   ProviderView,
@@ -103,6 +112,8 @@ import type {
   TabMeta,
   TopicMeta,
   ToolApprovalMode,
+  VocabularyMatch,
+  VocabularyRefreshResult,
   UpdateDownloadResult,
   UpdateInfo,
   UpdateProgress,
@@ -114,6 +125,8 @@ import type {
   GitCommitView,
   GitCommitDetailView,
   WorkspaceView,
+  BrowserPermissionsView,
+  BrowserLaunchView,
 } from "./types";
 
 const GLOBAL_PROJECT_ORDER_KEY = "__global__";
@@ -279,9 +292,25 @@ export interface WorkArtifactFileIntent {
 
 export interface AppBindings extends WailsWorkBindings {
   Platform(): Promise<string>;
-	EnterWidgetMode(): Promise<WidgetSnapshot>;
-	ExitWidgetMode(tabID: string): Promise<void>;
-	IsWidgetMode(): Promise<boolean>;
+	DecisionState(): Promise<DecisionStateView>;
+	CreateDecision(input: DecisionCreateInput): Promise<unknown>;
+	ResolveDecision(input: DecisionResolveInput): Promise<DecisionStateView>;
+	DeferDecision(id: string): Promise<DecisionStateView>;
+	ResumeDecision(id: string): Promise<DecisionStateView>;
+	CancelDecision(id: string): Promise<DecisionStateView>;
+	SaveDecisionSettings(input: { externalMode: string; localOnlyUntil: string; smartGraceSec: number }): Promise<DecisionStateView>;
+	SaveDecisionChannel(input: { id: string; name: string; kind: string; enabled: boolean; connectionId: string; domain: string; chatId: string; chatType: string }): Promise<DecisionStateView>;
+	DeleteDecisionChannel(id: string): Promise<DecisionStateView>;
+	TestDecisionChannel(id: string): Promise<void>;
+	InstallDecisionSkill(): Promise<AICollaborationInjectResult>;
+	ExportDecisionSkills(): Promise<DecisionSkillExportResult>;
+  UnreadState(): Promise<UnreadState>;
+  MarkUnreadRead(input: MarkUnreadReadInput): Promise<UnreadState>;
+  ResolveLegacySessionUnread(conversationKey: string): Promise<ResolvedSession>;
+  ResolveUnreadSession(conversationKey: string): Promise<ResolvedSession>;
+  EnterWidgetMode(): Promise<WidgetSnapshot>;
+  ExitWidgetMode(tabID: string): Promise<void>;
+  IsWidgetMode(): Promise<boolean>;
 	GetWidgetSnapshot(): Promise<WidgetSnapshot>;
 	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
@@ -316,6 +345,7 @@ export interface AppBindings extends WailsWorkBindings {
   RevokeCollaborationFile(input: { sessionID: string; fileID: string }): Promise<CollaborationActionResult>;
   OpenCollaborationFile(input: { sessionID: string; fileID: string }): Promise<void>;
   RevealCollaborationFile(input: { sessionID: string; fileID: string }): Promise<void>;
+  PreviewCollaborationFile(input: { sessionID: string; fileID: string }): Promise<CollaborationFilePreview>;
   // ── Heartbeat ──
   HeartbeatListTasks(): Promise<unknown>;
   HeartbeatReloadTasks(): Promise<unknown>;
@@ -453,6 +483,9 @@ export interface AppBindings extends WailsWorkBindings {
   SetPluginEnabled(name: string, enabled: boolean): Promise<void>;
   UpdatePlugin(name: string): Promise<string>;
   PluginDoctor(name: string): Promise<PluginView>;
+	StartDSHWorkbench(name: string): Promise<DSHWorkbenchView>;
+	DSHWorkbench(name: string): Promise<DSHWorkbenchView>;
+	StopDSHWorkbench(name: string): Promise<DSHWorkbenchView>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
   UpdateMCPServer(name: string, input: MCPServerInput): Promise<void>;
   RemoveMCPServer(name: string): Promise<void>;
@@ -472,6 +505,9 @@ export interface AppBindings extends WailsWorkBindings {
   SetMCPServerEnabled(name: string, enabled: boolean): Promise<void>;
   SetMCPServerTier(name: string, tier: string): Promise<void>;
   SlashArgs(input: string): Promise<SlashArgsResult>;
+  CompleteVocabularyForTab(tabID: string, prefix: string, limit: number): Promise<VocabularyMatch[]>;
+  RecordVocabularyUseForTab(tabID: string, id: string, useID: string): Promise<void>;
+  ActivateSkillVocabularyForTab(tabID: string, name: string): Promise<VocabularyRefreshResult>;
   ListDir(rel: string): Promise<DirEntry[]>;
   ListDirForTab(tabID: string, rel: string): Promise<DirEntry[]>;
   SearchFileRefs(query: string): Promise<DirEntry[]>;
@@ -490,6 +526,7 @@ export interface AppBindings extends WailsWorkBindings {
   OpenWorkspacePath(rel: string): Promise<void>;
   OpenWorkspacePathForTab(tabID: string, rel: string): Promise<void>;
   OpenWorkArtifactForTab(tabID: string, input: WorkArtifactFileIntent): Promise<void>;
+  OpenWorkArtifactURLForTab(tabID: string, input: WorkArtifactFileIntent): Promise<void>;
   RevealWorkspacePath(rel: string): Promise<void>;
   RevealWorkspacePathForTab(tabID: string, rel: string): Promise<void>;
   RevealWorkArtifactForTab(tabID: string, input: WorkArtifactFileIntent): Promise<void>;
@@ -563,6 +600,8 @@ export interface AppBindings extends WailsWorkBindings {
   SetPermissionMode(mode: string): Promise<void>;
   AddPermissionRule(list: string, rule: string): Promise<void>;
   RemovePermissionRule(list: string, rule: string): Promise<void>;
+  SetBrowserPermissions(b: BrowserPermissionsView): Promise<void>;
+  SetBrowserLaunch(b: BrowserLaunchView): Promise<void>;
   SetSandbox(bash: string, network: boolean, workspaceRoot: string, allowWrite: string[], shell: string): Promise<void>;
   SetNetwork(n: NetworkView): Promise<void>;
   SetCollaboration(c: CollaborationSettingsView): Promise<void>;
@@ -640,6 +679,7 @@ export interface AppBindings extends WailsWorkBindings {
   ListProjectTree(): Promise<ProjectNode[]>;
   RenameProject(workspaceRoot: string, title: string): Promise<void>;
   SetProjectColor(workspaceRoot: string, color: string): Promise<void>;
+  SetProjectIcon(workspaceRoot: string, icon: string): Promise<void>;
   SetProjectPinned(workspaceRoot: string, pinned: boolean): Promise<void>;
   ReorderProjects(workspaceRoots: string[]): Promise<void>;
   CreateTopic(scope: string, workspaceRoot: string, title: string): Promise<TopicMeta>;
@@ -936,6 +976,13 @@ export function onCollaborationState(cb: (payload: unknown) => void): () => void
   return () => {};
 }
 
+export function onDecisionState(cb: (state: DecisionStateView) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("decision:state", (payload?: unknown) => cb(payload as DecisionStateView));
+  }
+  return () => {};
+}
+
 export function onCollaborationEvent(cb: (payload: unknown) => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
     return window.runtime.EventsOn("collaboration:event", (payload?: unknown) => cb(payload));
@@ -956,6 +1003,18 @@ function sessionActivatedEvent(payload: unknown): SessionActivatedEvent {
 export function onProjectTreeChanged(cb: () => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
     return window.runtime.EventsOn("project-tree:changed", () => cb());
+  }
+  return () => {};
+}
+
+const emptyUnreadState = (): UnreadState => ({
+  available: false,
+  summary: { revision: 0, totalUnread: 0, highPriorityCount: 0, conversations: [] },
+});
+
+export function onUnreadState(cb: (state: UnreadState) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("unread:state", (payload?: unknown) => cb(payload as UnreadState));
   }
   return () => {};
 }
@@ -1094,6 +1153,16 @@ function mockWidgetSkin(): string {
   if (typeof window === "undefined") return "classic";
   const value = new URLSearchParams(window.location.search).get("skin")?.trim().toLowerCase() ?? "";
   return ["classic", "bp", "instant", "pet", "recorder"].includes(value) ? value : "classic";
+}
+
+// mockDecisionSkillExportFn lets tests drive the browser mock's
+// ExportDecisionSkills outcome (exported/canceled/failure) without touching
+// Wails. Null (the default) uses the canned success result below.
+let mockDecisionSkillExportFn: (() => Promise<DecisionSkillExportResult>) | null = null;
+
+/** Test-only override for the decision-skill export browser mock. */
+export function setMockDecisionSkillExport(fn: (() => Promise<DecisionSkillExportResult>) | null): void {
+  mockDecisionSkillExportFn = fn;
 }
 
 function makeMockApp(): AppBindings {
@@ -1634,7 +1703,8 @@ function makeMockApp(): AppBindings {
     officialProviders: [
       { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
-    permissions: { mode: "ask", allow: ["ls", "read_file"], ask: [], deny: ["Bash(rm:*)"] },
+    permissions: { mode: "ask", allow: ["ls", "read_file"], ask: [], deny: ["Bash(rm:*)"], browser: { allowPasswordInput: true, allowFileUpload: true } },
+    browserLaunch: { incognito: false },
     sandbox: { bash: "enforce", network: true, workspaceRoot: "", allowWrite: [], shell: "auto" },
     network: {
       proxyMode: "auto",
@@ -1711,6 +1781,7 @@ function makeMockApp(): AppBindings {
               updatedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
             },
           ],
+          endpoints: [],
           lastError: "",
           createdAt: new Date(Date.now() - 86_400_000).toISOString(),
           updatedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
@@ -1746,6 +1817,7 @@ function makeMockApp(): AppBindings {
               updatedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
             },
           ],
+          endpoints: [],
           lastError: "",
           createdAt: new Date(Date.now() - 86_400_000).toISOString(),
           updatedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
@@ -2284,7 +2356,88 @@ function makeMockApp(): AppBindings {
       "Work features are not available in the browser dev mock. " +
       "Run the desktop app (wails dev / wails build) to use Work.",
     );
+	let mockDecisionState: DecisionStateView = {
+		available: true,
+		revision: 1,
+		queue: [],
+		deferred: [],
+		history: [],
+		channels: [],
+		settings: { externalMode: "smart", smartGraceSec: 30 },
+	};
   return {
+		async DecisionState() { return structuredClone(mockDecisionState); },
+		async CreateDecision(input) {
+			const now = new Date().toISOString();
+			const notify = input.kind === "notify";
+			const value = {
+				id: `D-MOCK-${Date.now()}`,
+				kind: notify ? "notify" as const : "ask" as const,
+				status: notify ? "applied" as const : mockDecisionState.active ? "queued" as const : "presented" as const,
+				queue_seq: mockDecisionState.revision + 1,
+				created_at: now,
+				presented_at: notify || !mockDecisionState.active ? now : undefined,
+				applied_at: notify ? now : undefined,
+				origin: { kind: "agent", agent_id: input.agentId, thread_id: input.threadId, workspace_root: input.workspaceRoot },
+				presentation: {
+					title: input.title, task_summary: input.taskSummary, why_now: input.whyNow,
+					questions: input.questions.map((q) => ({ id: q.id, header: q.header, prompt: q.prompt, options: q.options, multi_select: q.multiSelect })),
+					no_answer_policy: input.noAnswerPolicy,
+				},
+			};
+			if (notify) mockDecisionState.history.unshift(value);
+			else if (mockDecisionState.active) mockDecisionState.queue.push(value);
+			else mockDecisionState.active = value;
+			mockDecisionState.revision++;
+			return value;
+		},
+		async ResolveDecision(input) {
+			if (mockDecisionState.active?.id === input.decisionId) {
+				mockDecisionState.history.unshift({ ...mockDecisionState.active, status: "applied", answer: { selections: input.selections.map((s) => ({ question_id: s.questionId, selected: s.selected })) }, responder: { kind: "desktop", label: input.responder } });
+				mockDecisionState.active = mockDecisionState.queue.shift();
+				if (mockDecisionState.active) mockDecisionState.active.status = "presented";
+			}
+			mockDecisionState.revision++;
+			return structuredClone(mockDecisionState);
+		},
+		async DeferDecision(id) {
+			if (mockDecisionState.active?.id === id) {
+				mockDecisionState.deferred.push({ ...mockDecisionState.active, status: "deferred" });
+				mockDecisionState.active = mockDecisionState.queue.shift();
+			}
+			return structuredClone(mockDecisionState);
+		},
+		async ResumeDecision(id) {
+			const index = mockDecisionState.deferred.findIndex((item) => item.id === id);
+			if (index >= 0) mockDecisionState.queue.push({ ...mockDecisionState.deferred.splice(index, 1)[0], status: "queued" });
+			return structuredClone(mockDecisionState);
+		},
+		async CancelDecision(id) {
+			if (mockDecisionState.active?.id === id) {
+				mockDecisionState.history.unshift({ ...mockDecisionState.active, status: "cancelled" });
+				mockDecisionState.active = mockDecisionState.queue.shift();
+			}
+			return structuredClone(mockDecisionState);
+		},
+		async SaveDecisionSettings(input) {
+			mockDecisionState.settings = { externalMode: input.externalMode, localOnlyUntil: input.localOnlyUntil || undefined, smartGraceSec: input.smartGraceSec };
+			return structuredClone(mockDecisionState);
+		},
+		async SaveDecisionChannel(input) {
+			const channel = { id: input.id || `channel-${Date.now()}`, name: input.name, kind: input.kind, enabled: input.enabled, connection_id: input.connectionId, domain: input.domain, chat_id: input.chatId, chat_type: input.chatType };
+			mockDecisionState.channels = [...mockDecisionState.channels.filter((item) => item.id !== channel.id), channel];
+			return structuredClone(mockDecisionState);
+		},
+		async DeleteDecisionChannel(id) {
+			mockDecisionState.channels = mockDecisionState.channels.filter((item) => item.id !== id);
+			return structuredClone(mockDecisionState);
+		},
+		async TestDecisionChannel() {},
+		async InstallDecisionSkill() { return { ok: true, path: "", skillPath: "~/.codex/skills/ask-workground2-owner" }; },
+		async ExportDecisionSkills() {
+			if (mockDecisionSkillExportFn) return mockDecisionSkillExportFn();
+			return { exported: true, canceled: false, path: "C:\\Downloads\\workground2-owner-skills.zip" };
+		},
     async GetCollaborationState() { return { status: "disconnected", members: [], timeline: [] }; },
     async RetryCollaboration() { return { status: "disconnected", members: [], timeline: [] }; },
     async HostCollaborationRoom() { throw new Error("Use the collaboration browser transport in preview mode"); },
@@ -2299,7 +2452,7 @@ function makeMockApp(): AppBindings {
     async RespondCollaborationAgentRun(input) { return { ok: false, requestID: `${input.runID}:respond`, error: "Collaboration preview transport unavailable", retryable: true }; },
     async RespondCollaborationRequest(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
     async UpdateCollaborationAgentConfig(input) { return { status: "disconnected", members: [], timeline: [], agentConfig: input.config }; },
-    async UpdateCollaborationProfile(input) { return { status: "disconnected", members: [], timeline: [], agentConfig: { alias: input.agentName, autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "off" } }; },
+    async UpdateCollaborationProfile(input) { return { status: "disconnected", members: [], timeline: [], agentConfig: { alias: input.agentName, autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "interval" } }; },
     async UpdateCollaborationToolApprovalMode(input) { return { status: "disconnected", members: [], timeline: [], toolApprovalMode: input.mode }; },
     async ShareCollaborationFiles() { return []; },
     async ReceiveCollaborationFile() { throw new Error("File transfer preview unavailable"); },
@@ -2308,6 +2461,7 @@ function makeMockApp(): AppBindings {
     async RevokeCollaborationFile() { return { ok: false, error: "File transfer preview unavailable", retryable: true }; },
     async OpenCollaborationFile() { throw new Error("File transfer preview unavailable"); },
     async RevealCollaborationFile() { throw new Error("File transfer preview unavailable"); },
+    async PreviewCollaborationFile() { throw new Error("File preview unavailable"); },
     async EnterWidgetMode() {
       widgetMode = true;
       return mockWidgetSnapshot();
@@ -3488,6 +3642,15 @@ function makeMockApp(): AppBindings {
         error: "plugin is not installed",
       };
     },
+		async StartDSHWorkbench(name: string) {
+			return { pluginName: name, url: "http://127.0.0.1:3080", status: "ready" as const, startedAt: new Date().toISOString() };
+		},
+		async DSHWorkbench(name: string) {
+			return { pluginName: name, status: "stopped" as const };
+		},
+		async StopDSHWorkbench(name: string) {
+			return { pluginName: name, status: "stopped" as const };
+		},
     async AddMCPServer(input: MCPServerInput) {
       const tools = input.transport === "stdio" ? 3 : 5;
       capServers.push({
@@ -3686,6 +3849,21 @@ function makeMockApp(): AppBindings {
         .map((it) => ({ label: it.label, insert: it.insert, hint: it.hint, descend: it.descend ?? false }));
       return { items, from };
     },
+    async CompleteVocabularyForTab(_tabID: string, prefix: string, limit: number) {
+      const terms: VocabularyMatch[] = [
+        { id: "mock-video-v5", text: "多模态生视频V5", suffix: "", kind: "noun", source: "workspace" },
+        { id: "mock-role-pro", text: "角色设定Pro", suffix: "", kind: "noun", source: "skill" },
+      ];
+      const needle = prefix.toLowerCase();
+      return terms
+        .filter((term) => term.text.toLowerCase().startsWith(needle) && term.text.length > prefix.length)
+        .slice(0, limit)
+        .map((term) => ({ ...term, suffix: term.text.slice(prefix.length) }));
+    },
+    async RecordVocabularyUseForTab(_tabID: string, _id: string, _useID: string) {},
+    async ActivateSkillVocabularyForTab(_tabID: string, name: string) {
+      return { skill: name, termCount: 2, added: 2, warnings: [] };
+    },
     async ListDir(rel: string) {
       // A tiny fake tree so the @ menu is navigable in browser dev.
       if (rel === "" || rel === "./") {
@@ -3801,6 +3979,9 @@ function makeMockApp(): AppBindings {
     },
     async OpenWorkArtifactForTab(_tabID: string, input: WorkArtifactFileIntent) {
       console.info("mock OpenWorkArtifactForTab", input);
+    },
+    async OpenWorkArtifactURLForTab(_tabID: string, input: WorkArtifactFileIntent) {
+      console.info("mock OpenWorkArtifactURLForTab", input);
     },
     async RevealWorkspacePath(rel: string) {
       console.info("mock RevealWorkspacePath", rel);
@@ -4055,6 +4236,18 @@ function makeMockApp(): AppBindings {
     async PickSessionBackgroundFolder() {
       return "";
     },
+    async UnreadState() {
+      return emptyUnreadState();
+    },
+    async MarkUnreadRead() {
+      return emptyUnreadState();
+    },
+    async ResolveLegacySessionUnread(_conversationKey: string) {
+      throw new Error("ResolveLegacySessionUnread is not available in browser dev mode");
+    },
+    async ResolveUnreadSession(_conversationKey: string) {
+      throw new Error("ResolveUnreadSession is not available in browser dev mode");
+    },
     async SessionBackground(_tabID: string) {
       return { path: "", url: "" };
     },
@@ -4160,6 +4353,12 @@ function makeMockApp(): AppBindings {
       const k = list as "allow" | "ask" | "deny";
       settings.permissions[k] = settings.permissions[k].filter((r) => r !== rule);
     },
+    async SetBrowserPermissions(b: BrowserPermissionsView) {
+      settings.permissions.browser = { allowPasswordInput: b.allowPasswordInput, allowFileUpload: b.allowFileUpload };
+    },
+    async SetBrowserLaunch(b: BrowserLaunchView) {
+      settings.browserLaunch = { incognito: b.incognito };
+    },
         async SetSandbox(bash: string, network: boolean, workspaceRoot: string, allowWrite: string[], shell: string) {
           settings.sandbox = { bash, network, workspaceRoot, allowWrite, shell };
         },
@@ -4250,6 +4449,7 @@ function makeMockApp(): AppBindings {
               secretSet: true,
             },
             sessionMappings: [],
+            endpoints: [],
             lastError: "",
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -4645,6 +4845,19 @@ function makeMockApp(): AppBindings {
         (workspaceRoot ? tab.workspaceRoot === workspaceRoot : tab.scope === "global")
           ? { ...tab, projectColor: node.projectColor }
         : tab,
+      );
+    },
+    async SetProjectIcon(workspaceRoot: string, icon: string) {
+      const node = workspaceRoot
+        ? mockProjectTree.find((item) => item.root === workspaceRoot)
+        : mockProjectTree.find((item) => item.kind === "global_folder");
+      if (!node) return;
+      node.projectIcon = icon || undefined;
+      for (const child of projectChildren(node)) child.projectIcon = node.projectIcon;
+      mockTabs = mockTabs.map((tab) =>
+        (workspaceRoot ? tab.workspaceRoot === workspaceRoot : tab.scope === "global")
+          ? { ...tab, projectIcon: node.projectIcon }
+          : tab,
       );
     },
     async SetProjectPinned(workspaceRoot: string, pinned: boolean) {

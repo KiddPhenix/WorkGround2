@@ -463,6 +463,8 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# path   = \"/opt/homebrew/bin/bash\"   # absolute path to the shell executable; empty = PATH lookup\n\n")
 	}
 
+	renderBrowserConfig(&b, c, true)
+
 	renderLSPConfig(&b, c.LSP)
 
 	b.WriteString("[skills]\n")
@@ -565,6 +567,14 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "app_id = %q\n", c.Bot.QQ.AppID)
 		fmt.Fprintf(&b, "app_secret_env = %q\n", c.Bot.QQ.AppSecretEnv)
 		fmt.Fprintf(&b, "sandbox = %v\n", c.Bot.QQ.Sandbox)
+		b.WriteString("\n[bot.qq.access]\n")
+		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.QQ.Access.Enabled)
+		fmt.Fprintf(&b, "allow_all = %v\n", c.Bot.QQ.Access.AllowAll)
+		fmt.Fprintf(&b, "pairing_enabled = %v\n", c.Bot.QQ.Access.PairingEnabled)
+		fmt.Fprintf(&b, "users = %s\n", renderStringArray(c.Bot.QQ.Access.Users))
+		fmt.Fprintf(&b, "groups = %s\n", renderStringArray(c.Bot.QQ.Access.Groups))
+		fmt.Fprintf(&b, "approvers = %s\n", renderStringArray(c.Bot.QQ.Access.Approvers))
+		fmt.Fprintf(&b, "admins = %s\n", renderStringArray(c.Bot.QQ.Access.Admins))
 		b.WriteString("\n[bot.feishu]\n")
 		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Feishu.Enabled)
 		fmt.Fprintf(&b, "app_id = %q\n", c.Bot.Feishu.AppID)
@@ -611,6 +621,19 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if len(conn.SessionMappings) > 0 {
 				fmt.Fprintf(&b, "session_mappings = %s\n", renderBotSessionMappings(conn.SessionMappings))
 			}
+			if len(conn.Endpoints) > 0 {
+				fmt.Fprintf(&b, "endpoints = %s\n", renderBotEndpoints(conn.Endpoints))
+			}
+			// access must be the last sub-table of the connection record: keys
+			// after a [bot.connections.access] header would belong to access.
+			b.WriteString("\n[bot.connections.access]\n")
+			fmt.Fprintf(&b, "enabled = %v\n", conn.Access.Enabled)
+			fmt.Fprintf(&b, "allow_all = %v\n", conn.Access.AllowAll)
+			fmt.Fprintf(&b, "pairing_enabled = %v\n", conn.Access.PairingEnabled)
+			fmt.Fprintf(&b, "users = %s\n", renderStringArray(conn.Access.Users))
+			fmt.Fprintf(&b, "groups = %s\n", renderStringArray(conn.Access.Groups))
+			fmt.Fprintf(&b, "approvers = %s\n", renderStringArray(conn.Access.Approvers))
+			fmt.Fprintf(&b, "admins = %s\n", renderStringArray(conn.Access.Admins))
 		}
 		b.WriteString("\n")
 	}
@@ -985,6 +1008,13 @@ func RenderTOMLProjectDelta(c *Config) string {
 		b.WriteString("\n")
 	}
 
+	// [tools.browser] is a project/runtime capability. Emit it only when it
+	// differs from built-in defaults so saving an unrelated legacy config cannot
+	// pin the newly introduced browser defaults into that project.
+	if !reflect.DeepEqual(c.Tools.Browser, d.Tools.Browser) {
+		renderBrowserConfig(&b, c, false)
+	}
+
 	// [lsp]
 	if !reflect.DeepEqual(c.LSP, d.LSP) {
 		renderLSPConfig(&b, c.LSP)
@@ -1111,6 +1141,42 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 
 	return b.String()
+}
+
+func renderBrowserConfig(b *strings.Builder, c *Config, annotated bool) {
+	if b == nil || c == nil {
+		return
+	}
+	b.WriteString("[tools.browser]\n")
+	if annotated {
+		fmt.Fprintf(b, "enabled = %v   # false hides all browser tools and skips the runtime manager\n", c.BrowserEnabled())
+		fmt.Fprintf(b, "kind = %q   # auto|chrome|edge|chromium|chrome_for_testing\n", c.BrowserKind())
+		fmt.Fprintf(b, "executable_path = %q   # optional absolute browser executable; takes priority over kind discovery\n", strings.TrimSpace(c.Tools.Browser.ExecutablePath))
+		fmt.Fprintf(b, "headless = %v   # false keeps the browser visible for user observation\n", c.BrowserHeadless())
+		fmt.Fprintf(b, "idle_timeout_seconds = %d   # per-session browser idle lifetime; 0 = never auto-close from idleness (30..86400 for positive)\n", c.BrowserIdleTimeoutSeconds())
+		fmt.Fprintf(b, "action_timeout_seconds = %d   # navigation/action cap (1..300)\n", c.BrowserActionTimeoutSeconds())
+		fmt.Fprintf(b, "state_timeout_seconds = %d   # DOM/accessibility observation cap (1..300)\n", c.BrowserStateTimeoutSeconds())
+		fmt.Fprintf(b, "settle_milliseconds = %d   # post-action DOM quiet window (50..5000)\n", c.BrowserSettleMilliseconds())
+		fmt.Fprintf(b, "max_text_chars = %d   # page text cap returned to the model (1000..60000)\n", c.BrowserMaxTextChars())
+		fmt.Fprintf(b, "max_elements = %d   # indexed interactive-element cap (1..2000)\n", c.BrowserMaxElements())
+		fmt.Fprintf(b, "allow_password_input = %v   # allow browser_type to type into password inputs (default true; false hard-rejects)\n", c.BrowserAllowPasswordInput())
+		fmt.Fprintf(b, "allow_file_upload = %v   # allow browser_upload to set local files on file inputs (default true; false hard-rejects)\n", c.BrowserAllowFileUpload())
+		fmt.Fprintf(b, "incognito = %v   # launch new browser processes in Chromium incognito mode (default false; affects only new processes)\n\n", c.BrowserIncognito())
+		return
+	}
+	fmt.Fprintf(b, "enabled = %v\n", c.BrowserEnabled())
+	fmt.Fprintf(b, "kind = %q\n", c.BrowserKind())
+	fmt.Fprintf(b, "executable_path = %q\n", strings.TrimSpace(c.Tools.Browser.ExecutablePath))
+	fmt.Fprintf(b, "headless = %v\n", c.BrowserHeadless())
+	fmt.Fprintf(b, "idle_timeout_seconds = %d\n", c.BrowserIdleTimeoutSeconds())
+	fmt.Fprintf(b, "action_timeout_seconds = %d\n", c.BrowserActionTimeoutSeconds())
+	fmt.Fprintf(b, "state_timeout_seconds = %d\n", c.BrowserStateTimeoutSeconds())
+	fmt.Fprintf(b, "settle_milliseconds = %d\n", c.BrowserSettleMilliseconds())
+	fmt.Fprintf(b, "max_text_chars = %d\n", c.BrowserMaxTextChars())
+	fmt.Fprintf(b, "max_elements = %d\n", c.BrowserMaxElements())
+	fmt.Fprintf(b, "allow_password_input = %v\n", c.BrowserAllowPasswordInput())
+	fmt.Fprintf(b, "allow_file_upload = %v\n", c.BrowserAllowFileUpload())
+	fmt.Fprintf(b, "incognito = %v\n\n", c.BrowserIncognito())
 }
 
 func renderPricingInline(p *provider.Pricing) string {
@@ -1476,6 +1542,31 @@ func renderBotSessionMappings(mappings []BotConnectionSessionMapping) string {
 		}
 		if mapping.UpdatedAt != "" {
 			parts["updated_at"] = mapping.UpdatedAt
+		}
+		b.WriteString(renderStringMap(parts))
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+func renderBotEndpoints(endpoints []BotConnectionRemote) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, endpoint := range endpoints {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		parts := map[string]string{
+			"remote_id": endpoint.RemoteID,
+		}
+		if endpoint.ChatType != "" {
+			parts["chat_type"] = endpoint.ChatType
+		}
+		if endpoint.ThreadID != "" {
+			parts["thread_id"] = endpoint.ThreadID
+		}
+		if endpoint.UpdatedAt != "" {
+			parts["updated_at"] = endpoint.UpdatedAt
 		}
 		b.WriteString(renderStringMap(parts))
 	}

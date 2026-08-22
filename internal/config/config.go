@@ -112,11 +112,19 @@ type DesktopConfig struct {
 }
 
 const (
-	SessionBackgroundSourceFile   = "file"
-	SessionBackgroundSourceFolder = "folder"
-	SessionBackgroundModePattern  = "pattern"
-	SessionBackgroundModeSolid    = "solid"
-	SessionBackgroundModeCustom   = "custom"
+	SessionBackgroundSourceFile     = "file"
+	SessionBackgroundSourceFolder   = "folder"
+	SessionBackgroundModePattern    = "pattern"
+	SessionBackgroundModeSolid      = "solid"
+	SessionBackgroundModeWaves      = "waves"
+	SessionBackgroundModeAurora     = "aurora"
+	SessionBackgroundModeNebula     = "nebula"
+	SessionBackgroundModeStarfield  = "starfield"
+	SessionBackgroundModeBlackhole  = "blackhole"
+	SessionBackgroundModeMoonclouds = "moonclouds"
+	SessionBackgroundModeBiolume    = "biolume"
+	SessionBackgroundModeDunes      = "dunes"
+	SessionBackgroundModeCustom     = "custom"
 )
 
 // DesktopSessionBackgroundConfig is a user-level, presentation-only image pool.
@@ -313,6 +321,22 @@ func normalizeSessionBackgroundMode(mode string) string {
 		return SessionBackgroundModePattern
 	case SessionBackgroundModeSolid:
 		return SessionBackgroundModeSolid
+	case SessionBackgroundModeWaves:
+		return SessionBackgroundModeWaves
+	case SessionBackgroundModeAurora:
+		return SessionBackgroundModeAurora
+	case SessionBackgroundModeNebula:
+		return SessionBackgroundModeNebula
+	case SessionBackgroundModeStarfield:
+		return SessionBackgroundModeStarfield
+	case SessionBackgroundModeBlackhole:
+		return SessionBackgroundModeBlackhole
+	case SessionBackgroundModeMoonclouds:
+		return SessionBackgroundModeMoonclouds
+	case SessionBackgroundModeBiolume:
+		return SessionBackgroundModeBiolume
+	case SessionBackgroundModeDunes:
+		return SessionBackgroundModeDunes
 	case SessionBackgroundModeCustom, "image", "images":
 		return SessionBackgroundModeCustom
 	default:
@@ -750,9 +774,23 @@ type BotConnectionConfig struct {
 	Access           BotAccessConfig               `toml:"access"`
 	Credential       BotConnectionCredential       `toml:"credential"`
 	SessionMappings  []BotConnectionSessionMapping `toml:"session_mappings"`
-	LastError        string                        `toml:"last_error"`
-	CreatedAt        string                        `toml:"created_at"`
-	UpdatedAt        string                        `toml:"updated_at"`
+	// Endpoints 是已授权远端会话的稳定端点登记表，独立于 Session binding：
+	// 自动 IM Session 回收只清理 session_mappings，不删除已登记端点。端点用于
+	// 主人通知/问答通道的目标发现与发送，不创建或恢复任何 AI Session。
+	Endpoints []BotConnectionRemote `toml:"endpoints"`
+	LastError string                `toml:"last_error"`
+	CreatedAt string                `toml:"created_at"`
+	UpdatedAt string                `toml:"updated_at"`
+}
+
+// BotConnectionRemote 是一条与 Session 生命周期无关的远端端点。RemoteID 是
+// 平台会话 ID（ChatID）；ChatType/ThreadID 用于区分同一 RemoteID 下的群、
+// 话题等不同目标。同一 (RemoteID, ChatType, ThreadID) 重复入站幂等复用。
+type BotConnectionRemote struct {
+	RemoteID  string `toml:"remote_id"`
+	ChatType  string `toml:"chat_type"`
+	ThreadID  string `toml:"thread_id"`
+	UpdatedAt string `toml:"updated_at"`
 }
 
 type BotConnectionCredential struct {
@@ -1503,6 +1541,7 @@ type ToolsConfig struct {
 	BackgroundJobs        BackgroundJobsConfig `toml:"background_jobs"`
 	Search                SearchConfig         `toml:"search"`
 	Shell                 ShellConfig          `toml:"shell"`
+	Browser               BrowserConfig        `toml:"browser"`
 }
 
 const (
@@ -1568,6 +1607,202 @@ type SearchConfig struct {
 type ShellConfig struct {
 	Prefer string `toml:"prefer"`
 	Path   string `toml:"path"`
+}
+
+// BrowserConfig tunes the browser automation tools.
+type BrowserConfig struct {
+	Enabled              *bool  `toml:"enabled"`
+	Kind                 string `toml:"kind"`
+	ExecutablePath       string `toml:"executable_path"`
+	Headless             *bool  `toml:"headless"`
+	IdleTimeoutSeconds   *int   `toml:"idle_timeout_seconds"`
+	ActionTimeoutSeconds *int   `toml:"action_timeout_seconds"`
+	StateTimeoutSeconds  *int   `toml:"state_timeout_seconds"`
+	SettleMilliseconds   *int   `toml:"settle_milliseconds"`
+	MaxTextChars         *int   `toml:"max_text_chars"`
+	MaxElements          *int   `toml:"max_elements"`
+	// AllowPasswordInput controls whether browser_type may type into password
+	// inputs. nil (old config without the key) defaults to true.
+	AllowPasswordInput *bool `toml:"allow_password_input"`
+	// AllowFileUpload controls whether browser_upload may set local files on
+	// file inputs. nil (old config without the key) defaults to true.
+	AllowFileUpload *bool `toml:"allow_file_upload"`
+	// Incognito controls whether newly launched Chrome/Edge/Chromium processes
+	// use Chromium incognito mode. nil (old config without the key) defaults to
+	// false; the switch only affects processes started after the change.
+	Incognito *bool `toml:"incognito"`
+}
+
+const (
+	// defaultBrowserIdleTimeoutSec = 0 means the browser is never auto-closed
+	// for idleness; only explicit Close/CloseSession and lifecycle cleanup do.
+	defaultBrowserIdleTimeoutSec   = 0
+	defaultBrowserActionTimeoutSec = 30
+	defaultBrowserStateTimeoutSec  = 15
+	defaultBrowserSettleMs         = 300
+	defaultBrowserMaxTextChars     = 20000
+	defaultBrowserMaxElements      = 400
+	minBrowserIdleTimeoutSec       = 30
+	maxBrowserIdleTimeoutSec       = 86400
+	minBrowserActionTimeoutSec     = 1
+	maxBrowserActionTimeoutSec     = 300
+	minBrowserStateTimeoutSec      = 1
+	maxBrowserStateTimeoutSec      = 300
+	minBrowserSettleMs             = 50
+	maxBrowserSettleMs             = 5000
+	minBrowserMaxTextChars         = 1000
+	maxBrowserMaxTextChars         = 60000
+	minBrowserMaxElements          = 1
+	maxBrowserMaxElements          = 2000
+)
+
+var browserKinds = map[string]bool{
+	"auto":               true,
+	"chrome":             true,
+	"chromium":           true,
+	"edge":               true,
+	"chrome_for_testing": true,
+}
+
+// BrowserEnabled reports whether browser tools are enabled.
+func (c *Config) BrowserEnabled() bool {
+	if c.Tools.Browser.Enabled != nil {
+		return *c.Tools.Browser.Enabled
+	}
+	return true
+}
+
+// BrowserKind returns a validated browser family. Unknown and blank values use
+// auto discovery so a typo cannot make application boot fail.
+func (c *Config) BrowserKind() string {
+	kind := strings.ToLower(strings.TrimSpace(c.Tools.Browser.Kind))
+	if !browserKinds[kind] {
+		return "auto"
+	}
+	return kind
+}
+
+// BrowserHeadless reports whether the browser should run without a visible UI.
+func (c *Config) BrowserHeadless() bool {
+	return c.Tools.Browser.Headless != nil && *c.Tools.Browser.Headless
+}
+
+// BrowserAllowPasswordInput reports whether browser_type may type into password
+// inputs. nil and old configs without the key default to true; explicit false
+// hard-rejects password typing.
+func (c *Config) BrowserAllowPasswordInput() bool {
+	return c.Tools.Browser.AllowPasswordInput == nil || *c.Tools.Browser.AllowPasswordInput
+}
+
+// BrowserAllowFileUpload reports whether browser_upload may set local files on
+// file inputs. nil and old configs without the key default to true; explicit
+// false hard-rejects uploads.
+func (c *Config) BrowserAllowFileUpload() bool {
+	return c.Tools.Browser.AllowFileUpload == nil || *c.Tools.Browser.AllowFileUpload
+}
+
+// BrowserIncognito reports whether newly launched browser processes should run
+// in Chromium incognito mode. nil and old configs without the key default to
+// false; the switch affects only processes started after the change, never
+// already-running windows.
+func (c *Config) BrowserIncognito() bool {
+	return c.Tools.Browser.Incognito != nil && *c.Tools.Browser.Incognito
+}
+
+// BrowserIdleTimeoutSeconds returns the browser idle timeout in seconds. 0 is
+// a legal special value that disables the idle reaper (the browser is never
+// auto-closed for idleness); positive values are clamped to 30..86400.
+func (c *Config) BrowserIdleTimeoutSeconds() int {
+	return boundedBrowserIdleTimeout(c.Tools.Browser.IdleTimeoutSeconds)
+}
+
+// BrowserActionTimeoutSeconds returns the action timeout.
+func (c *Config) BrowserActionTimeoutSeconds() int {
+	return boundedBrowserInt(c.Tools.Browser.ActionTimeoutSeconds, defaultBrowserActionTimeoutSec, minBrowserActionTimeoutSec, maxBrowserActionTimeoutSec)
+}
+
+// BrowserStateTimeoutSeconds returns the state observation timeout.
+func (c *Config) BrowserStateTimeoutSeconds() int {
+	return boundedBrowserInt(c.Tools.Browser.StateTimeoutSeconds, defaultBrowserStateTimeoutSec, minBrowserStateTimeoutSec, maxBrowserStateTimeoutSec)
+}
+
+// BrowserSettleMilliseconds returns the settle window.
+func (c *Config) BrowserSettleMilliseconds() int {
+	return boundedBrowserInt(c.Tools.Browser.SettleMilliseconds, defaultBrowserSettleMs, minBrowserSettleMs, maxBrowserSettleMs)
+}
+
+// BrowserMaxTextChars returns the max page text chars.
+func (c *Config) BrowserMaxTextChars() int {
+	return boundedBrowserInt(c.Tools.Browser.MaxTextChars, defaultBrowserMaxTextChars, minBrowserMaxTextChars, maxBrowserMaxTextChars)
+}
+
+// BrowserMaxElements returns the max interactive elements.
+func (c *Config) BrowserMaxElements() int {
+	return boundedBrowserInt(c.Tools.Browser.MaxElements, defaultBrowserMaxElements, minBrowserMaxElements, maxBrowserMaxElements)
+}
+
+// BrowserConfigWarnings reports recoverable normalization so frontends can
+// explain why runtime behavior differs from a malformed config value.
+func (c *Config) BrowserConfigWarnings() []string {
+	if c == nil {
+		return nil
+	}
+	var warnings []string
+	rawKind := strings.ToLower(strings.TrimSpace(c.Tools.Browser.Kind))
+	if rawKind != "" && !browserKinds[rawKind] {
+		warnings = append(warnings, fmt.Sprintf("tools.browser.kind %q is unsupported; using auto", c.Tools.Browser.Kind))
+	}
+	checks := []struct {
+		name  string
+		raw   *int
+		value int
+	}{
+		{"idle_timeout_seconds", c.Tools.Browser.IdleTimeoutSeconds, c.BrowserIdleTimeoutSeconds()},
+		{"action_timeout_seconds", c.Tools.Browser.ActionTimeoutSeconds, c.BrowserActionTimeoutSeconds()},
+		{"state_timeout_seconds", c.Tools.Browser.StateTimeoutSeconds, c.BrowserStateTimeoutSeconds()},
+		{"settle_milliseconds", c.Tools.Browser.SettleMilliseconds, c.BrowserSettleMilliseconds()},
+		{"max_text_chars", c.Tools.Browser.MaxTextChars, c.BrowserMaxTextChars()},
+		{"max_elements", c.Tools.Browser.MaxElements, c.BrowserMaxElements()},
+	}
+	for _, check := range checks {
+		if check.raw != nil && *check.raw != check.value {
+			warnings = append(warnings, fmt.Sprintf("tools.browser.%s=%d is out of range; using %d", check.name, *check.raw, check.value))
+		}
+	}
+	return warnings
+}
+
+// boundedBrowserIdleTimeout normalizes a configured browser idle timeout:
+// nil falls back to 0 (never auto-close), 0 is kept as the disable sentinel,
+// and 1..29 / negative values clamp to the 30s floor while values above
+// 86400 clamp to the cap. Negatives are never treated as "disabled".
+func boundedBrowserIdleTimeout(value *int) int {
+	if value == nil {
+		return defaultBrowserIdleTimeoutSec
+	}
+	if *value == 0 {
+		return 0
+	}
+	if *value < minBrowserIdleTimeoutSec {
+		return minBrowserIdleTimeoutSec
+	}
+	if *value > maxBrowserIdleTimeoutSec {
+		return maxBrowserIdleTimeoutSec
+	}
+	return *value
+}
+
+func boundedBrowserInt(value *int, fallback, minValue, maxValue int) int {
+	if value == nil {
+		return fallback
+	}
+	if *value < minValue {
+		return minValue
+	}
+	if *value > maxValue {
+		return maxValue
+	}
+	return *value
 }
 
 // PermissionsConfig declares the per-call permission policy (see
@@ -1720,6 +1955,20 @@ func Default() *Config {
 		// so an absent [sandbox] in a user's file keeps egress (zero value would
 		// wrongly deny it).
 		Sandbox: SandboxConfig{Bash: "enforce", Network: true},
+		Tools: ToolsConfig{Browser: BrowserConfig{
+			Enabled:              boolConfigPtr(true),
+			Kind:                 "auto",
+			Headless:             boolConfigPtr(false),
+			IdleTimeoutSeconds:   intConfigPtr(defaultBrowserIdleTimeoutSec),
+			ActionTimeoutSeconds: intConfigPtr(defaultBrowserActionTimeoutSec),
+			StateTimeoutSeconds:  intConfigPtr(defaultBrowserStateTimeoutSec),
+			SettleMilliseconds:   intConfigPtr(defaultBrowserSettleMs),
+			MaxTextChars:         intConfigPtr(defaultBrowserMaxTextChars),
+			MaxElements:          intConfigPtr(defaultBrowserMaxElements),
+			AllowPasswordInput:   boolConfigPtr(true),
+			AllowFileUpload:      boolConfigPtr(true),
+			Incognito:            boolConfigPtr(false),
+		}},
 		// LSP tools on by default, but dormant until a language server is on PATH;
 		// a missing server yields an install hint rather than an error.
 		LSP:           LSPConfig{Enabled: true},
@@ -1747,6 +1996,10 @@ func Default() *Config {
 		},
 	}
 }
+
+func boolConfigPtr(value bool) *bool { return &value }
+
+func intConfigPtr(value int) *int { return &value }
 
 // WriteFile writes the configuration to path as annotated TOML. The write is
 // atomic + fsynced so an interrupted write or power loss can never truncate the

@@ -93,6 +93,10 @@ export interface ResultCardProps {
   /** Called when the user wants to open a file with the system handler.
    *  May return void or Promise<void>. */
   onOpen?: (intent: FileOpenIntent) => void | Promise<void>;
+  /** Called when the user wants to open a URL artifact in the Desktop
+   *  browser. The backend resolves the URL from the authoritative Work
+   *  identity — the caller never supplies the URL itself. */
+  onOpenURL?: (intent: FileOpenIntent) => void | Promise<void>;
   /** Called when the user wants to download/save a file.
    *  May return void or Promise<void>. */
   onDownload?: (intent: FileDownloadIntent) => void | Promise<void>;
@@ -128,7 +132,8 @@ function artifactKey(kind: string, type?: string, name?: string): string {
   return `${type ?? ''} ${name ?? ''} ${kind}`.toLowerCase();
 }
 
-function fileIcon(kind: string, type?: string, name?: string): React.ReactNode {
+function fileIcon(kind: string, type?: string, name?: string, isURL?: boolean): React.ReactNode {
+  if (isURL) return <ExternalLink size={18} />;
   const key = artifactKey(kind, type, name);
   if (key.includes('image')) return <FileImage size={18} />;
   if (key.includes('audio')) return <FileAudio size={18} />;
@@ -166,7 +171,8 @@ function fileIcon(kind: string, type?: string, name?: string): React.ReactNode {
   return <File size={18} />;
 }
 
-function artifactTone(kind: string, type?: string, name?: string): string {
+function artifactTone(kind: string, type?: string, name?: string, isURL?: boolean): string {
+  if (isURL) return 'link';
   const key = artifactKey(kind, type, name);
   if (key.includes('pdf')) return 'pdf';
   if (key.includes('sheet') || key.includes('xls') || key.includes('excel')) return 'sheet';
@@ -222,10 +228,16 @@ const FileActions: React.FC<FileActionsProps> = ({
   actionErrors,
   onFire,
 }) => {
-  const hasReadableSource = Boolean(refInfo.relativePath || refInfo.blobDigest);
-  const canOpen = available.open && hasReadableSource && refInfo.status !== 'missing';
-  const canDownload = available.download && Boolean(refInfo.relativePath);
-  const canLocate = available.locate && hasReadableSource && refInfo.status !== 'missing';
+  const isURLRef = Boolean(refInfo.url);
+  const hasReadableSource = isURLRef
+    ? isURLRef
+    : Boolean(refInfo.relativePath || refInfo.blobDigest);
+  const canOpen = available.open && hasReadableSource && (
+    isURLRef ? refInfo.status === 'available' : refInfo.status !== 'missing'
+  );
+  // URL refs carry no file source: file-only actions never apply.
+  const canDownload = available.download && !isURLRef && Boolean(refInfo.relativePath);
+  const canLocate = available.locate && !isURLRef && hasReadableSource && refInfo.status !== 'missing';
 
   function actionLabel(kind: FileActionKind): string {
     switch (kind) {
@@ -237,7 +249,7 @@ const FileActions: React.FC<FileActionsProps> = ({
 
   function actionDescription(kind: FileActionKind): string {
     switch (kind) {
-      case 'open': return '使用默认应用打开';
+      case 'open': return isURLRef ? '在浏览器中打开' : '使用默认应用打开';
       case 'download': return '下载';
       case 'locate': return '在文件管理器中显示';
     }
@@ -301,6 +313,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
   slot,
   paused = false,
   onOpen,
+  onOpenURL,
   onDownload,
   onLocate,
   onRetry,
@@ -462,7 +475,9 @@ export const ResultCard: React.FC<ResultCardProps> = ({
       let intent: unknown;
       switch (kind) {
         case 'open':
-          handler = onOpen as ((intent: unknown) => void | Promise<void>) | undefined;
+          // URL refs open through the Desktop browser handler with the same
+          // authoritative identity; the URL itself is resolved server-side.
+          handler = (ref.url ? onOpenURL : onOpen) as ((intent: unknown) => void | Promise<void>) | undefined;
           intent = {
             workId: slot.workId,
             definitionRevision: slot.definitionRev,
@@ -509,7 +524,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
         clearInFlight(actionKey);
       }
     },
-    [slot, onOpen, onDownload, onLocate, markInFlight, clearInFlight, clearActionError, setActionError],
+    [slot, onOpen, onOpenURL, onDownload, onLocate, markInFlight, clearInFlight, clearActionError, setActionError],
   );
 
   // ── slot retry fire ───────────────────────────────────────────────────
@@ -571,10 +586,10 @@ export const ResultCard: React.FC<ResultCardProps> = ({
       <div className="wg2-rc-header">
         <span
           className="wg2-rc-hero-icon"
-          data-artifact-tone={artifactTone(slot.kind, singleRef?.type, singleRef?.name ?? slot.title)}
+          data-artifact-tone={artifactTone(slot.kind, singleRef?.type, singleRef?.name ?? slot.title, Boolean(singleRef?.url))}
           aria-hidden="true"
         >
-          {fileIcon(slot.kind, singleRef?.type, singleRef?.name ?? slot.title)}
+          {fileIcon(slot.kind, singleRef?.type, singleRef?.name ?? slot.title, Boolean(singleRef?.url))}
         </span>
         <span className="wg2-rc-heading">
           <span className="wg2-rc-title" title={displayTitle}>
@@ -745,11 +760,12 @@ export const ResultCard: React.FC<ResultCardProps> = ({
                 data-testid={`result-card-file-${ref.id}`}
               >
               <span className="wg2-rc-file-icon" aria-hidden="true">
-                {fileIcon(slot.kind, ref.type, ref.name)}
+                {fileIcon(slot.kind, ref.type, ref.name, Boolean(ref.url))}
               </span>
               <span
                 className="wg2-rc-file-name"
                 data-status={ref.status}
+                data-url-ref={ref.url ? 'true' : undefined}
                 title={ref.name ?? ref.id}
               >
                 {ref.name ?? ref.id}
@@ -760,7 +776,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
               <FileActions
                 refInfo={ref}
                 available={{
-                  open: Boolean(onOpen),
+                  open: Boolean(ref.url ? onOpenURL : onOpen),
                   download: Boolean(onDownload),
                   locate: Boolean(onLocate),
                 }}
@@ -768,8 +784,8 @@ export const ResultCard: React.FC<ResultCardProps> = ({
                 actionErrors={actionErrorsRender}
                 onFire={fireFileAction}
               />
-              {/* Preview button for inline/filecard artifacts */}
-              {onPreview && ref.status === 'available' && (
+              {/* Preview button for inline/filecard artifacts — never for URL refs */}
+              {onPreview && !ref.url && ref.status === 'available' && (
                 <button
                   type="button"
                   className={`wg2-rc-file-btn${previewBusy[ref.id] ? ' wg2-rc-file-btn--busy' : ''}`}

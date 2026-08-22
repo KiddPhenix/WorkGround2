@@ -71,7 +71,7 @@ func newFileTransferRegistry(service *Service) *fileTransferRegistry {
 	}
 }
 
-func (f *fileTransferRegistry) serve(w http.ResponseWriter, r *http.Request, room string, parts []string) {
+func (f *fileTransferRegistry) serve(w http.ResponseWriter, r *http.Request, room string, parts []string, protocolVersion int) {
 	if len(parts) < 2 || parts[0] == "" {
 		writeError(w, fail(CodeNotFound, "file endpoint does not exist"))
 		return
@@ -85,7 +85,7 @@ func (f *fileTransferRegistry) serve(w http.ResponseWriter, r *http.Request, roo
 	case len(parts) == 2 && parts[1] == "origin":
 		f.register(w, r, room, fileID)
 	case len(parts) == 2 && parts[1] == "ticket":
-		f.ticket(w, r, room, fileID)
+		f.ticket(w, r, room, fileID, protocolVersion)
 	case len(parts) == 2 && parts[1] == "manifest":
 		f.proxy(w, r, room, fileID, "manifest", -1)
 	case len(parts) == 3 && parts[1] == "chunks":
@@ -145,7 +145,7 @@ func (f *fileTransferRegistry) register(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{"registered": true})
 }
 
-func (f *fileTransferRegistry) ticket(w http.ResponseWriter, r *http.Request, room, fileID string) {
+func (f *fileTransferRegistry) ticket(w http.ResponseWriter, r *http.Request, room, fileID string, protocolVersion int) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, http.MethodGet)
 		return
@@ -170,7 +170,11 @@ func (f *fileTransferRegistry) ticket(w http.ResponseWriter, r *http.Request, ro
 	for _, host := range origin.hosts {
 		paths = append(paths, "http://"+net.JoinHostPort(host, strconv.Itoa(origin.port))+fileOriginPath(room, fileID))
 	}
-	writeJSON(w, http.StatusOK, FileTransferTicket{File: file, DirectURLs: paths, ProxyPath: "/collab/v1/rooms/" + url.PathEscape(room) + "/files/" + url.PathEscape(fileID), Ticket: ticket, ExpiresAt: expiresAt})
+	prefix := "/collab/v1/rooms/"
+	if protocolVersion >= 2 {
+		prefix = "/collab/v2/rooms/"
+	}
+	writeJSON(w, http.StatusOK, FileTransferTicket{File: file, DirectURLs: paths, ProxyPath: prefix + url.PathEscape(room) + "/files/" + url.PathEscape(fileID), Ticket: ticket, ExpiresAt: expiresAt})
 }
 
 func (f *fileTransferRegistry) proxy(w http.ResponseWriter, r *http.Request, room, fileID, kind string, index int) {

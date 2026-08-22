@@ -294,3 +294,13 @@ func TestHasProjectScope(t *testing.T) {
 		t.Error("without project root should return false")
 	}
 }
+
+func TestParseMarkdownContentVocabulary(t *testing.T) {
+	sk, ok := ParseMarkdownContent("---\ndescription: video\nvocabulary:\n  - 多模态生视频V5\n  - 角色设定Pro\n---\nbody", "remote", "video", ScopeRemote, false)
+	if !ok {
+		t.Fatal("skill did not parse")
+	}
+	if len(sk.Vocabulary) != 2 || sk.Vocabulary[0] != "多模态生视频V5" || sk.Vocabulary[1] != "角色设定Pro" {
+		t.Fatalf("Vocabulary = %#v", sk.Vocabulary)
+	}
+}

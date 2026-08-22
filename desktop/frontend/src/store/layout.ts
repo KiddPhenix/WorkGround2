@@ -22,6 +22,7 @@ const SIDEBAR_COLLAPSED_KEY = "WorkGround2.sidebar.collapsed";
 const SIDEBAR_DEFAULT_WIDTH = 264;
 export const SIDEBAR_MIN_WIDTH = 264;
 export const CREATION_SIDEBAR_MIN_WIDTH = 236;
+export const WORKBENCH_SIDEBAR_WIDTH = 300;
 export const SIDEBAR_MAX_WIDTH = 300;
 const SIDEBAR_VIEWPORT_RATIO = 0.18;
 

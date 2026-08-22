@@ -52,6 +52,7 @@ import (
 	"workground2/internal/skill"
 	"workground2/internal/store"
 	"workground2/internal/tool"
+	"workground2/internal/vocabulary"
 	"workground2/internal/work"
 )
 
@@ -92,6 +93,7 @@ type Controller struct {
 	// and write serialization behind its own locks, off c.mu — so a memory-panel
 	// save never stalls an approval or status poll. See memory.go.
 	memory            memoryManager
+	vocabulary        *vocabulary.Service
 	cleanup           func()
 	autoPlan          string
 	responseLanguage  string
@@ -381,6 +383,7 @@ type Options struct {
 	AllSkillStore *skill.Store
 	Hooks         *hook.Runner
 	Memory        *memory.Set
+	Vocabulary    *vocabulary.Service
 	Cleanup       func()
 	// BalanceURL/BalanceKey wire the active provider's optional wallet-balance
 	// endpoint and bearer key; empty when the provider declares no balance_url.
@@ -497,6 +500,7 @@ func New(opts Options) *Controller {
 		skills:                     newSkillSet(opts.Skills, opts.AllSkills, opts.SkillStore, opts.AllSkillStore),
 		hooks:                      opts.Hooks,
 		memory:                     newMemoryManager(opts.Memory),
+		vocabulary:                 opts.Vocabulary,
 		cleanup:                    opts.Cleanup,
 		autoPlan:                   normalizeAutoPlan(opts.AutoPlan),
 		responseLanguage:           config.NormalizeLanguage(opts.ResponseLanguage),
@@ -728,7 +732,7 @@ const planApprovalTool = "exit_plan_mode"
 
 // planApprovedMessage is the follow-up turn sent once the user approves a plan —
 // the in-context nudge to execute and keep the (already-seeded) task list honest.
-const planApprovedMessage = "Plan approved — plan mode is off; you’re cleared to make the changes without asking again. Implement the plan now. Use this serial workflow: 1) mark the first sub-step in_progress with todo_write (this establishes the task list); 2) execute the sub-step; 3) call complete_step with evidence — the host then marks that sub-step completed and moves the next one to in_progress for you. Repeat 2–3 for each remaining sub-step. You don’t need another todo_write to mark steps completed; each complete_step advances the list. Sign off one sub-step at a time — never batch multiple completions."
+const planApprovedMessage = "Plan approved — execute now. 计划已批准，立即执行。 Work through the existing task list one step at a time: mark one step in_progress, perform it, then call complete_step with evidence. Continue until done. Do not ask again for approval already granted; ask only for a new user-owned decision or permission outside the approved scope."
 
 // runTurn runs one model turn, then applies the plan-approval gate. This is the
 // single, frontend-agnostic plan flow: in plan mode the model just researches
@@ -1797,9 +1801,19 @@ func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]
 // AnswerQuestion resolves a pending AskRequest by ID with the user's selections.
 // Unknown/expired IDs are ignored.
 func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
+	c.ResolveQuestion(id, answers)
+}
+
+// ResolveQuestion resolves one pending AskRequest and reports whether this
+// Controller still owned the ID. The boolean lets durable decision routers
+// distinguish a successful handoff from a late/orphaned answer while keeping
+// AnswerQuestion's compatibility surface unchanged.
+func (c *Controller) ResolveQuestion(id string, answers []event.AskAnswer) bool {
 	if pending, ok := c.approval.resolveAsk(id); ok {
 		pending.reply <- answers // buffered, never blocks
+		return true
 	}
+	return false
 }
 
 // ReplayPendingPrompts re-emits the ApprovalRequest / AskRequest event for every
@@ -3433,7 +3447,7 @@ func (c *Controller) stripCancelledVisibleTurnMessagesAfter(idx int) {
 		if m.Role != provider.RoleUser {
 			continue
 		}
-		if IsSyntheticUserMessage(m.Content) {
+		if m.Origin == provider.MessageOriginHost || (m.Origin == "" && IsSyntheticUserMessage(m.Content)) {
 			continue
 		}
 		if _, ok := agent.SteerText(m.Content); ok {

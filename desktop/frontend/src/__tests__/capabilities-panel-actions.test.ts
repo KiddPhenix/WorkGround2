@@ -331,6 +331,29 @@ console.log("capabilities panel plugin actions");
       storageNamespace: "draw-tool",
     },
   }, {
+	name: "dsh-base",
+	version: "0.1.0",
+	description: "DSH base bundle.",
+	source: "/tmp/dsh-base",
+	root: "~/.WorkGround2/plugins/dsh-base",
+	manifestKind: "dsh",
+	enabled: true,
+	skills: 0,
+	hooks: 0,
+	mcpServers: 0,
+	dsh: {
+		packageName: "@deepseek-ai/dsh-base",
+		patch: "cordis.patch.yml",
+		level: "L3",
+		status: "runtime-ready",
+		rows: 12,
+		resolvedRows: 12,
+		clientRows: 2,
+		dynamicValues: 0,
+		overridePatches: 0,
+		runtimeReady: true,
+	},
+  }, {
     name: "jira-connector",
     version: "0.2.0",
     description: "External Jira connector package.",
@@ -496,6 +519,9 @@ console.log("capabilities panel plugin actions");
         },
         AddOnPanelQuery: async () => ({ records: [], form: {} }),
         AddOnPanelAction: async () => ({}),
+		DSHWorkbench: async (name: string) => ({ pluginName: name, status: "stopped" }),
+		StartDSHWorkbench: async (name: string) => ({ pluginName: name, status: "ready", url: "http://127.0.0.1:45678" }),
+		StopDSHWorkbench: async (name: string) => ({ pluginName: name, status: "stopped" }),
       } as Partial<AppBindings> as AppBindings,
     },
   };
@@ -581,6 +607,30 @@ console.log("capabilities panel plugin actions");
   ok(!addonBlock.textContent?.includes("Runtime"), "external AddOn expanded details hide default runtime metadata");
   ok(!addonBlock.textContent?.includes("Install path"), "external AddOn expanded details hide default install path metadata");
   ok(Boolean(findButton("Uninstall AddOn", addonBlock)), "external AddOn package block exposes uninstall action");
+	const dshBlock = document.querySelector<HTMLElement>('[data-plugin-settings-block="addon:dsh-base"]');
+	if (!dshBlock) throw new Error("missing DSH Bundle block");
+	const dshToggle = dshBlock.querySelector<HTMLButtonElement>(".cap-plugin-settings-block__head");
+	if (!dshToggle) throw new Error("missing DSH Bundle toggle");
+	await act(async () => {
+		dshToggle.click();
+		await flush();
+	});
+	const startMirror = findButton("Start UI mirror", dshBlock);
+	if (!startMirror) throw new Error("missing DSH UI mirror action");
+	await act(async () => {
+		startMirror.click();
+		await flush();
+	});
+	await waitFor("DSH mirror iframe", () => dshBlock.querySelector<HTMLIFrameElement>(".dsh-workbench__frame")?.src === "http://127.0.0.1:45678/");
+	const mirrorFrame = dshBlock.querySelector<HTMLIFrameElement>(".dsh-workbench__frame");
+	ok(mirrorFrame?.getAttribute("sandbox")?.includes("allow-scripts"), "DSH UI mirror runs in an explicit iframe sandbox");
+	const stopMirror = findButton("Stop mirror", dshBlock);
+	if (!stopMirror) throw new Error("missing DSH stop mirror action");
+	await act(async () => {
+		stopMirror.click();
+		await flush();
+	});
+	await waitFor("DSH mirror stopped", () => !dshBlock.querySelector(".dsh-workbench__frame"));
   ok(Boolean(document.querySelector(".cap-plugin-form-grid .cap-plugin-fields--local")), "local plugin install mode uses the shared form grid");
   const localOptionTexts = Array.from(document.querySelectorAll(".cap-plugin-installer__options > .cap-plugin-option-block"))
     .map((option) => option.textContent ?? "");

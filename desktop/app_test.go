@@ -31,6 +31,7 @@ import (
 	"workground2/internal/plugin"
 	"workground2/internal/pluginpkg"
 	"workground2/internal/provider"
+	"workground2/internal/skill"
 	"workground2/internal/tool"
 )
 
@@ -108,6 +109,9 @@ func isolateDesktopUserDirs(t *testing.T) string {
 	t.Setenv("WorkGround2_STATE_HOME", filepath.Join(home, "state"))
 	t.Setenv("WorkGround2_CACHE_HOME", filepath.Join(home, "cache"))
 	t.Setenv("AppData", appData)
+	// These tests assert the default user-then-project merge order. A machine
+	// that exports WorkGround2_PREFER_USER_CONFIG must not flip it.
+	t.Setenv("WorkGround2_PREFER_USER_CONFIG", "")
 	return home
 }
 
@@ -171,7 +175,7 @@ func TestCodexLocalCLIPresetUsesJSONLStream(t *testing.T) {
 }
 
 func TestDarwinCLICommandCandidatesCoverGUIAndPackageManagerInstalls(t *testing.T) {
-	home := filepath.Join(string(filepath.Separator), "Users", "tester")
+	home := "/Users/tester"
 	got := darwinCLICommandCandidates(onboardingLocalCLIPreset{
 		ID:       "codex",
 		Commands: []string{"codex", "codex.exe", "codex.cmd"},
@@ -180,9 +184,9 @@ func TestDarwinCLICommandCandidatesCoverGUIAndPackageManagerInstalls(t *testing.
 		"/Applications/Codex.app/Contents/Resources/codex",
 		"/opt/homebrew/bin/codex",
 		"/usr/local/bin/codex",
-		filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex"),
-		filepath.Join(home, ".local", "bin", "codex"),
-		filepath.Join(home, "Library", "pnpm", "codex"),
+		"/Users/tester/Applications/Codex.app/Contents/Resources/codex",
+		"/Users/tester/.local/bin/codex",
+		"/Users/tester/Library/pnpm/codex",
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("darwin Codex candidates missing %q: %+v", want, got)
@@ -191,7 +195,7 @@ func TestDarwinCLICommandCandidatesCoverGUIAndPackageManagerInstalls(t *testing.
 }
 
 func TestDarwinCLICommandCandidatesSupportEveryPreset(t *testing.T) {
-	home := filepath.Join(string(filepath.Separator), "Users", "tester")
+	home := "/Users/tester"
 	for _, preset := range onboardingLocalCLIPresets {
 		got := darwinCLICommandCandidates(preset, home)
 		wantCommand := ""
@@ -206,9 +210,9 @@ func TestDarwinCLICommandCandidatesSupportEveryPreset(t *testing.T) {
 			t.Fatalf("preset %q has no macOS command", preset.ID)
 		}
 		for _, want := range []string{
-			filepath.Join("/opt/homebrew/bin", wantCommand),
-			filepath.Join(home, ".local", "bin", wantCommand),
-			filepath.Join(home, "Library", "pnpm", wantCommand),
+			"/opt/homebrew/bin/" + wantCommand,
+			home + "/.local/bin/" + wantCommand,
+			home + "/Library/pnpm/" + wantCommand,
 		} {
 			if !slices.Contains(got, want) {
 				t.Errorf("preset %q missing darwin candidate %q", preset.ID, want)
@@ -541,6 +545,23 @@ func TestCommandsIncludesEffortNotThinking(t *testing.T) {
 	if hasCommand(cmds, "thinking") {
 		t.Fatalf("Commands() should not include thinking: %+v", cmds)
 	}
+}
+
+func TestCommandsListsRebuildVocabularyAsSkill(t *testing.T) {
+	store := skill.New(skill.Options{HomeDir: t.TempDir(), ProjectRoot: t.TempDir()})
+	ctrl := control.New(control.Options{SkillStore: store, Skills: store.List()})
+	app := NewApp()
+	app.setTestCtrl(ctrl, "test")
+
+	for _, command := range app.Commands() {
+		if command.Name == "rebuild_vocabulary" {
+			if command.Kind != "skill" {
+				t.Fatalf("rebuild_vocabulary kind = %q, want skill", command.Kind)
+			}
+			return
+		}
+	}
+	t.Fatal("Commands() should list the built-in rebuild_vocabulary Skill")
 }
 
 func TestMetaForTabIncludesWorkspaceContext(t *testing.T) {
@@ -6686,7 +6707,9 @@ func TestCollectPromptHistoryEntriesSkipsSyntheticMessages(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	if err := os.WriteFile(path, []byte(`{"role":"user","content":"Plan approved — plan mode is off"}
-{"role":"user","content":"real prompt"}
+{"role":"user","content":"new host wording","origin":"host"}
+{"role":"user","content":"Recent rounds only gathered context. Quoted by the user.","origin":"user"}
+{"role":"user","content":"real prompt","origin":"user"}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -6698,11 +6721,11 @@ func TestCollectPromptHistoryEntriesSkipsSyntheticMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d: %+v", len(entries), entries)
 	}
-	if entries[0].Text != "real prompt" {
-		t.Errorf("expected real prompt, got %q", entries[0].Text)
+	if entries[0].Text != "Recent rounds only gathered context. Quoted by the user." || entries[1].Text != "real prompt" {
+		t.Errorf("unexpected prompt history: %+v", entries)
 	}
 }
 

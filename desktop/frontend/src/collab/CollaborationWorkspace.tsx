@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from "react";
-import { Bot, Check, ChevronRight, Circle, CircleAlert, Copy, ImagePlus, LogOut, Pencil, RadioTower, RefreshCw, Settings2, Share2, Shield, ShieldAlert, ShieldCheck, Trash2, Users, X } from "lucide-react";
+import { Bot, Check, ChevronRight, ChevronsUpDown, Circle, CircleAlert, Copy, ImagePlus, LogOut, Pencil, RadioTower, RefreshCw, Settings2, Share2, Trash2, Users, X } from "lucide-react";
 import { useI18n } from "../lib/i18n";
 import { ModelSwitcher } from "../components/ModelSwitcher";
 import { collabCopy } from "./copy";
@@ -11,8 +11,9 @@ import { AgentActivityPopover, type AgentActivityAnchor } from "./components/Age
 import { CollaborationAvatar } from "./components/CollaborationAvatar";
 import { compressCollaborationAvatar } from "./avatar";
 import { loadCollaborationIdentity, saveCollaborationIdentity } from "./identity";
-import { tryBuildCollaborationInvite } from "./invite";
+import { buildCollaborationInviteForOption, collaborationInviteOptions } from "./invite";
 import { agentCollaborationClock } from "./state";
+import { autoResponseFlags, autoResponseMode, nextApprovalMode, nextAutoResponseMode, nextRecognitionMode } from "./agentPolicy";
 import type { CollaborationInvite, CollaborationTimelineItem, CollaborationToolApprovalMode, CollaborationWorkspaceOption } from "./types";
 import type { ComposerSubmitKey } from "../lib/composerKeyboard";
 import { useScrollManager } from "../lib/useScrollManager";
@@ -76,7 +77,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
   const [replyTo, setReplyTo] = useState<CollaborationTimelineItem>();
   const [batchInstruction, setBatchInstruction] = useState("");
   const [invite, setInvite] = useState<CollaborationInvite>();
-  const [inviteHost, setInviteHost] = useState("");
+  const [inviteTarget, setInviteTarget] = useState("");
   const [inviteError, setInviteError] = useState("");
   const [inviteCopied, setInviteCopied] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
@@ -94,6 +95,15 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
   const usable = ownsRoom && Boolean(state.room);
   const onlineMembers = state.members.filter((member) => member.online);
   const agentClock = agentCollaborationClock(state);
+  const responseMode = autoResponseMode(state.agentConfig);
+  const approvalMode = state.toolApprovalMode || "ask";
+  const approvalLabel = { ask: t("composer.modeAsk"), auto: t("composer.modeNormal"), yolo: t("composer.modeYolo") }[approvalMode];
+  const responseLabel = { manual: c("autoManualShort"), questions: c("autoQuestionsShort"), operations: c("autoRequestsShort") }[responseMode];
+  const recognitionLabel = {
+    message: c("recognitionMessage"),
+    interval: c("recognitionInterval"),
+    off: c("recognitionOff"),
+  }[state.agentConfig.recognitionMode];
 
   useLayoutEffect(() => {
     snapTimelineToBottom();
@@ -189,14 +199,13 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
     try {
       const next = await controller.invite();
       setInvite(next);
-      setInviteHost(next.hosts[0] || "127.0.0.1");
+      setInviteTarget(collaborationInviteOptions(next)[0]?.key || "");
     } catch (error) {
       setInviteError(error instanceof Error ? error.message : String(error));
     }
   };
-  const inviteString = invite?.invite || (invite?.version === 2 && invite.hostKey && invite.routes?.length
-    ? tryBuildCollaborationInvite({ version: 2, room: invite.room, hostKey: invite.hostKey, routes: invite.routes, roomToken: invite.token })
-    : invite && inviteHost ? tryBuildCollaborationInvite({ host: inviteHost, port: invite.port, room: invite.room, token: invite.token }) : "");
+  const inviteOptions = invite ? collaborationInviteOptions(invite) : [];
+  const inviteString = invite ? buildCollaborationInviteForOption(invite, inviteOptions.find((option) => option.key === inviteTarget)) : "";
   const inviteBuildError = invite && !inviteString ? c("connectionStringInvalid") : "";
   const copyInvite = async () => {
     if (!inviteString) return;
@@ -218,6 +227,9 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
     }
   };
   const windAgentClock = () => saveAgentConfig({ ...state.agentConfig, agentClockWoundAt: new Date().toISOString() });
+  const cycleResponseMode = () => saveAgentConfig({ ...state.agentConfig, ...autoResponseFlags(nextAutoResponseMode(responseMode)) });
+  const cycleRecognitionMode = () => saveAgentConfig({ ...state.agentConfig, recognitionMode: nextRecognitionMode(state.agentConfig.recognitionMode) });
+  const cycleApprovalMode = () => chooseApprovalMode(nextApprovalMode(approvalMode));
   const saveProfile = async () => {
     if (!self || !profileEditor || !profileName.trim()) return;
     const profile = {
@@ -290,7 +302,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
               {(invite || inviteError) && <div className="collab-invite-popover" role="dialog" aria-label={c("exportConnection")}>
                 <strong>{c("exportConnection")}</strong>
                 {invite && <>
-                  {invite.hosts.length > 0 && <label><span>{c("selectLocalIP")}</span><select value={inviteHost} onChange={(event) => { setInviteHost(event.target.value); setInviteCopied(false); }}>{invite.hosts.map((host) => <option key={host} value={host}>{host}</option>)}</select></label>}
+                  {inviteOptions.length > 0 && <label><span>{c("selectLocalIP")}</span><select value={inviteTarget} onChange={(event) => { setInviteTarget(event.target.value); setInviteCopied(false); }}>{inviteOptions.map((option) => <option key={option.key} value={option.key}>{option.kind === "relay" ? `${c("relayServer")} · ${option.label}` : option.label}</option>)}</select></label>}
                   <div className="collab-invite-value"><input readOnly value={inviteString} aria-label={c("connectionString")} /><button type="button" disabled={!inviteString} onClick={() => void copyInvite()} aria-label={c("copyConnection")} title={c("copyConnection")}>{inviteCopied ? <Check size={15} /> : <Copy size={15} />}</button></div>
                   <small>{c("connectionTokenNotice")}</small>
                 </>}
@@ -321,7 +333,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             onToggle={controller.toggleSelection}
             onReply={setReplyTo}
             onAgree={(item) => handleAction(controller.agree(item))}
-            onAgreeRun={(item) => handleAction(controller.agree(item).then(() => controller.startAgent(c("agentInstructionAgree", { text: item.text }), [item.id])))}
+            onRequestAgent={(item, memberId) => handleAction(controller.requestAgent(memberId, item.text, [item.id]))}
             onAgent={runForItem}
             onAccept={(item) => handleAction(controller.acceptRequest(item))}
             onReject={(item) => handleAction(controller.rejectRequest(item))}
@@ -335,6 +347,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             onRevokeFile={(id) => handleAction(controller.revokeFile(id))}
             onOpenFile={(id) => handleAction(controller.openFile(id))}
             onRevealFile={(id) => handleAction(controller.revealFile(id))}
+            previewFile={controller.previewFile}
           />
         </div>
 
@@ -369,56 +382,6 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             <span><Settings2 size={15} aria-hidden="true" /></span>
             <div><h2 id="collab-agent-config-title">{c("agentSettings")}</h2><p>{c("agentSettingsHint")}</p></div>
           </header>
-          {state.currentRun && state.currentRun.phase !== "idle" && (
-            <div className="collab-current-run" data-phase={state.currentRun.phase}>
-              <div className="collab-current-run__status">
-                <Circle size={10} fill="currentColor" />
-                <span>{c(`agentRunPhase_${state.currentRun.phase}`)}</span>
-                {state.currentRun.phase === "stopping" && <RefreshCw size={12} className="collab-current-run__spin" />}
-              </div>
-              <p className="collab-current-run__instruction" title={state.currentRun.instruction}>
-                {state.currentRun.instruction}
-              </p>
-              {state.currentRun.progress && (
-                <p className="collab-current-run__progress">{state.currentRun.progress}</p>
-              )}
-              <div className="collab-current-run__meta">
-                {state.currentRun.startedAt ? (
-                  <small>{c("agentRunStarted", { time: new Date(state.currentRun.startedAt).toLocaleTimeString() })}</small>
-                ) : null}
-                {state.currentRun.queueCount > 0 ? (
-                  <small>{c("agentRunQueued", { n: state.currentRun.queueCount })}</small>
-                ) : null}
-              </div>
-              {(state.currentRun.phase === "running" || state.currentRun.phase === "waiting_approval") && (
-                <button
-                  type="button"
-                  className="collab-current-run__stop"
-                  onClick={() => handleAction(controller.stopCurrentRun(state.currentRun!.runId))}
-                >
-                  <CircleAlert size={14} />
-                  {c("agentRunStop")}
-                </button>
-              )}
-              {state.currentRun.phase === "stopping" && (
-                <button type="button" className="collab-current-run__stop" disabled>
-                  <RefreshCw size={14} className="collab-current-run__spin" />
-                  {c("agentRunStopping")}
-                </button>
-              )}
-              {state.actionError && (
-                <p className="collab-current-run__error" role="alert">{state.actionError}</p>
-              )}
-            </div>
-          )}
-          {(!state.currentRun || state.currentRun.phase === "idle") && (
-            <div className="collab-current-run collab-current-run--idle" data-phase="idle">
-              <div className="collab-current-run__status">
-                <Circle size={10} fill="currentColor" />
-                <span>{c("agentRunPhase_idle")}</span>
-              </div>
-            </div>
-          )}
           <div className="collab-agent-identities">
             <button type="button" onClick={() => setProfileEditor("member")}>
               <CollaborationAvatar name={self.name} src={self.avatar} />
@@ -433,23 +396,13 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             <span>{c("agentModel")}</span>
             <ModelSwitcher label={modelLabel} tabId={tabID} onPick={onSwitchModel} />
           </div>
-          <div className="collab-agent-approval">
-            <span>{c("agentApproval")}</span>
-            <div className="composer-modebar composer-modebar--approval" data-mode={state.toolApprovalMode || "ask"}>
-              <span className="composer-modebar__thumb" aria-hidden="true" />
-              <button type="button" className={`composer-modebar__item composer-modebar__item--ask${(state.toolApprovalMode || "ask") === "ask" ? " composer-modebar__item--active" : ""}`} onClick={() => handleAction(chooseApprovalMode("ask"))} disabled={approvalSaving} aria-pressed={(state.toolApprovalMode || "ask") === "ask"} title={t("composer.accessAskTitle")}><Shield size={14} /><span>{t("composer.modeAsk")}</span></button>
-              <button type="button" className={`composer-modebar__item composer-modebar__item--auto${state.toolApprovalMode === "auto" ? " composer-modebar__item--active" : ""}`} onClick={() => handleAction(chooseApprovalMode("auto"))} disabled={approvalSaving} aria-pressed={state.toolApprovalMode === "auto"} title={t("composer.accessAutoTitle")}><ShieldCheck size={14} /><span>{t("composer.modeNormal")}</span></button>
-              <button type="button" className={`composer-modebar__item composer-modebar__item--yolo${state.toolApprovalMode === "yolo" ? " composer-modebar__item--active" : ""}`} onClick={() => handleAction(chooseApprovalMode("yolo"))} disabled={approvalSaving} aria-pressed={state.toolApprovalMode === "yolo"} title={t("composer.accessYoloTitle")}><ShieldAlert size={14} /><span>{t("composer.modeYolo")}</span></button>
-            </div>
+          <div className="collab-agent-policies">
+            <div className="collab-agent-policy-row"><span>{c("agentApproval")}</span><button type="button" className="collab-agent-cycle" disabled={approvalSaving} onClick={() => handleAction(cycleApprovalMode())} title={c("approvalSwitch")}><span>{approvalLabel}</span><ChevronsUpDown size={12} /></button></div>
+            <div className="collab-agent-policy-row"><span>{c("agentAutoResponse")}</span><button type="button" className="collab-agent-cycle" disabled={configSaving} onClick={() => handleAction(cycleResponseMode())} title={c("autoResponseSwitch")}><span>{responseLabel}</span><ChevronsUpDown size={12} /></button></div>
+            <div className="collab-agent-policy-row"><span>{c("recognitionMode")}</span><button type="button" className="collab-agent-cycle" disabled={configSaving} onClick={() => handleAction(cycleRecognitionMode())} title={c("recognitionSwitch")}><span>{recognitionLabel}</span><ChevronsUpDown size={12} /></button></div>
           </div>
           <button type="button" className="collab-agent-context-trigger" onClick={() => setContextOpen(true)}><span>{c("agentContext")}</span><small>{c("agentContextCount", { n: (state.agentConfig.contextRefs || []).length })}</small><ChevronRight size={13} /></button>
           <div className="collab-agent-policy">
-            <span className="collab-agent-section-title">{c("agentAutoResponse")}</span>
-            <div className="collab-agent-options">
-              <label title={c("autoQuestionsHint")}><span>{c("autoQuestionsShort")}</span><input type="checkbox" checked={state.agentConfig.autoRespondQuestions} disabled={configSaving} onChange={(event) => handleAction(saveAgentConfig({ ...state.agentConfig, autoRespondQuestions: event.target.checked }))} /></label>
-              <label title={c("autoRequestsHint")}><span>{c("autoRequestsShort")}</span><input type="checkbox" checked={state.agentConfig.autoRespondRequests} disabled={configSaving} onChange={(event) => handleAction(saveAgentConfig({ ...state.agentConfig, autoRespondRequests: event.target.checked }))} /></label>
-            </div>
-            <label className="collab-agent-scan"><span>{c("recognitionMode")}</span><select value={state.agentConfig.recognitionMode} disabled={configSaving} onChange={(event) => handleAction(saveAgentConfig({ ...state.agentConfig, recognitionMode: event.target.value as typeof state.agentConfig.recognitionMode }))}><option value="message">{c("recognitionMessage")}</option><option value="interval">{c("recognitionInterval")}</option><option value="off">{c("recognitionOff")}</option></select></label>
             <div className={`collab-agent-peer-policy${agentCollaborationOpen ? " collab-agent-peer-policy--open" : ""}`}>
               <div className="collab-agent-peer-head">
                 <button type="button" className="collab-agent-peer-summary" aria-expanded={agentCollaborationOpen} title={agentCollaborationOpen ? c("agentCollaborationCollapse") : c("agentCollaborationExpand")} onClick={() => setAgentCollaborationOpen((open) => !open)}><ChevronRight size={13} /><span><strong>{c("agentCollaboration")}</strong><small>{state.agentConfig.autoRespondAgents ? (agentClock.unlimited ? c("agentClockUnlimitedStatus") : c("agentClockRemaining", { remaining: agentClock.remaining, limit: agentClock.limit })) : c("agentCollaborationOff")}</small></span></button>
@@ -466,6 +419,20 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
           </div>
           <div className="collab-agent-queue">
             <div className="collab-agent-queue__header"><span>{c("agentQueue")}</span><small>{(state.queuedTasks || []).length}/20</small></div>
+            {state.currentRun && state.currentRun.phase !== "idle" ? (
+              <div className="collab-current-run" data-phase={state.currentRun.phase}>
+                <div className="collab-current-run__status"><Circle size={10} fill="currentColor" /><span>{c(`agentRunPhase_${state.currentRun.phase}`)}</span>{state.currentRun.phase === "stopping" && <RefreshCw size={12} className="collab-current-run__spin" />}</div>
+                <p className="collab-current-run__instruction" title={state.currentRun.instruction}>{state.currentRun.instruction}</p>
+                {state.currentRun.progress && <p className="collab-current-run__progress">{state.currentRun.progress}</p>}
+                <div className="collab-current-run__meta">
+                  {state.currentRun.startedAt ? <small>{c("agentRunStarted", { time: new Date(state.currentRun.startedAt).toLocaleTimeString() })}</small> : null}
+                  {state.currentRun.queueCount > 0 ? <small>{c("agentRunQueued", { n: state.currentRun.queueCount })}</small> : null}
+                </div>
+                {(state.currentRun.phase === "running" || state.currentRun.phase === "waiting_approval") && <button type="button" className="collab-current-run__stop" onClick={() => handleAction(controller.stopCurrentRun(state.currentRun!.runId))}><CircleAlert size={14} />{c("agentRunStop")}</button>}
+                {state.currentRun.phase === "stopping" && <button type="button" className="collab-current-run__stop" disabled><RefreshCw size={14} className="collab-current-run__spin" />{c("agentRunStopping")}</button>}
+                {state.actionError && <p className="collab-current-run__error" role="alert">{state.actionError}</p>}
+              </div>
+            ) : <div className="collab-current-run collab-current-run--idle" data-phase="idle"><div className="collab-current-run__status"><Circle size={10} fill="currentColor" /><span>{c("agentRunPhase_idle")}</span></div></div>}
             {(state.queuedTasks || []).length === 0
               ? <p>{c("agentQueueEmpty")}</p>
               : <div className="collab-agent-queue__list">{(state.queuedTasks || []).map((task, index) => <div key={task.id} className="collab-agent-queue__item">

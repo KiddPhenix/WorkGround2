@@ -164,6 +164,32 @@ func TestBroadcasterEmitFansOut(t *testing.T) {
 	}
 }
 
+func TestBroadcasterObserverReceivesAfterFanOutAndCanBeReplaced(t *testing.T) {
+	b := NewWorkViewBroadcaster()
+	id, events := b.Subscribe(1)
+	defer b.Unsubscribe(id)
+	observed := make([]string, 0, 2)
+	b.SetObserver(func(event work.WorkViewEvent) {
+		if len(events) != 1 {
+			t.Fatalf("observer ran before subscriber fan-out")
+		}
+		observed = append(observed, event.EventID)
+	})
+	b.EmitWorkView(work.WorkViewEvent{WorkID: "w", EventID: "one"})
+	<-events
+	b.SetObserver(func(event work.WorkViewEvent) { observed = append(observed, "next:"+event.EventID) })
+	b.EmitWorkView(work.WorkViewEvent{WorkID: "w", EventID: "two"})
+	if got := strings.Join(observed, ","); got != "one,next:two" {
+		t.Fatalf("observed = %q", got)
+	}
+	b.SetObserver(nil)
+	<-events
+	b.EmitWorkView(work.WorkViewEvent{WorkID: "w", EventID: "three"})
+	if len(observed) != 2 {
+		t.Fatalf("cleared observer received another event: %v", observed)
+	}
+}
+
 func TestBroadcasterSlowSubscriberDoesNotBlock(t *testing.T) {
 	b := NewWorkViewBroadcaster()
 	// Subscriber with tiny buffer that we don't drain.

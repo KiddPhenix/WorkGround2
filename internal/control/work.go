@@ -56,6 +56,7 @@ type WorkService interface {
 	PrepareReusableFlow(context.Context, work.PrepareReusableFlowInput) (*work.ReusableFlowSetup, error)
 	SaveReusableFlow(context.Context, work.SaveReusableFlowInput) (*work.ReusableFlow, error)
 	RunReusableFlow(context.Context, work.RunReusableFlowInput) (*work.ReusableFlowRun, error)
+	ReusableRunCommitted(context.Context, string) (bool, error)
 	UpdateDraft(context.Context, work.UpdateDraftInput) (*work.WorkView, error)
 	UpsertBlock(context.Context, work.BlockUpsertInput) (*work.WorkView, error)
 	RunWork(context.Context, string, string) (*work.WorkflowRun, error)
@@ -109,8 +110,21 @@ type WorkService interface {
 type WorkViewBroadcaster struct {
 	mu            sync.RWMutex
 	subs          map[string]*workViewSub
+	observer      func(work.WorkViewEvent)
 	nextID        atomic.Int64
 	overflowCount atomic.Int64
+}
+
+// SetObserver installs one transport-level observer in addition to normal
+// subscribers. It is intended for durable local projections such as unread
+// state. The observer runs after fan-out and must remain bounded.
+func (b *WorkViewBroadcaster) SetObserver(observer func(work.WorkViewEvent)) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.observer = observer
+	b.mu.Unlock()
 }
 
 type workViewSub struct {
@@ -205,7 +219,6 @@ func (b *WorkViewBroadcaster) EmitWorkView(e work.WorkViewEvent) {
 		return
 	}
 	b.mu.RLock()
-	defer b.mu.RUnlock()
 	for _, sub := range b.subs {
 		if sub.workID != "" && e.WorkID != sub.workID {
 			continue
@@ -220,6 +233,11 @@ func (b *WorkViewBroadcaster) EmitWorkView(e work.WorkViewEvent) {
 			sub.drops.Add(1)
 			b.overflowCount.Add(1)
 		}
+	}
+	observer := b.observer
+	b.mu.RUnlock()
+	if observer != nil {
+		observer(e)
 	}
 }
 
@@ -325,6 +343,13 @@ func (w workMethods) RunReusableFlow(ctx context.Context, input work.RunReusable
 		return nil, errWorkDisabled
 	}
 	return w.svc.RunReusableFlow(ctx, input)
+}
+
+func (w workMethods) ReusableRunCommitted(ctx context.Context, requestID string) (bool, error) {
+	if nilutil.IsNil(w.svc) {
+		return false, errWorkDisabled
+	}
+	return w.svc.ReusableRunCommitted(ctx, requestID)
 }
 
 func (w workMethods) UpdateDraft(ctx context.Context, input work.UpdateDraftInput) (*work.WorkView, error) {

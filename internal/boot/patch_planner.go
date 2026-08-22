@@ -121,7 +121,9 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 		b.WriteString("- Removing a result requires one remove at artifactSlots/<slotID>, plus replace every referencing node's producesSlotIds and consumesSlotIds to remove that ID. Do not leave dangling references.\n")
 		b.WriteString("- Modifying a result keeps its existing slot ID and all producer/consumer references. Replace only the explicitly requested artifactSlots fields; never model an edit as remove plus add.\n")
 		b.WriteString("- A result format change must replace artifactSlots/<slotID>/kind with the exact requested format and keep the title extension consistent. Changing only the title or MIME is not a format change.\n")
-		b.WriteString("- For a format-only result change, do not modify any node description, acceptance criteria, tool hints, dependencies, or goal. Emit reformat for that slot; its producer is reused.\n")
+		b.WriteString("- The url/link result kind means the actual absolute http/https link from the producer's final response, not a file or a URL saved inside a file.\n")
+		b.WriteString("- For a format-only result change between file-backed kinds, do not modify any node description, acceptance criteria, tool hints, dependencies, or goal. Emit reformat for that slot; its producer is reused.\n")
+		b.WriteString("- A format change to or from url/link must rerun the existing producer so it creates the new result representation. Never emit reformat for a url/link transition.\n")
 	}
 	b.WriteString("\n## Exact response examples\n")
 	if input.Scope == work.PatchBlock {
@@ -138,6 +140,7 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 			targetNodeID,
 		))
 		b.WriteString("{\"operations\":[{\"op\":\"replace\",\"path\":\"artifactSlots/<existingSlotID>/title\",\"newValue\":\"Result.docx\"},{\"op\":\"replace\",\"path\":\"artifactSlots/<existingSlotID>/kind\",\"newValue\":\"docx\"}],\"actions\":[{\"action\":\"reformat\",\"artifactSlotId\":\"<existingSlotID>\",\"reason\":\"content and search evidence remain valid\"}]}\n")
+		b.WriteString("{\"operations\":[{\"op\":\"replace\",\"path\":\"artifactSlots/<existingSlotID>/kind\",\"newValue\":\"url\"}],\"actions\":[{\"action\":\"rerun\",\"nodeId\":\"<producerNodeID>\",\"reason\":\"producer must return the actual published URL\"}]}\n")
 		b.WriteString("{\"operations\":[{\"op\":\"add\",\"path\":\"artifactSlots/new_report\",\"newValue\":{\"id\":\"new_report\",\"title\":\"New report\",\"kind\":\"document\",\"expectedCount\":1,\"required\":true}},{\"op\":\"replace\",\"path\":\"nodes/<producerNodeID>/producesSlotIds\",\"newValue\":[\"existing_slot\",\"new_report\"]}],\"actions\":[{\"action\":\"rerun\",\"nodeId\":\"<producerNodeID>\",\"reason\":\"new output content is required\"}]}\n")
 	}
 
@@ -157,6 +160,31 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 		b.WriteString("InputSpecs:\n")
 		for _, s := range input.Definition.InputSpecs {
 			b.WriteString(fmt.Sprintf("  - id=%s label=%q kind=%s required=%v\n", s.ID, s.Label, s.Kind, s.Required))
+		}
+	}
+	if input.Work != nil {
+		customInputs := make([]work.WorkInput, 0)
+		for _, item := range input.Work.V2Inputs {
+			if item.CustomSpec != nil {
+				customInputs = append(customInputs, item)
+			}
+		}
+		sort.Slice(customInputs, func(i, j int) bool {
+			return customInputs[i].ID < customInputs[j].ID
+		})
+		if len(customInputs) > 0 {
+			b.WriteString("Work Information (user-owned, preserve across workflow revisions):\n")
+			for _, item := range customInputs {
+				b.WriteString(fmt.Sprintf(
+					"  - id=%s label=%q description=%q kind=%s state=%s value=%s\n",
+					item.ID,
+					item.CustomSpec.Label,
+					item.CustomSpec.Description,
+					item.CustomSpec.Kind,
+					item.State,
+					compactPatchJSON(item.Value),
+				))
+			}
 		}
 	}
 

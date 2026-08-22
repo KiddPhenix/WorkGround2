@@ -29,7 +29,7 @@ func (t *installSourceTool) planGitHubPluginPackage(ctx context.Context, req req
 	}
 	var warnings []string
 	for _, branch := range src.branches() {
-		for _, manifestPath := range []string{pluginpkg.NativeManifest, pluginpkg.CodexManifest} {
+		for _, manifestPath := range []string{pluginpkg.NativeManifest, pluginpkg.CodexManifest, pluginpkg.DSHManifest} {
 			rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", src.Owner, src.Repo, branch, joinURLPath(src.Path, manifestPath))
 			body, err := t.fetchText(ctx, rawURL)
 			if err != nil {
@@ -46,6 +46,29 @@ func (t *installSourceTool) planGitHubPluginPackage(ctx context.Context, req req
 			}
 			if err := os.WriteFile(filepath.Join(tmp, manifestPath), []byte(body), 0o644); err != nil {
 				return nil, warnings, err
+			}
+			if strings.EqualFold(manifestPath, pluginpkg.DSHManifest) {
+				patchPath, ok, patchErr := pluginpkg.DSHPatchPath([]byte(body))
+				if patchErr != nil {
+					warnings = append(warnings, fmt.Sprintf("%s: %s", rawURL, patchErr.Error()))
+					continue
+				}
+				if !ok {
+					continue
+				}
+				patchURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", src.Owner, src.Repo, branch, joinURLPath(src.Path, patchPath))
+				patchBody, fetchErr := t.fetchText(ctx, patchURL)
+				if fetchErr != nil {
+					warnings = append(warnings, fmt.Sprintf("%s: %s", patchURL, fetchErr.Error()))
+					continue
+				}
+				localPatch := filepath.Join(tmp, filepath.FromSlash(patchPath))
+				if err := os.MkdirAll(filepath.Dir(localPatch), 0o755); err != nil {
+					return nil, warnings, err
+				}
+				if err := os.WriteFile(localPatch, []byte(patchBody), 0o644); err != nil {
+					return nil, warnings, err
+				}
 			}
 			if strings.EqualFold(manifestPath, pluginpkg.CodexManifest) {
 				if hookBody, err := t.fetchText(ctx, fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", src.Owner, src.Repo, branch, joinURLPath(src.Path, "hooks/session-start-codex"))); err == nil {
@@ -106,6 +129,12 @@ func (t *installSourceTool) pluginPackageAction(req request, pkg pluginpkg.Packa
 		a.AddOnPanels = addonPanels
 		a.AddOnSecrets = addonSecrets
 		a.RiskReasons = append(a.RiskReasons, "installs an AddOn package that can expose settings, storage, and runtime actions")
+	}
+	if pkg.Manifest.DSH != nil {
+		a.DSHLevel = pkg.Manifest.DSH.Report.Level
+		a.DSHRows = pkg.Manifest.DSH.Report.Rows
+		a.DSHClientRows = pkg.Manifest.DSH.Report.ClientRows
+		a.RiskReasons = append(a.RiskReasons, "runs third-party JavaScript in a Node/Cordis sidecar when the DSH bundle is enabled")
 	}
 	if a.Mode == "link" {
 		a.RiskReasons = append(a.RiskReasons, "links a plugin package from a mutable local directory")
@@ -200,6 +229,11 @@ func (t *installSourceTool) applyInstallPluginPackage(ctx context.Context, req r
 			act.AddOnRuntime = pkg.Manifest.AddOn.Runtime.Type
 		}
 		act.AddOnPanels, act.AddOnSecrets = pkg.AddOnCounts()
+	}
+	if pkg.Manifest.DSH != nil {
+		act.DSHLevel = pkg.Manifest.DSH.Report.Level
+		act.DSHRows = pkg.Manifest.DSH.Report.Rows
+		act.DSHClientRows = pkg.Manifest.DSH.Report.ClientRows
 	}
 	return nil
 }

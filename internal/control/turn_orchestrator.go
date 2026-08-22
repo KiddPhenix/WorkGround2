@@ -46,7 +46,7 @@ func (o *turnOrchestrator) runSyntheticTurnWithRawDisplay(ctx context.Context, i
 
 func (o *turnOrchestrator) runComposedSyntheticTurn(ctx context.Context, text string) error {
 	c := o.c
-	return c.runner.Run(agent.WithMemoryCompilerSkip(ctx), c.ComposeSynthetic(text))
+	return c.runner.Run(agent.WithSyntheticUser(agent.WithMemoryCompilerSkip(ctx)), c.ComposeSynthetic(text))
 }
 
 func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchestratedTurn) error {
@@ -80,6 +80,9 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	} else {
 		ctx = agent.WithMemoryCompilerSourceInput(ctx, turn.raw)
 	}
+	if turn.synthetic {
+		ctx = agent.WithSyntheticUser(ctx)
+	}
 	input := c.compose(turn.input, !turn.synthetic)
 	startMessages := c.messageCount()
 	defer c.snapshotActivityIfChanged(startMessages)
@@ -95,6 +98,9 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	if !turn.synthetic {
 		c.beginCheckpoint(input)
 		c.touchSessionActivity()
+		// Observe the raw user wording before the provider call. A network/model
+		// failure must not lose a newly introduced workspace term.
+		c.observeVocabulary(startMessages, "user", turn.raw)
 	}
 	if c.guardianSess != nil {
 		c.guardianSess.ResetTurn()
@@ -118,6 +124,12 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	c.appendAutoResearchHeartbeat(autoResearchTaskID, autoresearch.HeartbeatStartingTurn, "")
 	err := c.runner.Run(ctx, input)
 	if err == nil {
+		if !turn.synthetic {
+			history := c.History()
+			if startMessages < len(history) {
+				c.observeVocabulary(len(history), "assistant", lastAssistantText(history[startMessages:]))
+			}
+		}
 		c.recordAutoResearchEvidenceFromAssistant(autoResearchTaskID, lastAssistantText(c.History()))
 		c.recordAutoResearchTurnProgress(autoResearchTaskID, autoResearchAcceptedBefore)
 		c.appendAutoResearchHeartbeat(autoResearchTaskID, autoresearch.HeartbeatTurnDone, "")

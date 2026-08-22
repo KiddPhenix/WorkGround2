@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 import { applySnapshot, useWorkStore } from '../work/store.js';
 import { WorkControllerAdapter } from '../work/controller.js';
-import type { CornerstoneMutationResult, WorkView, WorkViewEvent } from '../work/types.js';
+import type { Cornerstone, CornerstoneMutationResult, WorkView, WorkViewEvent } from '../work/types.js';
 import type { WorkControllerPort, WorkControllerStatus } from '../work/controller.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -24,11 +24,27 @@ function makeView(workID: string, revision: number, overrides?: Partial<WorkView
       ...overrides,
     },
     revision,
+    assessment: { state: 'ready', blocking: false, degraded: false },
   };
 }
 
-function okMutation(view: WorkView): CornerstoneMutationResult {
-  return { ok: true, workView: view };
+function okMutation(view: WorkView, cornerstone?: Cornerstone): CornerstoneMutationResult {
+  const cs: Cornerstone = cornerstone ?? {
+    id: 'cs-default',
+    workId: view.work.id,
+    type: 'instruction',
+    title: 'Test',
+    content: 'ok',
+    ref: { kind: 'inline' },
+    mode: 'snapshot',
+    digest: 'sha256:abc',
+    required: false,
+    status: 'active',
+    provenance: { kind: 'work', workId: view.work.id },
+    pinnedAt: '2026-07-24T10:00:00Z',
+    updatedAt: '2026-07-24T10:00:00Z',
+  };
+  return { ok: true, cornerstone: cs, workView: view };
 }
 
 function getStatus(adapter: WorkControllerAdapter, workID: string): WorkControllerStatus {
@@ -62,14 +78,12 @@ interface MockPort extends WorkControllerPort {
 function makeMockPort(): MockPort {
   let fetchFn: (() => Promise<unknown>) | null = null;
   let recoveryFn: (() => Promise<unknown>) | null = null;
-  let captured: OnEvent | null = null;
 
   const port = {
     _capturedOnEvent: null as OnEvent | null,
     subscribe: (_wid: string, onEvent: OnEvent) => {
-      captured = onEvent;
       port._capturedOnEvent = onEvent;
-      return { ready: Promise.resolve(), unsubscribe: () => { captured = null; } };
+      return { ready: Promise.resolve(), unsubscribe: () => { port._capturedOnEvent = null; } };
     },
     fetchSnapshot: async (_wid: string) => {
       if (fetchFn) return fetchFn();
@@ -292,7 +306,7 @@ function makeMockPort(): MockPort {
   const adapter = new WorkControllerAdapter(port);
 
   try {
-    await adapter.applyMutationResult(workID, { ok: false, error: { kind: 'transport_error', message: 'boom' } });
+    await adapter.applyMutationResult(workID, { ok: false, error: { kind: 'network_error', requestId: 'req-1', message: 'boom', retryable: true } });
     assert.fail('should have thrown');
   } catch (e) {
     assert.ok(e instanceof Error);

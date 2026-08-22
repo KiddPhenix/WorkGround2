@@ -77,7 +77,7 @@ func (a *App) refreshBotRuntime() {
 	// An empty root is the bot gateway's Global scope. The desktop tab layer
 	// uses globalTabWorkspaceRoot() as a storage/session path, but passing that
 	// path here would make an otherwise global group chat look like a project.
-	_ = a.botRuntime.apply(a.bootContext(), cfg, "", a.persistRemoteBotToolApprovalMode, a.DeleteSession)
+	_ = a.botRuntime.apply(a.bootContext(), cfg, "", a.acceptIMUnread, a.bindIMUnread, a.handleDecisionInbound, a.persistRemoteBotToolApprovalMode, a.DeleteSession)
 }
 
 func (a *App) loadDesktopBotConfig() (*config.Config, error) {
@@ -101,7 +101,7 @@ func (a *App) BotRuntimeStatus() BotRuntimeStatusView {
 	return a.botRuntime.snapshot()
 }
 
-func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, workspaceRoot string, onToolApprovalModeChange func(bot.InboundMessage, string) error, onSessionIdle func(string) error) error {
+func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, workspaceRoot string, acceptInbound func(bot.InboundMessage) (bot.InboundAcceptance, error), bindSession func(bot.InboundMessage, string) error, handleDecision func(bot.InboundMessage) (string, bool, error), onToolApprovalModeChange func(bot.InboundMessage, string) error, onSessionIdle func(string) error) error {
 	if r == nil {
 		return nil
 	}
@@ -123,6 +123,8 @@ func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, wo
 	channels := botruntime.ChannelConfigs(cfg.Bot.Connections, true, true)
 	connectionChannels := botruntime.ConnectionChannelConfigs(cfg.Bot.Connections, true, true)
 	channels, connectionChannels = desktopBotChannelsWithLegacyQQ(cfg.Bot.QQ, channels, connectionChannels)
+	rememberRemote := botruntime.NewRemoteRememberer(logger)
+	rememberSession := botruntime.NewSessionRemembererWithWorkspace(logger, workspaceRoot)
 	gwCfg := bot.GatewayConfig{
 		Model:              modelName,
 		ToolApprovalMode:   cfg.Bot.ToolApprovalMode,
@@ -147,6 +149,7 @@ func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, wo
 		ConnectionChannels: connectionChannels,
 		Routes:             botruntime.RouteConfigs(cfg.Bot.Routes, true, true),
 		ConnectionAccess:   botruntime.ConnectionAccessConfigs(cfg),
+		RefreshAccess:      botruntime.RefreshAccessSnapshot,
 		Enabled:            plan.Enabled,
 		Allowlist: bot.AllowlistConfig{
 			Enabled:  cfg.Bot.Allowlist.Enabled,
@@ -172,9 +175,19 @@ func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, wo
 				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinGroups,
 			},
 		},
-		Debounce:                 time.Duration(cfg.Bot.DebounceMs) * time.Millisecond,
-		OnInbound:                botruntime.NewRemoteRememberer(logger),
-		OnSessionReady:           botruntime.NewSessionRemembererWithWorkspace(logger, workspaceRoot),
+		Debounce:       time.Duration(cfg.Bot.DebounceMs) * time.Millisecond,
+		AcceptInbound:  acceptInbound,
+		OnInbound:      rememberRemote,
+		HandleDecision: handleDecision,
+		OnSessionReady: func(msg bot.InboundMessage, sessionID string) error {
+			if err := rememberSession(msg, sessionID); err != nil {
+				return err
+			}
+			if bindSession != nil {
+				return bindSession(msg, sessionID)
+			}
+			return nil
+		},
 		OnSessionIdle:            onSessionIdle,
 		OnToolApprovalModeChange: onToolApprovalModeChange,
 	}

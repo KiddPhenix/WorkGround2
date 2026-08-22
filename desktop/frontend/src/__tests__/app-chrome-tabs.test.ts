@@ -78,8 +78,34 @@ ok(
 
 ok(
   ["e-resize", "s-resize", "se-resize"].every((edge) => appSource.includes(`edge: "${edge}"`)) &&
-    /\{windowsFramelessChrome && <WindowsResizeHandles \/>}[\s\S]*\{windowsFramelessChrome && <WindowsWindowControls \/>}/.test(appSource),
+    /\{windowsFramelessChrome && <WindowsResizeHandles \/>}[\s\S]*\{windowsFramelessChrome && <WindowsWindowControls/.test(appSource),
   "Windows frameless chrome renders explicit right and bottom resize handles",
+);
+
+ok(
+  !appSource.includes('className="windows-resize-handles"') &&
+    appSource.includes('className={`windows-resize-handle ${className}`}') &&
+    finalDeclaration(".windows-resize-handle", "z-index") === "var(--z-window-resize)",
+  "Windows resize hit targets do not use a full-viewport overlay",
+);
+
+ok(
+  /function WindowsResizeHandles\(\)[\s\S]*?flags\.borderThickness = Number\.NEGATIVE_INFINITY;[\s\S]*?flags\.borderThickness = borderThickness;[\s\S]*?wailsInvoke\(`resize:\$\{edge\}`\)/.test(appSource) &&
+    appSource.includes("flags.resizeEdge = undefined;") &&
+    finalDeclaration(".windows-resize-handle--right", "width") === "var(--windows-resize-edge)",
+  "Windows desktop neutralizes Wails global edge inference and keeps only explicit resize handles",
+);
+
+ok(
+  appSource.includes("function runFramelessPointerAction(event: ReactPointerEvent<HTMLElement>, action: () => void)") &&
+    appSource.includes("if (event.button !== 0) return;") &&
+    appSource.includes("function stopFramelessPointerDown(event: ReactPointerEvent<HTMLElement>)") &&
+    appSource.includes("function stopFramelessMouseDown(event: ReactMouseEvent<HTMLElement>)") &&
+    appSource.includes("function runKeyboardClick(event: ReactMouseEvent<HTMLElement>, action: () => void)") &&
+    appSource.includes("if (event.detail === 0) action();") &&
+    /aria-label="Maximize or restore window"[\s\S]*?onPointerDown=\{stopFramelessPointerDown\}[\s\S]*?onPointerUp=\{\(event\) => runFramelessPointerAction\(event, toggleMaximise\)\}[\s\S]*?onMouseDown=\{stopFramelessMouseDown\}[\s\S]*?onClick=\{\(event\) => runKeyboardClick\(event, toggleMaximise\)\}/.test(appSource) &&
+    /className="workspace-sidebar__settings"[\s\S]*?onPointerDown=\{stopFramelessPointerDown\}[\s\S]*?onPointerUp=\{\(event\) => runFramelessPointerAction\(event, openGeneralSettings\)\}[\s\S]*?onMouseDown=\{stopFramelessMouseDown\}[\s\S]*?onClick=\{\(event\) => runKeyboardClick\(event, openGeneralSettings\)\}/.test(appSource),
+  "Windows caption controls and bottom settings isolate pointer down and act on pointer up while retaining keyboard clicks",
 );
 
 ok(
@@ -154,10 +180,20 @@ ok(
 
 ok(
   /workspace-sidebar__collapse-btn/.test(appSource) &&
-    /session-header__expand-btn/.test(appSource) &&
-    /workspace-sidebar--collapsed/.test(appSource) &&
-    /sidebarCollapsed &&\s*\([\s\S]*?session-header__expand-btn/.test(appSource),
+    /<PanelLeft size=\{15\} aria-hidden="true" \/>/.test(appSource) &&
+    /aria-pressed=\{!sidebarCollapsed\}/.test(appSource) &&
+    /const sidebarCollapsed = useLayoutStore\(\(s\) => s\.sidebarCollapsed\);/.test(appSource),
   "real workbench puts PanelLeft collapse in sidebar brand and PanelRight expand in session header when collapsed",
+);
+
+ok(
+  /workspace-sidebar__brand-actions/.test(appSource) &&
+    /workspace-sidebar__decision-btn/.test(appSource) &&
+    /aria-label="打开主人决策"/.test(appSource) &&
+    /<MessageCircleQuestion size=\{15\} aria-hidden="true" \/>/.test(appSource) &&
+    !/decision-launcher/.test(appSource) &&
+    !/\.decision-launcher/.test(stylesSource),
+  "owner decision uses a small sidebar-header icon and no longer renders a floating launcher",
 );
 
 ok(
@@ -210,7 +246,7 @@ ok(
 );
 
 ok(
-  /const controllerReady = state\.meta\?\.ready === true && !state\.backendActivationPending;/.test(appSource) &&
+  /const controllerReady = workControllerReady;/.test(appSource) &&
     /onPrompt=\{handleTranscriptPrompt\}/.test(appSource) &&
     /submitDisabled=\{false\}/.test(appSource) &&
     appSource.includes("retryTabStartup") &&
@@ -220,7 +256,7 @@ ok(
 );
 
 ok(
-  /const transcriptHydrating = state\.hydrating && !state\.hydrateHistoryLoaded;/.test(appSource) &&
+  /const transcriptHydrating = state\.historyLoading;/.test(appSource) &&
     /hydrating=\{transcriptHydrating\}/.test(appSource),
   "Welcome is suppressed only until transcript history has loaded",
 );
@@ -251,13 +287,13 @@ ok(
 );
 
 ok(
-  /else \{[\s\S]*?await resumeSession\(session\.path, targetTab\.id\);/.test(navigationBlock) &&
+  /else \{[\s\S]*?openBlankTarget\([\s\S]*?\);\s*\n\s*if \(!latest\(\)\) return;\s*\n\s*if \(!\(await resumeSession\(session\.path, targetTab\.id\)\)\)/.test(navigationBlock) &&
     /scope === "project" && session\.workspaceRoot \? "project" : "global"/.test(navigationBlock),
   "history navigation opens CLI sessions without topic metadata on a blank scoped tab",
 );
 
 ok(
-  /else if \(scope === "global" && session\.topicId\) \{[\s\S]*?openTopicTarget\("global", "", session\.topicId, session\.path\);[\s\S]*?\} else \{[\s\S]*?await resumeSession\(session\.path, targetTab\.id\);/.test(navigationBlock),
+  /else if \(scope === "global" && session\.topicId\) \{[\s\S]*?openTopicTarget\("global", "", session\.topicId, session\.path\);[\s\S]*?\} else \{[\s\S]*?openBlankTarget\([\s\S]*?\);\s*\n\s*if \(!latest\(\)\) return;\s*\n\s*if \(!\(await resumeSession\(session\.path, targetTab\.id\)\)\)/.test(navigationBlock),
   "history navigation does not re-resume a session that OpenTopicSession already pinned",
 );
 

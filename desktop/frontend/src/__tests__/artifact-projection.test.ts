@@ -27,7 +27,7 @@ ok(
   "bridge exposes the host artifact projection with a browser-safe mock",
 );
 ok(
-  controllerSource.includes('applyAncillary("artifacts", () => app.ArtifactsForTab(tabId)') &&
+  controllerSource.includes('applyAncillary("artifacts", () => app.ArtifactsForTab(sessionTarget(tabId))') &&
     controllerSource.includes('e.kind === "tool_result" && toolMayProduceArtifacts(e.tool?.name)') &&
     controllerSource.includes('e.kind === "turn_done"'),
   "controller refreshes artifacts during hydration and after producing tools or turn completion",

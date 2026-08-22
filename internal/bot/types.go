@@ -2,7 +2,10 @@
 // 架构参考 Hermes Agent 的 gateway/adapter/session 模式。
 package bot
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Platform 标识 IM 平台。
 type Platform string
@@ -45,12 +48,13 @@ type InboundMessage struct {
 	UserID       string   `json:"user_id"`
 	UserName     string   `json:"user_name"`
 	// OperatorID, when set, is the authenticated actor gated by the allowlist; UserID stays routing-only.
-	OperatorID string   `json:"operator_id,omitempty"`
-	Text       string   `json:"text"`
-	MessageID  string   `json:"message_id"`
-	ThreadID   string   `json:"thread_id,omitempty"`
-	MediaURLs  []string `json:"media_urls,omitempty"`
-	Raw        any      `json:"-"`
+	OperatorID string    `json:"operator_id,omitempty"`
+	Text       string    `json:"text"`
+	MessageID  string    `json:"message_id"`
+	ThreadID   string    `json:"thread_id,omitempty"`
+	MediaURLs  []string  `json:"media_urls,omitempty"`
+	ReceivedAt time.Time `json:"-"`
+	Raw        any       `json:"-"`
 }
 
 // Session derives the SessionSource from this message.

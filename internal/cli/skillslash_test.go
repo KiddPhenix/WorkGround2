@@ -14,13 +14,14 @@ func TestSlashItemsIncludesSkills(t *testing.T) {
 	m.skills = []skill.Skill{
 		{Name: "init", Description: "bootstrap AGENTS.md", RunAs: skill.RunInline},
 		{Name: "explore", Description: "investigate", RunAs: skill.RunSubagent},
+		{Name: "rebuild_vocabulary", Description: "rebuild vocabulary", RunAs: skill.RunInline},
 	}
 
 	got := map[string]bool{}
 	for _, it := range m.slashItems() {
 		got[it.label] = true
 	}
-	for _, want := range []string{"/init", "/explore", "/skills", "/hooks", "/model"} {
+	for _, want := range []string{"/init", "/explore", "/skills", "/hooks", "/model", "/rebuild_vocabulary"} {
 		if !got[want] {
 			t.Errorf("slash menu missing %q; have %v", want, labels(m.slashItems()))
 		}

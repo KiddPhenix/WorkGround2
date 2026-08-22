@@ -36,7 +36,7 @@ export const initialCollabState: CollabViewState = {
   toolApprovalMode: "ask",
   selectedIds: [],
   pendingIntents: {},
-  agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "off", contextRefs: [] },
+  agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "interval", contextRefs: [] },
 };
 
 function mergeTimeline(current: CollaborationTimelineItem[], incoming: CollaborationTimelineItem[]): CollaborationTimelineItem[] {

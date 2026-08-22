@@ -3520,7 +3520,6 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			return nil
 		}
 		m.notice(fmt.Sprintf("commands reloaded: %d → %d commands", prev, len(m.commands)))
-
 	case "/paste-image":
 		return pasteClipboardImage()
 	case "/output-style", "/output-styles":

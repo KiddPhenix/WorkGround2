@@ -57,6 +57,7 @@ export interface CollaborationRelayConfig {
 
 export interface CollaborationRouteInput {
   id?: string;
+  protocolVersion?: 1 | 2;
   kind: "lan" | "relay";
   host?: string;
   port?: number;
@@ -219,6 +220,7 @@ export interface CollaborationMember {
     id: string;
     name: string;
     avatar?: string;
+    role?: string;
     status: CollaborationAgentStatus;
     sessionId?: string;
   };
@@ -283,6 +285,11 @@ export interface CollaborationFileTransfer {
   retryable?: boolean;
 }
 
+export interface CollaborationFilePreview {
+  mime: string;
+  dataUrl: string;
+}
+
 export interface CollaborationRoom {
   room: string;
   title?: string;
@@ -300,6 +307,7 @@ export interface CollaborationWorkspaceOption {
 
 export interface CollaborationState {
   status: CollaborationConnectionStatus;
+  protocolVersion?: 1 | 2;
   mode?: "host" | "client";
   room?: CollaborationRoom;
   selfMemberId?: string;
@@ -335,6 +343,7 @@ export interface HostCollaborationRoomInput {
   listenHost: string;
   port: number;
   room: string;
+  protocolVersion?: 1 | 2;
   roomName?: string;
   description?: string;
   token?: string;
@@ -468,6 +477,7 @@ export interface CollaborationTransport {
   revokeFile(fileId: string): Promise<CollaborationActionResult>;
   openFile(fileId: string): Promise<void>;
   revealFile(fileId: string): Promise<void>;
+  previewFile?(fileId: string): Promise<CollaborationFilePreview>;
   subscribeState(listener: (state: CollaborationState) => void): () => void;
   subscribeEvent(listener: (item: CollaborationTimelineItem) => void): () => void;
 }

@@ -98,6 +98,7 @@ const root = createRoot(rootElement);
 await act(async () => { root.render(React.createElement(Harness)); });
 const renderedHost = document.querySelector<HTMLElement>("[data-testid='scroll-host']");
 if (!renderedHost || !manager) throw new Error("scroll manager harness did not render");
+const scrollManager = manager as unknown as ReturnType<typeof useScrollManager>;
 Object.defineProperties(renderedHost, {
   clientHeight: { configurable: true, value: 400 },
   clientWidth: { configurable: true, value: 788 },
@@ -105,21 +106,21 @@ Object.defineProperties(renderedHost, {
 });
 renderedHost.getBoundingClientRect = () => ({ left: 0, right: 800, top: 0, bottom: 400 }) as DOMRect;
 
-manager.stick.current = false;
+scrollManager.stick.current = false;
 await act(async () => {
   renderedHost.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 795, clientY: 200 }));
-  manager?.onNewQuestion();
+  scrollManager.onNewQuestion();
 });
-ok(!manager.stick.current, "new-question handler preserves non-sticky state while the native scrollbar is held");
+ok(!scrollManager.stick.current, "new-question handler preserves non-sticky state while the native scrollbar is held");
 await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
-ok(!manager.stick.current, "releasing away from the bottom keeps automatic following disabled");
+ok(!scrollManager.stick.current, "releasing away from the bottom keeps automatic following disabled");
 
 renderedHost.scrollTop = 800;
 await act(async () => {
   renderedHost.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 795, clientY: 200 }));
   window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
 });
-ok(manager.stick.current, "releasing at the bottom restores automatic following");
+ok(scrollManager.stick.current, "releasing at the bottom restores automatic following");
 
 await act(async () => { root.unmount(); });
 dom.window.close();

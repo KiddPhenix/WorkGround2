@@ -8,7 +8,7 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import type { ArtifactPreview, ArtifactSlot, TaskV2View, WorkDefinitionRevision } from '../../types_v2';
 import { ResultCard, ResultShelf } from './index';
-import type { FileLocateIntent, FileOpenIntent } from './ResultCard';
+import type { FileLocateIntent, FileOpenIntent, FilePreviewIntent } from './ResultCard';
 
 // ── test harness ───────────────────────────────────────────────────────────
 
@@ -297,6 +297,74 @@ async function runTests(): Promise<void> {
     eq(opened[0]?.artifactRefId, 'blob-file', 'blob-host: open carries authoritative ref identity');
     eq(located[0]?.artifactRefId, 'blob-file', 'blob-host: locate carries authoritative ref identity');
     ok(!('path' in (opened[0] ?? {})), 'blob-host: renderer does not forward a file path');
+    await cleanup();
+  }
+
+  // URL refs render as results with a browser-open action only: file-only
+  // actions and in-app preview never appear, and the URL is never forwarded
+  // by the renderer (the backend resolves it from the Work identity).
+  {
+    const openedURL: FileOpenIntent[] = [];
+    const openedFile: FileOpenIntent[] = [];
+    const previewCalls: FilePreviewIntent[] = [];
+    const slot = makeSlot({
+      state: 'ready',
+      artifactRefs: [makeRef({
+        id: 'url-ref',
+        name: 'https://release.example.com/v1.2.0',
+        type: 'text/uri-list',
+        path: undefined,
+        relativePath: undefined,
+        blobDigest: undefined,
+        url: 'https://release.example.com/v1.2.0',
+      })],
+    });
+    const { host, cleanup } = await mount(
+      <ResultCard
+        slot={slot}
+        onOpen={(intent) => { openedFile.push(intent); }}
+        onOpenURL={(intent) => { openedURL.push(intent); }}
+        onLocate={() => { throw new Error('must not run'); }}
+        onPreview={async (intent) => { previewCalls.push(intent); throw new Error('must not run'); }}
+      />,
+    );
+    const open = host.querySelector<HTMLButtonElement>('[data-testid="rc-file-open-url-ref"]');
+    ok(open !== null, 'url-ref: browser-open action is visible');
+    contains(open?.getAttribute('aria-label') ?? '', '在浏览器中打开', 'url-ref: open action targets the browser');
+    ok(host.querySelector('[data-testid="rc-file-locate-url-ref"]') === null, 'url-ref: locate is hidden');
+    ok(host.querySelector('[data-testid="rc-file-download-url-ref"]') === null, 'url-ref: download is hidden');
+    ok(host.querySelector('[data-testid="rc-file-preview-url-ref"]') === null, 'url-ref: preview is hidden');
+    await interact(() => open?.click());
+    eq(openedURL.length, 1, 'url-ref: open routes to the URL handler');
+    eq(openedURL[0]?.artifactRefId, 'url-ref', 'url-ref: identity intent carries the ref id');
+    ok(!('url' in (openedURL[0] ?? {})), 'url-ref: renderer never forwards the URL');
+    eq(openedFile.length, 0, 'url-ref: file open handler is not used');
+    eq(previewCalls.length, 0, 'url-ref: preview capability is not called');
+    await cleanup();
+  }
+
+  // A URL ref inside the shelf routes through the same authoritative handler.
+  {
+    const openedURL: FileOpenIntent[] = [];
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot({
+          state: 'ready',
+          artifactRefs: [makeRef({
+            id: 'shelf-url', name: 'https://a.example.com/x', type: 'text/uri-list',
+            path: undefined, relativePath: undefined, blobDigest: undefined,
+            url: 'https://a.example.com/x',
+          })],
+        })]}
+        activeDefinitionRevision={2}
+        onOpenURL={(intent) => { openedURL.push(intent); }}
+      />,
+    );
+    const open = host.querySelector<HTMLButtonElement>('[data-testid="rc-file-open-shelf-url"]');
+    ok(open !== null, 'shelf-url: browser-open action is visible');
+    await interact(() => open?.click());
+    eq(openedURL.length, 1, 'shelf-url: open fires the URL handler');
+    eq(openedURL[0]?.artifactRefId, 'shelf-url', 'shelf-url: identity intent carries the ref id');
     await cleanup();
   }
 
@@ -936,9 +1004,11 @@ async function runTests(): Promise<void> {
     ok(Array.isArray(slots), 'golden: artifactSlots is array');
     ok(slots.length >= 1, 'golden: at least 1 slot');
     const slot0 = slots[0];
-    eq(slot0.state, 'reserved', 'golden: state=reserved');
+    eq(slot0.state, 'ready', 'golden: produced slot is ready');
     eq(slot0.id, 'slot', 'golden: id=slot');
-    eq(slot0.artifactRefs, null, 'golden: null refs');
+    ok(Array.isArray(slot0.artifactRefs), 'golden: produced artifactRefs is an array');
+    eq(slot0.artifactRefs.length, 1, 'golden: produced slot has one artifact ref');
+    eq(slot0.artifactRefs[0]?.blobDigest, 'sha256:' + '0'.repeat(64), 'golden: artifact ref digest');
     // Mount it
     const slot: ArtifactSlot = { ...slot0, artifactRefs: slot0.artifactRefs ?? [] };
     const { host, cleanup } = await mount(<ResultCard slot={slot} />);
@@ -1210,8 +1280,9 @@ async function runTests(): Promise<void> {
     await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-edit-slot-1"]')!.click());
     const format = host.querySelector<HTMLSelectElement>('[data-testid="result-edit-kind"]')!;
 
-    // All 12 format options are present with clear labels.
+    // All format options are present with clear labels, including URL results.
     const expectedFormats: Record<string, string> = {
+      url: '网址链接（URL）',
       document: '文档（Markdown）',
       text: '纯文本',
       docx: 'Word 文档（DOCX）',
@@ -1292,7 +1363,7 @@ async function runTests(): Promise<void> {
     );
     await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add"]')!.click());
     const addFormat = host.querySelector<HTMLSelectElement>('[data-testid="result-add-kind"]')!;
-    const allKinds = ['document', 'text', 'xlsx', 'docx', 'pdf', 'data', 'sh', 'bat', 'ps1', 'exe', 'zip', 'file'];
+    const allKinds = ['url', 'document', 'text', 'xlsx', 'docx', 'pdf', 'data', 'sh', 'bat', 'ps1', 'exe', 'zip', 'file'];
     for (const kind of allKinds) {
       ok(
         addFormat.querySelector<HTMLOptionElement>(`option[value="${kind}"]`) !== null,
@@ -1301,6 +1372,43 @@ async function runTests(): Promise<void> {
     }
     // Default kind is "document".
     eq(addFormat.value, 'document', 'result add: default kind is document');
+    await cleanup();
+  }
+
+  // URL format changes explicitly require the producer to return a real link,
+  // rather than asking the patch planner to rename or fabricate a file.
+  {
+    const requests: Array<{ instruction: string }> = [];
+    const definition = makeDefinition();
+    definition.artifactSlots[0] = {
+      ...definition.artifactSlots[0],
+      title: '发布包.zip',
+      kind: 'zip',
+    };
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot({ title: '发布包.zip', kind: 'zip' })]}
+        activeDefinitionRevision={2}
+        definition={definition}
+        onRequestWorkflowChange={(request) => requests.push(request)}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-edit-slot-1"]')!.click());
+    const format = host.querySelector<HTMLSelectElement>('[data-testid="result-edit-kind"]')!;
+    await interact(() => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+      setter?.call(format, 'url');
+      format.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    eq(
+      host.querySelector<HTMLInputElement>('[data-testid="result-edit-title"]')?.value,
+      '发布包',
+      'result edit url: removes a stale file extension from the display title',
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-edit-submit"]')!.click());
+    eq(requests.length, 1, 'result edit url: emits one workflow preview request');
+    contains(requests[0]?.instruction ?? '', '实际的绝对 http/https URL', 'result edit url: requires an actual absolute URL');
+    contains(requests[0]?.instruction ?? '', '不要生成占位文件', 'result edit url: forbids a fake file result');
     await cleanup();
   }
 

@@ -324,7 +324,12 @@ func TestPatchPlannerWorkflowPromptAnchorsGuidanceToTargetNode(t *testing.T) {
 		"keeps its existing slot ID",
 		"never model an edit as remove plus add",
 		"Changing only the title or MIME is not a format change",
-		"For a format-only result change, do not modify any node description",
+		"For a format-only result change between file-backed kinds",
+		"actual absolute http/https link",
+		"must rerun the existing producer",
+		"Never emit reformat for a url/link transition",
+		`"newValue":"url"`,
+		`"action":"rerun"`,
 		`"action":"reformat"`,
 		`description=""`,
 		`"path":"nodes/plan-theme/description"`,
@@ -342,6 +347,36 @@ func TestPatchPlannerWorkflowPromptAnchorsGuidanceToTargetNode(t *testing.T) {
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("workflow prompt contains block-only guidance %q:\n%s", forbidden, prompt)
+		}
+	}
+}
+
+func TestPatchPlannerWorkflowPromptIncludesPersistedCustomWorkInformation(t *testing.T) {
+	input := patchPlannerInput()
+	input.Scope = work.PatchWorkflow
+	input.Work = &work.Work{
+		ID: "novel",
+		V2Inputs: []work.WorkInput{{
+			ID: "custom-style", State: work.InputSubmitted,
+			CustomSpec: &work.InputSpec{
+				ID: "custom:custom-style", Label: "写作风格", Description: "全流程遵循", Kind: work.InputText,
+			},
+			Value: json.RawMessage(`"克制、简洁"`),
+		}},
+	}
+	input.Definition = &work.WorkDefinitionRevision{
+		WorkID: "novel", Revision: 2, Nodes: []work.NodeDef{{ID: "draft", Title: "初稿"}},
+	}
+
+	prompt := buildPatchPlannerSystemPrompt(input)
+	for _, want := range []string{
+		"Work Information (user-owned, preserve across workflow revisions)",
+		`id=custom-style`,
+		`label="写作风格"`,
+		`value="克制、简洁"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("workflow prompt missing custom Work information %q:\n%s", want, prompt)
 		}
 	}
 }

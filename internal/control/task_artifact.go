@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -15,6 +16,51 @@ import (
 
 const xlsxMediaType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 const docxMediaType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+const urlArtifactMediaType = "text/uri-list"
+
+// taskURLRe matches Markdown link destinations and bare absolute http(s) URL
+// tokens in one pass, preserving their order in the final response. The bare
+// URL class stops at ASCII and CJK sentence delimiters so prose is not
+// swallowed.
+var taskURLRe = regexp.MustCompile(`\[[^\]]*\]\(([^()\s]+)\)|((?i:https?)://[^\s)\]}<>。，、；：！？）》」』”’]+)`)
+
+// collectTaskURLs extracts unique valid absolute http(s) links from a task
+// final response in document order. Duplicate URLs are collapsed, keeping the
+// first occurrence. Every returned link satisfies work.ValidateArtifactURL.
+func collectTaskURLs(text string) []string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]bool)
+	add := func(raw string) {
+		raw = trimURLTrailingPunctuation(raw)
+		if !work.ValidateArtifactURL(raw) || seen[raw] {
+			return
+		}
+		seen[raw] = true
+		out = append(out, raw)
+	}
+	for _, match := range taskURLRe.FindAllStringSubmatch(text, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		if match[1] != "" {
+			add(match[1])
+		} else {
+			add(match[2])
+		}
+	}
+	return out
+}
+
+// trimURLTrailingPunctuation removes sentence/quote delimiters that a bare
+// URL scan may have captured (e.g. "https://x.com/a." → "https://x.com/a"),
+// including CJK full-width punctuation commonly used as sentence ends.
+func trimURLTrailingPunctuation(raw string) string {
+	return strings.TrimRight(raw, ".,;:!?)]}>\"'`。，、；：！？）》」』”’")
+}
 
 func materializeTaskArtifact(
 	slot work.ArtifactSlot,

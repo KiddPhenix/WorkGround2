@@ -1,3 +1,270 @@
+# 总体未读提醒 Design QA（2026-08-08）
+
+- Source visual truth: `D:\Codex\.codex\generated_images\019fdf57-c322-7323-acf3-8416144055e1\exec-8c9fceda-25c0-4659-90e4-133c5629c435.png`
+- Implementation screenshot: `D:\Codex\.codex\visualizations\2026\08\08\019fdf57-c322-7323-acf3-8416144055e1\unread-implementation-window.png`
+- Taskbar evidence: `D:\Codex\.codex\visualizations\2026\08\08\019fdf57-c322-7323-acf3-8416144055e1\unread-taskbar-fast-crop.png`
+- Full-view comparison: `D:\Codex\.codex\visualizations\2026\08\08\019fdf57-c322-7323-acf3-8416144055e1\unread-design-qa-full-comparison.png`
+- Focused comparison: `D:\Codex\.codex\visualizations\2026\08\08\019fdf57-c322-7323-acf3-8416144055e1\unread-design-qa-focused-comparison.png`
+- Viewport: 实现窗口 `1000 × 700` CSS px；Windows 主屏 `3840 × 1080`；100% 原生截图。
+- Pixels and normalization: 源图 `1672 × 941`，实现窗口 `1000 × 700`，任务栏聚焦图 `1200 × 80`；全图比较将源图等比缩放到 `1244 × 700`，实现保持 `1000 × 700`，聚焦比较使用各自原生区域，无密度伪精确比较。
+- State: 深色工作台；隔离状态中一个微信 IM 会话有 4 条未读；最近列表显示 IM 来源；项目计数保持原语义；置顶 Windows 任务栏显示 WorkGround2 图标。
+
+## Findings
+
+- P0 / P1 / P2: none。
+- Fonts and typography: 数字使用现有 UI 字体、`10px / 750`、等宽数字；在 18px 徽标和任务栏 32px 图标中均清晰可读。
+- Spacing and layout rhythm: 有未读时，18px 紫色数字完整占用原状态点槽位；无未读行继续使用绿色状态点，标题与右侧来源/动作位不跳动。
+- Colors and tokens: 最近列表复用 `--accent` 与现有对比色；任务栏徽标使用同一紫色语义，同时保留 W2 基础图标。
+- Image quality and assets: W2 图标来自应用自身窗口图标；数字由 Windows 原生图标合成，未替换品牌资产。截图在原生像素下无拉伸和压缩伪影。
+- Copy and content: 未读数量来自 `internal/unread` 汇总；IM 标签、会话标题和项目计数来自现有模型，没有用标题文本推断。
+
+## Comparison history
+
+- Pass 1 — blocked：最近列表数字正确替代绿点；标准 `ITaskbarList3` Overlay 在本机置顶任务栏返回 `E_NOINTERFACE`，任务栏没有数字。
+- Fix：任务栏改为合成窗口大小图标，保留 W2 基础图标并在左上角叠加紫色数量；初始化移动到窗口显示后；32 位 DIB 显式补齐徽标 alpha。
+- Pass 2 — passed：聚焦对比同时可见“最近”左侧 `4`、项目数字未变化，以及任务栏 W2 图标左上角 `4`。无遗留 P0 / P1 / P2。
+
+## Interaction and engineering evidence
+
+- 初始状态与 `unread:state` 事件均更新最近列表和任务栏总数；revision 防止迟到事件回退。
+- 打开实际会话后按 `latestSequence` 单调标记已读；重复调用安全，失败保留可观察错误；总体归零时恢复原任务栏图标。
+- Project Tree 定向测试 `48 / 48`、TypeScript、CSS syntax、z-index token、Vite production、Desktop/未读/Bot 定向 Go 测试、Go vet 和 Wails production 构建通过。
+
+final result: passed
+
+---
+
+# 最近会话 Pin 视觉修正 Design QA（2026-08-13）
+
+- Source visual truth: `D:\Temp\codex-clipboard-39c9b9b4-167a-44cc-bb29-883f7e3a7476.png`
+- Implementation full screenshot: `D:\Work\WorkGround2\.codex-preview\session-pin-full.png`
+- Implementation pinned-state screenshot: `D:\Work\WorkGround2\.codex-preview\session-pin-pinned.png`
+- Full target-region comparison: `D:\Work\WorkGround2\.codex-preview\session-pin-comparison.png`
+- Focused pinned-state evidence: `D:\Work\WorkGround2\.codex-preview\session-pin-pinned-crop.png`
+- Alignment feedback source: `D:\Temp\codex-clipboard-aa687e41-8d0f-4d07-aa8a-6821c3f7d363.png`
+- Alignment implementation: `D:\Work\WorkGround2\.codex-preview\session-pin-alignment-hover.png`
+- Alignment comparison: `D:\Work\WorkGround2\.codex-preview\session-pin-alignment-comparison.png`
+- Multi-pin focus fix evidence: `D:\Work\WorkGround2\.codex-preview\session-pin-focus-after.jpg`
+- Right-edge Pin implementation: `D:\Work\WorkGround2\.codex-preview\session-pin-right-edge.jpg`
+- Right-edge before/after comparison: `D:\Work\WorkGround2\.codex-preview\session-pin-right-edge-comparison.jpg`
+- Viewport: `1280 × 720` CSS px；device pixel ratio `1.375`；工作台侧栏渲染宽度 `300px`。
+- Pixels and normalization: 源图 `409 × 393`；实现截图 `1280 × 720`；对照图将源图等比缩放到 `229 × 220`，实现侧栏裁剪为 `320 × 220`，只比较用户指出的“最近”区域。
+- Alignment viewport and normalization: `612 × 842` CSS px、device pixel ratio `1.375`；反馈图 `413 × 125`，实现从全屏截图裁剪为 `300 × 125`，并排图保持两侧同高 `125px`。
+- State: 深色工作台；分别验证未置顶悬停、置顶静止、置顶聚焦、取消置顶与重新置顶。
+
+## Findings
+
+- P0 / P1 / P2: none。
+- Fonts and typography: 沿用现有 UI 字体、字号、字重和截断规则；Pin 绝对定位在标题右侧，不再参与标题宽度计算，实机标题从“00 制定…”恢复到“00 制定项目…”。
+- Spacing and layout rhythm: 未置顶时操作区静止隐藏；悬停/聚焦时项目名淡出，Pin 与更多菜单占用独立的 `26px` 操作槽；操作区固定 `top: 6px`，其中心与 `38px` 行中心实测偏差为 `0`。
+- Colors and tokens: 状态 Pin 使用现有 `--accent` 与前景色混合；静止态无额外底框，悬停底色继续复用 `--sidebar-hover`。
+- Image quality and assets: 没有新增位图或近似绘制；状态与操作图标均来自项目现有 `lucide-react`，分别使用 `Pin` 和 `PinOff`。
+- Copy and content: 沿用“置顶对话 / 取消置顶 / 置顶”现有本地化，不引入新文案。
+
+## Full-view and focused comparison
+
+- 源图只覆盖侧栏局部，因此全视图以完整的源目标区域与实现侧栏裁剪并排比较；应用全屏截图用于确认改动没有影响 Session 主界面比例。
+- 聚焦图确认已置顶 Pin 位于标题之后，项目名仍保持右对齐；操作区静止时 `opacity: 0`、`pointer-events: none`，项目名保持 `opacity: 1`。
+- 悬停对照确认项目名让位后 Pin 与 `…` 不再覆盖 `wg2t / CICDBOT` 一类项目标签。
+
+## Comparison history
+
+### Pass 1
+
+- Earlier finding: 旧实现所有 Recent 行常驻垂直 Pin，已置顶只靠弱背景区分；项目名固定在 `right: 38px`，与两个 `26px` 操作槽重叠。
+- Fix: 已置顶状态改为标题旁 `-45deg` Pin；未置顶操作仅在悬停/聚焦时出现；取消置顶使用 `PinOff`；项目名在操作区出现时淡出。
+- Post-fix evidence: 并排图、置顶静止聚焦图、浏览器计算样式与双向交互结果均无重叠或状态残留。
+
+### Pass 2
+
+- Earlier findings: 用户实机指出 Unpin 与更多菜单整体偏高；标题旁 Pin 作为 flex item 占用宽度，使标题过早截断。
+- Fix: 操作区改为相对 38px 行的固定 `top: 6px`，移除纵向百分比变换；状态 Pin 改为标题容器内绝对定位，并将置顶行项目名上限收为 `64px`，避免状态 Pin 与项目名相撞。
+- Post-fix evidence: `session-pin-alignment-comparison.png`；浏览器测得行与操作区中心差为 `0`，Pin 为 `position: absolute; right: -18px`，标题 label 不再为 Pin 让出宽度。
+
+### Pass 3
+
+- Earlier findings: 鼠标点击 Pin/Unpin 后按钮保留焦点，最后点击行持续命中 `:focus-within`，导致操作区常显、Workspace 标签被淡出；状态 Pin 以标题为定位参照，长标题下会与 Workspace 争位。
+- Fix: 仅对真实指针点击（`MouseEvent.detail > 0`）释放按钮焦点，键盘激活继续保留可见焦点；状态 Pin 改为相对整行固定在 `right: 80px`，Workspace 保持 `right: 10px`，两者成为互不抢位的独立列。
+- Post-fix evidence: `session-pin-focus-after.jpg`；实机同时置顶两条 Recent，会话状态 Pin 均可见；点击后活动元素回到 `BODY`，两行操作区 `opacity: 0`、Workspace `opacity: 1`，Pin 与 Workspace 实测间距约 `4.5px`，无重叠。
+
+### Pass 4
+
+- Earlier finding: 用户希望状态 Pin 成为 Recent 行最右侧状态，而 Workspace 位于其左侧。
+- Fix: 状态 Pin 改为 `right: 10px`；置顶行 Workspace 改为 `right: 34px`、`max-width: 64px`；悬停、键盘聚焦或菜单打开时状态 Pin 淡出，为右侧 Unpin / `…` 操作区让位。
+- Post-fix evidence: `session-pin-right-edge-comparison.jpg`；静止态两条置顶行均显示最右侧 Pin，Workspace 与 Pin 间距 `10px`，Pin 距行右边缘约 `10.7px`；操作区与状态图标不会叠加。
+
+## Interaction and engineering evidence
+
+- 浏览器实际点击“置顶对话”后状态 Pin 出现；点击“取消置顶”后数量为 `0`，重新置顶后数量恢复为 `1`；本轮进一步验证两条 Recent 可同时显示状态 Pin。
+- 浏览器 console error/warning: none。
+- 4 条 Workbench Pin/布局契约通过，并覆盖指针焦点释放与状态/Workspace 独立列；该历史布局脚本仍为既有 12 条漂移断言（`113 / 125`），本次无新增失败。
+- CSS syntax、z-index token、TypeScript 和 Vite production build 通过。
+
+## Follow-up polish
+
+- P3: 如果后续统一侧栏全部状态图标，可将 Pin 的倾角、线宽与运行态圆环纳入同一图标 token。
+
+final result: passed
+
+---
+
+# Session List 层级与选中态 Design QA（2026-08-07）
+
+- Source visual truth: `D:\Temp\codex-clipboard-3d6474e0-121b-429b-ba43-2c900bf9e89d.png`
+- Adjustment source — remove Session ellipsis: `D:\Temp\codex-clipboard-c998f46c-da8d-4762-a580-9c4829620eb9.png`
+- Adjustment source — remove project-header ellipsis: `D:\Temp\codex-clipboard-fa491039-721c-4e54-8758-5abc75d452be.png`
+- Adjustment source — Recent visibility and settings: `D:\Temp\codex-clipboard-c7eef836-c306-48b9-8a1f-58de8475c1ba.png`
+- Final implementation: `D:\Codex\.codex\visualizations\2026\08\07\019fda7f-2001-7bf0-9e4a-0f5358f1814f\session-list-clean-actions-sidebar.png`
+- Recent closed-state evidence: `D:\Codex\.codex\visualizations\2026\08\07\019fda7f-2001-7bf0-9e4a-0f5358f1814f\recent-settings-closed.png`
+- Recent settings evidence: `D:\Codex\.codex\visualizations\2026\08\07\019fda7f-2001-7bf0-9e4a-0f5358f1814f\recent-settings-open.png`
+- Runtime package: `desktop/build/bin/WorkGround2-session-list-transparent.exe`
+- State: 深色工作台、真实本地项目与会话数据、Recent 显示 3 条且隐藏外部调用、设置弹层开闭、展开与收起项目、Work Session 选中态
+
+## Normalization and comparison
+
+- 参考图为 `808 × 1946` 的高密度长侧栏方向稿，约等于 `404 × 973` CSS 视口；三张局部调整图分别为 `368 × 229`、`754 × 510` 和 `418 × 155`；Recent 最终开闭状态均为 `1240 × 720` 原生像素。Recent 参考局部与最终设置弹层已放入同一比较输入，直接检查标题可见性、动作位和列表密度。
+- 本轮只调整侧栏局部且目标元素在 `323 × 978` 裁切中完整可读，因此使用无阻挡的侧栏聚焦证据；无需用被 Windows 防火墙提示遮挡的主内容区作为比较依据。
+- 参考图与实现使用不同的实时数据快照，因此项目数量、会话标题、展开项目和滚动终点不作像素级比较；项目卡、最近区、项目头、会话行和选中行使用同一层级状态进行对照。
+
+## Findings and fixes
+
+- Pass 1：项目卡缺失文件夹图标；原因是主题级 `svg { display: none }` 仍命中新增图标。最终规则显式恢复 `display: inline-flex`。
+- Pass 1：“最近”仍沿用置顶抽取语义，导致会话可能从所属项目消失。最终改为最新会话的单条快捷副本，并从快捷键收集和选中态中排除副本。
+- Pass 2：最新会话缺少稳定状态点。最终增加轻量绿色状态点；真实运行态继续使用后端状态。
+- Pass 3：按用户反馈恢复列表内部透明感。项目卡与选中行的常驻填充改为透明，保留项目细边框、悬停反馈、选中主题描边和 4px 左标记；实机滚动复验中选中项仍可稳定定位。参考图中的低对比填充被视为本轮明确要求的有意偏差。
+- Pass 4：按圈选移除工作台会话行常驻 `…`；释放右侧 24px 标题空间。行级右键菜单继续可用，“最近”快捷行的 Pin 按钮不受影响。
+- Pass 5：按圈选移除“项目”标题栏的竖向 `⋮` 时间筛选入口；新增项目按钮保留，每个项目行自己的 `⋮` 菜单保留。经典侧栏仍保留时间筛选控件。
+- Pass 6：实机发现 Workspace 旧规则仍对分区标题设置 `display:none`，导致“最近”文字消失、只剩筛选图标。最终以工作台专用规则恢复标题布局和对比度，并加入最终声明回归断言。
+- Pass 7：Recent 改为稳定渲染，新增明确的滑杆设置按钮；弹层可切换“显示外部调用”，并选择 `1 / 3 / 5 / 10` 条。CLI、IM/Bot、外部导入按现有来源字段判定，Work 子任务和多人协作保持内部来源；设置写入 localStorage，完整进程关闭重开后恢复。开关补齐可访问名称，Pin 保持可用。
+- 最终比较没有可执行的 P0 / P1 / P2 问题。
+
+## Fidelity
+
+- Layout：侧栏固定为 `300px`，恢复参考图中的“最近 → 分隔线 → 项目 → 项目卡 → 会话行”结构；项目计数和溢出菜单拥有固定列，不挤压标题。
+- Typography：沿用现有产品字体和字重；项目、选中会话、普通会话和辅助项目名形成四级层次，长标题保持单行省略。
+- Color and shape：项目颜色收敛为 9px 圆点，不再染整行；项目卡恢复透明底色并保留细边框；唯一选中行使用透明底色、主题色描边和 4px 左标记。
+- Assets：品牌图继续使用现有 wordmark；所有新增控制图标来自现有 Lucide 图标库。
+- Content：来源徽标、Room / Work / CLI 类型、项目计数和真实标题均来自现有模型，不通过标题关键词猜测类型。
+
+## Interaction and engineering evidence
+
+- 项目展开/收起、项目拖拽、创建项目、创建会话、创建 Work、颜色、历史、重命名、移除及右键菜单继续复用既有入口。
+- 工作台不再显示会话行和项目标题栏的省略号；会话右键菜单、项目行菜单与新增项目入口仍可用。
+- 最新会话快捷副本可打开真实 Session，但不会重复占用数字快捷键；只有项目树内的具体会话行可获得 `aria-current="page"`。Recent 无数据或过滤后为空时仍保留标题、设置入口和显式空状态。
+- `global_work_session` 现在按 Global scope 打开，避免空项目根路径导致导航失败。
+- Project Tree 定向测试 `44 / 44` 通过；CSS syntax、z-index token、TypeScript、Vite production 和 Wails production 构建通过。
+- `workbench-layout` 宽结构套件 `98 / 109`；新增“Recent 始终可见、设置持久化、覆盖旧隐藏规则”契约通过。剩余 11 条均为本功能开始前已存在的工作台/Composer/RuntimeConfig 旧断言。
+
+final result: passed
+
+# Blackhole Front-Lens Arc Correction — 2026-08-08
+
+## Evidence
+
+- Source visual truth: `D:\Temp\codex-clipboard-c2558eb5-2b27-444c-89f0-656abf2015d0.png` (964 × 564 px, user-marked target).
+- Implementation: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-front-arcs-qa\implementation-final.png` (1280 × 720 px, CSS viewport 1280 × 720, device scale factor 1).
+- Full comparison: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-front-arcs-qa\comparison-final.png`.
+- Focused comparison: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-front-arcs-qa\comparison-focused.png`.
+- Normalization: the source was center-cropped from 964 × 564 to 964 × 542 and resized to 1280 × 720. The focused comparison independently scales each event-horizon crop so the annotated lower arcs can be judged without the source application's display-scale difference.
+- State: dark appearance, animated `blackhole` theme, unobstructed raw WebGL canvas.
+- Primary interaction tested: Settings → Appearance → Blackhole; canvas mounted and animated.
+- Browser warning/error log: empty.
+
+## Findings
+
+- No P0/P1/P2 mismatch remains. The previous orange-gold accretion disk, event-horizon size, Doppler asymmetry, star field, crown and lower outer ring are restored. Three warm foreground lens arcs now occupy the lower half of the dark horizon in the same direction, count and curvature indicated by the user's red annotation.
+- Fonts and typography: not applicable; the target contains no text.
+- Spacing and layout rhythm: the restored shader preserves the prior composition. The source was captured with a different application display scale, so full-frame subject size is not used as a change request; the focused equal-subject comparison verifies the requested arc placement.
+- Colors and visual tokens: the arcs reuse the existing orange/gold disk palette and theme-lightness uniform; no unrelated palette changes remain.
+- Image quality and asset fidelity: the WebGL output is crisp at 1280 × 720, with soft emissive falloff and animated noise rather than flat annotation strokes.
+- Copy and content: not applicable.
+
+## Comparison history
+
+### Pass 1
+
+- Earlier finding: the new front arcs were mirrored into the upper half of the event horizon.
+- Fix: inverted the vertical lens-curve equation while leaving the restored previous shader unchanged.
+- Post-fix evidence: `implementation-final.png` and `comparison-focused.png` show all three arcs across the lower horizon.
+- Result: no remaining P0/P1/P2 findings.
+
+## Implementation checklist
+
+- [x] Restore the user's preferred previous blackhole shader.
+- [x] Add three lower foreground lens arcs only.
+- [x] Preserve animation, WebGL1 compatibility, theme response and lifecycle behavior.
+- [x] Verify the Blackhole selection path and browser console.
+- [x] Run the 46 background contracts, CSS checks, TypeScript check, production Vite bundle and standard desktop restart.
+
+## Follow-up polish
+
+- P3: the hand-drawn reference intentionally varies each red stroke length; the implementation keeps the three light bands optically coherent as one lensed disk image.
+
+final result: passed
+
+---
+
+# Blackhole Wallpaper Reference Match — 2026-08-08
+
+## Evidence
+
+- Source visual truth: `D:\Temp\codex-clipboard-ba9bbb7b-bf13-4ab0-80c7-3b339fc0af63.png`
+- Previous implementation supplied by user: `D:\Temp\codex-clipboard-c2e8be65-4092-4a86-a20f-bdd73451b2c8.png`
+- Final raw WebGL capture: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-reference-qa\implementation-final.png`
+- Final desktop capture: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-reference-qa\implementation-app-final.png`
+- Side-by-side comparison: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-reference-qa\comparison-final.png`
+- State: dark theme, blackhole scene selected, animation running.
+- Browser viewport / CSS size: 1280 × 720 at device scale factor 1.
+- Source pixels: 306 × 172, normalized with Lanczos to 1280 × 720 for equal-size comparison.
+- Implementation pixels: 1280 × 720; runtime canvas rendered at 1408 × 792 before browser composition.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: not applicable; the selected visual contains no text.
+- Spacing and layout rhythm: centered subject, outer lens diameter, horizon-to-halo ratio, and horizontal disk span now follow the reference proportions.
+- Colors and visual tokens: orange/red bands were replaced by a white-hot ivory core, restrained gold edge, and blue-black atmospheric field.
+- Image quality and asset fidelity: the result remains real-time WebGL, crisp at desktop resolution with controlled bloom and no raster scaling artifacts.
+- Copy and content: not applicable; the selected visual contains no copy.
+
+## Full-view Comparison
+
+The final comparison shows the same dominant structure as the reference: a smaller central event horizon, bright upper and lower gravitational lens arcs, a narrow dark gap around the horizon, and a razor-thin horizontal accretion line extending into the dark field. The desktop capture confirms that the brighter subject remains readable beneath WorkGround2's foreground plates and mask.
+
+Focused-region comparison was not required because the only fidelity-critical subject occupies the central majority of the equal-size full-view comparison, with no small typography, icons, or controls.
+
+## Comparison History
+
+1. Initial user-provided implementation: P1 — event horizon too large, disk too thick, repeated orange radial bands dominated the scene.
+2. `implementation-v3.png`: P1 — color direction corrected, but the lens became a clipped uniform white donut.
+3. `implementation-v4.png` / `implementation-v5.png`: P2 — upper/lower emphasis improved, but side bloom formed wide vertical columns and the photon rim was too strong.
+4. Final: side bloom now tapers into the horizontal disk, the photon rim is restrained, the disk has a thin bright core plus soft halo, and the white-gold arcs retain subtle animated texture. No actionable P0/P1/P2 differences remain.
+
+## Validation
+
+- Primary interaction tested: Settings → Appearance → Blackhole selection and close.
+- Browser console errors/warnings: none.
+- Raw shader and masked desktop states captured and reviewed.
+
+## Follow-up Polish
+
+- P3: the low-resolution reference has photographic blur and irregular lens streaks that cannot be matched pixel-for-pixel without sacrificing clean real-time wallpaper rendering; the current procedural motion preserves the intended art direction.
+
+final result: passed
+
+# Design QA — 小组件多皮肤操作区精修
+
+- Source visual truth：用户提供的 BP机、拍立得、电子宠物、录音机四张 752×220 实机截图，以及 `D:/Temp/codex-clipboard-446596cd-21ff-4ec3-968d-a92be818e53d.png` 的电子宠物运行态反馈。
+- Viewport：`590 × 176` 逻辑尺寸；另在真实 WidgetMode 的 BP 选择回复态复核任务按钮。
+- Geometry：四套皮肤的“主窗口”键与正文/底部主操作统一右边缘；主窗口、工作区、新对话共享 `66px` 逻辑高度和同一内边距节奏，底部两项进入一个内嵌操作坞。
+- Material：BP 保留军用塑料与黄铜主键；录音机保留方形棕黑压键。拍立得继续使用单一逻辑轮廓。电子宠物的暗绿操作槽、薄荷副键、杏橙主键改为重新生成的无字 PNG 图素；首轮厚框/双沟槽版本被淘汰，第二轮只保留一条薄压边和克制的面内材质。三张图素经透明化、紧边裁切后使用 filled nine-slice，圆角和压边不参与横向拉伸。
+- Iconography：工作区、新对话和主窗口图标各有独立图标槽，文字与图标不再裸贴；hover 上浮 1px，active 下压 1px，disabled/focus 契约保持。
+- Comparison history：首轮发现右上键与新对话键偏小；第二轮虽统一比例，却把外框、内圈、底板框和阴影叠成多层，电子宠物实机出现明显白色双圈。先删除重复 CSS 内圈后，用户进一步要求重新生成图素；生成首轮仍有厚边，未接入项目，第二轮按“去内沟槽、压薄至高度约 5%–6%”重新收边后才进入生产资源。590×176 复核时三张 PNG 均实际加载，透明角无洋红泄漏，九宫格无接缝，右上/底部按钮右缘与文字安全区正常。
+- Validation：`test:widget-layout`、`test:widget-skins`、TypeScript、CSS、Vite production、scoped `git diff --check` 与独立 Wails production 构建通过；验收版为 `desktop/build/bin/WorkGround2-widget-raster.exe`。新增契约要求三张生产图素存在、非空并被 CSS filled nine-slice 消费；浏览器控制台无 warning/error。
+
+final result: passed
+
+---
+
 # Session 石墨叠板视觉 QA
 
 - source visual truth: `D:\Codex\.codex\generated_images\019fd4ea-4259-7be1-a7fb-fd4bc9f9f5ab\exec-670f39ea-3d5e-4397-b09b-a65be63fa26b.png`

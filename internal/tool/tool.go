@@ -121,6 +121,23 @@ type SnipHinter interface {
 	SnipHint() SnipHint
 }
 
+// OutputLimiter is an optional capability a Tool implements when its result
+// has a shape a generic head/tail cut would garble — e.g. a JSON envelope
+// whose element objects must stay whole, whose metadata must survive, and
+// whose indices must stay stable. The agent consults it on successful Execute
+// output that exceeds the per-tool byte budget, before falling back to the
+// generic truncation. Type-assert a Tool to discover support; most tools do
+// not implement it.
+type OutputLimiter interface {
+	// LimitOutput fits s (a successful Execute result) to at most maxBytes
+	// bytes, returning the fitted output with ok=true when it handled the
+	// payload — whether or not it actually had to trim. Returning ok=false
+	// declines: the agent falls back to its generic head/tail truncation.
+	// The agent double-checks the returned output against maxBytes (and UTF-8
+	// validity) and falls back if the limiter overran the budget.
+	LimitOutput(s string, maxBytes int) (out string, ok bool)
+}
+
 // --- process-global built-in set (populated by builtin subpackage init) ---
 
 var builtins = map[string]Tool{}

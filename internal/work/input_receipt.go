@@ -3,9 +3,11 @@ package work
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -50,6 +52,48 @@ func cloneInputIntentReceipt(receipt *InputIntentReceipt) *InputIntentReceipt {
 
 const inputReceiptSubDir = "input_receipts"
 
+// receiptCacheFileName maps a requestID to a filesystem-safe cache file name.
+// RequestIDs are caller-chosen and may contain characters that are illegal in
+// file names on Windows (":", "/", "\\", "*", "?", '"', "<", ">", "|", control
+// chars) or may collide with reserved device names. The receipt sidecar is only
+// a cache (authoritative data lives in the event log), but store and load must
+// agree deterministically and two distinct request IDs must never map to the
+// same file name. A reversible percent-encoding (URL-style, "%XX") guarantees
+// that; safe request IDs keep their exact name so sidecars written by older
+// builds remain readable.
+func receiptCacheFileName(requestID string) string {
+	var b strings.Builder
+	b.Grow(len(requestID) + 8)
+	for _, r := range requestID {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(`<>:"/\|?*%`, r) {
+			fmt.Fprintf(&b, "%%%02X", r)
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	name := b.String()
+	if receiptNameIsReservedDevice(name) {
+		// CON, PRN, AUX, NUL, COM1..9, LPT1..9 (also with an extension) cannot
+		// be created on Windows; prefix so the cache write never fails.
+		name = "_" + name
+	}
+	return name + ".json"
+}
+
+func receiptNameIsReservedDevice(name string) bool {
+	base := name
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	switch strings.ToUpper(base) {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	}
+	return false
+}
+
 // StoreInputReceipt persists an input intent receipt. Idempotent for same content;
 // different content for same requestID returns typed conflict.
 func (s *FileWorkStore) StoreInputReceipt(workID string, receipt *InputIntentReceipt) error {
@@ -61,7 +105,7 @@ func (s *FileWorkStore) StoreInputReceipt(workID string, receipt *InputIntentRec
 		return err
 	}
 	dir := filepath.Join(wp, inputReceiptSubDir)
-	path := filepath.Join(dir, receipt.RequestID+".json")
+	path := filepath.Join(dir, receiptCacheFileName(receipt.RequestID))
 
 	data, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
@@ -94,7 +138,15 @@ func (s *FileWorkStore) StoreInputReceipt(workID string, receipt *InputIntentRec
 
 // LoadInputReceipt reconstructs the authoritative receipt from the event log.
 // The receipts directory is only a backwards-compatible cache.
-func (s *FileWorkStore) LoadInputReceipt(workID, requestID string) (*InputIntentReceipt, error) {
+func (s *FileWorkStore) LoadInputReceipt(workID, requestID string) (receipt *InputIntentReceipt, retErr error) {
+	// Read under the per-Work lifecycle lock so a concurrent commit cannot
+	// expose a mid-batch event log to the replay below (same reasoning as
+	// LoadV2Receipt).
+	done, err := s.beginWorkOp(workID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, done()) }()
 	wp, err := s.workPath(workID)
 	if err != nil {
 		return nil, err
@@ -119,7 +171,7 @@ func (s *FileWorkStore) LoadInputReceipt(workID, requestID string) (*InputIntent
 	}
 
 	// Fallback: try the sidecar cache.
-	path := filepath.Join(wp, inputReceiptSubDir, requestID+".json")
+	path := filepath.Join(wp, inputReceiptSubDir, receiptCacheFileName(requestID))
 	data, readErr := os.ReadFile(path)
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
@@ -127,11 +179,11 @@ func (s *FileWorkStore) LoadInputReceipt(workID, requestID string) (*InputIntent
 		}
 		return nil, fmt.Errorf("work: read input receipt %s for %s: %w", requestID, workID, readErr)
 	}
-	var receipt InputIntentReceipt
-	if err := json.Unmarshal(data, &receipt); err != nil {
+	var cached InputIntentReceipt
+	if err := json.Unmarshal(data, &cached); err != nil {
 		return nil, fmt.Errorf("work: corrupt input receipt %s for %s: %w", requestID, workID, err)
 	}
-	return &receipt, nil
+	return &cached, nil
 }
 
 // ── Intent digest helpers ──────────────────────────────────────────────────

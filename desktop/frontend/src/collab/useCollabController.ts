@@ -6,6 +6,7 @@ import type {
   CollaborationActionResult,
   CollaborationAgentConfig,
   CollaborationAgentRunResponse,
+  CollaborationFilePreview,
   CollaborationToolApprovalMode,
   UpdateCollaborationProfileInput,
   CollaborationInvite,
@@ -93,6 +94,7 @@ export interface CollabController {
   revokeFile(fileId: string): Promise<void>;
   openFile(fileId: string): Promise<void>;
   revealFile(fileId: string): Promise<void>;
+  previewFile(fileId: string): Promise<CollaborationFilePreview | null>;
   toggleSelection(id: string): void;
   clearSelection(): void;
   startPending(intent: PendingIntent): Promise<void>;
@@ -470,6 +472,10 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   const resumeFile = useCallback((fileId: string) => runFileAction(transport.resumeFile(fileId)), [runFileAction, transport]);
   const openFile = useCallback((fileId: string) => runFileAction(transport.openFile(fileId)), [runFileAction, transport]);
   const revealFile = useCallback((fileId: string) => runFileAction(transport.revealFile(fileId)), [runFileAction, transport]);
+  const previewFile = useCallback(async (fileId: string) => {
+    if (!transport.previewFile) return null;
+    return transport.previewFile(fileId);
+  }, [transport]);
   const revokeFile = useCallback(async (fileId: string) => {
     await perform(transport.revokeFile(fileId));
   }, [perform, transport]);
@@ -478,5 +484,5 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   const clearSelection = useCallback(() => dispatch({ type: "CLEAR_SELECTION" }), []);
   const selectedItems = selectedTimelineItems(state);
 
-  return { state, self, agentBusy, selectedItems, relayConfig, roomQuery, discoveryLoading, discoveryError, relaySaving, relayConfigError, host, join, invite, queryRooms, saveRelayConfig, leave, refresh, postChat, postContribution, requestAgent, agree, startAgent, cancelQueuedTask, stopCurrentRun, respondAgentRun, acceptRequest, rejectRequest, updateAgentConfig, updateProfile, updateToolApprovalMode, shareFiles, receiveFile, pauseFile, resumeFile, revokeFile, openFile, revealFile, toggleSelection, clearSelection, startPending, stopPending, editPending };
+  return { state, self, agentBusy, selectedItems, relayConfig, roomQuery, discoveryLoading, discoveryError, relaySaving, relayConfigError, host, join, invite, queryRooms, saveRelayConfig, leave, refresh, postChat, postContribution, requestAgent, agree, startAgent, cancelQueuedTask, stopCurrentRun, respondAgentRun, acceptRequest, rejectRequest, updateAgentConfig, updateProfile, updateToolApprovalMode, shareFiles, receiveFile, pauseFile, resumeFile, revokeFile, openFile, revealFile, previewFile, toggleSelection, clearSelection, startPending, stopPending, editPending };
 }

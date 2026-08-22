@@ -169,6 +169,7 @@ const readyHandlers: Array<(tabId?: string) => void> = [];
 const sessionActivatedHandlers: Array<(payload?: unknown) => void> = [];
 let replayPendingCalls = 0;
 const submittedPrompts: Array<{ tabId: string; text: string }> = [];
+let failConfirmedSubmit = false;
 const replayPendingEvents = new Map<string, WireEvent>();
 
 function currentTabs(): TabMeta[] {
@@ -257,6 +258,7 @@ window.go = {
       },
       SubmitToTab: async (tabID: string, text: string) => {
         submittedPrompts.push({ tabId: tabID, text });
+        if (failConfirmedSubmit) throw new Error("bridge rejected queued send");
         runningTabs.add(tabID);
         if (tabID === "tab-c") await submitTabCGate.promise;
       },
@@ -694,6 +696,23 @@ await act(async () => {
   await flushPromises();
 });
 eq(controller?.state.running, false, "foreground runtime snapshot: turn_done finishes the turn");
+
+failConfirmedSubmit = true;
+let confirmedSendError = "";
+await act(async () => {
+  try {
+    await controller?.sendToTabConfirmed("tab-h", "queued send must be confirmed");
+  } catch (error) {
+    confirmedSendError = error instanceof Error ? error.message : String(error);
+  }
+  await flushPromises();
+});
+ok(confirmedSendError.includes("bridge rejected queued send"), "confirmed queue send rejects when the Desktop bridge rejects");
+ok(
+  controller?.state.items.some((item) => item.kind === "user" && item.text === "queued send must be confirmed" && item.failed) ?? false,
+  "confirmed queue send exposes the rejected optimistic message",
+);
+failConfirmedSubmit = false;
 
 // Restore original SetActiveTab
 window.go.main.App.SetActiveTab = originalSetActive;

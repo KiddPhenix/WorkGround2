@@ -1003,6 +1003,20 @@ func TestOpenGlobalTabResolvesTopicToLatestSessionRuntime(t *testing.T) {
 
 	oldCtrl.Submit("keep old runtime running")
 	<-runner.started
+	// The running old controller marks its own session as recently active, so
+	// the disk "latest session" for the topic must be newer than that touch to
+	// exercise the rebind path. Refresh new.jsonl's meta after the runtime is
+	// live, then invalidate the topic index so the resolver sees it.
+	if err := agent.SaveBranchMetaPreserveUpdated(newPath, agent.BranchMeta{
+		CreatedAt:  time.Now().Add(-time.Minute),
+		UpdatedAt:  time.Now().Add(time.Minute),
+		Scope:      "global",
+		TopicID:    topicID,
+		TopicTitle: topicTitle,
+	}); err != nil {
+		t.Fatalf("refresh new session meta: %v", err)
+	}
+	invalidateTopicSessionIndex(dir)
 
 	meta, err := app.OpenGlobalTab(topicID)
 	if err != nil {

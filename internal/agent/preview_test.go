@@ -73,6 +73,11 @@ func TestStripTransientUserBlocksUnwrapsMemoryCompilerExecution(t *testing.T) {
 			in:   "<cornerstone-context>\n<cornerstone id=\"cs-1\">keep</cornerstone>\n</cornerstone-context>\n\nship it",
 			want: "ship it",
 		},
+		{
+			name: "workspace vocabulary prefix is stripped",
+			in:   "<workspace-vocabulary>\n- 多模态生视频V5: node\n</workspace-vocabulary>\n\n请使用多模态生视频V5",
+			want: "请使用多模态生视频V5",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

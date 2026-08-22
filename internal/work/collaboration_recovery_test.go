@@ -56,6 +56,12 @@ func (s *retryReadBarrierStore) LoadState(workID, requestID string) (*Work, Work
 	return value, state, err
 }
 
+func cloneArtifactSlot(slot *ArtifactSlot) ArtifactSlot {
+	clone := *slot
+	clone.ArtifactRefs = append([]ArtifactRef(nil), slot.ArtifactRefs...)
+	return clone
+}
+
 func TestRetryArtifactSlotTwoFileStoresConcurrentReplayAndRestart(t *testing.T) {
 	h := newCoordinatorHarness(t, coordinatorDefinition(
 		[]NodeDef{{ID: "n1", Title: "producer", ProducesSlotIDs: []string{"slot"}}},
@@ -779,6 +785,19 @@ func TestRetryArtifactSlotRequiresRevisionAndLosesConcurrentDefinitionSwitch_Fil
 		t.Fatalf("switch apply=%+v err=%v", applied, applyErr)
 	}
 	callsAfterSwitch := executor.callCount()
+	// Snapshot the rev3 slot right after ApplyDefinition. The apply may carry
+	// kept runtime/slot context from the old run (projectKeptContexts), so the
+	// assertion is that the concurrent retry leaves that authoritative slot
+	// byte-identical — not a fixed reserved/ready guess.
+	projectionBefore, _, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev3Before, _ := FindArtifactSlotRevision(projectionBefore, candidate.Revision, "slot")
+	if rev3Before == nil {
+		t.Fatal("rev3 slot missing after apply")
+	}
+	slotSnapshot := cloneArtifactSlot(rev3Before)
 	close(barrier.release)
 	retryResult, retryErr := <-resultCh, <-errCh
 	if retryErr == nil || retryResult == nil || retryResult.Committed {
@@ -789,9 +808,10 @@ func TestRetryArtifactSlotRequiresRevisionAndLosesConcurrentDefinitionSwitch_Fil
 		t.Fatal(err)
 	}
 	rev3, _ := FindArtifactSlotRevision(projection, candidate.Revision, "slot")
-	if rev3 == nil || rev3.State != SlotReserved || rev3.Revision != 1 ||
+	if rev3 == nil || !reflect.DeepEqual(*rev3, slotSnapshot) ||
 		executor.callCount() != callsAfterSwitch {
-		t.Fatalf("concurrent retry polluted rev3=%+v calls %d→%d", rev3, callsAfterSwitch, executor.callCount())
+		t.Fatalf("concurrent retry polluted rev3=%+v snapshot=%+v calls %d→%d",
+			rev3, slotSnapshot, callsAfterSwitch, executor.callCount())
 	}
 	_, retryEvent, err := h.store.LoadState(h.work, "concurrent-switch-retry/slot/artifact-slot")
 	if err != nil {
@@ -886,6 +906,18 @@ func TestRetryArtifactSlotRejectsRevisionSwitchAtInvalidationCommit_FileWorkStor
 		t.Fatalf("apply=%+v err=%v", applied, applyErr)
 	}
 	callsAfterSwitch := executor.callCount()
+	// Snapshot the rev3 slot after apply. ApplyDefinition may carry kept
+	// runtime/slot context from the old run, so verify the historical retry
+	// leaves the authoritative slot byte-identical instead of guessing state.
+	beforeProj, _, loadErr := switchStore.LoadState(h.work, "")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	rev3Before, _ := FindArtifactSlotRevision(beforeProj, candidate.Revision, "slot")
+	if rev3Before == nil {
+		t.Fatal("rev3 slot missing after apply")
+	}
+	slotSnapshot := cloneArtifactSlot(rev3Before)
 	close(barrier.release)
 	got := <-done
 	var conflict *ErrWorkEventConflict
@@ -911,8 +943,8 @@ func TestRetryArtifactSlotRejectsRevisionSwitchAtInvalidationCommit_FileWorkStor
 		t.Fatal("historical task.invalidated was committed")
 	}
 	rev3Slot, _ := FindArtifactSlotRevision(projection, candidate.Revision, "slot")
-	if rev3Slot == nil || rev3Slot.State != SlotReserved || rev3Slot.Revision != 1 {
-		t.Fatalf("historical retry polluted active slot: %+v", rev3Slot)
+	if rev3Slot == nil || !reflect.DeepEqual(*rev3Slot, slotSnapshot) {
+		t.Fatalf("historical retry polluted active slot: %+v snapshot=%+v", rev3Slot, slotSnapshot)
 	}
 	if old := projection.V2TaskRuntimes[runtime.TaskID]; old == nil {
 		t.Fatal("historical runtime disappeared")

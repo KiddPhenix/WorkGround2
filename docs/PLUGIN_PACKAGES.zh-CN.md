@@ -2,6 +2,8 @@
 
 WorkGround2 插件包把 skills、hooks 和 MCP servers 组织成一个可安装单元。
 
+DSH Bundle（`package.json.dsh.bundle.patch`）可直接进入同一安装流程；Host/Tool、Doctor 和隔离 UI 映像的操作与边界见 [DSH Bundle 兼容使用说明](DSH_BUNDLE_COMPATIBILITY.zh-CN.md)。
+
 ## CLI 模式
 
 在终端里使用 `WorkGround2 plugin` 安装和管理插件包。插件包当前按全局范围安装，

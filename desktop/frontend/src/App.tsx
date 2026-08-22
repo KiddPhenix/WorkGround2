@@ -26,6 +26,7 @@ import {
   GitBranch,
   History,
   MessageSquare,
+	MessageCircleQuestion,
   Settings as SettingsIcon,
   Pencil,
   Trash2,
@@ -138,6 +139,7 @@ import {
   type RightDockMode,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  WORKBENCH_SIDEBAR_WIDTH,
   clampCreationSidebarWidth,
   clampRightDockPreviewWidth,
   clampRightDockTreeWidth,
@@ -152,6 +154,7 @@ import {
 } from "./store/layout";
 import { useOverlayStore } from "./store/overlays";
 import { useAddOnDialogStore } from "./store/addonDialog";
+import { canDrainQueue, selectSessionQueueHead, useComposerQueueStore } from "./store/composerQueue";
 import { hydrateDisplayMode } from "./lib/displayMode";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "./lib/statusBarItems";
 import { paletteSessionDisplayTitle, paletteSessionHint, paletteSessionKeywords, sessionActivityTime, tabSessionDisplayTitle } from "./lib/session";
@@ -183,6 +186,7 @@ import type { CollaborationWorkspaceOption } from "./collab/types";
 const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
 const AddOnDialogModal = lazy(() => import("./components/addons/AddOnDialogModal").then((module) => ({ default: module.AddOnDialogModal })));
+const DecisionCenter = lazy(() => import("./components/DecisionCenter").then((module) => ({ default: module.DecisionCenter })));
 
 const CHAT_MIN_WIDTH = 400;
 const CHAT_COMFORT_MIN_WIDTH = 560;
@@ -272,6 +276,24 @@ type WorkBootstrap = {
   result?: WorkSessionResult;
 };
 
+function runFramelessPointerAction(event: ReactPointerEvent<HTMLElement>, action: () => void) {
+  event.stopPropagation();
+  if (event.button !== 0) return;
+  action();
+}
+
+function stopFramelessPointerDown(event: ReactPointerEvent<HTMLElement>) {
+  event.stopPropagation();
+}
+
+function stopFramelessMouseDown(event: ReactMouseEvent<HTMLElement>) {
+  event.stopPropagation();
+}
+
+function runKeyboardClick(event: ReactMouseEvent<HTMLElement>, action: () => void) {
+  if (event.detail === 0) action();
+}
+
 function workDraftKey(requestID: string): string {
   return `work:start-draft:${requestID}`;
 }
@@ -304,7 +326,10 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
 		type="button"
 		aria-label="进入小组件模式"
 		title="小组件模式"
-		onClick={() => void onEnterWidgetMode()}
+		onPointerDown={stopFramelessPointerDown}
+		onPointerUp={(event) => runFramelessPointerAction(event, () => void onEnterWidgetMode())}
+		onMouseDown={stopFramelessMouseDown}
+		onClick={(event) => runKeyboardClick(event, () => void onEnterWidgetMode())}
 	  >
 		<PictureInPicture2 size={13} strokeWidth={1.8} />
 	  </button>
@@ -314,7 +339,10 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
         type="button"
         aria-label="Minimize window"
         title="Minimize"
-        onClick={() => void app.MinimiseMainWindow()}
+        onPointerDown={stopFramelessPointerDown}
+        onPointerUp={(event) => runFramelessPointerAction(event, () => void app.MinimiseMainWindow())}
+        onMouseDown={stopFramelessMouseDown}
+        onClick={(event) => runKeyboardClick(event, () => void app.MinimiseMainWindow())}
       >
         <Minus size={13} strokeWidth={1.9} />
       </button>
@@ -324,7 +352,10 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
         aria-label="Maximize or restore window"
         aria-pressed={maximised}
         title={maximised ? "Restore" : "Maximize"}
-        onClick={toggleMaximise}
+        onPointerDown={stopFramelessPointerDown}
+        onPointerUp={(event) => runFramelessPointerAction(event, toggleMaximise)}
+        onMouseDown={stopFramelessMouseDown}
+        onClick={(event) => runKeyboardClick(event, toggleMaximise)}
       >
         {maximised ? <RestoreIcon size={12} strokeWidth={1.75} /> : <Square size={11} strokeWidth={1.8} />}
       </button>
@@ -333,7 +364,10 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
         type="button"
         aria-label="Close window"
         title="Close"
-        onClick={() => void app.CloseMainWindow()}
+        onPointerDown={stopFramelessPointerDown}
+        onPointerUp={(event) => runFramelessPointerAction(event, () => void app.CloseMainWindow())}
+        onMouseDown={stopFramelessMouseDown}
+        onClick={(event) => runKeyboardClick(event, () => void app.CloseMainWindow())}
       >
         <X size={13} strokeWidth={1.9} />
       </button>
@@ -343,6 +377,26 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
 
 function WindowsResizeHandles() {
   const { maximised } = useWindowsMaximisedState();
+  useEffect(() => {
+    const flags = (window as Window & {
+      wails?: { flags?: { borderThickness: number; resizeEdge?: string; defaultCursor?: string | null } };
+    }).wails?.flags;
+    if (!flags) return;
+    const borderThickness = flags.borderThickness;
+
+    const resetCursor = () => {
+      document.documentElement.style.cursor = flags.defaultCursor ?? "";
+      flags.resizeEdge = undefined;
+    };
+
+    resetCursor();
+    flags.borderThickness = Number.NEGATIVE_INFINITY;
+    return () => {
+      resetCursor();
+      flags.borderThickness = borderThickness;
+    };
+  }, []);
+
   const startResize = useCallback((edge: WindowsResizeEdge, event: ReactMouseEvent<HTMLSpanElement>) => {
     if (event.button !== 0) return;
     const wailsInvoke = (window as Window & { WailsInvoke?: (message: string) => void }).WailsInvoke;
@@ -355,15 +409,16 @@ function WindowsResizeHandles() {
   if (maximised) return null;
 
   return (
-    <div className="windows-resize-handles" aria-hidden="true">
+    <>
       {WINDOWS_RESIZE_EDGES.map(({ edge, className }) => (
         <span
           key={edge}
+          aria-hidden="true"
           className={`windows-resize-handle ${className}`}
           onMouseDown={(event) => startResize(edge, event)}
         />
       ))}
-    </div>
+    </>
   );
 }
 
@@ -1041,6 +1096,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     activeSessionId,
     send,
     sendToTab,
+    sendToTabConfirmed,
     runShell,
     steer,
     notice,
@@ -1139,6 +1195,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const singleSurfaceLayout = desktopLayoutStyle === "workbench" || desktopLayoutStyle === "creation";
   const [startupUpdateChecksEnabled, setStartupUpdateChecksEnabled] = useState<boolean | null>(null);
   const [histView, setHistView] = useState<HistoryViewState | null>(null);
+	const [decisionCenterOpen, setDecisionCenterOpen] = useState(false);
   const paletteOpen = useOverlayStore((s) => s.paletteOpen);
   const setPaletteOpen = useOverlayStore((s) => s.setPaletteOpen);
   const shortcutsOpen = useOverlayStore((s) => s.shortcutsOpen);
@@ -1396,6 +1453,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     setTransientOverlayDismissSignal((signal) => signal + 1);
   }, []);
 
+  const openGeneralSettings = useCallback(() => {
+    closeTransientOverlays();
+    setSettingsFocus(null);
+    setSettingsTarget("general");
+  }, [closeTransientOverlays, setSettingsFocus, setSettingsTarget]);
+
   const reloadSidebarImConnections = useCallback(async () => {
     const [settings, runtimeStatus] = await Promise.all([
       app.DesktopStartupSettings(),
@@ -1548,10 +1611,9 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   useEffect(() => {
     if (typeof window === "undefined" || !window.runtime) return;
     return window.runtime.EventsOn("app:open-settings", () => {
-      closeTransientOverlays();
-      setSettingsTarget("general");
+      openGeneralSettings();
     });
-  }, [closeTransientOverlays]);
+  }, [openGeneralSettings]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onResize = () => setViewportWidth(window.innerWidth);
@@ -2334,10 +2396,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   }, [anchorAppScrollToChat, closeTransientOverlays, pulseSidebarToggle, sidebarCollapsed]);
 
   const sidebarWidthClamp = desktopLayoutStyle === "creation" ? clampCreationSidebarWidth : clampSidebarWidth;
-  // Workbench owns a fixed 264px navigation rail and does not render the
+  // Workbench owns a fixed navigation rail and does not render the
   // resizer. Reusing a persisted classic/creation width here leaves an empty
   // grid track between the fixed rail and the session workspace.
-  const sidebarRenderWidth = desktopLayoutStyle === "workbench" ? SIDEBAR_MIN_WIDTH : (liveSidebarWidth ?? sidebarWidth);
+  const sidebarRenderWidth = desktopLayoutStyle === "workbench" ? WORKBENCH_SIDEBAR_WIDTH : (liveSidebarWidth ?? sidebarWidth);
   const sidebarResizeMinWidth = desktopLayoutStyle === "creation" ? CREATION_SIDEBAR_MIN_WIDTH : SIDEBAR_MIN_WIDTH;
 
   useEffect(() => {
@@ -3189,10 +3251,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     });
   }, [openPalette]);
   useGlobalShortcut("app.newSession", () => void handleNewTab(), [handleNewTab]);
-  useGlobalShortcut("settings.open", () => {
-    closeTransientOverlays();
-    setSettingsTarget("general");
-  }, [closeTransientOverlays]);
+  useGlobalShortcut("settings.open", openGeneralSettings, [openGeneralSettings]);
   useGlobalShortcut("tab.close", () => {
     if (activeTabId) void handleTabClose(activeTabId);
   }, [activeTabId, handleTabClose], Boolean(activeTabId));
@@ -3595,6 +3654,13 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     }
   }, [refreshProjectsAndTabs, showToast]);
 
+  const renameSidebarSession = useCallback(async (path: string, title: string) => {
+    const nextTitle = title.trim();
+    if (!path || !nextTitle) return;
+    await renameSession(path, nextTitle);
+    await refreshProjectsAndTabs();
+  }, [refreshProjectsAndTabs, renameSession]);
+
   const startActiveTopicRename = useCallback(() => {
     if (!activeTab?.topicId) return;
     topicRenameSkipCommitRef.current = false;
@@ -3755,6 +3821,67 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     widgetEnabled,
   };
 
+  // ── Composer queue auto-drain ────────────────────────────────────────────
+  //
+  // While an ordinary session is running, the Composer enqueues follow-up
+  // messages into the visible session queue (store/composerQueue). Once that
+  // same session becomes safe/idle — ready, no foreground turn, no pending
+  // approval/ask/decision gate — submit only the FIFO head as a new turn.
+  // One item drains per completed turn; a failed submit is retained with a
+  // retryable error instead of retrying in a tight loop.
+  const composerQueueItems = useComposerQueueStore((s) => s.items);
+  const composerQueueDrainingRef = useRef(false);
+
+  useEffect(() => {
+    const sessionId = activeSessionId ?? activeTabId ?? "";
+    const targetTabId = activeTabId ?? "";
+    const drainable = canDrainQueue({
+      ready: controllerReady && !hydratePlaceholderActive,
+      running: state.running || rewindCommitting,
+      decisionPending:
+        state.approval != null ||
+        state.ask != null ||
+        state.messageAction != null ||
+        clearContextPending,
+    });
+    if (!drainable || !sessionId || !targetTabId || composerQueueDrainingRef.current) return;
+    const head = selectSessionQueueHead(composerQueueItems, sessionId);
+    if (!head || head.error) return;
+
+    composerQueueDrainingRef.current = true;
+    handleSend(
+      head.content,
+      head.submitText ?? head.content,
+      (display, submit) => commitRewindThen(() => sendToTabConfirmed(targetTabId, display, submit)),
+    )
+      .then(() => {
+        useComposerQueueStore.getState().removeItem(head.queueItemId);
+      })
+      .catch((error) => {
+        useComposerQueueStore.getState().updateItem(head.queueItemId, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        composerQueueDrainingRef.current = false;
+      });
+  }, [
+    composerQueueItems,
+    activeSessionId,
+    activeTabId,
+    controllerReady,
+    hydratePlaceholderActive,
+    state.running,
+    rewindCommitting,
+    state.approval,
+    state.ask,
+    state.messageAction,
+    clearContextPending,
+    handleSend,
+    commitRewindThen,
+    sendToTabConfirmed,
+  ]);
+
   // ── Linked task Session navigation with an explicit Work return path ─
   const handleNavigateToLinkedSession = useCallback(async (sessionRef: SessionRef): Promise<void> => {
     if (activeTab?.sessionKind !== "work" || !activeTab.workId || !activeTab.topicId || !activeTab.sessionPath) {
@@ -3835,6 +3962,19 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   const showCollaborationSurface = activeTab?.sessionKind === "collaboration";
   const showWorkSurface = activeTab?.sessionKind === "work";
+  const workbenchSidebarRestoreControl = sidebarCollapsed ? (
+    <button
+      className={`workbench-surface-sidebar-restore${sidebarTogglePressed ? " workbench-surface-sidebar-restore--pressed" : ""}`}
+      type="button"
+      onClick={sidebarExpandBlocked ? undefined : toggleSidebar}
+      aria-label={sidebarToggleTitle}
+      aria-pressed={!sidebarCollapsed}
+      aria-disabled={sidebarExpandBlocked}
+      title={sidebarToggleTitle}
+    >
+      <PanelRight size={15} aria-hidden="true" />
+    </button>
+  ) : undefined;
   const storedLinkedWorkReturn = linkedWorkReturn
     && comparableSessionPath(activeTab?.sessionPath) === comparableSessionPath(linkedWorkReturn.targetSessionPath)
     ? linkedWorkReturn
@@ -3991,17 +4131,29 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                   className="workspace-sidebar__brand-logo"
                   draggable={false}
                 />
-                <Tooltip label={sidebarToggleTitle} side="right">
-                  <button
-                    className={`workspace-sidebar__collapse-btn${sidebarTogglePressed ? " workspace-sidebar__collapse-btn--pressed" : ""}`}
-                    type="button"
-                    onClick={toggleSidebar}
-                    aria-label={sidebarToggleTitle}
-                    aria-pressed={!sidebarCollapsed}
-                  >
-                    <PanelLeft size={15} aria-hidden="true" />
-                  </button>
-                </Tooltip>
+                <div className="workspace-sidebar__brand-actions">
+                  <Tooltip label="主人决策" side="bottom">
+                    <button
+                      className="workspace-sidebar__decision-btn"
+                      type="button"
+                      onClick={() => setDecisionCenterOpen(true)}
+                      aria-label="打开主人决策"
+                    >
+                      <MessageCircleQuestion size={15} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                  <Tooltip label={sidebarToggleTitle} side="right">
+                    <button
+                      className={`workspace-sidebar__collapse-btn${sidebarTogglePressed ? " workspace-sidebar__collapse-btn--pressed" : ""}`}
+                      type="button"
+                      onClick={toggleSidebar}
+                      aria-label={sidebarToggleTitle}
+                      aria-pressed={!sidebarCollapsed}
+                    >
+                      <PanelLeft size={15} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                </div>
               </div>
 
               <button
@@ -4052,6 +4204,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                   onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
                   onTopicsChanged={refreshProjectsAndTabs}
                   onRenameTopic={renameTopic}
+                  onRenameSession={renameSidebarSession}
                   refreshSignal={projectRevision}
                   onAddProject={async () => { await switchFolder(); }}
                   timeFilter={topicTimeFilter}
@@ -4069,15 +4222,17 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 type="button"
                 className="workspace-sidebar__settings"
                 aria-label={t("topbar.settings")}
-                onClick={() => {
-                  closeTransientOverlays();
-                  setSettingsTarget("general");
-                }}
+                onPointerDown={stopFramelessPointerDown}
+                onPointerUp={(event) => runFramelessPointerAction(event, openGeneralSettings)}
+                onMouseDown={stopFramelessMouseDown}
+                onClick={(event) => runKeyboardClick(event, openGeneralSettings)}
               >
                 <SettingsIcon size={18} aria-hidden="true" />
                 <span>{t("topbar.settings")}</span>
               </button>
             </aside>
+
+            {(showWorkSurface || showCollaborationSurface) && workbenchSidebarRestoreControl}
 
             {showCollaborationSurface && activeTab?.sessionId ? (
               <CollaborationWorkspace
@@ -4119,6 +4274,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                     tabID={activeTab.id}
                     sessionId={sessionSurfaceProps.activeSessionId ?? sessionSurfaceProps.renderSessionId}
                     onArtifactOpen={(intent) => app.OpenWorkArtifactForTab(activeTab.id, intent)}
+                    onArtifactOpenURL={(intent) => app.OpenWorkArtifactURLForTab(activeTab.id, intent)}
                     onArtifactLocate={(intent) => app.RevealWorkArtifactForTab(activeTab.id, intent)}
                     resolveSessionSurface={resolveSessionSurface}
                     onOpenSession={handleNavigateToLinkedSession}
@@ -4346,6 +4502,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
               onTopicsChanged={refreshProjectsAndTabs}
               onRenameTopic={renameTopic}
+              onRenameSession={renameSidebarSession}
               refreshSignal={projectRevision}
               onAddProject={async () => {
                 await switchFolder();
@@ -4851,7 +5008,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               modelLabel={state.meta?.label ?? t("status.connecting")}
               submitKey={composerSubmitKey}
               imageInputEnabled={state.meta?.imageInputEnabled !== false}
-              tabId={activeSessionId}
+              tabId={activeSessionId ?? activeTabId}
               widgetEnabled={widgetEnabled}
               onEnterWidgetMode={onEnterWidgetMode}
               effort={state.effort}
@@ -5030,6 +5187,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
           />
         </Suspense>
       )}
+
+	  <Suspense fallback={null}>
+		<DecisionCenter open={decisionCenterOpen} onClose={() => setDecisionCenterOpen(false)} />
+	  </Suspense>
 
       {settingsTarget !== null && (
         <Suspense fallback={null}>

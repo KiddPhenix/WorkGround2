@@ -13,7 +13,9 @@ import { detectShortcutPlatform, matchesShortcut } from "../lib/keyboardShortcut
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { useToast } from "../lib/toast";
-import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ComposerSubmitKey, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode } from "../lib/types";
+import { makeQueueItem, useComposerQueueStore } from "../store/composerQueue";
+import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ComposerSubmitKey, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode, type VocabularyMatch } from "../lib/types";
+import { acceptVocabulary, vocabularyTokenAt } from "../lib/vocabularyCompletion";
 import {
   formatWorkspaceReference,
   parseWorkspaceReference,
@@ -58,7 +60,6 @@ const PROMPT_HISTORY_PREFETCH_REMAINING = 3;
 // it; the real gap is a few ms, so keep it short or a deliberate quick second
 // Enter (submit) gets eaten too.
 const IME_CONFIRM_GRACE_MS = 100;
-
 type PastedBlock = {
   label: string;
   text: string;
@@ -68,6 +69,7 @@ type PendingGuidance = {
   id: number;
   text: string;
   submitText: string;
+  source: "preview" | "manual";
 };
 
 type ComposerDraft = {
@@ -544,6 +546,11 @@ export function Composer({
   const [loadingPastChats, setLoadingPastChats] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [composerPrompt, setComposerPrompt] = useState<string | null>(null);
+  const [vocabularyMatch, setVocabularyMatch] = useState<VocabularyMatch | null>(null);
+  const [vocabularyCursor, setVocabularyCursor] = useState({ start: 0, end: 0 });
+  const [vocabularyComposing, setVocabularyComposing] = useState(false);
+  const [vocabularyDismissed, setVocabularyDismissed] = useState(false);
+  const [vocabularyScrollTop, setVocabularyScrollTop] = useState(0);
   // Prompt history navigation (plain ↑/↓)
   // Use refs for values read inside async closures to avoid stale captures
   // on rapid key presses (the React closure trap).
@@ -624,6 +631,7 @@ export function Composer({
     savedTextRef.current = next.savedText;
     setHistoryIndex(next.historyIndex);
     lastSelectionRef.current = { start: next.text.length, end: next.text.length };
+    setVocabularyCursor(lastSelectionRef.current);
     setComposerPrompt(null);
     setShowPastChats(false);
     setPastChatQuery("");
@@ -659,6 +667,7 @@ export function Composer({
   useEffect(() => {
     if (wasRunning.current && !running) {
       setGuidanceExpanded(false);
+      setPendingGuidance((items) => items.filter((item) => item.source === "manual"));
       if (text.trim() === "") {
         pastedBlocksRef.current = [];
         setPastedBlocks([]);
@@ -679,7 +688,7 @@ export function Composer({
     setPendingGuidance(
       guidanceQueuePreviewKey
         .split("\n")
-        .map((text) => ({ id: nextGuidanceId.current++, text, submitText: text })),
+        .map((text) => ({ id: nextGuidanceId.current++, text, submitText: text, source: "preview" as const })),
     );
   }, [guidanceQueuePreviewKey, running]);
 
@@ -701,6 +710,32 @@ export function Composer({
     () => (slashQuery === null ? [] : commands.filter((c) => c.name.toLowerCase().includes(slashQuery))),
     [slashQuery, commands],
   );
+  const skillVocabularyActivations = useRef(new Map<string, Promise<unknown>>());
+  const activateSkillVocabulary = useCallback((command: CommandInfo) => {
+    if (!tabId || command.kind !== "skill") return;
+    const key = `${tabId}:${command.name.toLowerCase()}`;
+    if (skillVocabularyActivations.current.has(key)) return;
+    const activate = app.ActivateSkillVocabularyForTab;
+    if (typeof activate !== "function") return;
+    const pending = activate(tabId, command.name)
+      .then((result) => {
+        const warnings = asArray(result?.warnings);
+        if (warnings.length > 0) showToast(t("composer.skillVocabularyWarning", { warning: warnings[0] }), "warn");
+      })
+      .catch((error) => {
+        showToast(t("composer.skillVocabularyFailed", { error: error instanceof Error ? error.message : String(error) }), "warn");
+      })
+      .finally(() => skillVocabularyActivations.current.delete(key));
+    skillVocabularyActivations.current.set(key, pending);
+  }, [showToast, t, tabId]);
+  const typedSkillName = useMemo(() => /^\/([^\s]+)/.exec(text)?.[1]?.toLowerCase(), [text]);
+  const exactSkillCommand = useMemo(
+    () => typedSkillName === undefined ? undefined : commands.find((command) => command.kind === "skill" && command.name.toLowerCase() === typedSkillName),
+    [commands, typedSkillName],
+  );
+  useEffect(() => {
+    if (exactSkillCommand) activateSkillVocabulary(exactSkillCommand);
+  }, [activateSkillVocabulary, exactSkillCommand]);
 
   // --- slash argument completion ("/cmd <args>") --- mirrors the CLI: once past
   // the command word, the backend suggests sub-commands (/skill → list/show/…,
@@ -866,6 +901,43 @@ export function Composer({
         : atRaw !== null && !dismissed
           ? "at"
           : null;
+
+  const vocabularyToken = useMemo(
+    () => vocabularyTokenAt(text, vocabularyCursor.start, vocabularyCursor.end),
+    [text, vocabularyCursor],
+  );
+
+  useEffect(() => {
+    if (!tabId || menuMode || vocabularyComposing || vocabularyDismissed || !vocabularyToken) {
+      setVocabularyMatch(null);
+      return;
+    }
+    let live = true;
+    const timer = window.setTimeout(() => {
+      const complete = app.CompleteVocabularyForTab;
+      if (typeof complete !== "function") {
+        setVocabularyMatch(null);
+        return;
+      }
+      complete(tabId, vocabularyToken.prefix, 5)
+        .then((items) => {
+          if (!live) return;
+          const first = asArray(items)[0] ?? null;
+          setVocabularyMatch(first && first.text !== vocabularyToken.prefix ? first : null);
+        })
+        .catch(() => {
+          if (live) setVocabularyMatch(null);
+        });
+    }, 90);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [menuMode, tabId, vocabularyComposing, vocabularyDismissed, vocabularyToken?.from, vocabularyToken?.prefix]);
+
+  useEffect(() => {
+    setVocabularyDismissed(false);
+  }, [text, vocabularyCursor.start, vocabularyCursor.end, tabId]);
   const countBase =
     menuMode === "slash"
       ? slashMatches.length
@@ -962,6 +1034,7 @@ export function Composer({
 
   const setTextCaretEnd = (next: string) => {
     setText(next);
+    setVocabularyCursor({ start: next.length, end: next.length });
     requestAnimationFrame(() => {
       const ta = taRef.current;
       if (ta) {
@@ -975,6 +1048,30 @@ export function Composer({
     const ta = taRef.current;
     if (!ta) return;
     lastSelectionRef.current = { start: ta.selectionStart ?? text.length, end: ta.selectionEnd ?? text.length };
+    setVocabularyCursor(lastSelectionRef.current);
+  };
+
+  const pickVocabulary = () => {
+    if (!vocabularyMatch || !vocabularyToken) return;
+    const accepted = acceptVocabulary(text, vocabularyToken, vocabularyMatch);
+    setText(accepted.value);
+    setVocabularyMatch(null);
+    setVocabularyDismissed(true);
+    const recordUse = app.RecordVocabularyUseForTab;
+    if (tabId && typeof recordUse === "function") {
+      const useID = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      void recordUse(tabId, vocabularyMatch.id, useID).catch((error) => {
+        showToast(t("composer.vocabularyUseFailed", { error: error instanceof Error ? error.message : String(error) }), "warn");
+      });
+    }
+    requestAnimationFrame(() => {
+      const node = taRef.current;
+      if (!node) return;
+      node.focus();
+      node.selectionStart = node.selectionEnd = accepted.cursor;
+      lastSelectionRef.current = { start: accepted.cursor, end: accepted.cursor };
+      setVocabularyCursor(lastSelectionRef.current);
+    });
   };
 
   const insertTextAtCaret = (snippet: string) => {
@@ -1250,11 +1347,27 @@ export function Composer({
       const baseSubmitText = [expandPastedBlocks(trimmedText), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
       const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
       if (runningRef.current) {
-        const guidanceText = displayText.trim();
-        const guidanceSubmitText = submitText.trim();
-        if (guidanceText) {
-          const id = nextGuidanceId.current++;
-          setPendingGuidance((items) => [...items, { id, text: guidanceText, submitText: guidanceSubmitText || guidanceText }]);
+        const queuedText = displayText.trim();
+        const queuedSubmitText = submitText.trim();
+        if (queuedText) {
+          if (goalModeOn) {
+            // Goal mode steers the running turn: keep the manual guidance queue.
+            const id = nextGuidanceId.current++;
+            setPendingGuidance((items) => [...items, {
+              id,
+              text: queuedText,
+              submitText: queuedSubmitText || queuedText,
+              source: "manual",
+            }]);
+          } else {
+            // Ordinary sessions queue a follow-up turn for the visible session
+            // queue, which drains FIFO once this session becomes safe/idle.
+            useComposerQueueStore.getState().addItem(makeQueueItem({
+              sessionId: tabId ?? "",
+              content: queuedText,
+              submitText: queuedSubmitText || queuedText,
+            }));
+          }
         }
         clearSubmittedDraft(submitDraftKey);
         return;
@@ -1537,7 +1650,10 @@ export function Composer({
     if (typeof restored === "string") setTextCaretEnd(restored);
   };
 
-  const pickCommand = (c: CommandInfo) => setTextCaretEnd("/" + c.name + " ");
+  const pickCommand = (c: CommandInfo) => {
+    activateSkillVocabulary(c);
+    setTextCaretEnd("/" + c.name + " ");
+  };
 
   const activePastedBlocks = pastedBlocks.filter((block) => text.includes(block.label));
   const shellModeActive = text.trimStart().startsWith("!");
@@ -1969,6 +2085,19 @@ export function Composer({
       }
     }
 
+    if (e.key === "Tab" && !e.shiftKey && vocabularyMatch && vocabularyToken && !composing) {
+      e.preventDefault();
+      pickVocabulary();
+      return;
+    }
+
+    if (e.key === "Escape" && vocabularyMatch && !composing) {
+      e.preventDefault();
+      setVocabularyMatch(null);
+      setVocabularyDismissed(true);
+      return;
+    }
+
     // Enter handling follows the user-configured submit shortcut.
     if (isComposerSubmitKey(e, composerSubmitKey, composing)) {
       e.preventDefault();
@@ -2064,7 +2193,7 @@ export function Composer({
     return null;
   })();
   const submitEmpty = !text.trim() && attachments.length === 0 && workspaceRefs.length === 0;
-  const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal) && !running) || disabled || (!running && submitDisabled) || readOnly;
+  const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly;
   const submitTooltip = running ? t("composer.queueGuidance") : t(composerSubmitKey === "ctrl_enter" ? "composer.sendCtrlEnter" : "composer.send");
   const composerPlaceholder = readOnly
     ? t("composer.readOnlyChannel")
@@ -2352,7 +2481,7 @@ export function Composer({
                     className="composer-guidance-item__guide"
                     type="button"
                     aria-label={t("composer.guidanceSend")}
-                    disabled={!running || disabled || readOnly || guidanceSendingId !== null}
+                    disabled={disabled || readOnly || guidanceSendingId !== null}
                     onClick={() => void sendQueuedGuidance(item)}
                   >
                     <CornerDownRight size={13} />
@@ -2500,35 +2629,53 @@ export function Composer({
           onDragLeave={onDragLeave}
         >
           <span className="composer__caret">{shellModeActive ? "$" : "›"}</span>
-          <textarea
-            id="composer-input"
-            ref={taRef}
-            className="composer__input"
-            aria-label={t("composer.placeholder")}
-            value={text}
-            onChange={(e) => {
-              resetPromptHistoryNavigation();
-              setText(e.target.value);
-              if (composerPrompt) setComposerPrompt(null);
-            }}
-            onSelect={rememberCaret}
-            onClick={rememberCaret}
-            onKeyUp={rememberCaret}
-            onFocus={rememberCaret}
-            onPaste={onPaste}
-            onKeyDown={onKeyDown}
-            onCompositionStart={() => {
-              composingRef.current = true;
-            }}
-            onCompositionEnd={() => {
-              composingRef.current = false;
-              lastCompositionEndAt.current = Date.now();
-            }}
-            style={textareaStyle}
-            placeholder={composerPlaceholder}
-            rows={1}
-            disabled={disabled || readOnly}
-          />
+          <div className="composer__input-wrap">
+            {vocabularyMatch && vocabularyToken && (
+              <div className="composer__ghost" aria-hidden="true" style={{ top: `${-vocabularyScrollTop}px` }}>
+                <span>{text}</span><b>{vocabularyMatch.suffix}</b>
+              </div>
+            )}
+            <textarea
+              id="composer-input"
+              ref={taRef}
+              className="composer__input"
+              aria-label={t("composer.placeholder")}
+              aria-describedby={vocabularyMatch ? "composer-vocabulary-hint" : undefined}
+              value={text}
+              onChange={(e) => {
+                resetPromptHistoryNavigation();
+                setText(e.target.value);
+                setVocabularyCursor({ start: e.target.selectionStart ?? e.target.value.length, end: e.target.selectionEnd ?? e.target.value.length });
+                setVocabularyMatch(null);
+                if (composerPrompt) setComposerPrompt(null);
+              }}
+              onSelect={rememberCaret}
+              onClick={rememberCaret}
+              onKeyUp={rememberCaret}
+              onFocus={rememberCaret}
+              onPaste={onPaste}
+              onScroll={(event) => setVocabularyScrollTop(event.currentTarget.scrollTop)}
+              onKeyDown={onKeyDown}
+              onCompositionStart={() => {
+                composingRef.current = true;
+                setVocabularyComposing(true);
+                setVocabularyMatch(null);
+              }}
+              onCompositionEnd={(event) => {
+                composingRef.current = false;
+                setVocabularyComposing(false);
+                setVocabularyCursor({ start: event.currentTarget.selectionStart ?? text.length, end: event.currentTarget.selectionEnd ?? text.length });
+                lastCompositionEndAt.current = Date.now();
+              }}
+              style={textareaStyle}
+              placeholder={composerPlaceholder}
+              rows={1}
+              disabled={disabled || readOnly}
+            />
+            {vocabularyMatch && (
+              <span id="composer-vocabulary-hint" className="sr-only">{t("composer.vocabularyHint", { term: vocabularyMatch.text })}</span>
+            )}
+          </div>
           {composerPrompt && (
             <span className="composer__prompt" role="status">
               {composerPrompt === imageInputPromptKey ? t("composer.imageInputUnsupported") : composerPrompt}

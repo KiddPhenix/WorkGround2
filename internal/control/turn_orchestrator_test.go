@@ -155,7 +155,11 @@ func (r *recordingSessionRunner) Run(ctx context.Context, input string) error {
 	if source, ok := agent.MemoryCompilerSourceInputFromContext(ctx); ok {
 		r.memoryCompilerInputs = append(r.memoryCompilerInputs, source)
 	}
-	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	origin := provider.MessageOriginUser
+	if agent.SyntheticUserFromContext(ctx) {
+		origin = provider.MessageOriginHost
+	}
+	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input, Origin: origin})
 	return nil
 }
 
@@ -379,6 +383,10 @@ func TestTurnOrchestratorSyntheticTurnDoesNotCreateCheckpoint(t *testing.T) {
 	turns := c.CheckpointTurnsByMessageIndex()
 	if len(turns) != 1 || turns[1] != 0 {
 		t.Fatalf("checkpoint turns by message index = %v, want {1:0}", turns)
+	}
+	msgs := sess.Snapshot()
+	if msgs[1].Origin != provider.MessageOriginUser || msgs[2].Origin != provider.MessageOriginHost {
+		t.Fatalf("turn origins = [%q %q], want [user host]", msgs[1].Origin, msgs[2].Origin)
 	}
 }
 

@@ -2006,7 +2006,8 @@ func TestTaskExecutorRunsMandatoryQualityPass(t *testing.T) {
 	}
 	last := request.Messages[len(request.Messages)-1]
 	if last.Role != provider.RoleUser ||
-		!strings.Contains(last.Content, "complete replacement delivery") ||
+		last.Origin != provider.MessageOriginHost ||
+		!strings.Contains(last.Content, "complete final delivery") ||
 		!strings.Contains(last.Content, "preserve source URLs") {
 		t.Fatalf("quality pass prompt = %+v", last)
 	}
@@ -2361,5 +2362,139 @@ func TestNativeSearchEvidenceSurvivesQualityPass(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("native web_search with URLs should survive quality pass; got %v", got)
+	}
+}
+
+// ── URL artifact slots ──────────────────────────────────────────────────────
+
+func TestCollectTaskURLsExtractsUniqueValidLinks(t *testing.T) {
+	text := "先看 HTTPS://release.example.com/v1.2.0，再参考 [官方文档](https://example.com/docs) 与 https://example.com/docs。排除 javascript:alert(1)、相对 /docs、无主机 http://。"
+	got := collectTaskURLs(text)
+	want := []string{
+		"HTTPS://release.example.com/v1.2.0",
+		"https://example.com/docs",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("links = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("links[%d] = %q, want %q (all=%v)", i, got[i], want[i], got)
+		}
+	}
+	if len(collectTaskURLs("")) != 0 || len(collectTaskURLs("   ")) != 0 {
+		t.Fatal("empty text must yield no links")
+	}
+}
+
+func TestTaskArtifactsURLSlotSatisfiesCountWithStableRefs(t *testing.T) {
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	exec.SetArtifactStore(newTaskBlobStore())
+	slot := work.ArtifactSlot{
+		ID: "release", WorkID: "work-url", DefinitionRev: 1,
+		Title: "发布链接", Kind: "url", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work: &work.Work{
+			ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2,
+			V2ArtifactSlots: []work.ArtifactSlot{slot},
+		},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{
+		text: "发布地址：https://release.example.com/v1.2.0 （重复 https://release.example.com/v1.2.0 只算一个）",
+	}
+
+	outputs, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || len(outputs[0].Refs) != 1 {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	ref := outputs[0].Refs[0]
+	if ref.URL != "https://release.example.com/v1.2.0" || ref.Status != work.ArtifactRefStatusAvailable {
+		t.Fatalf("url ref = %+v", ref)
+	}
+	if ref.BlobDigest != "" || ref.RelativePath != "" {
+		t.Fatalf("URL ref must not materialize a file: %+v", ref)
+	}
+	// Stable identity across retries of the same attempt.
+	exec.taskArtifacts[key] = taskArtifactData{
+		text: "发布地址：https://release.example.com/v1.2.0",
+	}
+	again, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again[0].Refs[0].ID != ref.ID {
+		t.Fatalf("ref ID unstable: %q vs %q", ref.ID, again[0].Refs[0].ID)
+	}
+}
+
+func TestTaskArtifactsURLSlotCountsMultipleUniqueLinks(t *testing.T) {
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	exec.SetArtifactStore(newTaskBlobStore())
+	slot := work.ArtifactSlot{
+		ID: "sources", WorkID: "work-url-multi", DefinitionRev: 1,
+		Title: "参考链接", Kind: "link", ExpectedCount: 2, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work: &work.Work{
+			ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2,
+			V2ArtifactSlots: []work.ArtifactSlot{slot},
+		},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{
+		text: "来源一：[A](https://a.example.com/x) 来源二：https://b.example.com/y 重复 https://a.example.com/x",
+	}
+
+	outputs, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := outputs[0].Refs
+	if len(refs) != 2 || refs[0].URL != "https://a.example.com/x" || refs[1].URL != "https://b.example.com/y" {
+		t.Fatalf("refs = %+v", refs)
+	}
+}
+
+func TestTaskArtifactsURLSlotInsufficientLinksFailsExplicitly(t *testing.T) {
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	exec.SetArtifactStore(newTaskBlobStore())
+	slot := work.ArtifactSlot{
+		ID: "release", WorkID: "work-url-short", DefinitionRev: 1,
+		Title: "发布链接", Kind: "url", ExpectedCount: 2, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work: &work.Work{
+			ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2,
+			V2ArtifactSlots: []work.ArtifactSlot{slot},
+		},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{
+		text: "只有 https://release.example.com/v1.0.0 一个链接，另一个是 javascript:alert(1)",
+	}
+
+	_, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err == nil || !strings.Contains(err.Error(), "requires 2") || !strings.Contains(err.Error(), "1 valid") {
+		t.Fatalf("expected explicit insufficient-count error, got %v", err)
 	}
 }

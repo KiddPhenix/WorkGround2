@@ -69,6 +69,56 @@ func TestSaveWorkspaceOnlyRemembersLastWorkspace(t *testing.T) {
 	}
 }
 
+func TestProjectIconRoundTripAndFallback(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+
+	if err := setProjectIcon(root, " STAR "); err != nil {
+		t.Fatalf("set project icon: %v", err)
+	}
+	if got := projectIcon(root); got != "star" {
+		t.Fatalf("projectIcon = %q, want star", got)
+	}
+	if err := setProjectIcon(root, "unknown"); err != nil {
+		t.Fatalf("reset invalid project icon: %v", err)
+	}
+	if got := projectIcon(root); got != "" {
+		t.Fatalf("invalid icon should fall back to dot, stored value = %q", got)
+	}
+}
+
+func TestGlobalProjectIconRoundTrip(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := setProjectIcon("", "terminal"); err != nil {
+		t.Fatalf("set global project icon: %v", err)
+	}
+	if got := globalProjectIcon(); got != "terminal" {
+		t.Fatalf("globalProjectIcon = %q, want terminal", got)
+	}
+}
+
+func TestSetProjectIconUpdatesProjectTree(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	if err := saveProjectsFile(desktopProjectFile{Projects: []desktopProject{{Root: root}}}); err != nil {
+		t.Fatalf("save project: %v", err)
+	}
+
+	app := NewApp()
+	if err := app.SetProjectIcon(root, "bookmark"); err != nil {
+		t.Fatalf("SetProjectIcon: %v", err)
+	}
+	for _, node := range app.ListProjectTree() {
+		if node.Root == normalizeProjectRoot(root) {
+			if node.ProjectIcon != "bookmark" {
+				t.Fatalf("project tree icon = %q, want bookmark", node.ProjectIcon)
+			}
+			return
+		}
+	}
+	t.Fatalf("project %q missing from project tree", root)
+}
+
 func TestDesktopMCPMigrationRootsIncludesLegacyWorkspaces(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	active := t.TempDir()

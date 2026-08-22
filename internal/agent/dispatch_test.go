@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"workground2/internal/event"
@@ -50,5 +51,17 @@ func TestEarlyToolDispatch(t *testing.T) {
 	}
 	if full != 1 {
 		t.Errorf("want 1 full dispatch, got %d", full)
+	}
+	var found bool
+	for _, msg := range a.Session().Snapshot() {
+		if strings.Contains(msg.Content, "Tool-round limit reached") {
+			found = true
+			if msg.Origin != provider.MessageOriginHost {
+				t.Fatalf("tool-round nudge origin = %q, want host", msg.Origin)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("tool-round nudge missing from session")
 	}
 }

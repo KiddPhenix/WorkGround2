@@ -479,3 +479,150 @@ func findProjectTreeTopic(tree []ProjectNode, projectRoot, topicID string) *Proj
 	}
 	return nil
 }
+
+// TestListProjectTree_OrphanWorkSessionColdStart verifies that a half-completed
+// Work Session whose branch meta lost its topic binding (e.g. a reusable-flow
+// run that failed before committing a Work) is still projected on cold start as
+// a concrete Session row with kind/sessionKind/sessionPath, so it can be moved
+// to the trash by path. Ordinary blank sessions must stay hidden.
+func TestListProjectTree_OrphanWorkSessionColdStart(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	if err := addProject(projectRoot, "OrphanProject"); err != nil {
+		t.Fatal(err)
+	}
+	dir := desktopSessionDir(projectRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	orphanPath := filepath.Join(dir, "20260817-020000.000000000-orphan-work.jsonl")
+	if err := os.WriteFile(orphanPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(orphanPath, agent.BranchMeta{
+		CreatedAt:     now.Add(-time.Minute),
+		UpdatedAt:     now,
+		Scope:         "project",
+		WorkspaceRoot: projectRoot,
+		TopicID:       "",
+		TopicTitle:    "",
+		SessionKind:   agent.SessionKindWork,
+		WorkID:        "work-orphan-project",
+		WorkRequestID: "request-orphan-project",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Ordinary blank session (no kind, no content) must not be batch-exposed.
+	blankPath := filepath.Join(dir, "20260817-020000.000000001-blank.jsonl")
+	if err := os.WriteFile(blankPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(blankPath, agent.BranchMeta{
+		CreatedAt: now, UpdatedAt: now, Scope: "project", WorkspaceRoot: projectRoot,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	projectSessionCache.invalidate()
+	tree := NewApp().ListProjectTree()
+
+	var project *ProjectNode
+	for i := range tree {
+		node := &tree[i]
+		if node.Kind == "project" && normalizeProjectRoot(node.Root) == normalizeProjectRoot(projectRoot) {
+			project = node
+			break
+		}
+	}
+	if project == nil {
+		t.Fatalf("project node not found in tree")
+	}
+	var orphan *ProjectNode
+	for i := range project.Children {
+		node := &project.Children[i]
+		if node.Kind == "work_session" && node.SessionPath == orphanPath {
+			orphan = node
+			break
+		}
+	}
+	if orphan == nil {
+		t.Fatalf("orphan Work Session node not found under project; paths: %v", childSessionPaths(project.Children))
+	}
+	if orphan.SessionKind != string(agent.SessionKindWork) {
+		t.Fatalf("orphan SessionKind = %q, want work", orphan.SessionKind)
+	}
+	if orphan.WorkID != "work-orphan-project" {
+		t.Fatalf("orphan WorkID = %q", orphan.WorkID)
+	}
+	if orphan.SessionPath != orphanPath {
+		t.Fatalf("orphan SessionPath = %q, want %q", orphan.SessionPath, orphanPath)
+	}
+	for _, node := range project.Children {
+		if node.Kind == "work_session" && node.SessionPath == blankPath {
+			t.Fatalf("ordinary blank session was batch-exposed as a work node")
+		}
+	}
+}
+
+// TestListProjectTree_OrphanWorkSessionColdStartGlobal is the global-scope
+// counterpart: the orphan node must use the global_work_session kind so the
+// frontend renders it in the Global area and can trash it by path.
+func TestListProjectTree_OrphanWorkSessionColdStartGlobal(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	globalDir := config.SessionDir()
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	orphanPath := filepath.Join(globalDir, "20260817-020000.000000000-global-orphan-work.jsonl")
+	if err := os.WriteFile(orphanPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(orphanPath, agent.BranchMeta{
+		CreatedAt: now.Add(-time.Minute), UpdatedAt: now,
+		Scope: "global", WorkspaceRoot: "",
+		TopicID: "", TopicTitle: "",
+		SessionKind: agent.SessionKindWork, WorkID: "", WorkRequestID: "request-orphan-global",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	projectSessionCache.invalidate()
+	tree := NewApp().ListProjectTree()
+	var global *ProjectNode
+	for i := range tree {
+		node := &tree[i]
+		if node.Kind == "global_folder" {
+			global = node
+			break
+		}
+	}
+	if global == nil {
+		t.Fatalf("global folder not found in tree")
+	}
+	var orphan *ProjectNode
+	for i := range global.Children {
+		node := &global.Children[i]
+		if node.Kind == "global_work_session" && node.SessionPath == orphanPath {
+			orphan = node
+			break
+		}
+	}
+	if orphan == nil {
+		t.Fatalf("global orphan Work Session node not found under Global; paths: %v", childSessionPaths(global.Children))
+	}
+	if orphan.SessionKind != string(agent.SessionKindWork) || orphan.WorkID != "" {
+		t.Fatalf("global orphan = %+v", orphan)
+	}
+}
+
+func childSessionPaths(nodes []ProjectNode) []string {
+	var paths []string
+	for _, node := range nodes {
+		if node.SessionPath != "" {
+			paths = append(paths, node.Kind+":"+node.SessionPath)
+		}
+	}
+	return paths
+}

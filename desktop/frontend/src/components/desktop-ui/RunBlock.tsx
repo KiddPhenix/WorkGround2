@@ -3,13 +3,20 @@ import {
   CheckCircle2,
   CircleHelp,
   CircleStop,
+  Code2,
   Clock,
+  FileText,
+  FlaskConical,
+  Globe2,
   Loader2,
   RotateCcw,
+  Search,
   Square,
+  Terminal,
+  Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
-import type { RunRecord, RunStatus, RunStepStatus } from "../../store/run";
+import type { RunEventKind, RunRecord, RunStatus, RunStepStatus } from "../../store/run";
 
 export interface RunBlockProps {
   run: RunRecord;
@@ -149,6 +156,8 @@ export function ActiveRunView({
         </span>
       </header>
 
+      <RunDetailViewport events={run.events} selectedStepIndex={selectedIndex} runStatus={run.status} />
+
       <div
         ref={tabsRef}
         className="active-run-view__tabs"
@@ -170,13 +179,13 @@ export function ActiveRunView({
             selected={selectedIndex === index}
             runStatus={run.status}
             eventStatus={event.status}
+            kind={event.kind}
             tabIndex={hidden ? -1 : 0}
             onClick={() => onStepSelect?.(run.runId, index)}
           />
         ))}
       </div>
 
-      <RunDetailViewport events={run.events} selectedStepIndex={selectedIndex} />
     </section>
   );
 }
@@ -188,6 +197,7 @@ function RunStepTab({
   selected,
   runStatus,
   eventStatus,
+  kind,
   tabIndex,
   onClick,
 }: {
@@ -197,6 +207,7 @@ function RunStepTab({
   selected: boolean;
   runStatus: RunStatus;
   eventStatus?: RunStepStatus;
+  kind: RunEventKind;
   tabIndex: number;
   onClick: () => void;
 }) {
@@ -206,6 +217,7 @@ function RunStepTab({
       type="button"
       role="tab"
       className={`run-step-tab run-step-tab--${status}`}
+      data-kind={kind}
       aria-selected={selected}
       aria-label={`记录 ${index + 1}: ${label}`}
       tabIndex={tabIndex}
@@ -222,14 +234,131 @@ function RunStepTab({
   );
 }
 
-export function RunDetailViewport({ events, selectedStepIndex }: {
+const ACTIVITY_LABEL: Record<RunEventKind, string> = {
+  search: "正在搜索",
+  read: "正在读取",
+  edit: "正在编辑",
+  command: "正在运行命令",
+  test: "正在运行测试",
+  browser: "正在操作浏览器",
+  generic: "正在执行工具",
+};
+
+function activityIcon(kind: RunEventKind, size = 15): React.ReactNode {
+  switch (kind) {
+    case "search": return <Search size={size} />;
+    case "read": return <FileText size={size} />;
+    case "edit": return <Code2 size={size} />;
+    case "command": return <Terminal size={size} />;
+    case "test": return <FlaskConical size={size} />;
+    case "browser": return <Globe2 size={size} />;
+    case "generic": return <Wrench size={size} />;
+  }
+}
+
+function compactText(value: string, max = 108): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function sceneSubject(args?: string, fallback?: string): string {
+  if (!args?.trim()) return compactText(fallback || "等待执行信息…", 92);
+  try {
+    const parsed = JSON.parse(args) as Record<string, unknown>;
+    for (const key of ["command", "path", "file", "url", "query", "pattern", "selector"]) {
+      if (typeof parsed[key] === "string" && parsed[key]) return compactText(parsed[key] as string, 92);
+    }
+  } catch {
+    // Plain tool arguments are already displayable source data.
+  }
+  return compactText(args, 92);
+}
+
+function sceneLines(content: string): string[] {
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => compactText(line, 112))
+    .filter(Boolean)
+    .slice(-3);
+  return lines.length ? lines : ["等待输出…"];
+}
+
+function SceneBody({ kind, subject, lines }: { kind: RunEventKind; subject: string; lines: string[] }) {
+  if (kind === "browser") {
+    return (
+      <div className="run-activity-browser">
+        <div className="run-activity-browser__bar">
+          <span className="run-activity-browser__lights" aria-hidden="true"><i /><i /><i /></span>
+          <span className="run-activity-browser__address">{subject}</span>
+        </div>
+        <div className="run-activity-browser__page">{lines.map((line, index) => <span key={index}>{line}</span>)}</div>
+      </div>
+    );
+  }
+
+  if (kind === "command" || kind === "test") {
+    return (
+      <div className="run-activity-terminal">
+        <div className="run-activity-terminal__command"><span aria-hidden="true">›</span>{subject}</div>
+        {lines.map((line, index) => <span className="run-activity-terminal__line" key={index}>{line}</span>)}
+      </div>
+    );
+  }
+
+  if (kind === "read" || kind === "edit") {
+    return (
+      <div className="run-activity-editor">
+        <div className="run-activity-editor__tab">{subject}</div>
+        <div className="run-activity-editor__code">
+          {lines.map((line, index) => <span key={index}><i>{index + 1}</i><code>{line}</code></span>)}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`run-activity-lines run-activity-lines--${kind}`}>
+      <strong>{subject}</strong>
+      {lines.map((line, index) => <span key={index}>{line}</span>)}
+    </div>
+  );
+}
+
+export function RunDetailViewport({ events, selectedStepIndex, runStatus }: {
   events: RunRecord["events"];
   selectedStepIndex?: number;
+  runStatus?: RunStatus;
 }) {
   const event = selectedStepIndex === undefined ? events[events.length - 1] : events[selectedStepIndex];
+  const kind = event?.kind ?? "generic";
+  const sceneStatus = runStatus && runStatus !== "running"
+    ? runStatus
+    : (event?.status ?? runStatus ?? "running");
+  const subject = sceneSubject(event?.args, event?.toolName || event?.stepLabel || event?.content);
+  const lines = sceneLines(event?.content ?? "");
   return (
-    <div className="run-detail-viewport" role="log" aria-label="执行详情" aria-live="polite">
-      {event ? <div className="run-detail-viewport__event">{event.content}</div> : (
+    <div
+      className={`run-detail-viewport run-activity-scene run-activity-scene--${kind} run-activity-scene--${sceneStatus}`}
+      data-kind={kind}
+      data-status={sceneStatus}
+      role="log"
+      aria-label="执行详情"
+      aria-live="polite"
+    >
+      {event ? <>
+        <div className="run-activity-scene__heading">
+          <span className="run-activity-scene__icon" aria-hidden="true">{activityIcon(kind)}</span>
+          <strong>{sceneStatus === "completed" ? "执行完成" : sceneStatus === "failed" ? "执行失败" : ACTIVITY_LABEL[kind]}</strong>
+          <span>{event.toolName || event.stepLabel}</span>
+        </div>
+        <SceneBody kind={kind} subject={subject} lines={lines} />
+        <span className="run-activity-scene__scan" aria-hidden="true" />
+        {(sceneStatus === "completed" || sceneStatus === "failed") && (
+          <span className="run-activity-scene__reveal" aria-hidden="true">
+            {sceneStatus === "completed" ? <CheckCircle2 size={17} /> : <AlertCircle size={17} />}
+          </span>
+        )}
+      </> : (
         <span className="run-detail-viewport__empty">等待第一条执行记录…</span>
       )}
     </div>

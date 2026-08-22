@@ -412,8 +412,11 @@ func TestValidateFormValue_NestedValidation(t *testing.T) {
 	if err := ValidateInputValue(spec, mustJSONRaw(map[string]any{"count": 5})); err == nil {
 		t.Fatal("missing required field should fail")
 	}
-	if err := ValidateInputValue(spec, mustJSONRaw(map[string]any{"name": "test", "count": 3.5})); err == nil {
-		t.Fatal("non-integer should fail")
+	// Number constraints are UI hints (see TestValidateNumberValue_*), not
+	// hard submission gates; a decimal in an integer-constrained field is
+	// accepted but surfaced as a hint.
+	if err := ValidateInputValue(spec, mustJSONRaw(map[string]any{"name": "test", "count": 3.5})); err != nil {
+		t.Fatalf("non-integer hint should not block submission: %v", err)
 	}
 }
 

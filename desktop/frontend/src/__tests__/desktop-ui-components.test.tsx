@@ -135,9 +135,9 @@ const BASE_MEMORY: MemoryLine = {
 };
 
 const BASE_EVENTS: RunEvent[] = [
-  { eventId: "e1", content: "读取配置文件", stepLabel: "配置" },
-  { eventId: "e2", content: "连接数据库", stepLabel: "数据库" },
-  { eventId: "e3", content: "执行查询", stepLabel: "查询" },
+  { eventId: "e1", kind: "read", content: "读取配置文件", stepLabel: "配置" },
+  { eventId: "e2", kind: "generic", content: "连接数据库", stepLabel: "数据库" },
+  { eventId: "e3", kind: "search", content: "执行查询", stepLabel: "查询", toolName: "grep", args: "session" },
 ];
 
 const COMPLETED_RUN: RunRecord = {
@@ -424,7 +424,33 @@ installDom();
   const region = container.querySelector('[aria-busy="true"]');
   ok(region !== null, "ActiveRunView: aria-busy is true for running run");
   ok(container.querySelector(".active-run-view--running") !== null, "ActiveRunView: has --running modifier class");
+  const scene = container.querySelector(".run-activity-scene");
+  ok(scene?.getAttribute("data-kind") === "search", "ActiveRunView: scene follows the projected event kind");
+  const children = Array.from(container.querySelector(".active-run-view")?.children ?? []);
+  ok(children.indexOf(scene as Element) < children.indexOf(container.querySelector(".active-run-view__tabs") as Element), "ActiveRunView: activity scene stays above the bottom step track");
   cleanup();
+}
+
+{
+  const sceneContract = [
+    ["search", ".run-activity-lines--search"],
+    ["read", ".run-activity-editor"],
+    ["edit", ".run-activity-editor"],
+    ["command", ".run-activity-terminal"],
+    ["test", ".run-activity-terminal"],
+    ["browser", ".run-activity-browser"],
+    ["generic", ".run-activity-lines--generic"],
+  ] as const;
+  for (const [kind, selector] of sceneContract) {
+    const run: RunRecord = {
+      ...RUNNING_RUN,
+      events: [{ eventId: `scene-${kind}`, kind, toolName: `${kind}_tool`, args: "real input", content: "real output", status: "running" }],
+    };
+    const container = render(<ActiveRunView run={run} />);
+    ok(container.querySelector(`.run-activity-scene--${kind}[data-kind="${kind}"]`) !== null, `Run activity scene: ${kind} has a stable semantic class`);
+    ok(container.querySelector(selector) !== null, `Run activity scene: ${kind} renders its compact micro-scene`);
+    cleanup();
+  }
 }
 
 {
@@ -759,6 +785,54 @@ installDom();
   ok(editBtn !== null, "QueueTray: has 编辑 button");
   const removeBtn = queryByAriaLabel(container, "移除");
   ok(removeBtn !== null, "QueueTray: has 移除 button");
+  cleanup();
+}
+
+{
+  const container = render(
+    <QueueTray
+      items={QUEUE_ITEMS.slice(0, 1)}
+      onSteer={() => {}}
+    />,
+  );
+  const steerBtn = queryByAriaLabel(container, "引导");
+  ok(steerBtn !== null, "QueueTray: has 引导 button when onSteer is provided");
+  ok(steerBtn?.textContent?.includes("引导") === true, "QueueTray: 引导 button carries a visible text label");
+  ok(steerBtn?.classList.contains("queue-item-row__steer") === true, "QueueTray: 引导 button uses the steer class");
+  cleanup();
+}
+
+{
+  const container = render(<QueueTray items={QUEUE_ITEMS.slice(0, 1)} />);
+  ok(queryByAriaLabel(container, "引导") === null, "QueueTray: no 引导 button without onSteer");
+  cleanup();
+}
+
+{
+  let steeredId = "";
+  const container = render(
+    <QueueTray
+      items={QUEUE_ITEMS.slice(0, 1)}
+      onSteer={(id) => { steeredId = id; }}
+    />,
+  );
+  const steerBtn = queryByAriaLabel(container, "引导") as HTMLButtonElement | null;
+  if (!steerBtn) throw new Error("QueueTray 引导 button did not render");
+  act(() => steerBtn.click());
+  eq(steeredId, "q1", "QueueTray: clicking 引导 passes the item's queueItemId");
+  cleanup();
+}
+
+{
+  const container = render(
+    <QueueTray
+      items={QUEUE_ITEMS.slice(0, 1)}
+      onSteer={() => {}}
+      steeringId="q1"
+    />,
+  );
+  const steerBtn = queryByAriaLabel(container, "引导") as HTMLButtonElement | null;
+  ok(steerBtn?.disabled === true, "QueueTray: 引导 is disabled while that item is being steered");
   cleanup();
 }
 

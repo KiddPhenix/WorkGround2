@@ -2,13 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"workground2/internal/bot"
 	"workground2/internal/config"
 )
 
@@ -531,7 +534,7 @@ func TestDiagnoseWeixinConnectionDetectsMissingSavedAccountWithoutTokenEnv(t *te
 	}
 }
 
-func TestRememberBotConnectionRemoteStoresStableScope(t *testing.T) {
+func TestRememberBotConnectionRemoteStoresStableEndpoint(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	app := NewApp()
 	if _, err := app.upsertBotConnection(config.BotConnectionConfig{
@@ -547,9 +550,19 @@ func TestRememberBotConnectionRemoteStoresStableScope(t *testing.T) {
 	if err := app.rememberBotConnectionRemote("feishu-lark", "ou_global"); err != nil {
 		t.Fatalf("remember global remote: %v", err)
 	}
+	if err := app.rememberBotConnectionRemote("feishu-lark", "ou_global"); err != nil {
+		t.Fatalf("remember global remote again: %v", err)
+	}
 	cfg := config.LoadForEdit(config.UserConfigPath())
-	if got := cfg.Bot.Connections[0].SessionMappings[0]; got.Scope != "global" || got.WorkspaceRoot != "" || got.RemoteID != "ou_global" {
-		t.Fatalf("global mapping = %+v, want scope=global without workspace", got)
+	endpoints := cfg.Bot.Connections[0].Endpoints
+	if len(endpoints) != 1 {
+		t.Fatalf("endpoints = %+v, want one stable endpoint", endpoints)
+	}
+	if got := endpoints[0]; got.RemoteID != "ou_global" || got.ChatType != string(bot.ChatDM) || got.UpdatedAt == "" {
+		t.Fatalf("global endpoint = %+v, want dm endpoint with updated_at", got)
+	}
+	if mappings := cfg.Bot.Connections[0].SessionMappings; len(mappings) != 0 {
+		t.Fatalf("session mappings = %+v, want untouched by remote registration", mappings)
 	}
 
 	if _, err := app.upsertBotConnection(config.BotConnectionConfig{
@@ -567,14 +580,50 @@ func TestRememberBotConnectionRemoteStoresStableScope(t *testing.T) {
 		t.Fatalf("remember project remote: %v", err)
 	}
 	cfg = config.LoadForEdit(config.UserConfigPath())
-	var projectMapping config.BotConnectionSessionMapping
+	var projectEndpoint config.BotConnectionRemote
 	for _, conn := range cfg.Bot.Connections {
-		if conn.ID == "weixin-project" && len(conn.SessionMappings) == 1 {
-			projectMapping = conn.SessionMappings[0]
+		if conn.ID == "weixin-project" && len(conn.Endpoints) == 1 {
+			projectEndpoint = conn.Endpoints[0]
 		}
 	}
-	if projectMapping.Scope != "project" || projectMapping.WorkspaceRoot != "/tmp/WorkGround2-project" || projectMapping.RemoteID != "wxid_project" {
-		t.Fatalf("project mapping = %+v, want project scope and workspace", projectMapping)
+	if projectEndpoint.RemoteID != "wxid_project" || projectEndpoint.ChatType != string(bot.ChatDM) {
+		t.Fatalf("project endpoint = %+v, want stable dm endpoint", projectEndpoint)
+	}
+}
+
+func TestUpsertBotConnectionPreservesRegisteredEndpoints(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	if _, err := app.upsertBotConnection(config.BotConnectionConfig{
+		ID:       "weixin-weixin",
+		Provider: "weixin",
+		Domain:   "weixin",
+		Label:    "微信",
+		Enabled:  true,
+		Status:   "connected",
+	}, nil); err != nil {
+		t.Fatalf("upsert connection: %v", err)
+	}
+	if err := app.rememberBotConnectionRemote("weixin-weixin", "wx-owner"); err != nil {
+		t.Fatalf("remember remote: %v", err)
+	}
+
+	// 重装/重配对会整体替换连接记录：已登记端点必须保留（通知目标数据源）。
+	if _, err := app.upsertBotConnection(config.BotConnectionConfig{
+		ID:       "weixin-weixin",
+		Provider: "weixin",
+		Domain:   "weixin",
+		Label:    "微信",
+		Enabled:  true,
+		Status:   "connected",
+	}, nil); err != nil {
+		t.Fatalf("re-upsert connection: %v", err)
+	}
+
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	endpoints := cfg.Bot.Connections[0].Endpoints
+	if len(endpoints) != 1 || endpoints[0].RemoteID != "wx-owner" || endpoints[0].ChatType != string(bot.ChatDM) {
+		t.Fatalf("endpoints = %+v, want preserved after re-install", endpoints)
 	}
 }
 
@@ -617,4 +666,119 @@ func (r rewriteHTTPTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	clone.URL.Path = "/" + strings.TrimLeft(clone.URL.Path, "/")
 	return r.next.RoundTrip(clone)
+}
+
+func writeWeixinSavedAccount(t *testing.T, accountID, token, userID string) {
+	t.Helper()
+	dir := filepath.Join(config.MemoryUserDir(), "weixin", "accounts")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir weixin accounts: %v", err)
+	}
+	body := fmt.Sprintf(`{"token":%q,"base_url":"https://ilinkai.weixin.qq.com","user_id":%q,"saved_at":"2026-08-17T00:00:00Z"}`, token, userID)
+	if err := os.WriteFile(filepath.Join(dir, accountID+".json"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write weixin saved account: %v", err)
+	}
+}
+
+// TestBackfillFeishuConnectionPreservesGlobalAccess verifies the legacy feishu
+// backfill copies existing global allowlist roles and groups into the new
+// connection-level access, so connection access cannot shadow the global grant.
+func TestBackfillFeishuConnectionPreservesGlobalAccess(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	cfg := config.Default()
+	cfg.Bot.Enabled = true
+	cfg.Bot.Feishu = config.FeishuBotConfig{Enabled: true, AppID: "cli_fs", AppSecretEnv: "FEISHU_BOT_APP_SECRET", Domain: "feishu"}
+	cfg.Bot.Allowlist = config.BotAllowlist{
+		Enabled:         true,
+		AllowAll:        true,
+		FeishuUsers:     []string{"ou_global_user"},
+		FeishuGroups:    []string{"oc_global_group"},
+		FeishuApprovers: []string{"ou_global_approver"},
+		FeishuAdmins:    []string{"ou_global_admin"},
+	}
+	if !backfillFeishuConnection(cfg) {
+		t.Fatal("backfillFeishuConnection returned false")
+	}
+	var conn config.BotConnectionConfig
+	for _, c := range cfg.Bot.Connections {
+		if c.Provider == "feishu" {
+			conn = c
+		}
+	}
+	if conn.ID == "" {
+		t.Fatal("feishu connection not backfilled")
+	}
+	access := conn.Access
+	if !access.AllowAll {
+		t.Error("access allow_all not preserved from global allowlist")
+	}
+	if !stringSlicesEqual(access.Users, cfg.Bot.Allowlist.FeishuUsers) {
+		t.Errorf("access users = %+v, want global %+v preserved", access.Users, cfg.Bot.Allowlist.FeishuUsers)
+	}
+	if !stringSlicesEqual(access.Groups, cfg.Bot.Allowlist.FeishuGroups) {
+		t.Errorf("access groups = %+v, want global %+v preserved", access.Groups, cfg.Bot.Allowlist.FeishuGroups)
+	}
+	if !stringSlicesEqual(access.Approvers, cfg.Bot.Allowlist.FeishuApprovers) {
+		t.Errorf("access approvers = %+v, want global %+v preserved", access.Approvers, cfg.Bot.Allowlist.FeishuApprovers)
+	}
+	if !stringSlicesEqual(access.Admins, cfg.Bot.Allowlist.FeishuAdmins) {
+		t.Errorf("access admins = %+v, want global %+v preserved", access.Admins, cfg.Bot.Allowlist.FeishuAdmins)
+	}
+}
+
+// TestBackfillWeixinConnectionPreservesGlobalAccess is the WeChat counterpart
+// of the feishu backfill test.
+func TestBackfillWeixinConnectionPreservesGlobalAccess(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	writeWeixinSavedAccount(t, "wx-test", "token-1", "user-1")
+	cfg := config.Default()
+	cfg.Bot.Enabled = true
+	cfg.Bot.Allowlist = config.BotAllowlist{
+		Enabled:         true,
+		AllowAll:        true,
+		WeixinUsers:     []string{"wx_global_user"},
+		WeixinGroups:    []string{"wx_global_group"},
+		WeixinApprovers: []string{"wx_global_approver"},
+		WeixinAdmins:    []string{"wx_global_admin"},
+	}
+	if !backfillWeixinConnection(cfg) {
+		t.Fatal("backfillWeixinConnection returned false")
+	}
+	var conn config.BotConnectionConfig
+	for _, c := range cfg.Bot.Connections {
+		if c.Provider == "weixin" {
+			conn = c
+		}
+	}
+	if conn.ID == "" {
+		t.Fatal("weixin connection not backfilled")
+	}
+	access := conn.Access
+	if !access.AllowAll {
+		t.Error("access allow_all not preserved from global allowlist")
+	}
+	if !stringSlicesEqual(access.Users, []string{"wx_global_user", "user-1"}) {
+		t.Errorf("access users = %+v, want global and saved account users preserved", access.Users)
+	}
+	if !stringSlicesEqual(access.Groups, cfg.Bot.Allowlist.WeixinGroups) {
+		t.Errorf("access groups = %+v, want global %+v preserved", access.Groups, cfg.Bot.Allowlist.WeixinGroups)
+	}
+	if !stringSlicesEqual(access.Approvers, cfg.Bot.Allowlist.WeixinApprovers) {
+		t.Errorf("access approvers = %+v, want global %+v preserved", access.Approvers, cfg.Bot.Allowlist.WeixinApprovers)
+	}
+	if !stringSlicesEqual(access.Admins, cfg.Bot.Allowlist.WeixinAdmins) {
+		t.Errorf("access admins = %+v, want global %+v preserved", access.Admins, cfg.Bot.Allowlist.WeixinAdmins)
+	}
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

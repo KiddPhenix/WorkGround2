@@ -1,6 +1,8 @@
 package botruntime
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -199,6 +201,52 @@ func ConnectionAccessConfigs(cfg *config.Config) map[string]bot.AccessConfig {
 		return nil
 	}
 	return out
+}
+
+// RefreshAccessSnapshot reloads the user config and rebuilds the complete
+// admission snapshot for the gateway's refresh-on-miss hook. The gateway keeps its
+// previous snapshot and stays denied when this fails, so approvals written by
+// another process (e.g. `bot pairing approve`) take effect on the next message
+// without a gateway restart.
+func RefreshAccessSnapshot() (bot.AccessSnapshot, error) {
+	path := config.UserConfigPath()
+	if strings.TrimSpace(path) == "" {
+		return bot.AccessSnapshot{}, errors.New("WorkGround2 user config path is unavailable")
+	}
+	cfg, err := config.LoadForEditChecked(path)
+	if err != nil {
+		return bot.AccessSnapshot{}, fmt.Errorf("load WorkGround2 user config: %w", err)
+	}
+	if cfg == nil {
+		return bot.AccessSnapshot{}, errors.New("WorkGround2 user config load returned nil")
+	}
+	return bot.AccessSnapshot{
+		ConnectionAccess: ConnectionAccessConfigs(cfg),
+		Allowlist: bot.AllowlistConfig{
+			Enabled:  cfg.Bot.Allowlist.Enabled,
+			AllowAll: cfg.Bot.Allowlist.AllowAll,
+			Users: map[bot.Platform][]string{
+				bot.PlatformQQ:     cfg.Bot.Allowlist.QQUsers,
+				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuUsers,
+				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinUsers,
+			},
+			Approvers: map[bot.Platform][]string{
+				bot.PlatformQQ:     cfg.Bot.Allowlist.QQApprovers,
+				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuApprovers,
+				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinApprovers,
+			},
+			Admins: map[bot.Platform][]string{
+				bot.PlatformQQ:     cfg.Bot.Allowlist.QQAdmins,
+				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuAdmins,
+				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinAdmins,
+			},
+			Groups: map[bot.Platform][]string{
+				bot.PlatformQQ:     cfg.Bot.Allowlist.QQGroups,
+				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuGroups,
+				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinGroups,
+			},
+		},
+	}, nil
 }
 
 func BotAccessActive(access config.BotAccessConfig) bool {
@@ -546,6 +594,12 @@ func rememberInbound(msg bot.InboundMessage, sessionID string, actualWorkspaceRo
 		if strings.TrimSpace(conn.Provider) != string(platform) || !conn.Enabled || !connectionMatchesInbound(*conn, msg) {
 			continue
 		}
+		// 端点登记与 Session binding 分离：任何授权入站都幂等登记稳定
+		// 远端端点（无 sessionID 也可），Session 回收不会删除它。
+		if rememberInboundEndpoint(conn, msg, now) {
+			conn.UpdatedAt = now
+			changed = true
+		}
 		mappingIndex := -1
 		for j := range conn.SessionMappings {
 			if botSessionMappingMatches(conn.SessionMappings[j], msg) {
@@ -651,6 +705,56 @@ func rememberBotSessionMeta(msg bot.InboundMessage, sessionID string, conn confi
 		meta.WorkspaceRoot = ""
 	}
 	return agent.SaveBranchMetaPreserveUpdated(sessionPath, meta)
+}
+
+// maxEndpointsPerConnection caps how many registered remote endpoints a single
+// connection keeps, so an active bot's config cannot grow without bound. The
+// most recently registered endpoints are kept; a dropped endpoint re-registers on the next
+// authorized inbound message, and a saved decision channel is unaffected.
+const maxEndpointsPerConnection = 256
+
+func rememberInboundEndpoint(conn *config.BotConnectionConfig, msg bot.InboundMessage, now string) bool {
+	if conn == nil {
+		return false
+	}
+	remoteID := strings.TrimSpace(msg.ChatID)
+	if remoteID == "" {
+		return false
+	}
+	_, _, threadID := botSessionMappingIdentity(msg)
+	chatType := botEndpointChatType(msg)
+	for i := range conn.Endpoints {
+		e := &conn.Endpoints[i]
+		if strings.TrimSpace(e.RemoteID) == remoteID && strings.TrimSpace(e.ChatType) == chatType && strings.TrimSpace(e.ThreadID) == threadID {
+			// 已登记端点保持原样：重复入站不触发配置写入，也不改变身份。
+			return false
+		}
+	}
+	conn.Endpoints = append(conn.Endpoints, config.BotConnectionRemote{
+		RemoteID:  remoteID,
+		ChatType:  chatType,
+		ThreadID:  threadID,
+		UpdatedAt: now,
+	})
+	if len(conn.Endpoints) > maxEndpointsPerConnection {
+		// Registration order is authoritative. RFC3339 timestamps are intentionally
+		// human-readable and can collide within one second; sorting on them would
+		// occasionally discard the endpoint that was just registered.
+		start := len(conn.Endpoints) - maxEndpointsPerConnection
+		conn.Endpoints = append([]config.BotConnectionRemote(nil), conn.Endpoints[start:]...)
+	}
+	return true
+}
+
+// botEndpointChatType 归一化端点的 ChatType。群/话题按真实类型登记，私聊
+// 归一为 dm，让同一远端会话只产生一个稳定端点。
+func botEndpointChatType(msg bot.InboundMessage) string {
+	switch msg.ChatType {
+	case bot.ChatGroup, bot.ChatGuild, bot.ChatThread:
+		return string(msg.ChatType)
+	default:
+		return string(bot.ChatDM)
+	}
 }
 
 func botSessionMappingMatches(mapping config.BotConnectionSessionMapping, msg bot.InboundMessage) bool {

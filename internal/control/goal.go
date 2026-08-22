@@ -17,8 +17,8 @@ import (
 const (
 	maxGoalAutoTurns   = 50
 	maxGoalIdleTurns   = 2
-	goalContinueTurn   = "Continue pursuing the active goal. If it is complete, provide the concise final result and end with [goal:complete]. If it is truly blocked on a user-owned decision after trying sensible defaults, end with [goal:blocked:<short reason>]. Otherwise do the next useful work and end with [goal:continue]."
-	goalSelfCheckTurn  = "The agent signaled goal completion and all tasks are marked done. Before finalizing, perform a brief quality self-check:\n1. Verify any changed files compile or parse correctly\n2. Run the relevant tests if applicable\n3. Confirm the original requirements are met\nIf everything checks out, signal [goal:complete]. If issues are found, fix them and signal [goal:complete] when done."
+	goalContinueTurn   = "Continue the active goal now. 继续当前目标。 Do the next useful action. End with [goal:complete] only when finished, [goal:blocked:<reason>] only for a real user-owned blocker, otherwise [goal:continue]."
+	goalSelfCheckTurn  = "Final self-check before completion. 完成前最后检查。 Verify changed files, relevant tests, and the original requirements. Fix any issue, then emit [goal:complete]; if work remains, emit [goal:continue]."
 	goalCompleteNotice = "goal complete"
 )
 
@@ -261,7 +261,7 @@ func (g *goalMachine) advance(in goalAdvanceInput) goalAdvanceResult {
 			g.idleTurns++
 			if g.idleTurns >= maxGoalIdleTurns {
 				g.idleTurns = 0
-				g.interceptMsg = "No tool calls in recent turns. Either make progress with tools or signal [goal:blocked:<reason>]."
+				g.interceptMsg = "The goal is idle. Act now or report a real blocker. 目标已空转，立即行动或报告真实阻塞。 Use tools for executable work; use [goal:blocked:<reason>] only for a user-owned blocker."
 			}
 		}
 	}
@@ -430,13 +430,13 @@ func formatIncompleteTodos(todos []evidence.TodoItem, readiness string) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("Goal signaled complete but issues remain:\n")
+	b.WriteString("Goal is not complete. Fix the remaining issues now. 目标尚未完成，立即修复：\n")
 	for _, p := range parts {
 		b.WriteString("- ")
 		b.WriteString(p)
 		b.WriteString("\n")
 	}
-	b.WriteString("Fix or use todo_write/complete_step to mark done, then [goal:complete] again.")
+	b.WriteString("Fix each item or update it with todo_write/complete_step, then emit [goal:complete].")
 	return b.String()
 }
 

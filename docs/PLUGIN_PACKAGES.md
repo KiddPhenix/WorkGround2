@@ -3,6 +3,8 @@
 WorkGround2 plugin packages bundle skills, hooks, and MCP servers behind one
 installable unit.
 
+DSH Bundles (`package.json.dsh.bundle.patch`) use the same installation flow. See [DSH Bundle compatibility](DSH_BUNDLE_COMPATIBILITY.zh-CN.md) for Host/Tool bridging, Doctor diagnostics, and the isolated UI mirror.
+
 ## CLI Mode
 
 Use `WorkGround2 plugin` when installing or managing plugin packages from a

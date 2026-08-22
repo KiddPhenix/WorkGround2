@@ -885,6 +885,8 @@ type tabEventSink struct {
 	ctx           context.Context
 	runtimeEvents asyncRuntimeEmitter
 	botSink       event.Sink // optional: when set, events are also forwarded here
+	ownerMu       sync.Mutex
+	ownerTurn     ownerTurnState
 }
 
 type closeableEventSink interface {
@@ -892,8 +894,13 @@ type closeableEventSink interface {
 }
 
 func (s *tabEventSink) Emit(e event.Event) {
+	if s.app != nil && e.Kind == event.AskRequest && !s.app.observeDecisionAsk(s.tabID, e.Ask) {
+		return
+	}
 	if s.app != nil {
+		s.app.observeOwnerNotifyEvent(s, e)
 		s.app.observeCollaborationAgentEvent(s.tabID, e)
+		s.app.observeSessionUnread(s.tabID, e)
 	}
 	if s.app != nil {
 		switch e.Kind {
@@ -1348,6 +1355,7 @@ type TabMeta struct {
 	ReadOnly            bool                     `json:"readOnly,omitempty"`
 	Blank               bool                     `json:"blank,omitempty"`
 	ProjectColor        string                   `json:"projectColor,omitempty"`
+	ProjectIcon         string                   `json:"projectIcon,omitempty"`
 	Label               string                   `json:"label"`
 	Ready               bool                     `json:"ready"`
 	Running             bool                     `json:"running"`
@@ -1425,9 +1433,11 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 	switch tab.Scope {
 	case "global":
 		m.ProjectColor = globalProjectColor()
+		m.ProjectIcon = globalProjectIcon()
 		m.WorkspaceName = globalProjectTitle()
 	case "project":
 		m.ProjectColor = projectColor(tab.WorkspaceRoot)
+		m.ProjectIcon = projectIcon(tab.WorkspaceRoot)
 	}
 	m.SessionDisplayTitle = tabSessionDisplayTitle(tab)
 
@@ -2517,8 +2527,18 @@ func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
 		closed := make([]*WorkspaceTab, 0, len(hidden))
 		detached := make([]*WorkspaceTab, 0, len(hidden))
 		for id, tab := range hidden {
-			if a.detachSessionRuntimeLocked(tab) {
-				detached = append(detached, tab)
+			// Runtimes with live work, and any session that owns a concrete
+			// SessionID (e.g. an external API session), detach so they stay
+			// addressable. Blank transient tabs are removed outright so their
+			// temporary session artifacts are cleaned up.
+			if (tab.Ctrl != nil && tab.hasActiveRuntimeWork()) ||
+				strings.TrimSpace(tab.SessionID) != "" {
+				if a.detachSessionRuntimeLocked(tab) {
+					detached = append(detached, tab)
+				} else {
+					a.markTabRemovedLocked(tab)
+					closed = append(closed, tab)
+				}
 			} else {
 				a.markTabRemovedLocked(tab)
 				closed = append(closed, tab)
@@ -3039,6 +3059,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 	clearTabStartupError(tab)
 	keepBuildContext = true
 	a.mu.Unlock()
+	a.bindWorkUnreadObserver(ctrl)
 	a.drainRemoteSubmit(tab)
 	a.emitReady(wailsCtx, tab.ID)
 }
@@ -4240,6 +4261,7 @@ type desktopProject struct {
 	Root         string   `json:"root"`
 	Title        string   `json:"title,omitempty"`
 	Color        string   `json:"color,omitempty"`
+	Icon         string   `json:"icon,omitempty"`
 	Topics       []string `json:"topics"` // ordered topic IDs
 	PinnedTopics []string `json:"pinnedTopics,omitempty"`
 }
@@ -4247,6 +4269,7 @@ type desktopProject struct {
 type desktopProjectFile struct {
 	GlobalTitle        string           `json:"globalTitle,omitempty"`
 	GlobalColor        string           `json:"globalColor,omitempty"`
+	GlobalIcon         string           `json:"globalIcon,omitempty"`
 	GlobalTopics       []string         `json:"globalTopics,omitempty"`
 	GlobalPinnedTopics []string         `json:"globalPinnedTopics,omitempty"`
 	PinnedProjects     []string         `json:"pinnedProjects,omitempty"`
@@ -4634,6 +4657,7 @@ func normalizeProjectsFile(f desktopProjectFile) desktopProjectFile {
 	out := desktopProjectFile{
 		GlobalTitle:        strings.TrimSpace(f.GlobalTitle),
 		GlobalColor:        normalizeProjectColor(f.GlobalColor),
+		GlobalIcon:         normalizeProjectIcon(f.GlobalIcon),
 		GlobalTopics:       uniqueStrings(f.GlobalTopics),
 		GlobalPinnedTopics: uniqueStrings(f.GlobalPinnedTopics),
 	}
@@ -4646,6 +4670,7 @@ func normalizeProjectsFile(f desktopProjectFile) desktopProjectFile {
 		p.Root = root
 		p.Title = strings.TrimSpace(p.Title)
 		p.Color = normalizeProjectColor(p.Color)
+		p.Icon = normalizeProjectIcon(p.Icon)
 		p.Topics = uniqueStrings(p.Topics)
 		p.PinnedTopics = uniqueStrings(p.PinnedTopics)
 		if i, ok := index[root]; ok {
@@ -4654,6 +4679,9 @@ func normalizeProjectsFile(f desktopProjectFile) desktopProjectFile {
 			}
 			if out.Projects[i].Color == "" && p.Color != "" {
 				out.Projects[i].Color = p.Color
+			}
+			if out.Projects[i].Icon == "" && p.Icon != "" {
+				out.Projects[i].Icon = p.Icon
 			}
 			out.Projects[i].Topics = uniqueStrings(append(out.Projects[i].Topics, p.Topics...))
 			out.Projects[i].PinnedTopics = uniqueStrings(append(out.Projects[i].PinnedTopics, p.PinnedTopics...))
@@ -4944,6 +4972,17 @@ func normalizeProjectColor(color string) string {
 	}
 }
 
+func normalizeProjectIcon(icon string) string {
+	icon = strings.TrimSpace(strings.ToLower(icon))
+	switch icon {
+	case "star", "bookmark", "code", "terminal", "bolt":
+		return icon
+	default:
+		// Empty and unknown values preserve the backwards-compatible dot icon.
+		return ""
+	}
+}
+
 func projectColor(root string) string {
 	root = normalizeProjectRoot(root)
 	if root == "" {
@@ -4959,6 +4998,23 @@ func projectColor(root string) string {
 
 func globalProjectColor() string {
 	return normalizeProjectColor(loadProjectsFile().GlobalColor)
+}
+
+func projectIcon(root string) string {
+	root = normalizeProjectRoot(root)
+	if root == "" {
+		return globalProjectIcon()
+	}
+	for _, p := range loadProjectsFile().Projects {
+		if p.Root == root {
+			return normalizeProjectIcon(p.Icon)
+		}
+	}
+	return ""
+}
+
+func globalProjectIcon() string {
+	return normalizeProjectIcon(loadProjectsFile().GlobalIcon)
 }
 
 func globalProjectTitle() string {
@@ -5035,6 +5091,31 @@ func setProjectColor(root, color string) error {
 			}
 		}
 		f.Projects = append(f.Projects, desktopProject{Root: root, Color: color})
+		return true, nil
+	})
+}
+
+func setProjectIcon(root, icon string) error {
+	root = normalizeProjectRoot(root)
+	icon = normalizeProjectIcon(icon)
+	return updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		if root == "" {
+			if f.GlobalIcon == icon {
+				return false, nil
+			}
+			f.GlobalIcon = icon
+			return true, nil
+		}
+		for i, p := range f.Projects {
+			if p.Root == root {
+				if f.Projects[i].Icon == icon {
+					return false, nil
+				}
+				f.Projects[i].Icon = icon
+				return true, nil
+			}
+		}
+		f.Projects = append(f.Projects, desktopProject{Root: root, Icon: icon})
 		return true, nil
 	})
 }
@@ -5561,8 +5642,10 @@ type ProjectNode struct {
 	Label          string        `json:"label"`
 	Root           string        `json:"root,omitempty"` // project workspace root
 	TopicID        string        `json:"topicId,omitempty"`
+	SessionID      string        `json:"sessionId,omitempty"`
 	SessionPath    string        `json:"sessionPath,omitempty"`
 	ProjectColor   string        `json:"projectColor,omitempty"`
+	ProjectIcon    string        `json:"projectIcon,omitempty"`
 	TitleSource    string        `json:"titleSource,omitempty"`
 	SessionSource  string        `json:"sessionSource,omitempty"`
 	Channel        string        `json:"channel,omitempty"`
@@ -6033,6 +6116,16 @@ func (a *App) RenameProject(workspaceRoot, title string) error {
 // in the sidebar and tabs. Empty color restores the default accent.
 func (a *App) SetProjectColor(workspaceRoot, color string) error {
 	if err := setProjectColor(workspaceRoot, color); err != nil {
+		return err
+	}
+	a.emitProjectTreeChanged()
+	return nil
+}
+
+// SetProjectIcon updates the project-level visual marker. Empty restores the
+// backwards-compatible dot icon.
+func (a *App) SetProjectIcon(workspaceRoot, icon string) error {
+	if err := setProjectIcon(workspaceRoot, icon); err != nil {
 		return err
 	}
 	a.emitProjectTreeChanged()
@@ -6538,6 +6631,7 @@ type topicSummary struct {
 }
 
 type runtimeSessionStatus struct {
+	sessionID      string
 	sessionPath    string
 	label          string
 	sessionSource  string
@@ -6721,17 +6815,25 @@ func (a *App) ListProjectTree() []ProjectNode {
 	// sequential reads add up to seconds of wall time on cold start.
 	cacheToken := projectSessionCache.versionToken()
 	type sessionDirLoadResult struct {
-		dir    string
-		infos  []agent.SessionInfo
-		titles map[string]string
-		ok     bool
+		dir     string
+		infos   []agent.SessionInfo
+		titles  map[string]string
+		orphans []agent.SessionInfo
+		ok      bool
 	}
 	results := make(chan sessionDirLoadResult, len(knownDirs))
+	orphanWorks := map[string]agent.SessionInfo{}
 	pendingLoads := 0
 	for _, dir := range knownDirs {
 		infos, titles, ok := projectSessionCache.get(dir)
 		if ok {
 			mergeSessionInfos(dir, infos, titles, sessionInfos, sessionTitles, topicSummaries, workTaskTopics, visibleSessionTopics)
+			for _, orphan := range projectSessionCache.orphans(dir) {
+				orphanWorks[orphan.Path] = orphan
+				if title := strings.TrimSpace(titles[filepath.Base(orphan.Path)]); title != "" {
+					sessionTitles[sessionRuntimeKey(orphan.Path)] = title
+				}
+			}
 			continue
 		}
 		pendingLoads++
@@ -6754,7 +6856,9 @@ func (a *App) ListProjectTree() []ProjectNode {
 				return
 			}
 			titles := loadSessionTitles(dir)
+			result.orphans = orphanWorkSessionsForDir(dir)
 			projectSessionCache.put(dir, infos, titles, cacheToken)
+			projectSessionCache.putOrphans(dir, result.orphans, cacheToken)
 			result.infos = infos
 			result.titles = titles
 			result.ok = true
@@ -6768,6 +6872,12 @@ func (a *App) ListProjectTree() []ProjectNode {
 				received++
 				if result.ok {
 					mergeSessionInfos(result.dir, result.infos, result.titles, sessionInfos, sessionTitles, topicSummaries, workTaskTopics, visibleSessionTopics)
+					for _, orphan := range result.orphans {
+						orphanWorks[orphan.Path] = orphan
+						if title := strings.TrimSpace(result.titles[filepath.Base(orphan.Path)]); title != "" {
+							sessionTitles[sessionRuntimeKey(orphan.Path)] = title
+						}
+					}
 				}
 			case <-timer.C:
 				received = pendingLoads
@@ -6789,8 +6899,15 @@ func (a *App) ListProjectTree() []ProjectNode {
 	runtimeSessionsByTopic := map[string][]runtimeSessionStatus{}
 	a.mu.RLock()
 	seenRuntimePaths := map[string]bool{}
+	runtimePaths := map[string]bool{}
 	addRuntimeSession := func(tab *WorkspaceTab, open bool) {
-		if tab == nil || strings.TrimSpace(tab.TopicID) == "" {
+		if tab == nil {
+			return
+		}
+		if path := canonicalTabSessionPath(tab.currentSessionPath()); path != "" {
+			runtimePaths[path] = true
+		}
+		if strings.TrimSpace(tab.TopicID) == "" {
 			return
 		}
 		if !tab.ReadOnly && (tab.sessionKind == "" || tab.sessionKind == agent.SessionKindNormal) && blankTabSessionPathHasNoContent(tab) {
@@ -6844,6 +6961,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			wid = info.WorkID
 		}
 		runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)] = append(runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)], runtimeSessionStatus{
+			sessionID:      tab.SessionID,
 			sessionPath:    sessionPath,
 			label:          label,
 			sessionSource:  sessionSource,
@@ -6924,39 +7042,46 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		return
 	}
-	topicWorkBinding := func(key string) (sessionPath, sessionKind, workID string) {
+	topicWorkBinding := func(key string) (sessionID, sessionPath, sessionKind, workID string) {
 		sessions := runtimeSessionsByTopic[key]
-		if len(sessions) == 1 && (sessions[0].sessionKind == string(agent.SessionKindWork) || sessions[0].sessionKind == string(agent.SessionKindCollaboration)) {
+		if len(sessions) == 1 {
 			session := sessions[0]
-			return session.sessionPath, session.sessionKind, session.workID
+			if session.sessionKind == string(agent.SessionKindWork) || session.sessionKind == string(agent.SessionKindCollaboration) {
+				return session.sessionID, session.sessionPath, session.sessionKind, session.workID
+			}
+			// Single normal session: expose identity so the frontend can
+			// match UnreadConversation entries to this tree node.
+			return session.sessionID, session.sessionPath, string(agent.SessionKindNormal), ""
 		}
 		if len(sessions) != 0 {
-			return "", "", ""
+			return "", "", "", ""
 		}
 		persisted := persistedSessionsByTopic[key]
 		if len(persisted) == 0 {
-			return "", "", ""
+			return "", "", "", ""
 		}
 		selected := persisted[0]
 		identityKind := selected.SessionKind
 		if identityKind != agent.SessionKindWork && identityKind != agent.SessionKindCollaboration {
-			return "", "", ""
+			// Cold start: map the most-recent normal session path so the
+			// frontend can match persisted unread conversations.
+			return "", selected.Path, string(agent.SessionKindNormal), ""
 		}
 		identityWorkID := ""
 		identityRequestID := ""
 		for _, info := range persisted {
 			if info.SessionKind != identityKind {
-				return "", "", ""
+				return "", "", "", ""
 			}
 			if info.WorkID != "" {
 				if identityWorkID != "" && identityWorkID != info.WorkID {
-					return "", "", ""
+					return "", "", "", ""
 				}
 				identityWorkID = info.WorkID
 			}
 			if info.WorkRequestID != "" {
 				if identityRequestID != "" && identityRequestID != info.WorkRequestID {
-					return "", "", ""
+					return "", "", "", ""
 				}
 				identityRequestID = info.WorkRequestID
 			}
@@ -6964,9 +7089,9 @@ func (a *App) ListProjectTree() []ProjectNode {
 				selected = info
 			}
 		}
-		return selected.Path, string(identityKind), identityWorkID
+		return "", selected.Path, string(identityKind), identityWorkID
 	}
-	runtimeSessionNodes := func(scope, workspaceRoot, topicID, projectColor string) []ProjectNode {
+	runtimeSessionNodes := func(scope, workspaceRoot, topicID, projectColor, projectIcon string) []ProjectNode {
 		key := topicSummaryKey(scope, workspaceRoot, topicID)
 		sessions := runtimeSessionsByTopic[key]
 		if len(sessions) <= 1 {
@@ -6994,8 +7119,10 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Label:          session.label,
 				Root:           workspaceRoot,
 				TopicID:        topicID,
+				SessionID:      session.sessionID,
 				SessionPath:    session.sessionPath,
 				ProjectColor:   projectColor,
+				ProjectIcon:    projectIcon,
 				SessionSource:  session.sessionSource,
 				Channel:        session.channel,
 				ChannelLabel:   session.channelLabel,
@@ -7021,10 +7148,11 @@ func (a *App) ListProjectTree() []ProjectNode {
 	globalTitleSetting := strings.TrimSpace(f.GlobalTitle)
 	globalTitle := globalTitleSetting
 	globalColor := normalizeProjectColor(f.GlobalColor)
+	globalIcon := normalizeProjectIcon(f.GlobalIcon)
 	if globalTitle == "" {
 		globalTitle = "Global"
 	}
-	if len(globalTitleMap) > 0 || len(f.Projects) == 0 || len(f.GlobalTopics) > 0 || globalTitleSetting != "" || globalColor != "" || hasGlobalTrashedSessions() {
+	if len(globalTitleMap) > 0 || len(f.Projects) == 0 || len(f.GlobalTopics) > 0 || globalTitleSetting != "" || globalColor != "" || globalIcon != "" || hasGlobalTrashedSessions() {
 		globalTopicIDs := sortTopicIDsByActivityWithPinned(orderedTopicIDs(f.GlobalTopics, globalTitleMap), "global", "", topicSummaries, f.GlobalPinnedTopics)
 		children := make([]ProjectNode, 0, len(globalTopicIDs))
 		for _, id := range globalTopicIDs {
@@ -7041,7 +7169,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				continue
 			}
 			open, running, status, turnStartedAt := topicRuntimeStatus(key)
-			sessionPath, sessionKind, workID := topicWorkBinding(key)
+			sessionID, sessionPath, sessionKind, workID := topicWorkBinding(key)
 			kind := "global_topic"
 			if sessionKind == string(agent.SessionKindWork) {
 				kind = "global_work_session"
@@ -7052,8 +7180,10 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Kind:           kind,
 				Label:          title,
 				TopicID:        id,
+				SessionID:      sessionID,
 				SessionPath:    sessionPath,
 				ProjectColor:   globalColor,
+				ProjectIcon:    globalIcon,
 				TitleSource:    globalTitleSourceMap[id],
 				SessionSource:  summary.sessionSource,
 				Channel:        summary.channel,
@@ -7068,7 +7198,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Pinned:         pinned,
 				SessionKind:    sessionKind,
 				WorkID:         workID,
-				Children:       runtimeSessionNodes("global", "", id, globalColor),
+				Children:       runtimeSessionNodes("global", "", id, globalColor, globalIcon),
 			})
 		}
 		out = append(out, ProjectNode{
@@ -7077,6 +7207,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			Label:        globalTitle,
 			Root:         globalWorkspaceRoot(),
 			ProjectColor: globalColor,
+			ProjectIcon:  globalIcon,
 			Children:     children,
 		})
 	}
@@ -7145,7 +7276,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				continue
 			}
 			open, running, status, turnStartedAt := topicRuntimeStatus(key)
-			sessionPath, sessionKind, workID := topicWorkBinding(key)
+			sessionID, sessionPath, sessionKind, workID := topicWorkBinding(key)
 			kind := "topic"
 			if sessionKind == string(agent.SessionKindWork) {
 				kind = "work_session"
@@ -7157,8 +7288,10 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Label:          topicTitle,
 				Root:           p.Root,
 				TopicID:        tid,
+				SessionID:      sessionID,
 				SessionPath:    sessionPath,
 				ProjectColor:   p.Color,
+				ProjectIcon:    p.Icon,
 				TitleSource:    loaded.sources[tid],
 				SessionSource:  summary.sessionSource,
 				Channel:        summary.channel,
@@ -7173,13 +7306,97 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Pinned:         pinned,
 				SessionKind:    sessionKind,
 				WorkID:         workID,
-				Children:       runtimeSessionNodes("project", p.Root, tid, p.Color),
+				Children:       runtimeSessionNodes("project", p.Root, tid, p.Color, p.Icon),
 			})
 		}
 		node.Label = title
 		node.ProjectColor = p.Color
+		node.ProjectIcon = p.Icon
 		node.Children = children
 		out = append(out, node)
+	}
+
+	// Cold-start orphan Work Sessions: a half-completed Work Session may have
+	// lost its topic binding (e.g. a reusable-flow run that failed before a
+	// Work committed), and ListSessions hides zero-turn sessions. Keep each as a
+	// concrete Session row with its path so the frontend can move it to the
+	// trash by path; ordinary blank sessions stay hidden. Runtime tabs are
+	// excluded because they are already projected.
+	orphanNodesByRoot := map[string][]ProjectNode{}
+	for _, info := range orphanWorks {
+		if info.SessionKind != agent.SessionKindWork {
+			continue
+		}
+		if strings.TrimSpace(info.TopicID) != "" || isWorkTaskSessionSource(info.SessionSource) {
+			continue
+		}
+		if runtimePaths[info.Path] {
+			continue
+		}
+		scope := strings.TrimSpace(info.Scope)
+		if scope == "" {
+			scope = "global"
+		}
+		kind := "work_session"
+		root := ""
+		projectColor, projectIcon := "", ""
+		if scope == "global" {
+			kind = "global_work_session"
+		} else {
+			root = normalizeProjectRoot(info.WorkspaceRoot)
+			for _, p := range f.Projects {
+				if normalizeProjectRoot(p.Root) == root {
+					projectColor, projectIcon = p.Color, p.Icon
+					break
+				}
+			}
+		}
+		label := strings.TrimSpace(sessionTitles[sessionRuntimeKey(info.Path)])
+		if label == "" {
+			label = strings.TrimSpace(info.TopicTitle)
+		}
+		if label == "" {
+			label = "New Work"
+		}
+		orphanNodesByRoot[root] = append(orphanNodesByRoot[root], ProjectNode{
+			Key:            projectSessionNodeKey(scope, info.Path),
+			Kind:           kind,
+			Label:          label,
+			Root:           root,
+			SessionPath:    info.Path,
+			ProjectColor:   projectColor,
+			ProjectIcon:    projectIcon,
+			SessionSource:  info.SessionSource,
+			Channel:        info.Channel,
+			ChannelLabel:   info.ChannelLabel,
+			Turns:          info.Turns,
+			CreatedAt:      unixMilliOrZero(info.CreatedAt),
+			LastActivityAt: unixMilliOrZero(info.LastActivityAt),
+			SessionKind:    string(agent.SessionKindWork),
+			WorkID:         info.WorkID,
+		})
+	}
+	for root, nodes := range orphanNodesByRoot {
+		sort.Slice(nodes, func(i, j int) bool {
+			if nodes[i].LastActivityAt != nodes[j].LastActivityAt {
+				return nodes[i].LastActivityAt > nodes[j].LastActivityAt
+			}
+			return nodes[i].SessionPath < nodes[j].SessionPath
+		})
+		orphanNodesByRoot[root] = nodes
+	}
+	for i := range out {
+		root := ""
+		switch out[i].Kind {
+		case "global_folder":
+		case "project":
+			root = normalizeProjectRoot(out[i].Root)
+		default:
+			continue
+		}
+		if nodes := orphanNodesByRoot[root]; len(nodes) > 0 {
+			out[i].Children = append(out[i].Children, nodes...)
+		}
 	}
 
 	return applyPinnedProjectOrder(applyProjectTreeOrder(out, f.SidebarOrder), f.PinnedProjects)
@@ -7869,6 +8086,9 @@ func (a *App) persistTabSessionPath(tab *WorkspaceTab, path string) {
 }
 
 func (a *App) knownSessionDirs() []string {
+	if len(a.sessionDirsOverride) > 0 {
+		return a.sessionDirsOverride
+	}
 	seen := map[string]bool{}
 	out := []string{}
 	add := func(dir string) {
@@ -7972,6 +8192,9 @@ type topicSessionDirIndex struct {
 type sessionListCacheEntry struct {
 	infos  []agent.SessionInfo
 	titles map[string]string
+	// orphans are zero-turn Work Sessions without a topic binding that
+	// ListSessions filters out; the tree still projects them as removable rows.
+	orphans []agent.SessionInfo
 }
 
 type sessionListCache struct {
@@ -7990,6 +8213,12 @@ func (c *sessionListCache) get(dir string) ([]agent.SessionInfo, map[string]stri
 	return e.infos, e.titles, true
 }
 
+func (c *sessionListCache) orphans(dir string) []agent.SessionInfo {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.byDir[dir].orphans
+}
+
 func (c *sessionListCache) versionToken() uint64 {
 	return c.version.Load()
 }
@@ -8006,6 +8235,20 @@ func (c *sessionListCache) put(dir string, infos []agent.SessionInfo, titles map
 	c.byDir[dir] = sessionListCacheEntry{infos: infos, titles: titles}
 }
 
+func (c *sessionListCache) putOrphans(dir string, orphans []agent.SessionInfo, token uint64) {
+	if c.version.Load() != token {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.version.Load() != token {
+		return
+	}
+	entry := c.byDir[dir]
+	entry.orphans = orphans
+	c.byDir[dir] = entry
+}
+
 func (c *sessionListCache) invalidate() {
 	c.version.Add(1)
 	c.mu.Lock()
@@ -8019,6 +8262,59 @@ var projectSessionCache = &sessionListCache{byDir: map[string]sessionListCacheEn
 // Work Task execution child session (created by the TaskExecutor).
 func isWorkTaskSessionSource(source string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(source)), "work:")
+}
+
+// orphanWorkSessionsForDir lists topic-less Work Sessions regardless of turn
+// count. ListSessions drops zero-turn sessions, but a half-completed Work
+// Session (reusable run failed before committing) is exactly that: empty and
+// topic-less. It must stay reachable so the user can trash it by path.
+func orphanWorkSessionsForDir(dir string) []agent.SessionInfo {
+	order, err := agent.ListSessionOrder(dir)
+	if err != nil {
+		return nil
+	}
+	var out []agent.SessionInfo
+	for _, info := range order {
+		if info.SessionKind != agent.SessionKindWork {
+			continue
+		}
+		if strings.TrimSpace(info.TopicID) != "" || isWorkTaskSessionSource(info.SessionSource) {
+			continue
+		}
+		out = append(out, sessionOrderToInfo(info))
+	}
+	return out
+}
+
+func sessionOrderToInfo(info agent.SessionOrderInfo) agent.SessionInfo {
+	return agent.SessionInfo{
+		Path:           info.Path,
+		CreatedAt:      info.CreatedAt,
+		LastActivityAt: info.LastActivityAt,
+		ModTime:        info.ModTime,
+		Scope:          info.Scope,
+		WorkspaceRoot:  info.WorkspaceRoot,
+		TopicID:        info.TopicID,
+		TopicTitle:     info.TopicTitle,
+		CustomTitle:    info.CustomTitle,
+		SessionSource:  info.SessionSource,
+		Channel:        info.Channel,
+		ChannelLabel:   info.ChannelLabel,
+		Pinned:         info.Pinned,
+		RemoteID:       info.RemoteID,
+		ChatType:       info.ChatType,
+		UserID:         info.UserID,
+		ThreadID:       info.ThreadID,
+		Recovered:      info.Recovered,
+		RecoveryReason: info.RecoveryReason,
+		RecoveryDigest: info.RecoveryDigest,
+		ParentID:       info.ParentID,
+		SessionKind:    info.SessionKind,
+		WorkID:         info.WorkID,
+		WorkRequestID:  info.WorkRequestID,
+		Turns:          info.Turns,
+		Preview:        info.Preview,
+	}
 }
 
 func projectTreeSessionSource(info agent.SessionInfo) (source, channel, channelLabel string) {

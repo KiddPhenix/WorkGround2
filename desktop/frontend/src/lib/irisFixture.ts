@@ -70,10 +70,10 @@ export function irisFixtureTranscript(): IrisFixtureTranscriptItem[] {
 
 export function irisFixtureCompletedRun(): RunRecord {
   const events: RunEvent[] = [
-    { eventId: "cr-e1", content: "已读 1 个文件", stepLabel: "已读 1 个文件" },
-    { eventId: "cr-e2", content: "思考 8 秒", stepLabel: "思考 8 秒" },
-    { eventId: "cr-e3", content: "delete_range task_test.go", stepLabel: "delete_range task_test.go" },
-    { eventId: "cr-e4", content: "运行完成", stepLabel: "+4" },
+    { eventId: "cr-e1", kind: "read", content: "已读 1 个文件", stepLabel: "已读 1 个文件" },
+    { eventId: "cr-e2", kind: "generic", content: "思考 8 秒", stepLabel: "思考 8 秒" },
+    { eventId: "cr-e3", kind: "edit", content: "delete_range task_test.go", stepLabel: "delete_range task_test.go" },
+    { eventId: "cr-e4", kind: "generic", content: "运行完成", stepLabel: "+4" },
   ];
   return {
     runId: "cr-1",
@@ -90,10 +90,10 @@ export function irisFixtureCompletedRun(): RunRecord {
 export function irisFixtureActiveRun(): RunRecord {
   const now = Date.now();
   const events: RunEvent[] = [
-    { eventId: "ar-e1", content: "14:32:11  读取 internal/agent/task_test.go", stepLabel: "步骤 1" },
-    { eventId: "ar-e2", content: "14:32:13  分析 delete_range 调用", stepLabel: "步骤 2" },
-    { eventId: "ar-e3", content: "14:32:17  正在运行 go test ./internal/agent/...", stepLabel: "步骤 3" },
-    { eventId: "ar-e4", content: "14:32:22  等待测试结果...", stepLabel: "步骤 4" },
+    { eventId: "ar-e1", kind: "read", content: "14:32:11  读取 internal/agent/task_test.go", stepLabel: "步骤 1" },
+    { eventId: "ar-e2", kind: "generic", content: "14:32:13  分析 delete_range 调用", stepLabel: "步骤 2" },
+    { eventId: "ar-e3", kind: "test", content: "14:32:17  正在运行 go test ./internal/agent/...", stepLabel: "步骤 3" },
+    { eventId: "ar-e4", kind: "test", content: "14:32:22  等待测试结果...", stepLabel: "步骤 4" },
   ];
   return {
     runId: "ar-1",
@@ -214,12 +214,14 @@ export function irisFixtureQueueItems(): QueueItem[] {
     {
       queueItemId: "q-1",
       requestId: "req-1",
+      sessionId: FIXTURE_SESSION_ID,
       content: "查看测试结果并总结",
       createdAt: Date.now() - 5000,
     },
     {
       queueItemId: "q-2",
       requestId: "req-2",
+      sessionId: FIXTURE_SESSION_ID,
       content: "提交代码审查",
       createdAt: Date.now() - 3000,
     },

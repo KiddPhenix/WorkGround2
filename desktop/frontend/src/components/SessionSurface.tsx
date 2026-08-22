@@ -418,7 +418,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
         </div>
 
         <div data-testid="session-queue-slot" style={{ display: 'contents' }}>
-          <SessionQueueTray onEditContent={(text) => onComposerInsert({ id: Date.now(), text, mode: "replace" })} />
+          <SessionQueueTray sessionId={activeSessionId ?? renderSessionId} running={running} onSend={onSend} onEditContent={(text) => onComposerInsert({ id: Date.now(), text, mode: "replace" })} />
         </div>
 
         <div data-testid="session-composer-slot" style={{ display: 'contents' }}>
@@ -432,7 +432,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
             modelLabel={modelLabel}
             submitKey={composerSubmitKey}
             imageInputEnabled={imageInputEnabled}
-            tabId={activeSessionId}
+            tabId={activeSessionId ?? activeTabId}
             widgetEnabled={widgetEnabled}
             onEnterWidgetMode={onEnterWidgetMode}
             effort={effort}

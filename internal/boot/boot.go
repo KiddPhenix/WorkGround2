@@ -18,12 +18,16 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"workground2/internal/agent"
+	browserpkg "workground2/internal/browser"
+	"workground2/internal/browser/cdp"
 	"workground2/internal/command"
 	"workground2/internal/config"
 	"workground2/internal/control"
+	"workground2/internal/dshcompat"
 	"workground2/internal/environment"
 	"workground2/internal/event"
 	"workground2/internal/guardian"
@@ -46,8 +50,10 @@ import (
 	"workground2/internal/skill"
 	"workground2/internal/skillshare"
 	"workground2/internal/tool"
+	browsertool "workground2/internal/tool/browser"
 	"workground2/internal/tool/builtin"
 	"workground2/internal/tool/sessiontool"
+	"workground2/internal/vocabulary"
 	"workground2/internal/work"
 )
 
@@ -55,6 +61,96 @@ import (
 // system prompts, and documentation. It is the single source of truth for
 // the product brand.
 const ProductName = "WorkGround2"
+
+var browserRuntimeTools = map[string]bool{
+	"browser_open":     true,
+	"browser_attach":   true,
+	"browser_navigate": true,
+	"browser_state":    true,
+	"browser_click":    true,
+	"browser_type":     true,
+	"browser_scroll":   true,
+	"browser_tab":      true,
+	"browser_upload":   true,
+	"browser_close":    true,
+}
+
+type browserCloseAll interface {
+	Close() error
+}
+
+type browserSessionCloser interface {
+	CloseSession(context.Context, string) (browserpkg.CloseResult, error)
+}
+
+// browserLifecycle keeps Build responsible for a newly-created manager until a
+// Controller has actually been returned. Cleanup retries once because a
+// Controller invokes its cleanup hook only once, while Manager.Close can expose
+// a transient process/profile cleanup failure that is safe to retry.
+type browserLifecycle struct {
+	closer browserCloseAll
+	sink   event.Sink
+	mu     sync.Mutex
+	closed bool
+	owned  bool
+}
+
+func newBrowserLifecycle(closer browserCloseAll, sink event.Sink) *browserLifecycle {
+	return &browserLifecycle{closer: closer, sink: sink, owned: true}
+}
+
+func (l *browserLifecycle) transfer() {
+	if l != nil {
+		l.owned = false
+	}
+}
+
+func (l *browserLifecycle) releaseIfOwned() {
+	if l != nil && l.owned {
+		l.close("browser manager cleanup after Build failure")
+	}
+}
+
+func (l *browserLifecycle) close(label string) {
+	if l == nil || l.closer == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return
+	}
+	var err error
+	for range 2 {
+		if err = l.closer.Close(); err == nil {
+			l.closed = true
+			return
+		}
+	}
+	slog.Warn(label, "err", err)
+	if l.sink != nil {
+		l.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: label + ": " + err.Error()})
+	}
+}
+
+func browserTaskCleanup(closer browserSessionCloser, owner string, sink event.Sink) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if closer == nil || strings.TrimSpace(owner) == "" {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := closer.CloseSession(ctx, owner); err != nil {
+				slog.Warn("browser task session cleanup failed", "owner", owner, "err", err)
+				if sink != nil {
+					sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "browser task session cleanup failed: " + err.Error()})
+				}
+			}
+		})
+	}
+}
 
 // WorkTaskSystemPrompt is the system prompt injected into every Work V2 task
 // session. It defines the role as a business delivery executor — distinct from
@@ -276,6 +372,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			Text:  fmt.Sprintf("plan_mode_allowed_tools ignored known blocked entries: %s; this setting only declares extra read-only custom tools and cannot unlock known blocked tools or unsafe bash", strings.Join(ignored, ", ")),
 		})
 	}
+	for _, warning := range cfg.BrowserConfigWarnings() {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: warning})
+	}
 	if migErr != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "config migration from ~/.WorkGround2 failed: " + migErr.Error()})
 	} else if migrated != nil {
@@ -378,11 +477,34 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	skills := skillStore.List()
 	allSkillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), ExcludedPaths: cfg.SkillExcludedPaths(), Providers: remoteSkillProviders, MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
 	allSkills := allSkillStore.List()
+	vocabSkills := make([]vocabulary.SkillSource, 0, len(skills))
+	for _, sk := range skills {
+		if sk.Protected {
+			continue
+		}
+		vocabSkills = append(vocabSkills, vocabulary.SkillSource{Name: sk.Name, Path: sk.Path, Terms: sk.Vocabulary})
+	}
+	vocabAgents := make([]vocabulary.AgentSource, 0, len(mem.Docs))
+	for _, doc := range mem.Docs {
+		if base := strings.ToLower(filepath.Base(doc.Path)); strings.HasPrefix(base, "agents") {
+			vocabAgents = append(vocabAgents, vocabulary.AgentSource{Name: filepath.Base(doc.Path), Path: doc.Path, Body: doc.Body})
+		}
+	}
+	vocab := vocabulary.New(vocabulary.Options{
+		WorkspaceRoot: root,
+		StateDir:      config.ProjectVocabularyDir(root),
+		Skills:        vocabSkills,
+		Agents:        vocabAgents,
+	})
+	for _, warning := range vocab.Warnings() {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "vocabulary: " + warning})
+	}
 	if !tokenEconomy {
 		sysPrompt = skill.ApplyIndex(sysPrompt, skills)
 	}
 
 	reg := tool.NewRegistry()
+	reg.Add(vocabulary.NewRebuildTool(vocab))
 	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: cfg.WriteRootsForRoot(root), ForbidReadRoots: cfg.ForbidReadRootsForRoot(root), Network: cfg.Sandbox.Network}
 	bashSpec.Shell = shell
 	if bashSpec.Mode == "enforce" && !sandbox.Available() {
@@ -399,6 +521,37 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	readPathResolver := builtin.NewPathResolver()
 	addBuiltins(reg, enabledBuiltins, cfg.WriteRootsForRoot(root), bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, cfg.ForbidReadRootsForRoot(root), readPathResolver, opts.FileOverlay, opts.TerminalRunner)
+
+	// DSH Bundles run out-of-process, but remain session-owned: each Controller
+	// gets one Cordis Agent per enabled Bundle and closes it with the session.
+	dshSpecs, dshWarnings := dshcompat.Discover(config.WorkGround2HomeDir(), root, stderr)
+	for _, warning := range dshWarnings {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: warning})
+	}
+	var dshClients []*dshcompat.Client
+	dshTransferred := false
+	defer func() {
+		if dshTransferred {
+			return
+		}
+		for i := len(dshClients) - 1; i >= 0; i-- {
+			_ = dshClients[i].Close()
+		}
+	}()
+	for _, spec := range dshSpecs {
+		startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		client, startErr := dshcompat.Start(startCtx, spec)
+		cancel()
+		if startErr != nil {
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: fmt.Sprintf("dsh %s: %v", spec.Name, startErr)})
+			continue
+		}
+		dshClients = append(dshClients, client)
+		for _, dshTool := range client.Tools() {
+			reg.Add(dshTool)
+		}
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("dsh %s: %d tools bridged", spec.Name, len(client.Tools()))})
+	}
 	// Use the caller-supplied shared host when set, so controllers for the same
 	// workspace root reuse running MCP processes (e.g. one CodeGraph daemon
 	// instead of one per tab). Otherwise construct a private host per controller.
@@ -572,6 +725,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		// shutting down MCP processes that other controllers still use.
 		cleanup = func() {}
 	}
+	if len(dshClients) > 0 {
+		previousCleanup := cleanup
+		cleanup = func() {
+			for i := len(dshClients) - 1; i >= 0; i-- {
+				_ = dshClients[i].Close()
+			}
+			previousCleanup()
+		}
+	}
 
 	// LSP tools resolve their servers on PATH and spawn lazily on first query, so
 	// registering them is cheap even when no server is installed (a query then
@@ -595,6 +757,30 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		cleanup = func() { prev(); lspMgr.Close() }
 	}
 
+	// Browser tools: manager is created but no browser is launched until
+	// the first browser_open call. Browser-absent hosts boot successfully.
+	var browserMgr *browserpkg.Manager
+	var browserOwner *browserLifecycle
+	if cfg.BrowserEnabled() && !tokenEconomy && browserToolsSelected(enabledBuiltins) {
+		factory := cdp.NewFactory(cdp.Options{})
+		bm, err := browserpkg.NewManager(ctx, browserManagerOptions(cfg, factory))
+		if err != nil {
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+				Text: "browser manager init failed: " + err.Error()})
+		} else {
+			browserMgr = bm
+			browserOwner = newBrowserLifecycle(browserMgr, sink)
+			defer browserOwner.releaseIfOwned()
+			for _, t := range browsertool.NewTools(browserMgr) {
+				if builtinToolEnabled(enabledBuiltins, t.Name()) {
+					reg.Add(t)
+				}
+			}
+			prev := cleanup
+			cleanup = func() { prev(); browserOwner.close("browser manager cleanup failed") }
+		}
+	}
+
 	maxSteps := cfg.Agent.MaxSteps
 	if opts.MaxSteps > 0 {
 		maxSteps = opts.MaxSteps
@@ -613,7 +799,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// in an interactive gate later via Controller.EnableInteractiveApproval.
 	// Sub-agents always run headless: they have no UI to answer a prompt, so they
 	// inherit this same gate.
-	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
+	// Completion notifications are explicitly requested through notify-me and
+	// must still work after the owner has gone AFK. Allow them by default while
+	// preserving configured ask/deny precedence.
+	permissionAllow := append([]string(nil), cfg.Permissions.Allow...)
+	permissionAllow = append(permissionAllow, "notify_me")
+	policy := permission.New(cfg.Permissions.Mode, permissionAllow, cfg.Permissions.Ask, cfg.Permissions.Deny)
 	headlessGate := permission.NewGate(policy, nil)
 
 	// Hooks: load the global settings.json plus the project's (only when trusted —
@@ -747,6 +938,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// frontends wire to the controller (EnableInteractiveApproval); a headless run
 	// has none, so ask resolves to "decide for yourself".
 	reg.Add(agent.NewAskTool())
+	if builtinToolEnabled(enabledBuiltins, "notify_me") {
+		reg.Add(agent.NewNotifyMeTool())
+	}
 
 	childOptions := func(sctx context.Context, steps, childDepth, ctxWin int, price *provider.Pricing) agent.Options {
 		return agent.Options{
@@ -1277,6 +1471,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 					taskJobs := jobs.NewManager(taskSink, jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds())*time.Second))
 					taskSession := agent.NewSession(taskPrompt)
 					taskAgent := agent.New(execProv, reg, taskSession, newAgentOptions(taskJobs), taskSink)
+					taskCleanup := func() {}
+					if browserMgr != nil {
+						taskCleanup = browserTaskCleanup(browserMgr, agent.BranchID(taskPath), taskSink)
+					}
 					taskCtrl := control.New(control.Options{
 						Runner:               taskAgent,
 						Executor:             taskAgent,
@@ -1300,6 +1498,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 						BalanceClient:        balanceClient,
 						Jobs:                 taskJobs,
 						Registry:             reg,
+						Cleanup:              taskCleanup,
 					})
 					return taskCtrl, func() {}, nil
 				},
@@ -1344,6 +1543,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		AllSkillStore:          allSkillStore,
 		Hooks:                  hookRunner,
 		Memory:                 mem,
+		Vocabulary:             vocab,
 		Cleanup:                cleanup,
 		BalanceURL:             entry.BalanceURL,
 		BalanceKey:             entry.APIKey(),
@@ -1418,6 +1618,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 	ctrl := control.New(ctrlOpts)
+	if browserOwner != nil {
+		browserOwner.transfer()
+	}
 	// Post-init: wire every live Cornerstone source through production adapters.
 	// URL resolution reuses the configured web_fetch tool, including its proxy,
 	// timeout, response cap, and SSRF policy. If web_fetch is disabled, URL refs
@@ -1439,6 +1642,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if workSvc != nil && cfg.Work.CollaborationWorkbenchV2 {
 		startBackgroundWorkRecovery(workRecoveryCtx, workDir, workSvc, sink)
 	}
+	dshTransferred = true
 	return ctrl, nil
 }
 
@@ -1765,7 +1969,7 @@ func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sand
 		for _, name := range enabled {
 			if t, ok := tool.LookupBuiltin(name); ok {
 				reg.Add(t)
-			} else {
+			} else if !browserRuntimeTools[strings.TrimSpace(name)] {
 				fmt.Fprintf(stderr, "warning: unknown built-in tool %q\n", name)
 			}
 		}
@@ -1797,6 +2001,43 @@ func builtinToolEnabled(enabled []string, name string) bool {
 		}
 	}
 	return false
+}
+
+func browserToolsSelected(enabled []string) bool {
+	if len(enabled) == 0 {
+		return true
+	}
+	for _, name := range enabled {
+		if browserRuntimeTools[strings.TrimSpace(name)] {
+			return true
+		}
+	}
+	return false
+}
+
+// browserManagerOptions maps the resolved browser config onto the Manager
+// options. It is a separate function so tests can verify the config→runtime
+// value flow (including incognito) without booting a controller.
+func browserManagerOptions(cfg *config.Config, factory browserpkg.DriverFactory) browserpkg.Options {
+	return browserpkg.Options{
+		Factory:            factory,
+		BrowserKind:        browserpkg.BrowserKind(cfg.BrowserKind()),
+		ExecutablePath:     cfg.Tools.Browser.ExecutablePath,
+		Headless:           cfg.BrowserHeadless(),
+		Incognito:          cfg.BrowserIncognito(),
+		IdleTimeout:        time.Duration(cfg.BrowserIdleTimeoutSeconds()) * time.Second,
+		ActionTimeout:      time.Duration(cfg.BrowserActionTimeoutSeconds()) * time.Second,
+		StateTimeout:       time.Duration(cfg.BrowserStateTimeoutSeconds()) * time.Second,
+		SettleWindow:       time.Duration(cfg.BrowserSettleMilliseconds()) * time.Millisecond,
+		MaxTextChars:       cfg.BrowserMaxTextChars(),
+		MaxElements:        cfg.BrowserMaxElements(),
+		AllowPasswordInput: cfg.BrowserAllowPasswordInput(),
+		AllowFileUpload:    cfg.BrowserAllowFileUpload(),
+		// Shared persistent browser: one automation profile + endpoint record
+		// per user, reused across controllers/tasks/rebuilds/restarts.
+		RuntimeDir:  config.BrowserStateDir(),
+		ProfileRoot: config.BrowserProfileDir(),
+	}
 }
 
 // partitionByTier splits configured plugin entries into eager (block boot until

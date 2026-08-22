@@ -1,0 +1,601 @@
+package browsertool_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+
+	"workground2/internal/browser"
+	"workground2/internal/jobs"
+	browsertool "workground2/internal/tool/browser"
+)
+
+type fakeService struct {
+	openFn     func(ctx context.Context, owner string, req browser.OpenRequest) (browser.OpenResult, error)
+	stateFn    func(ctx context.Context, owner string, req browser.StateRequest) (browser.PageState, error)
+	clickFn    func(ctx context.Context, owner string, req browser.ClickRequest) (browser.ActionResult, error)
+	navigateFn func(ctx context.Context, owner string, req browser.NavigateRequest) (browser.ActionResult, error)
+	typeFn     func(ctx context.Context, owner string, req browser.TypeRequest) (browser.ActionResult, error)
+	scrollFn   func(ctx context.Context, owner string, req browser.ScrollRequest) (browser.ActionResult, error)
+	tabFn      func(ctx context.Context, owner string, req browser.TabRequest) (browser.ActionResult, error)
+	uploadFn   func(ctx context.Context, owner string, req browser.UploadRequest) (browser.ActionResult, error)
+	attachFn   func(ctx context.Context, owner string) (browser.AttachResult, error)
+	closeFn    func(ctx context.Context, owner string) (browser.CloseResult, error)
+}
+
+func (s *fakeService) Open(ctx context.Context, owner string, req browser.OpenRequest) (browser.OpenResult, error) {
+	return s.openFn(ctx, owner, req)
+}
+func (s *fakeService) Navigate(ctx context.Context, owner string, req browser.NavigateRequest) (browser.ActionResult, error) {
+	return s.navigateFn(ctx, owner, req)
+}
+func (s *fakeService) State(ctx context.Context, owner string, req browser.StateRequest) (browser.PageState, error) {
+	return s.stateFn(ctx, owner, req)
+}
+func (s *fakeService) Click(ctx context.Context, owner string, req browser.ClickRequest) (browser.ActionResult, error) {
+	return s.clickFn(ctx, owner, req)
+}
+func (s *fakeService) Type(ctx context.Context, owner string, req browser.TypeRequest) (browser.ActionResult, error) {
+	return s.typeFn(ctx, owner, req)
+}
+func (s *fakeService) Scroll(ctx context.Context, owner string, req browser.ScrollRequest) (browser.ActionResult, error) {
+	return s.scrollFn(ctx, owner, req)
+}
+func (s *fakeService) Tab(ctx context.Context, owner string, req browser.TabRequest) (browser.ActionResult, error) {
+	return s.tabFn(ctx, owner, req)
+}
+func (s *fakeService) Upload(ctx context.Context, owner string, req browser.UploadRequest) (browser.ActionResult, error) {
+	return s.uploadFn(ctx, owner, req)
+}
+func (s *fakeService) Attach(ctx context.Context, owner string) (browser.AttachResult, error) {
+	return s.attachFn(ctx, owner)
+}
+func (s *fakeService) CloseSession(ctx context.Context, owner string) (browser.CloseResult, error) {
+	return s.closeFn(ctx, owner)
+}
+func (s *fakeService) Close() error { return nil }
+
+func newFakeService() *fakeService {
+	return &fakeService{
+		openFn: func(ctx context.Context, owner string, req browser.OpenRequest) (browser.OpenResult, error) {
+			return browser.OpenResult{SessionID: "test-session", Created: true, Revision: 1, URL: req.URL}, nil
+		},
+		stateFn: func(ctx context.Context, owner string, req browser.StateRequest) (browser.PageState, error) {
+			return browser.PageState{
+				SessionID: "test-session",
+				Revision:  1,
+				URL:       "https://example.com",
+				Title:     "Test",
+				Elements:  []browser.Element{{Index: 1, Tag: "button", Role: "button"}},
+			}, nil
+		},
+		clickFn: func(ctx context.Context, owner string, req browser.ClickRequest) (browser.ActionResult, error) {
+			return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2, URL: "https://example.com"}, nil
+		},
+		navigateFn: func(ctx context.Context, owner string, req browser.NavigateRequest) (browser.ActionResult, error) {
+			return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2, URL: req.URL}, nil
+		},
+		typeFn: func(ctx context.Context, owner string, req browser.TypeRequest) (browser.ActionResult, error) {
+			return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
+		},
+		scrollFn: func(ctx context.Context, owner string, req browser.ScrollRequest) (browser.ActionResult, error) {
+			return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
+		},
+		tabFn: func(ctx context.Context, owner string, req browser.TabRequest) (browser.ActionResult, error) {
+			return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
+		},
+		uploadFn: func(ctx context.Context, owner string, req browser.UploadRequest) (browser.ActionResult, error) {
+			return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
+		},
+		attachFn: func(ctx context.Context, owner string) (browser.AttachResult, error) {
+			return browser.AttachResult{SessionID: "test-session", Endpoint: "http://127.0.0.1:9222"}, nil
+		},
+		closeFn: func(ctx context.Context, owner string) (browser.CloseResult, error) {
+			return browser.CloseResult{SessionID: "test-session", Closed: true}, nil
+		},
+	}
+}
+
+func TestToolsExist(t *testing.T) {
+	svc := newFakeService()
+	tools := browsertool.NewTools(svc)
+	if len(tools) != 10 {
+		t.Fatalf("expected 10 tools, got %d", len(tools))
+	}
+	names := make(map[string]bool)
+	for _, tool := range tools {
+		names[tool.Name()] = true
+	}
+	expected := []string{
+		"browser_open", "browser_attach", "browser_navigate", "browser_state",
+		"browser_click", "browser_type", "browser_scroll",
+		"browser_tab", "browser_upload", "browser_close",
+	}
+	for _, n := range expected {
+		if !names[n] {
+			t.Errorf("missing tool: %s", n)
+		}
+	}
+}
+
+func TestStateIsReadOnly(t *testing.T) {
+	svc := newFakeService()
+	readOnly := map[string]bool{"browser_state": true, "browser_attach": true}
+	for _, tool := range browsertool.NewTools(svc) {
+		if readOnly[tool.Name()] {
+			if !tool.ReadOnly() {
+				t.Errorf("%s must be ReadOnly", tool.Name())
+			}
+			pc, ok := tool.(interface{ PlanModeSafe() bool })
+			if !ok || !pc.PlanModeSafe() {
+				t.Errorf("%s must be PlanModeSafe", tool.Name())
+			}
+		} else if tool.ReadOnly() {
+			t.Errorf("%s must not be ReadOnly", tool.Name())
+		}
+	}
+}
+
+func TestOpenSchema(t *testing.T) {
+	svc := newFakeService()
+	tools := browsertool.NewTools(svc)
+	var openTool interface{ Schema() json.RawMessage }
+	for _, t := range tools {
+		if t.Name() == "browser_open" {
+			openTool = t
+			break
+		}
+	}
+	schema := openTool.Schema()
+	var s map[string]interface{}
+	if err := json.Unmarshal(schema, &s); err != nil {
+		t.Fatalf("invalid schema: %v", err)
+	}
+	if s["type"] != "object" {
+		t.Error("schema must be type=object")
+	}
+}
+
+func TestExecuteReturnsEnvelope(t *testing.T) {
+	svc := newFakeService()
+	tools := browsertool.NewTools(svc)
+	for _, tool := range tools {
+		if tool.Name() == "browser_open" {
+			output, err := tool.Execute(context.Background(), json.RawMessage(`{"request_id":"r1","url":"https://example.com"}`))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !strings.Contains(output, `"ok":true`) {
+				t.Errorf("expected ok:true in output, got: %s", output)
+			}
+			if !strings.Contains(output, `"result":`) {
+				t.Errorf("expected result in output, got: %s", output)
+			}
+			break
+		}
+	}
+}
+
+func TestExecuteErrorReturnsBothJSONAndError(t *testing.T) {
+	svc := newFakeService()
+	svc.stateFn = func(ctx context.Context, owner string, req browser.StateRequest) (browser.PageState, error) {
+		return browser.PageState{}, browser.NewError(browser.ErrBrowserNotOpen, "not open", nil)
+	}
+	tools := browsertool.NewTools(svc)
+	for _, tool := range tools {
+		if tool.Name() == "browser_state" {
+			output, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
+			if err == nil {
+				t.Fatal("expected non-nil error for browser error")
+			}
+			if !strings.Contains(output, `"ok":false`) {
+				t.Errorf("expected ok:false, got: %s", output)
+			}
+			if !strings.Contains(output, `"error":`) {
+				t.Errorf("expected error field, got: %s", output)
+			}
+			break
+		}
+	}
+}
+
+func TestCloseSchemaNoRequired(t *testing.T) {
+	svc := newFakeService()
+	tools := browsertool.NewTools(svc)
+	for _, tool := range tools {
+		if tool.Name() == "browser_close" {
+			schema := tool.Schema()
+			var s map[string]interface{}
+			json.Unmarshal(schema, &s)
+			if req, ok := s["required"]; ok && req != nil {
+				t.Error("browser_close must have no required fields")
+			}
+			break
+		}
+	}
+}
+
+func TestScrollAllowsIndexZero(t *testing.T) {
+	svc := newFakeService()
+	tools := browsertool.NewTools(svc)
+	for _, tool := range tools {
+		if tool.Name() == "browser_scroll" {
+			schema := tool.Schema()
+			var s map[string]interface{}
+			json.Unmarshal(schema, &s)
+			props := s["properties"].(map[string]interface{})
+			indexProp := props["index"].(map[string]interface{})
+			if min, ok := indexProp["minimum"].(float64); !ok || min != 0 {
+				t.Errorf("scroll index minimum must be 0, got %v", indexProp["minimum"])
+			}
+			break
+		}
+	}
+}
+
+func TestNewToolsAllHaveSchema(t *testing.T) {
+	svc := newFakeService()
+	tools := browsertool.NewTools(svc)
+	for _, tool := range tools {
+		schema := tool.Schema()
+		if len(schema) == 0 {
+			t.Errorf("%s has empty schema", tool.Name())
+		}
+		var s map[string]interface{}
+		if err := json.Unmarshal(schema, &s); err != nil {
+			t.Errorf("%s schema is not valid JSON: %v", tool.Name(), err)
+		}
+	}
+}
+
+func TestToolTraitsAndSchemas(t *testing.T) {
+	for _, bt := range browsertool.NewTools(newFakeService()) {
+		var schema map[string]any
+		if err := json.Unmarshal(bt.Schema(), &schema); err != nil {
+			t.Fatalf("%s schema: %v", bt.Name(), err)
+		}
+		if schema["type"] != "object" || schema["additionalProperties"] != false {
+			t.Errorf("%s must be a closed object schema", bt.Name())
+		}
+		classifier, ok := bt.(interface{ PlanModeSafe() bool })
+		if !ok {
+			t.Fatalf("%s does not explicitly classify plan mode", bt.Name())
+		}
+		wantRead := bt.Name() == "browser_state" || bt.Name() == "browser_attach"
+		if bt.ReadOnly() != wantRead || classifier.PlanModeSafe() != wantRead {
+			t.Errorf("%s traits readOnly=%v planSafe=%v, want %v", bt.Name(), bt.ReadOnly(), classifier.PlanModeSafe(), wantRead)
+		}
+		if bt.Name() == "browser_tab" {
+			branches, ok := schema["oneOf"].([]any)
+			if !ok {
+				t.Error("browser_tab schema must use oneOf for action-specific fields")
+				continue
+			}
+			if len(branches) != 3 {
+				t.Fatalf("browser_tab oneOf branches = %d, want 3", len(branches))
+			}
+			for _, index := range []int{1, 2} {
+				branch, ok := branches[index].(map[string]any)
+				if !ok {
+					t.Fatalf("browser_tab branch %d is not an object", index)
+				}
+				required, ok := branch["required"].([]any)
+				if !ok || len(required) != 1 || required[0] != "tab_id" {
+					t.Errorf("browser_tab branch %d must require tab_id, got %v", index, branch["required"])
+				}
+			}
+		}
+	}
+}
+
+func TestTypeTextLimitCountsUnicodeCharacters(t *testing.T) {
+	svc := newFakeService()
+	called := false
+	svc.typeFn = func(ctx context.Context, owner string, req browser.TypeRequest) (browser.ActionResult, error) {
+		called = true
+		return browser.ActionResult{RequestID: req.RequestID}, nil
+	}
+	var typeTool interface {
+		Execute(context.Context, json.RawMessage) (string, error)
+	}
+	for _, candidate := range browsertool.NewTools(svc) {
+		if candidate.Name() == "browser_type" {
+			typeTool = candidate
+			break
+		}
+	}
+	text := strings.Repeat("界", 20000)
+	args, err := json.Marshal(map[string]any{
+		"revision": 1, "index": 1, "text": text, "request_id": "unicode-limit",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := typeTool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("20000 Unicode characters should be accepted: %v", err)
+	}
+	if !called {
+		t.Fatal("browser_type did not reach service")
+	}
+}
+
+func TestInvalidArgumentsAlwaysReturnEnvelope(t *testing.T) {
+	tools := map[string]json.RawMessage{
+		"browser_open":     json.RawMessage(`{"request_id":"","extra":1}`),
+		"browser_navigate": json.RawMessage(`{"request_id":"r","url":""}`),
+		"browser_state":    json.RawMessage(`{"max_chars":2}`),
+		"browser_click":    json.RawMessage(`{"revision":0,"index":0,"request_id":"r"}`),
+		"browser_type":     json.RawMessage(`{"revision":1,"index":1,"text":"","request_id":"r"}`),
+		"browser_scroll":   json.RawMessage(`{"revision":1,"delta_y":0,"request_id":"r"}`),
+		"browser_tab":      json.RawMessage(`{"revision":1,"action":"activate","request_id":"r"}`),
+		"browser_upload":   json.RawMessage(`{"revision":1,"index":1,"files":[],"request_id":"r"}`),
+		"browser_attach":   json.RawMessage(`{"unexpected":true}`),
+		"browser_close":    json.RawMessage(`{"unexpected":true}`),
+	}
+	for _, bt := range browsertool.NewTools(newFakeService()) {
+		output, err := bt.Execute(context.Background(), tools[bt.Name()])
+		if err == nil {
+			t.Errorf("%s: expected validation error", bt.Name())
+			continue
+		}
+		if !strings.Contains(output, `"ok":false`) || !strings.Contains(output, `"code":"invalid_arguments"`) {
+			t.Errorf("%s: invalid error envelope %q", bt.Name(), output)
+		}
+	}
+}
+
+func TestUploadSchemaAndTraits(t *testing.T) {
+	svc := newFakeService()
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() != "browser_upload" {
+			continue
+		}
+		if bt.ReadOnly() {
+			t.Fatal("browser_upload must be a writer tool")
+		}
+		if pc, ok := bt.(interface{ PlanModeSafe() bool }); !ok || pc.PlanModeSafe() {
+			t.Fatal("browser_upload must not be plan-mode safe")
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(bt.Schema(), &schema); err != nil {
+			t.Fatal(err)
+		}
+		if schema["type"] != "object" || schema["additionalProperties"] != false {
+			t.Fatalf("browser_upload schema must be a closed object: %v", schema)
+		}
+		required, ok := schema["required"].([]any)
+		if !ok || len(required) != 4 {
+			t.Fatalf("browser_upload required = %v, want 4 fields", schema["required"])
+		}
+		props := schema["properties"].(map[string]any)
+		revision := props["revision"].(map[string]any)
+		if revision["minimum"].(float64) != 1 {
+			t.Fatalf("revision minimum = %v, want 1", revision["minimum"])
+		}
+		index := props["index"].(map[string]any)
+		if index["minimum"].(float64) != 1 {
+			t.Fatalf("index minimum = %v, want 1", index["minimum"])
+		}
+		files := props["files"].(map[string]any)
+		if files["minItems"].(float64) != 1 || files["maxItems"].(float64) != 20 {
+			t.Fatalf("files min/max = %v/%v, want 1/20", files["minItems"], files["maxItems"])
+		}
+		items := files["items"].(map[string]any)
+		if items["minLength"].(float64) != 1 {
+			t.Fatalf("files items minLength = %v, want 1", items["minLength"])
+		}
+		rid := props["request_id"].(map[string]any)
+		if rid["minLength"].(float64) != 1 || rid["maxLength"].(float64) != 128 {
+			t.Fatalf("request_id bounds = %v/%v, want 1/128", rid["minLength"], rid["maxLength"])
+		}
+	}
+}
+
+func TestUploadExecutePassesFilesAndEnvelope(t *testing.T) {
+	svc := newFakeService()
+	var got browser.UploadRequest
+	svc.uploadFn = func(_ context.Context, _ string, req browser.UploadRequest) (browser.ActionResult, error) {
+		got = req
+		return browser.ActionResult{BeforeRevision: 3, AfterRevision: 4, Method: "upload"}, nil
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() != "browser_upload" {
+			continue
+		}
+		output, err := bt.Execute(context.Background(), json.RawMessage(`{"revision":3,"index":2,"files":["a.txt","b.txt"],"request_id":"up-1"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(output, `"ok":true`) || !strings.Contains(output, `"method":"upload"`) {
+			t.Fatalf("upload output = %s", output)
+		}
+		if got.Revision != 3 || got.Index != 2 || len(got.Files) != 2 || got.Files[0] != "a.txt" || got.RequestID != "up-1" {
+			t.Fatalf("upload request = %+v", got)
+		}
+	}
+}
+
+func TestUploadRejectsInvalidFilesBeforeService(t *testing.T) {
+	svc := newFakeService()
+	reached := false
+	svc.uploadFn = func(context.Context, string, browser.UploadRequest) (browser.ActionResult, error) {
+		reached = true
+		return browser.ActionResult{}, nil
+	}
+	var uploadTool interface {
+		Execute(context.Context, json.RawMessage) (string, error)
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() == "browser_upload" {
+			uploadTool = bt
+		}
+	}
+	for name, args := range map[string]string{
+		"zero revision":  `{"revision":0,"index":1,"files":["a"],"request_id":"r"}`,
+		"zero index":     `{"revision":1,"index":0,"files":["a"],"request_id":"r"}`,
+		"empty files":    `{"revision":1,"index":1,"files":[],"request_id":"r"}`,
+		"too many files": `{"revision":1,"index":1,"files":["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u"],"request_id":"r"}`,
+		"empty path":     `{"revision":1,"index":1,"files":["  "],"request_id":"r"}`,
+		"bad request id": `{"revision":1,"index":1,"files":["a"],"request_id":""}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			output, err := uploadTool.Execute(context.Background(), json.RawMessage(args))
+			if err == nil || !strings.Contains(output, `"code":"invalid_arguments"`) {
+				t.Fatalf("%s: err=%v output=%s", name, err, output)
+			}
+		})
+	}
+	if reached {
+		t.Fatal("invalid upload args reached the service")
+	}
+}
+
+func TestToolsPassCurrentJobsOwner(t *testing.T) {
+	svc := newFakeService()
+	svc.openFn = func(_ context.Context, owner string, _ browser.OpenRequest) (browser.OpenResult, error) {
+		if owner != "owner-42" {
+			return browser.OpenResult{}, fmt.Errorf("owner=%q", owner)
+		}
+		return browser.OpenResult{SessionID: "ok"}, nil
+	}
+	ctx := jobs.WithSession(context.Background(), "owner-42")
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() != "browser_open" {
+			continue
+		}
+		if _, err := bt.Execute(ctx, json.RawMessage(`{"request_id":"owner-test"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestWrappedBrowserErrorKeepsStructuredCode(t *testing.T) {
+	svc := newFakeService()
+	svc.stateFn = func(context.Context, string, browser.StateRequest) (browser.PageState, error) {
+		return browser.PageState{}, fmt.Errorf("observe: %w", browser.NewError(browser.ErrStaleState, "refresh", nil))
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() != "browser_state" {
+			continue
+		}
+		output, err := bt.Execute(context.Background(), json.RawMessage(`{}`))
+		if err == nil || !strings.Contains(output, `"code":"stale_state"`) {
+			t.Fatalf("output=%q err=%v", output, err)
+		}
+	}
+}
+
+func TestDialogBlockedErrorEnvelopeCarriesDialogContext(t *testing.T) {
+	svc := newFakeService()
+	svc.navigateFn = func(context.Context, string, browser.NavigateRequest) (browser.ActionResult, error) {
+		return browser.ActionResult{}, browser.NewDialogBlockedError(
+			browser.DialogContext{TargetID: "tab-1", Type: browser.DialogBeforeUnload, Message: "Leave site?"},
+			"navigation blocked by beforeunload dialog; page stayed",
+			nil,
+		)
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() != "browser_navigate" {
+			continue
+		}
+		output, err := bt.Execute(context.Background(), json.RawMessage(`{"url":"https://example.com","request_id":"nav-1"}`))
+		if err == nil || !strings.Contains(output, `"code":"dialog_blocked"`) {
+			t.Fatalf("output=%q err=%v", output, err)
+		}
+		if !strings.Contains(output, `"dialog":{"target_id":"tab-1","type":"beforeunload"`) {
+			t.Fatalf("dialog context missing from envelope: %q", output)
+		}
+		if !strings.Contains(output, `"recoverable":true`) || !strings.Contains(output, `"outcome_known":true`) {
+			t.Fatalf("dialog_blocked must be recoverable and outcome_known: %q", output)
+		}
+	}
+}
+
+func TestActionSchemasHaveAllowLeave(t *testing.T) {
+	for _, bt := range browsertool.NewTools(newFakeService()) {
+		switch bt.Name() {
+		case "browser_navigate", "browser_click", "browser_tab":
+		default:
+			continue
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(bt.Schema(), &schema); err != nil {
+			t.Fatalf("%s schema: %v", bt.Name(), err)
+		}
+		if schema["additionalProperties"] != false {
+			t.Errorf("%s must remain a closed schema", bt.Name())
+		}
+		props, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s properties missing", bt.Name())
+		}
+		allowLeave, ok := props["allow_leave"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s schema missing allow_leave", bt.Name())
+		}
+		if allowLeave["type"] != "boolean" {
+			t.Errorf("%s allow_leave must be boolean, got %v", bt.Name(), allowLeave["type"])
+		}
+	}
+}
+
+func TestNavigatePassesAllowLeave(t *testing.T) {
+	svc := newFakeService()
+	var gotAllowLeave bool
+	svc.navigateFn = func(_ context.Context, _ string, req browser.NavigateRequest) (browser.ActionResult, error) {
+		gotAllowLeave = req.AllowLeave
+		return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2, URL: req.URL}, nil
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() != "browser_navigate" {
+			continue
+		}
+		if _, err := bt.Execute(context.Background(), json.RawMessage(`{"url":"https://example.com","allow_leave":true,"request_id":"nav-1"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !gotAllowLeave {
+		t.Fatal("allow_leave=true not passed to the service")
+	}
+}
+
+func TestClickAndTabClosePassAllowLeave(t *testing.T) {
+	svc := newFakeService()
+	var gotClick, gotClose bool
+	svc.clickFn = func(_ context.Context, _ string, req browser.ClickRequest) (browser.ActionResult, error) {
+		gotClick = req.AllowLeave
+		return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
+	}
+	svc.tabFn = func(_ context.Context, _ string, req browser.TabRequest) (browser.ActionResult, error) {
+		gotClose = req.AllowLeave
+		return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		switch bt.Name() {
+		case "browser_click":
+			if _, err := bt.Execute(context.Background(), json.RawMessage(`{"revision":1,"index":1,"allow_leave":true,"request_id":"c-1"}`)); err != nil {
+				t.Fatal(err)
+			}
+		case "browser_tab":
+			if _, err := bt.Execute(context.Background(), json.RawMessage(`{"revision":1,"action":"close","tab_id":"tab-2","allow_leave":true,"request_id":"t-1"}`)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !gotClick {
+		t.Error("allow_leave=true not passed for browser_click")
+	}
+	if !gotClose {
+		t.Error("allow_leave=true not passed for browser_tab close")
+	}
+}
+
+func TestNoCredentialToolRegistered(t *testing.T) {
+	for _, bt := range browsertool.NewTools(newFakeService()) {
+		if strings.Contains(bt.Name(), "credential") || strings.Contains(bt.Name(), "password") {
+			t.Fatalf("V1 must not register credential tool: %s", bt.Name())
+		}
+	}
+}

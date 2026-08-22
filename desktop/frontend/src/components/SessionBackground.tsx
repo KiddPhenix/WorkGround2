@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { app, onSessionBackgroundChanged } from "../lib/bridge";
 import type { SessionBackgroundImageView, SessionBackgroundMode, SessionBackgroundSettingsView } from "../lib/types";
+import { DynamicWallpaper, isSceneName } from "./DynamicWallpaper";
 
 type BackgroundLayers = {
   current: SessionBackgroundImageView | null;
@@ -8,7 +9,9 @@ type BackgroundLayers = {
 };
 
 export function sessionBackgroundMode(settings: Pick<SessionBackgroundSettingsView, "mode" | "enabled" | "imageCount">): SessionBackgroundMode {
-  if (settings.mode === "pattern" || settings.mode === "solid" || settings.mode === "custom") return settings.mode;
+  const m = settings.mode ?? "";
+  if (m === "pattern" || m === "solid" || m === "custom") return m;
+  if (isSceneName(m)) return m;
   return settings.enabled && settings.imageCount > 0 ? "custom" : "pattern";
 }
 
@@ -160,6 +163,13 @@ export function SessionBackground({ tabId }: { tabId?: string }) {
     return (
       <div className="session-background session-background--solid" aria-hidden="true">
         <div className="session-background__solid" />
+      </div>
+    );
+  }
+  if (isSceneName(mode)) {
+    return (
+      <div className={`session-background session-background--${mode}`} aria-hidden="true">
+        <DynamicWallpaper scene={mode} />
       </div>
     );
   }

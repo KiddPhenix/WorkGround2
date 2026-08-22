@@ -76,6 +76,22 @@ type PermissionsView struct {
 	Allow []string `json:"allow"`
 	Ask   []string `json:"ask"`
 	Deny  []string `json:"deny"`
+	// Browser carries the browser sensitive-operation switches (password
+	// typing and local file upload). Both default to allowed.
+	Browser BrowserPermissionsView `json:"browser"`
+}
+
+// BrowserPermissionsView exposes the two browser sensitive-operation switches.
+// Old configs without the keys surface as true (allowed).
+type BrowserPermissionsView struct {
+	AllowPasswordInput bool `json:"allowPasswordInput"`
+	AllowFileUpload    bool `json:"allowFileUpload"`
+}
+
+// BrowserLaunchView exposes browser process launch preferences separately from
+// permissions. Incognito defaults to false for old configs.
+type BrowserLaunchView struct {
+	Incognito bool `json:"incognito"`
 }
 
 type SandboxView struct {
@@ -191,6 +207,7 @@ type SettingsView struct {
 	Providers               []ProviderView            `json:"providers"`
 	OfficialProviders       []ProviderView            `json:"officialProviders"`
 	Permissions             PermissionsView           `json:"permissions"`
+	BrowserLaunch           BrowserLaunchView         `json:"browserLaunch"`
 	Sandbox                 SandboxView               `json:"sandbox"`
 	Network                 NetworkView               `json:"network"`
 	Collaboration           CollaborationSettingsView `json:"collaboration"`
@@ -565,7 +582,12 @@ func (a *App) Settings() SettingsView {
 				Allow: []string{},
 				Ask:   []string{},
 				Deny:  []string{},
+				Browser: BrowserPermissionsView{
+					AllowPasswordInput: true,
+					AllowFileUpload:    true,
+				},
 			},
+			BrowserLaunch:           BrowserLaunchView{Incognito: false},
 			Sandbox:                 SandboxView{Bash: "enforce", AllowWrite: []string{}, Shell: "auto"},
 			Collaboration:           CollaborationSettingsView{PreferLAN: true, ConnectTimeoutSeconds: 10, RouteStableSeconds: 60, Relays: []RelayView{}},
 			Agent:                   AgentView{PlannerMaxSteps: 0, MaxSubagentDepth: agent.DefaultMaxSubagentDepth, ColdResumePrune: true, ReasoningLanguage: "auto"},
@@ -612,7 +634,12 @@ func (a *App) Settings() SettingsView {
 			Allow: nonNil(cfg.Permissions.Allow),
 			Ask:   nonNil(cfg.Permissions.Ask),
 			Deny:  nonNil(cfg.Permissions.Deny),
+			Browser: BrowserPermissionsView{
+				AllowPasswordInput: cfg.BrowserAllowPasswordInput(),
+				AllowFileUpload:    cfg.BrowserAllowFileUpload(),
+			},
 		},
+		BrowserLaunch: BrowserLaunchView{Incognito: cfg.BrowserIncognito()},
 		Sandbox: SandboxView{
 			Bash: bash, Network: cfg.Sandbox.Network,
 			WorkspaceRoot: cfg.Sandbox.WorkspaceRoot, AllowWrite: nonNil(cfg.Sandbox.AllowWrite),
@@ -2043,6 +2070,30 @@ func (a *App) RemovePermissionRule(list, rule string) error {
 	return a.applyConfigChange(func(c *config.Config) error {
 		_, err := c.RemovePermissionRule(list, rule)
 		return err
+	})
+}
+
+// SetBrowserPermissions atomically persists both browser sensitive-operation
+// switches. Both values are written explicitly so a single flipped switch
+// still lands in the TOML.
+func (a *App) SetBrowserPermissions(b BrowserPermissionsView) error {
+	return a.applyConfigChange(func(c *config.Config) error {
+		allowPassword := b.AllowPasswordInput
+		allowFile := b.AllowFileUpload
+		c.Tools.Browser.AllowPasswordInput = &allowPassword
+		c.Tools.Browser.AllowFileUpload = &allowFile
+		return nil
+	})
+}
+
+// SetBrowserLaunch persists browser process launch preferences. Rebuilding the
+// controller closes manager-owned browser processes; the selected mode is used
+// the next time browser_open creates a process.
+func (a *App) SetBrowserLaunch(b BrowserLaunchView) error {
+	return a.applyConfigChange(func(c *config.Config) error {
+		incognito := b.Incognito
+		c.Tools.Browser.Incognito = &incognito
+		return nil
 	})
 }
 

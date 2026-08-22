@@ -504,6 +504,7 @@ func ValidateV2WorkEventPayload(typ WorkEventType, payload json.RawMessage) erro
 			State  string `json:"state"`
 			Refs   []struct {
 				Status string `json:"status"`
+				URL    string `json:"url"`
 			} `json:"refs"`
 			Revision wireInt64 `json:"revision"`
 			Progress *float64  `json:"progress"`
@@ -530,6 +531,9 @@ func ValidateV2WorkEventPayload(typ WorkEventType, payload json.RawMessage) erro
 		for i, ref := range p.Refs {
 			if !validArtifactRefStatus(ref.Status) {
 				return fmt.Errorf("work: %s refs[%d].status %q is invalid", typ, i, ref.Status)
+			}
+			if strings.TrimSpace(ref.URL) != "" && !ValidateArtifactURL(ref.URL) {
+				return fmt.Errorf("work: %s refs[%d].url %q is not an absolute http(s) URL", typ, i, ref.URL)
 			}
 		}
 		if p.State == string(SlotFailed) && p.Error == nil {

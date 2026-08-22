@@ -266,7 +266,8 @@ func (a *Agent) compact(ctx context.Context, trigger, instructions string, force
 	compacted = append(compacted, msgs[:head]...)
 	compacted = append(compacted, kept...)
 	compacted = append(compacted, provider.Message{
-		Role: provider.RoleUser,
+		Role:   provider.RoleUser,
+		Origin: provider.MessageOriginHost,
 		Content: summaryTagOpen + "\n" +
 			"Summary of earlier conversation (older messages were compacted to save context):\n" +
 			summary + "\n" +
@@ -312,6 +313,7 @@ func (a *Agent) SummarizeFrom(ctx context.Context, fromIdx int) error {
 	next = append(next, provider.Message{
 		Role:    provider.RoleUser,
 		Content: "Summary of the later conversation (compacted from here on):\n" + summary,
+		Origin:  provider.MessageOriginHost,
 	})
 	a.session.Replace(next)
 	a.session.IncrementRewrite()
@@ -345,6 +347,7 @@ func (a *Agent) SummarizeUpTo(ctx context.Context, toIdx int) error {
 	next = append(next, provider.Message{
 		Role:    provider.RoleUser,
 		Content: "Summary of earlier conversation (compacted up to here):\n" + summary,
+		Origin:  provider.MessageOriginHost,
 	})
 	next = append(next, msgs[toIdx:]...)
 	a.session.Replace(next)

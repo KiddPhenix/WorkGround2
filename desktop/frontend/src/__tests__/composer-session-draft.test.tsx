@@ -337,5 +337,71 @@ console.log("\ncomposer session draft");
   dom.window.close();
 }
 
+{
+  const dom = installDom();
+  const used: string[] = [];
+  let cycled = 0;
+  installBridgeApp({
+    CompleteVocabularyForTab: async (_tabID: string, prefix: string) => prefix === "多模"
+      ? [{ id: "term-video-v5", text: "多模态生视频V5", suffix: "态生视频V5", kind: "noun", source: "workspace" }]
+      : [],
+    RecordVocabularyUseForTab: async (_tabID: string, id: string) => {
+      used.push(id);
+    },
+  });
+  const { root, rerender } = await renderComposer({ onCycleMode: () => { cycled += 1; } });
+  await rerender({ insertRequest: { id: 20, text: "多模", mode: "replace" } });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  });
+  eq(document.querySelector(".composer__ghost b")?.textContent, "态生视频V5", "workspace vocabulary renders an inline ghost suffix");
+
+  await act(async () => {
+    textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(textarea().value, "多模态生视频V5", "plain Tab accepts vocabulary completion");
+  eq(used[0], "term-video-v5", "accepted vocabulary usage is recorded with the tab-scoped entry id");
+
+  await rerender({ insertRequest: { id: 21, text: "多模", mode: "replace" } });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(cycled, 1, "Shift+Tab keeps its plan-mode action when vocabulary is visible");
+  eq(textarea().value, "多模", "Shift+Tab does not accept vocabulary completion");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const activated: Array<{ tabID: string; name: string }> = [];
+  installBridgeApp({
+    Commands: async () => [{ name: "GPT", description: "delegated workflow", kind: "skill" }],
+    ActivateSkillVocabularyForTab: async (tabID: string, name: string) => {
+      activated.push({ tabID, name });
+      return { skill: name, termCount: 1, added: 1, warnings: [] };
+    },
+  });
+  const { root, rerender } = await renderComposer();
+  await rerender({ insertRequest: { id: 30, text: "/GPT", mode: "replace" } });
+  await act(async () => {
+    await flushTimers();
+  });
+  eq(activated.length, 1, "exact Skill slash input activates vocabulary before submit");
+  eq(activated[0]?.tabID, "single-surface-tab", "Skill vocabulary activation keeps the target tab identity");
+  eq(activated[0]?.name, "GPT", "Skill vocabulary activation uses the canonical command name");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

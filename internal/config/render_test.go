@@ -19,6 +19,9 @@ func isolateUserConfigHome(t *testing.T) string {
 	t.Setenv("WorkGround2_CREDENTIALS_STORE", "file")
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	// These tests assert the default user-then-project merge order. A machine
+	// that exports WorkGround2_PREFER_USER_CONFIG must not flip it.
+	t.Setenv("WorkGround2_PREFER_USER_CONFIG", "")
 	return home
 }
 
@@ -187,6 +190,15 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Skills.DisabledSkills = []string{"review", "explore"}
 	orig.Skills.MaxDepth = 2
 	orig.Bot.ToolApprovalMode = "auto"
+	orig.Bot.QQ.Access = BotAccessConfig{
+		Enabled:        true,
+		AllowAll:       false,
+		PairingEnabled: true,
+		Users:          []string{"qq_user_1"},
+		Groups:         []string{"qq_group_1"},
+		Approvers:      []string{"qq_user_1"},
+		Admins:         []string{"qq_admin"},
+	}
 	orig.Bot.Connections = []BotConnectionConfig{{
 		ID:               "feishu-lark",
 		Provider:         "feishu",
@@ -197,7 +209,16 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 		Model:            "deepseek-pro",
 		ToolApprovalMode: "yolo",
 		WorkspaceRoot:    "/tmp/WorkGround2-bot",
-		Credential:       BotConnectionCredential{AppID: "cli_lark", AppSecretEnv: "LARK_BOT_APP_SECRET"},
+		Access: BotAccessConfig{
+			Enabled:        true,
+			AllowAll:       false,
+			PairingEnabled: true,
+			Users:          []string{"ou_user_a", "ou_user_b"},
+			Groups:         []string{"oc_group_1"},
+			Approvers:      []string{"ou_user_a"},
+			Admins:         []string{"ou_admin"},
+		},
+		Credential: BotConnectionCredential{AppID: "cli_lark", AppSecretEnv: "LARK_BOT_APP_SECRET"},
 		SessionMappings: []BotConnectionSessionMapping{{
 			RemoteID:      "ou_123",
 			SessionID:     "topic:topic_bot",
@@ -205,6 +226,10 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 			WorkspaceRoot: "/tmp/WorkGround2-bot",
 			UpdatedAt:     "2026-06-11T00:00:00Z",
 		}},
+		Endpoints: []BotConnectionRemote{
+			{RemoteID: "ou_123", ChatType: "dm", UpdatedAt: "2026-06-11T00:00:00Z"},
+			{RemoteID: "oc_group_1", ChatType: "group", ThreadID: "thread-1", UpdatedAt: "2026-06-11T00:01:00Z"},
+		},
 	}}
 	orig.LSP = LSPConfig{
 		Enabled: true,
@@ -306,6 +331,15 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if len(got.Bot.Connections[0].SessionMappings) != 1 || got.Bot.Connections[0].SessionMappings[0].Scope != "project" || got.Bot.Connections[0].SessionMappings[0].WorkspaceRoot != "/tmp/WorkGround2-bot" {
 		t.Errorf("bot session mapping scope not preserved: %+v", got.Bot.Connections[0].SessionMappings)
+	}
+	if want := orig.Bot.Connections[0].Endpoints; !reflect.DeepEqual(got.Bot.Connections[0].Endpoints, want) {
+		t.Errorf("bot endpoints not preserved through render round-trip: got %+v, want %+v", got.Bot.Connections[0].Endpoints, want)
+	}
+	if want := orig.Bot.Connections[0].Access; !reflect.DeepEqual(got.Bot.Connections[0].Access, want) {
+		t.Errorf("bot connection access not preserved through render round-trip: got %+v, want %+v", got.Bot.Connections[0].Access, want)
+	}
+	if want := orig.Bot.QQ.Access; !reflect.DeepEqual(got.Bot.QQ.Access, want) {
+		t.Errorf("bot qq access not preserved through render round-trip: got %+v, want %+v", got.Bot.QQ.Access, want)
 	}
 	if got.Agent.Temperature != orig.Agent.Temperature {
 		t.Errorf("temperature = %v, want %v", got.Agent.Temperature, orig.Agent.Temperature)

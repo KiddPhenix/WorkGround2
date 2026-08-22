@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"workground2/internal/config"
+	"workground2/internal/dshcompat"
 	"workground2/internal/installsource"
 	"workground2/internal/pluginpkg"
 )
@@ -32,6 +34,23 @@ type PluginView struct {
 	Warnings        []string   `json:"warnings,omitempty"`
 	Error           string     `json:"error,omitempty"`
 	AddOn           *AddOnView `json:"addon,omitempty"`
+	DSH             *DSHView   `json:"dsh,omitempty"`
+}
+
+type DSHView struct {
+	PackageName     string   `json:"packageName"`
+	Patch           string   `json:"patch"`
+	Level           string   `json:"level"`
+	Status          string   `json:"status"`
+	Rows            int      `json:"rows"`
+	ResolvedRows    int      `json:"resolvedRows"`
+	ClientRows      int      `json:"clientRows"`
+	DynamicValues   int      `json:"dynamicValues"`
+	OverridePatches int      `json:"overridePatches"`
+	MissingPackages []string `json:"missingPackages,omitempty"`
+	NodePath        string   `json:"nodePath,omitempty"`
+	RuntimeReady    bool     `json:"runtimeReady"`
+	RuntimeAnchor   string   `json:"runtimeAnchor,omitempty"`
 }
 
 type AddOnView struct {
@@ -101,6 +120,17 @@ func (a *App) Plugins() []PluginView {
 		if pkg, warnings, err := pluginpkg.ParseDir(view.Root); err == nil {
 			view.Skills, view.Hooks, view.MCPServers = pkg.CapabilityCounts()
 			view.AddOn = addOnView(pkg.Manifest.AddOn)
+			bundleRoot := dshcompat.ResolveBundleRoot(pluginpkg.InstalledPackage{Installed: p, Package: pkg}, a.activeWorkspaceRoot())
+			bundle := pkg.Manifest.DSH
+			if bundleRoot != pkg.Root {
+				if sourcePkg, sourceWarnings, sourceErr := pluginpkg.ParseDir(bundleRoot); sourceErr == nil {
+					bundle = sourcePkg.Manifest.DSH
+					warnings = sourceWarnings
+				} else {
+					warnings = append(warnings, "DSH source fallback: "+sourceErr.Error())
+				}
+			}
+			view.DSH = dshView(bundle, bundleRoot)
 			view.Warnings = warnings
 		} else {
 			view.Error = err.Error()
@@ -108,6 +138,33 @@ func (a *App) Plugins() []PluginView {
 		out = append(out, view)
 	}
 	return out
+}
+
+func dshView(bundle *pluginpkg.DshBundle, bundleRoot string) *DSHView {
+	if bundle == nil {
+		return nil
+	}
+	report := bundle.Report
+	view := &DSHView{
+		PackageName:     bundle.PackageName,
+		Patch:           bundle.Patch,
+		Level:           report.Level,
+		Status:          report.Status,
+		Rows:            report.Rows,
+		ResolvedRows:    report.ResolvedRows,
+		ClientRows:      report.ClientRows,
+		DynamicValues:   report.DynamicValues,
+		OverridePatches: report.OverridePatches,
+		MissingPackages: append([]string(nil), report.MissingPackages...),
+	}
+	if nodePath, err := exec.LookPath("node"); err == nil {
+		view.NodePath = nodePath
+		if anchor, anchorErr := dshcompat.ResolveRuntimeAnchor(bundleRoot); anchorErr == nil {
+			view.RuntimeAnchor = anchor
+			view.RuntimeReady = len(view.MissingPackages) == 0
+		}
+	}
+	return view
 }
 
 func addOnView(addon *pluginpkg.AddOn) *AddOnView {
@@ -237,6 +294,17 @@ func (a *App) PluginDoctor(name string) PluginView {
 		if _, err := os.Stat(p.Root); err != nil {
 			p.Error = err.Error()
 			return p
+		}
+		if p.DSH != nil {
+			if _, err := exec.LookPath("node"); err != nil {
+				p.Warnings = append(p.Warnings, "Node.js was not found; DSH Host runtime cannot start")
+			}
+			if p.DSH.RuntimeAnchor == "" {
+				p.Warnings = append(p.Warnings, "DSH runtime anchor was not found; install DSH or set DSH_RUNTIME_ANCHOR")
+			}
+			if len(p.DSH.MissingPackages) > 0 {
+				p.Warnings = append(p.Warnings, fmt.Sprintf("DSH runtime is waiting for %d unresolved package(s)", len(p.DSH.MissingPackages)))
+			}
 		}
 		return p
 	}

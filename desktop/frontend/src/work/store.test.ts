@@ -1226,7 +1226,8 @@ function assertFullGoldenProjected(view: WorkViewV2, chain: string): void {
   equal(state.revisions[workID], view.revision, `${chain}: revision enters the single Store`);
   equal(state.v2Definitions[workID]?.digest, view.definition?.digest, `${chain}: definition enters the single Store`);
   equal((state.artifactSlots[workID] ?? [])[0]?.id, view.artifactSlots?.[0]?.id, `${chain}: artifact slot enters the single Store`);
-  equal((state.artifactSlots[workID] ?? [])[0]?.artifactRefs.length, 0, `${chain}: Go null slice is normalized for UI consumption`);
+  equal((state.artifactSlots[workID] ?? [])[0]?.artifactRefs.length, view.artifactSlots?.[0]?.artifactRefs?.length ?? 0, `${chain}: artifact refs enter the single Store`);
+  equal((state.artifactSlots[workID] ?? [])[0]?.artifactRefs?.[0]?.blobDigest, view.artifactSlots?.[0]?.artifactRefs?.[0]?.blobDigest, `${chain}: artifact ref digest enters the single Store`);
   equal((state.v2Tasks[workID] ?? [])[0]?.state, 'completed', `${chain}: task enters the single Store`);
   equal((state.v2Inputs[workID] ?? [])[0]?.state, 'requested', `${chain}: input enters the single Store`);
   equal((state.patchPreviews[workID] ?? [])[0]?.id, view.patchPreviews?.[0]?.id, `${chain}: patch preview enters the single Store`);
@@ -1235,7 +1236,11 @@ function assertFullGoldenProjected(view: WorkViewV2, chain: string): void {
 test('real Go ArtifactSlot distinguishes required artifactRefs, null, and wrong types', () => {
   const valid = structuredClone(goFullV2Golden) as unknown as Record<string, unknown>;
   const slots = valid.artifactSlots as Record<string, unknown>[];
-  const parsedNull = parseArtifactSlot(slots[0]);
+  // Golden slots now carry their produced refs (URL-artifact baseline); build
+  // an explicit null-refs slot to assert the null → empty normalization.
+  const nullRefSlot = structuredClone(slots[0]) as Record<string, unknown>;
+  nullRefSlot.artifactRefs = null;
+  const parsedNull = parseArtifactSlot(nullRefSlot);
   equal(parsedNull.artifactRefs.length, 0, 'explicit Go null slice normalizes to an empty UI array');
 
   const missing = fullGoldenWithoutArtifactRefs();
@@ -1634,7 +1639,7 @@ test('real FileWorkStore golden missing artifactRefs fails fetch without mutatin
   ok(error instanceof TypeError, 'fetch exposes the parser TypeError');
   ok(error.message.includes('missing required field "artifactRefs"'), 'fetch reports the missing field');
   equal(useWorkStore.getState().revisions[valid.work.id], valid.revision, 'failed fetch cannot advance revision');
-  equal((useWorkStore.getState().artifactSlots[valid.work.id] ?? [])[0].artifactRefs.length, 0, 'failed fetch cannot replace refs');
+  equal((useWorkStore.getState().artifactSlots[valid.work.id] ?? [])[0].artifactRefs.length, 1, 'failed fetch cannot replace refs');
   ok(adapter.getStatus(valid.work.id).snapshotError?.includes('missing required field "artifactRefs"'), 'fetch failure remains observable');
   adapter.dispose();
 });
@@ -1655,7 +1660,7 @@ test('real FileWorkStore golden missing artifactRefs conflicts in delta and repe
   const second = adapter.applyEvent(malformed);
   equal(second.kind, 'conflict', 'repeated malformed delta remains a conflict');
   equal(useWorkStore.getState().revisions[valid.work.id], valid.revision, 'malformed delta cannot advance revision');
-  equal((useWorkStore.getState().artifactSlots[valid.work.id] ?? [])[0].artifactRefs.length, 0, 'malformed delta cannot replace refs');
+  equal((useWorkStore.getState().artifactSlots[valid.work.id] ?? [])[0].artifactRefs.length, 1, 'malformed delta cannot replace refs');
   ok(adapter.getStatus(valid.work.id).eventError?.includes('missing required field "artifactRefs"'), 'delta parser conflict remains observable');
   adapter.dispose();
 });
@@ -1682,7 +1687,7 @@ test('V2 watch conflict from missing artifactRefs triggers one deduplicated auth
 
   equal(port.fetchCount, 2, 'duplicate malformed watch events share one recovery fetch');
   equal(useWorkStore.getState().revisions[valid.work.id], valid.revision, 'watch conflict cannot advance revision');
-  equal((useWorkStore.getState().artifactSlots[valid.work.id] ?? [])[0].artifactRefs.length, 0, 'authoritative null refs remain stable');
+  equal((useWorkStore.getState().artifactSlots[valid.work.id] ?? [])[0].artifactRefs.length, 1, 'authoritative refs remain stable');
   adapter.dispose();
 });
 
@@ -1742,7 +1747,7 @@ test('real FileWorkStore golden missing artifactRefs fails authoritative recover
   await new Promise<void>((resolveWait) => setTimeout(resolveWait, 0));
 
   equal(useWorkStore.getState().revisions[valid.work.id], valid.revision, 'failed recover cannot advance revision');
-  equal((useWorkStore.getState().artifactSlots[valid.work.id] ?? [])[0].artifactRefs.length, 0, 'failed recover cannot replace refs');
+  equal((useWorkStore.getState().artifactSlots[valid.work.id] ?? [])[0].artifactRefs.length, 1, 'failed recover cannot replace refs');
   ok(adapter.getStatus(valid.work.id).snapshotError?.includes('missing required field "artifactRefs"'), 'recover conflict remains observable and retryable');
   equal(adapter.getStatus(valid.work.id).stream.kind, 'offline', 'failed recover exposes retryable subscription state');
   adapter.dispose();

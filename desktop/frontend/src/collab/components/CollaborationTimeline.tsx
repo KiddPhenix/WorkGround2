@@ -1,13 +1,162 @@
-import { useState } from "react";
-import { Ban, Bot, Check, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, File, FolderOpen, MoreHorizontal, Pause, Play, RefreshCw, Reply, ThumbsUp, UserRound } from "lucide-react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { Ban, Bot, Check, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, File, FolderOpen, Image, MoreHorizontal, Pause, Play, RefreshCw, Reply, ThumbsUp, UserRound } from "lucide-react";
 import { useI18n } from "../../lib/i18n";
 import { ApprovalModal } from "../../components/ApprovalModal";
 import { AskCard } from "../../components/AskCard";
 import { collabCopy, contributionLabel, type CollabCopy } from "../copy";
 import { visibleCollaborationTimeline } from "../state";
-import type { CollaborationAgentPrompt, CollaborationAgentRunResponse, CollaborationFileTransfer, CollaborationMember, CollaborationTimelineItem, PendingIntent } from "../types";
+import type { CollaborationAgentPrompt, CollaborationAgentRunResponse, CollaborationFilePreview, CollaborationFileTransfer, CollaborationMember, CollaborationTimelineItem, PendingIntent } from "../types";
 import { IntentCountdown } from "./IntentCountdown";
 import { CollaborationAvatar } from "./CollaborationAvatar";
+
+type CollaborationPreviewLoader = (fileId: string) => Promise<CollaborationFilePreview | null>;
+
+interface CollaborationPreviewCacheEntry {
+  promise: Promise<CollaborationFilePreview | null>;
+  dataBytes: number;
+  consumers: number;
+  settled: boolean;
+  cancelQueued(): boolean;
+}
+
+interface CollaborationPreviewCache {
+  entries: Map<string, CollaborationPreviewCacheEntry>;
+  dataBytes: number;
+}
+
+const collaborationPreviewCache = new WeakMap<CollaborationPreviewLoader, CollaborationPreviewCache>();
+const collaborationPreviewQueue: Array<() => void> = [];
+const maxConcurrentCollaborationPreviews = 2;
+const maxCachedCollaborationPreviews = 16;
+const maxCachedCollaborationPreviewBytes = 16 * 1024 * 1024;
+let activeCollaborationPreviews = 0;
+
+function drainCollaborationPreviewQueue() {
+  while (activeCollaborationPreviews < maxConcurrentCollaborationPreviews && collaborationPreviewQueue.length > 0) {
+    collaborationPreviewQueue.shift()?.();
+  }
+}
+
+function queueCollaborationPreview(load: CollaborationPreviewLoader, fileId: string) {
+  let started = false;
+  let settled = false;
+  let queuedTask: (() => void) | undefined;
+  let cancelQueued = () => false;
+  const promise = new Promise<CollaborationFilePreview | null>((resolve, reject) => {
+    queuedTask = () => {
+      if (settled) return;
+      started = true;
+      activeCollaborationPreviews++;
+      Promise.resolve()
+        .then(() => load(fileId))
+        .then(resolve, reject)
+        .finally(() => {
+          settled = true;
+          activeCollaborationPreviews--;
+          drainCollaborationPreviewQueue();
+        });
+    };
+    collaborationPreviewQueue.push(queuedTask);
+    cancelQueued = () => {
+      if (started || settled || !queuedTask) return false;
+      const index = collaborationPreviewQueue.indexOf(queuedTask);
+      if (index >= 0) collaborationPreviewQueue.splice(index, 1);
+      settled = true;
+      resolve(null);
+      drainCollaborationPreviewQueue();
+      return true;
+    };
+    drainCollaborationPreviewQueue();
+  });
+  return { promise, cancelQueued: () => cancelQueued() };
+}
+
+function collaborationPreviewKey(item: CollaborationTimelineItem) {
+  const mime = (item.fileMime || "").split(";", 1)[0].trim().toLowerCase();
+  return JSON.stringify([item.id, (item.fileSHA256 || "").trim().toLowerCase(), item.fileSize || 0, mime]);
+}
+
+function removeCollaborationPreview(cache: CollaborationPreviewCache, cacheKey: string, expected?: CollaborationPreviewCacheEntry) {
+  const entry = cache.entries.get(cacheKey);
+  if (!entry || (expected && entry !== expected)) return;
+  cache.entries.delete(cacheKey);
+  cache.dataBytes -= entry.dataBytes;
+}
+
+function touchCollaborationPreview(cache: CollaborationPreviewCache, cacheKey: string, entry: CollaborationPreviewCacheEntry) {
+  cache.entries.delete(cacheKey);
+  cache.entries.set(cacheKey, entry);
+}
+
+function trimCollaborationPreviewCache(cache: CollaborationPreviewCache) {
+  while (cache.entries.size > maxCachedCollaborationPreviews || cache.dataBytes > maxCachedCollaborationPreviewBytes) {
+    const oldest = cache.entries.keys().next().value as string | undefined;
+    if (oldest === undefined) return;
+    removeCollaborationPreview(cache, oldest);
+  }
+}
+
+function acquireCollaborationPreview(cache: CollaborationPreviewCache, cacheKey: string, entry: CollaborationPreviewCacheEntry) {
+  entry.consumers++;
+  let released = false;
+  return {
+    promise: entry.promise,
+    release: () => {
+      if (released) return;
+      released = true;
+      entry.consumers--;
+      if (entry.consumers === 0 && !entry.settled && entry.cancelQueued()) {
+        removeCollaborationPreview(cache, cacheKey, entry);
+      }
+    },
+  };
+}
+
+function loadCollaborationPreview(load: CollaborationPreviewLoader, fileId: string, cacheKey: string, refresh: boolean) {
+  let cache = collaborationPreviewCache.get(load);
+  if (!cache) {
+    cache = { entries: new Map(), dataBytes: 0 };
+    collaborationPreviewCache.set(load, cache);
+  }
+  if (refresh) removeCollaborationPreview(cache, cacheKey);
+  const cached = cache.entries.get(cacheKey);
+  if (cached) {
+    touchCollaborationPreview(cache, cacheKey, cached);
+    return acquireCollaborationPreview(cache, cacheKey, cached);
+  }
+
+  const queued = queueCollaborationPreview(load, fileId);
+  const entry: CollaborationPreviewCacheEntry = { promise: Promise.resolve(null), dataBytes: 0, consumers: 0, settled: false, cancelQueued: queued.cancelQueued };
+  entry.promise = queued.promise
+    .then((preview) => {
+      entry.settled = true;
+      if (cache.entries.get(cacheKey) === entry) {
+        entry.dataBytes = preview?.dataUrl.length || 0;
+        cache.dataBytes += entry.dataBytes;
+        trimCollaborationPreviewCache(cache);
+      }
+      return preview;
+    })
+    .catch((error) => {
+      entry.settled = true;
+      removeCollaborationPreview(cache, cacheKey, entry);
+      throw error;
+    });
+  cache.entries.set(cacheKey, entry);
+  trimCollaborationPreviewCache(cache);
+  return acquireCollaborationPreview(cache, cacheKey, entry);
+}
+
+function invalidateCollaborationPreview(load: CollaborationPreviewLoader | undefined, cacheKey: string) {
+  const cache = load ? collaborationPreviewCache.get(load) : undefined;
+  if (cache) removeCollaborationPreview(cache, cacheKey);
+}
+
+function looksLikeCollaborationImage(item: CollaborationTimelineItem) {
+  const mime = (item.fileMime || "").split(";", 1)[0].trim().toLowerCase();
+  if (["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mime)) return true;
+  return /\.(?:png|jpe?g|gif|webp)$/i.test(item.fileName || item.text || "");
+}
 
 interface CollaborationTimelineProps {
   items: CollaborationTimelineItem[];
@@ -22,7 +171,7 @@ interface CollaborationTimelineProps {
   onToggle(id: string): void;
   onReply(item: CollaborationTimelineItem): void;
   onAgree(item: CollaborationTimelineItem): void;
-  onAgreeRun(item: CollaborationTimelineItem): void;
+  onRequestAgent(item: CollaborationTimelineItem, memberId: string): void;
   onAgent(item: CollaborationTimelineItem): void;
   onAccept(item: CollaborationTimelineItem): void;
   onReject(item: CollaborationTimelineItem): void;
@@ -36,6 +185,7 @@ interface CollaborationTimelineProps {
   onRevokeFile(id: string): void;
   onOpenFile(id: string): void;
   onRevealFile(id: string): void;
+  previewFile?(fileId: string): Promise<CollaborationFilePreview | null>;
 }
 
 const kindCopy = {
@@ -72,13 +222,67 @@ function fileStatus(status: CollaborationFileTransfer["status"] | undefined, c: 
   return c("fileAvailable");
 }
 
-function FileCard({ item, own, transfer, c, onReceive, onPause, onResume, onRevoke, onOpen, onReveal }: { item: CollaborationTimelineItem; own: boolean; transfer?: CollaborationFileTransfer; c: CollabCopy; onReceive(): void; onPause(): void; onResume(): void; onRevoke(): void; onOpen(): void; onReveal(): void }) {
+function FileCard({ item, own, transfer, c, onReceive, onPause, onResume, onRevoke, onOpen, onReveal, previewFile }: { item: CollaborationTimelineItem; own: boolean; transfer?: CollaborationFileTransfer; c: CollabCopy; onReceive(): void; onPause(): void; onResume(): void; onRevoke(): void; onOpen(): void; onReveal(): void; previewFile?: CollaborationPreviewLoader }) {
   const revoked = item.fileRevoked || transfer?.status === "revoked";
   const receiving = transfer?.direction === "receive";
+  const previewReady = looksLikeCollaborationImage(item) && !revoked && ((receiving && transfer?.status === "completed") || (own && transfer?.direction === "share" && transfer.status === "available"));
+  const previewKey = collaborationPreviewKey(item);
   const progress = transfer?.total ? Math.min(100, Math.round(transfer.transferred / transfer.total * 100)) : 0;
   const resumable = receiving && ["paused", "waiting_sender", "failed"].includes(transfer?.status || "") && transfer?.retryable !== false;
-  return <div className={`collab-file-card${revoked ? " collab-file-card--revoked" : ""}`}>
-    <div className="collab-file-card__icon"><File size={21} /></div>
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState(false);
+  const [previewAttempt, setPreviewAttempt] = useState(0);
+  const [previewVisible, setPreviewVisible] = useState(false);
+
+  useEffect(() => {
+    setPreviewVisible(false);
+    if (!previewReady || !previewFile) return;
+    const target = cardRef.current;
+    if (!target || typeof IntersectionObserver === "undefined") {
+      setPreviewVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries.find((value) => value.target === target);
+      if (entry) setPreviewVisible(entry.isIntersecting);
+    }, { root: target.closest(".collab-scroll") });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [previewFile, previewKey, previewReady]);
+
+  useEffect(() => {
+    setImagePreview(null);
+    setPreviewError(false);
+    if (!previewReady || !previewVisible || !previewFile) return;
+    let cancelled = false;
+    const request = loadCollaborationPreview(previewFile, item.id, previewKey, previewAttempt > 0);
+    request.promise.then((preview) => {
+      if (cancelled || !preview || !preview.dataUrl) return;
+      const supported = ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(preview.mime);
+      if (!supported || !preview.dataUrl.startsWith(`data:${preview.mime};base64,`)) {
+        invalidateCollaborationPreview(previewFile, previewKey);
+        setPreviewError(true);
+        return;
+      }
+      setImagePreview(preview.dataUrl);
+    }).catch(() => {
+      if (!cancelled) setPreviewError(true);
+    });
+    return () => {
+      cancelled = true;
+      request.release();
+    };
+  }, [item.id, previewAttempt, previewFile, previewKey, previewReady, previewVisible]);
+
+  const previewLoadFailed = () => {
+    invalidateCollaborationPreview(previewFile, previewKey);
+    setImagePreview(null);
+    setPreviewError(true);
+  };
+
+  return <div ref={cardRef} className={`collab-file-card${revoked ? " collab-file-card--revoked" : ""}${imagePreview ? " collab-file-card--image" : ""}`}>
+    <div className="collab-file-card__icon">{imagePreview ? <img src={imagePreview} alt="" loading="lazy" decoding="async" draggable={false} onError={previewLoadFailed} /> : <File size={21} />}</div>
     <div className="collab-file-card__body"><strong>{item.fileName || item.text}</strong><span>{fileSize(item.fileSize)} · {fileStatus(revoked ? "revoked" : transfer?.status, c)}</span>{transfer?.error && <small>{transfer.error}</small>}</div>
     <div className="collab-file-card__actions">
       {!own && !revoked && !receiving && <button type="button" onClick={onReceive}><Download size={14} />{c("fileReceive")}</button>}
@@ -88,6 +292,8 @@ function FileCard({ item, own, transfer, c, onReceive, onPause, onResume, onRevo
       {receiving && transfer.status === "completed" && <><button type="button" className="collab-file-card__open" onClick={onOpen}><ExternalLink size={14} />{c("fileOpen")}</button><details className="collab-file-card__more"><summary aria-label={c("moreActions")} title={c("moreActions")}><MoreHorizontal size={15} /></summary><div><button type="button" onClick={onReveal}><FolderOpen size={14} />{c("fileReveal")}</button></div></details></>}
     </div>
     {receiving && transfer.status !== "completed" && <div className="collab-file-progress"><span style={{ width: `${progress}%` }} /></div>}
+    {imagePreview && <div className="collab-file-card__preview"><img src={imagePreview} alt={item.fileName || item.text} loading="lazy" decoding="async" draggable={false} onError={previewLoadFailed} /></div>}
+    {previewError && !imagePreview && <div className="collab-file-card__preview-error" role="status"><Image size={14} /><span>{c("previewFailed")}</span><button type="button" onClick={() => setPreviewAttempt((value) => value + 1)}><RefreshCw size={12} />{c("previewRetry")}</button></div>}
   </div>;
 }
 
@@ -173,6 +379,38 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
   const { locale, t } = useI18n();
   const c = collabCopy(t);
   const [expandedReferences, setExpandedReferences] = useState<Set<string>>(new Set());
+  const [requestAgentOpen, setRequestAgentOpen] = useState<string | null>(null);
+  const [requestAgentPlacement, setRequestAgentPlacement] = useState<{ side: "above" | "below"; maxHeight: number }>({ side: "above", maxHeight: 260 });
+  const requestAgentRef = useRef<HTMLDivElement>(null);
+  const requestAgentTriggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!requestAgentOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!requestAgentRef.current || !requestAgentRef.current.contains(event.target as Node)) {
+        setRequestAgentOpen(null);
+      }
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [requestAgentOpen]);
+  const closeRequestAgent = (restoreFocus = false) => {
+    if (restoreFocus) requestAgentTriggerRef.current?.focus();
+    setRequestAgentOpen(null);
+  };
+  const toggleRequestAgent = (event: ReactMouseEvent<HTMLButtonElement>, itemId: string) => {
+    if (requestAgentOpen === itemId) {
+      closeRequestAgent();
+      return;
+    }
+    requestAgentTriggerRef.current = event.currentTarget;
+    const trigger = event.currentTarget.getBoundingClientRect();
+    const scroll = event.currentTarget.closest(".collab-scroll")?.getBoundingClientRect();
+    const above = Math.max(0, trigger.top - (scroll?.top ?? 0));
+    const below = Math.max(0, (scroll?.bottom ?? window.innerHeight) - trigger.bottom);
+    const side = below >= above ? "below" : "above";
+    setRequestAgentPlacement({ side, maxHeight: Math.max(48, Math.min(260, Math.floor(Math.max(above, below) - 8))) });
+    setRequestAgentOpen(itemId);
+  };
   if (props.items.length === 0) return <div className="collab-empty">{c("empty")}</div>;
   const rawItems = new Map(props.items.map((item) => [item.id, item]));
   const visibleItems = visibleCollaborationTimeline(props.items);
@@ -184,6 +422,10 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
     target.classList.add("collab-message--referenced");
     window.setTimeout(() => target.classList.remove("collab-message--referenced"), 1800);
   };
+
+  const requestAgentEligible = (props.members || []).filter(
+    (member) => member.online && member.id !== props.selfMemberId && !member.isSelf && Boolean(member.agent.id.trim()),
+  );
 
   return <div className="collab-timeline-list">
     {visibleItems.map((item) => {
@@ -208,7 +450,7 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
               {item.syncStatus === "pending" && <span className="collab-sync collab-sync--pending"><RefreshCw size={11} />{c("pending")}</span>}
               {item.syncStatus === "failed" && <span className="collab-sync collab-sync--failed"><CircleAlert size={11} />{c("failedItem")}</span>}
             </header>
-            {item.kind === "agent_command" ? <><AgentRunCard item={item} c={c} canRespond={waitingAgentRun} prompt={props.agentPrompt} onRespond={(response) => props.onRespondAgentRun(item, response)} />{item.agentRunOutput && <p className="collab-agent-output">{item.agentRunOutput}</p>}</> : item.kind === "file" ? <FileCard item={item} own={own} transfer={transfer} c={c} onReceive={() => props.onReceiveFile(item.id)} onPause={() => props.onPauseFile(item.id)} onResume={() => props.onResumeFile(item.id)} onRevoke={() => props.onRevokeFile(item.id)} onOpen={() => props.onOpenFile(item.id)} onReveal={() => props.onRevealFile(item.id)} /> : <p>{item.text}</p>}
+            {item.kind === "agent_command" ? <><AgentRunCard item={item} c={c} canRespond={waitingAgentRun} prompt={props.agentPrompt} onRespond={(response) => props.onRespondAgentRun(item, response)} />{item.agentRunOutput && <p className="collab-agent-output">{item.agentRunOutput}</p>}</> : item.kind === "file" ? <FileCard item={item} own={own} transfer={transfer} c={c} onReceive={() => props.onReceiveFile(item.id)} onPause={() => props.onPauseFile(item.id)} onResume={() => props.onResumeFile(item.id)} onRevoke={() => props.onRevokeFile(item.id)} onOpen={() => props.onOpenFile(item.id)} onReveal={() => props.onRevealFile(item.id)} previewFile={props.previewFile} /> : <p>{item.text}</p>}
             <ReferenceCards item={item} items={rawItems} c={c} expanded={expandedReferences} onToggle={(id) => setExpandedReferences((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onJump={jumpTo} />
             {(item.handoffs || []).length > 0 && <div className="collab-handoffs">{item.handoffs?.map((handoff, index) => {
               const target = props.members?.find((member) => member.agent.id === handoff.targetAgentId);
@@ -223,10 +465,20 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
               <button type="button" aria-label={c("reply")} title={c("reply")} onClick={() => props.onReply(item)}><Reply size={14} /><span>{c("reply")}</span></button>
               <button type="button" aria-label={c("agree")} title={c("agree")} onClick={() => props.onAgree(item)}><ThumbsUp size={14} /><span>{c("agree")}</span></button>
               <button type="button" aria-label={c("agentRespond")} title={props.agentBusy ? c("agentQueueHint") : c("agentRespond")} onClick={() => props.onAgent(item)}><Bot size={14} /><span>{c("agentRespond")}</span></button>
-              <details className="collab-action-more">
-                <summary aria-label={c("moreActions")} title={c("moreActions")}><MoreHorizontal size={15} /></summary>
-                <div><button type="button" title={props.agentBusy ? c("agentQueueHint") : undefined} onClick={() => props.onAgreeRun(item)}><Bot size={13} />{c("agreeRun")}</button></div>
-              </details>
+              <div className="collab-request-agent" ref={requestAgentOpen === item.id ? requestAgentRef : undefined} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeRequestAgent(true); } }}>
+                <button type="button" aria-label={c("requestOther")} title={c("requestOther")} aria-expanded={requestAgentOpen === item.id} aria-controls={`${timelineDOMID(item.id)}-request-agents`} onClick={(event) => toggleRequestAgent(event, item.id)}>
+                  <span className="collab-double-bot" aria-hidden="true"><Bot size={10} /><Bot size={10} /></span>
+                </button>
+                {requestAgentOpen === item.id && <div id={`${timelineDOMID(item.id)}-request-agents`} className={`collab-request-agent__popup collab-request-agent__popup--${requestAgentPlacement.side}`} role="group" aria-label={c("requestOther")} style={{ maxHeight: requestAgentPlacement.maxHeight }}>
+                  {requestAgentEligible.length === 0
+                    ? <p className="collab-request-agent__empty">{c("requestAgentEmpty")}</p>
+                    : requestAgentEligible.map((member) => (
+                      <button key={member.id} type="button" title={`${member.name} · ${member.agent.name} · ${member.agent.role || c("agentResponsibilityFallback")}`} onClick={() => { closeRequestAgent(true); props.onRequestAgent(item, member.id); }}>
+                        <span>{member.name} · {member.agent.name} · {member.agent.role || c("agentResponsibilityFallback")}</span>
+                      </button>
+                    ))}
+                </div>}
+              </div>
             </div>}
             {incomingRequest && <div className="collab-request-actions">
               <button type="button" className="collab-action-accent" title={props.agentBusy ? c("agentQueueHint") : undefined} onClick={() => props.onAccept(item)}><UserRound size={13} />{c("acceptRun")}</button>

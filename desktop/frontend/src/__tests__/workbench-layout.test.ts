@@ -12,7 +12,9 @@ import { fileURLToPath } from "node:url";
 const testDir = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
 const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8");
+const layoutStoreSource = readFileSync(resolve(testDir, "../store/layout.ts"), "utf8");
 const projectTreeSource = readFileSync(resolve(testDir, "../components/ProjectTree.tsx"), "utf8");
+const projectIconsSource = readFileSync(resolve(testDir, "../lib/projectIcons.ts"), "utf8");
 const runtimeConfigSource = readFileSync(resolve(testDir, "../components/desktop-ui/RuntimeConfigBar.tsx"), "utf8");
 const workWorkspaceSource = readFileSync(resolve(testDir, "../components/work/WorkWorkspace.tsx"), "utf8");
 const collaborationSource = readFileSync(resolve(testDir, "../collab/CollaborationWorkspace.tsx"), "utf8");
@@ -31,7 +33,7 @@ function ok(value: boolean, label: string) {
 }
 
 function includes(text: string, pattern: string): boolean {
-  return text.includes(pattern);
+  return text.replace(/\r\n/g, "\n").includes(pattern);
 }
 
 function finalDeclaration(source: string, selector: string, property: string): string | undefined {
@@ -64,29 +66,52 @@ ok(!includes(appSource, '"layout--iris"'), "App.tsx: layout--iris class does NOT
 ok(includes(projectTreeSource, 'variant === "workbench"'), "ProjectTree: variant workbench branch exists");
 ok(includes(projectTreeSource, "compactTopics = variant === \"workbench\""), "ProjectTree: compactTopics maps to workbench");
 
-// CSS: layout--workbench has correct grid
-const gridTpl = finalDeclaration(stylesSource, ".layout--workbench", "grid-template-columns");
-ok(gridTpl === "264px minmax(0, 1fr)" || gridTpl === "264px minmax(0,1fr)", `CSS: .layout--workbench grid is 264px | 1fr (got: ${gridTpl})`);
-
-// CSS: workspace-sidebar exists with proper width
-const sidebarWidth = finalDeclaration(stylesSource, ".workspace-sidebar", "width");
-ok(sidebarWidth === "264px", `CSS: .workspace-sidebar width is 264px (got: ${sidebarWidth})`);
+// Session status semantics: running is a ring; green solid dot is done-unread only.
 ok(
-  finalDeclaration(stylesSource, ".workspace-sidebar", "box-sizing") === "border-box",
-  "CSS: 264px sidebar includes its horizontal padding",
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-visual--running", "background") === "transparent" &&
+    includes(stylesSource, "animation: session-list-running-spin 900ms linear infinite;"),
+  "CSS: running Session uses an animated ring instead of the green unread dot",
 );
 ok(
-  includes(appSource, 'const sidebarRenderWidth = desktopLayoutStyle === "workbench" ? SIDEBAR_MIN_WIDTH : (liveSidebarWidth ?? sidebarWidth);'),
-  "App.tsx: workbench grid track uses the same fixed 264px width as workspace-sidebar",
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-visual--done::after", "background") === "var(--ok)",
+  "CSS: green solid dot remains reserved for done-unread Session",
+);
+ok(includes(stylesSource, "@keyframes session-list-running-spin"), "CSS: running Session ring has a dedicated animation");
+
+// CSS: layout--workbench has correct grid
+const workbenchGrid = includes(
+  stylesSource,
+  ".app--workbench .layout--workbench {\n  position: relative;\n  isolation: isolate;\n  grid-template-columns: 300px minmax(0, 1fr);",
+);
+ok(workbenchGrid, "CSS: .layout--workbench grid is 300px | 1fr");
+
+// CSS: workspace-sidebar exists with proper width
+const sidebarWidth = finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar", "width");
+ok(sidebarWidth === "300px", `CSS: workbench workspace-sidebar width is 300px (got: ${sidebarWidth})`);
+ok(
+  finalDeclaration(stylesSource, ".workspace-sidebar", "box-sizing") === "border-box",
+  "CSS: sidebar includes its horizontal padding",
+);
+ok(
+  includes(layoutStoreSource, "export const WORKBENCH_SIDEBAR_WIDTH = 300;") &&
+    includes(appSource, 'const sidebarRenderWidth = desktopLayoutStyle === "workbench" ? WORKBENCH_SIDEBAR_WIDTH : (liveSidebarWidth ?? sidebarWidth);'),
+  "App.tsx: workbench grid track uses the same fixed 300px width as workspace-sidebar",
 );
 
 // CSS: workspace-sidebar project-tree folder-main uses 9px gap (matching fixture)
 const folderGap = finalDeclaration(stylesSource, ".workspace-sidebar .project-tree__folder-main", "gap");
-ok(folderGap === "9px", `CSS: workspace-sidebar folder-main gap is 9px (got: ${folderGap})`);
+ok(folderGap === "8px", `CSS: workspace-sidebar folder-main gap is 8px (got: ${folderGap})`);
 
 ok(
   finalDeclaration(stylesSource, ".workspace-sidebar__tree", "overflow-x") === "hidden",
   "CSS: real workspace tree cannot create horizontal scrolling",
+);
+ok(
+  finalDeclaration(stylesSource, ".workspace-sidebar__tree", "-webkit-mask-image") ===
+    "linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%)" &&
+    finalDeclaration(stylesSource, ".workspace-sidebar__tree", "mask-image") ===
+      "linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%)",
+  "CSS: Session List content fades through the top and bottom 18px without an overlay",
 );
 ok(
   includes(stylesSource, ".workspace-sidebar *::-webkit-scrollbar:horizontal") &&
@@ -95,24 +120,112 @@ ok(
   "CSS: nested workbench controls cannot paint a horizontal scrollbar",
 );
 
-// CSS: workspace-sidebar topic active has left border accent
-const topicBorder = includes(
-  stylesSource,
-  ".workspace-sidebar .project-tree__topic--active:hover {\n  border-left-color: var(--accent);",
+// CSS: workspace-sidebar topic active owns one outlined row and one left marker.
+ok(
+  includes(stylesSource, "border-color: var(--session-list-selected-border);") &&
+    includes(stylesSource, "box-shadow: inset 4px 0 0 var(--tree-row-marker);"),
+  "CSS: active topic has outlined selection and left accent marker",
 );
-ok(topicBorder, "CSS: active topic has accent border");
 
 ok(
   includes(projectTreeSource, 'className="project-tree__workspace-actions"') &&
-    includes(projectTreeSource, "<MoreHorizontal") &&
+    includes(projectTreeSource, "<MoreVertical") &&
     includes(projectTreeSource, "void handleCreateTopic(scope, projectRoot, key)"),
-  "ProjectTree: workbench workspace exposes create and more actions",
+  "ProjectTree: workbench project menu exposes create and more actions",
 );
 ok(
   includes(projectTreeSource, 'mode === "workbench" ? (') &&
-    includes(projectTreeSource, 'className="project-tree__add-project project-tree__header-icon-btn"') &&
+    includes(projectTreeSource, "<SquarePlus") &&
     includes(projectTreeSource, "void handleAddProject()"),
   "ProjectTree: workbench header keeps the add-workspace action available",
+);
+ok(
+  !includes(projectTreeSource, 'renderTimeFilterControl("workbench")') &&
+    includes(projectTreeSource, '(section === "recent" || !compactTopics)') &&
+    includes(projectTreeSource, 'section === "recent" && !workSession'),
+  "ProjectTree: workbench hides header controls while Recent rows expose scoped actions",
+);
+ok(
+  includes(projectTreeSource, 'className="project-tree__topic-pin-state"') &&
+    includes(projectTreeSource, '<PinOff size={15} aria-hidden="true" />') &&
+    includes(projectTreeSource, "event.detail > 0") &&
+    includes(projectTreeSource, "event.currentTarget.blur()"),
+  "ProjectTree: pinned Recent rows separate state from action and release pointer focus after toggling",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "opacity") === "0" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "pointer-events") === "none" &&
+    includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-actions") &&
+    includes(stylesSource, "pointer-events: auto;"),
+  "CSS: Recent row actions stay quiet until hover or keyboard focus",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "display") === "inline-flex" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "position") === "absolute" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "right") === "10px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-project", "right") === "10px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-project", "right") === "34px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-project", "max-width") === "64px" &&
+    includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-project") &&
+    includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-pin-state") &&
+    includes(stylesSource, "transform: translateX(-3px);"),
+  "CSS: pinned state stays at the right edge while project metadata shifts left and both yield to row actions",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "top") === "6px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "transform") === "translateX(4px)" &&
+    includes(stylesSource, "transform: translateX(0);"),
+  "CSS: Recent row actions are vertically centered without a percentage translation",
+);
+ok(
+  includes(projectTreeSource, 'role="switch"') &&
+    includes(projectTreeSource, "WORKBENCH_RECENT_LIMITS.map") &&
+    includes(projectTreeSource, "saveWorkbenchRecentSettings(next)") &&
+    includes(projectTreeSource, 'project-tree__section--recent'),
+  "ProjectTree: recent section stays visible and persists external-call and row-count settings",
+);
+ok(
+  includes(projectTreeSource, "projectTreeRenameTarget(node)") &&
+    includes(projectTreeSource, "editingNode?.rowKey === menuKey") &&
+    includes(projectTreeSource, "await onRenameSession(target.path, title)") &&
+    includes(appSource, "onRenameSession={renameSidebarSession}"),
+  "ProjectTree: Recent Session rename is routed by path and scoped to the concrete rendered row",
+);
+ok(
+  includes(projectTreeSource, 'variant: "color" as const') &&
+    includes(projectTreeSource, 'checked: (node.projectColor || "") === option.key') &&
+    includes(projectTreeSource, "minWidth={230}") &&
+    finalDeclaration(stylesSource, ".context-menu__item--color", "display") === "inline-flex" &&
+    finalDeclaration(stylesSource, ".context-menu__item--color", "width") === "24px",
+  "ProjectTree: visual labels render as one compact horizontal color row",
+);
+ok(
+  includes(projectIconsSource, '["", "star", "bookmark", "code", "terminal", "bolt"]') &&
+    includes(projectTreeSource, 'variant: "visual" as const') &&
+    includes(projectTreeSource, "await app.SetProjectIcon(path, icon)") &&
+    includes(projectTreeSource, '<span className="project-tree__folder-color" aria-hidden="true" />') &&
+    includes(projectTreeSource, "<ProjectFolderIcon value={node.projectIcon} open={folderDisclosure.isOpen} />") &&
+    includes(projectTreeSource, '? <FolderOpen size={size} className={className} aria-hidden="true" />') &&
+    includes(stylesSource, ".app--workbench .workspace-sidebar .project-tree__folder--has-color .project-tree__folder-color {\n  display: block;\n  width: 9px;") &&
+    finalDeclaration(stylesSource, ".context-menu__item--visual", "display") === "inline-flex" &&
+    finalDeclaration(stylesSource, ".context-menu__item--visual", "width") === "30px",
+  "ProjectTree: project icons replace the folder glyph while the color dot stays independent",
+);
+ok(
+  !includes(projectTreeSource, 'className="project-tree__recent-settings-slot"') &&
+    includes(projectTreeSource, 'onPointerDown={(event) => event.stopPropagation()}') &&
+    includes(projectTreeSource, 'aria-controls="project-tree-recent-settings"'),
+  "ProjectTree: recent settings uses a direct, isolated trigger without a tooltip event wrapper",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__recent-settings-trigger", "width") === "32px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__recent-settings-trigger", "height") === "32px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__recent-settings-trigger", "touch-action") === "manipulation",
+  "CSS: recent settings trigger keeps a stable 32px pointer target",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section-title", "display") === "flex",
+  "CSS: recent title overrides the legacy hidden workspace section title",
 );
 ok(
   finalDeclaration(stylesSource, ".workspace-sidebar .project-tree__header-actions", "opacity") === "1" &&
@@ -120,10 +233,10 @@ ok(
   "CSS: workbench header actions remain visible and clickable",
 );
 ok(
-  includes(stylesSource, ".workspace-sidebar .project-tree__folder:hover .project-tree__workspace-actions") &&
-    includes(stylesSource, ".workspace-sidebar .project-tree__folder:focus-within .project-tree__workspace-actions") &&
-    includes(stylesSource, "flex: 0 0 52px;"),
-  "CSS: workspace actions reveal on hover/focus without moving the label",
+  includes(stylesSource, ".app--workbench .workspace-sidebar .project-tree__workspace-actions") &&
+    includes(stylesSource, "visibility: visible;") &&
+    includes(stylesSource, "pointer-events: auto;"),
+  "CSS: project overflow action remains visible without moving the label",
 );
 
 // CSS: footer contents shrink inside the real viewport instead of reserving titlebar space
@@ -139,7 +252,7 @@ ok(composerMaxW === "100%", `CSS: workbench composer-card max-width is 100% (got
 
 // CSS: conversation-viewport padding is compact
 const viewportPad = finalDeclaration(stylesSource, ".conversation-viewport", "padding");
-ok(viewportPad === "48px 48px 24px 48px", `CSS: conversation-viewport padding is compact (got: ${viewportPad})`);
+ok(viewportPad === "24px 48px 22px", `CSS: conversation-viewport padding is compact (got: ${viewportPad})`);
 
 // Windows frameless chrome: one compact utility row and a real drag surface.
 ok(
@@ -323,7 +436,7 @@ ok(memBorderT === "1px solid var(--border)", `CSS: workbench TaskMemoryBar has t
 
 // task-memory-bar base still has bottom border (workbench keeps it)
 const memBorderB = finalDeclaration(stylesSource, ".task-memory-bar", "border-bottom");
-ok(memBorderB === "1px solid var(--border)", `CSS: base task-memory-bar has bottom hairline (got: ${memBorderB})`);
+ok(memBorderB === "1px solid var(--border-soft)", `CSS: base task-memory-bar has bottom hairline (got: ${memBorderB})`);
 
 const memSlotFlex = finalDeclaration(stylesSource, ".task-memory-bar__segment-slot", "flex");
 ok(memSlotFlex === "1 1 0", `CSS: memory segments share available width (got: ${memSlotFlex})`);
@@ -335,21 +448,21 @@ ok(noCurrentGoalGrow === "2", `CSS: goal expands when current is absent (got: ${
 
 // Verify both share one rule (same property source)
 ok(
-  includes(stylesSource, ".session-footer-dock > .artifact-shelf,\n.session-footer-dock > .queue-tray,\n.session-footer-dock > .composer-wrap,\n.session-footer-dock > .runtime-config-bar"),
+  includes(stylesSource, ".session-footer-dock .artifact-shelf,\n.session-footer-dock .queue-tray,\n.session-footer-dock .composer-wrap,\n.session-footer-dock .runtime-config-bar"),
   "CSS: composer-wrap and runtime-config-bar share one explicit rule with artifact-shelf and queue-tray",
 );
 
 // The shared rule must have width: auto; max-width: none; for the border-box width contract.
 // Use includes because finalDeclaration cannot extract from comma-separated selectors.
 const sharedBlock = stylesSource.slice(
-  stylesSource.indexOf(".session-footer-dock > .artifact-shelf,"),
-  stylesSource.indexOf("}", stylesSource.indexOf(".session-footer-dock > .artifact-shelf,")) + 1,
+  stylesSource.indexOf(".session-footer-dock .artifact-shelf,"),
+  stylesSource.indexOf("}", stylesSource.indexOf(".session-footer-dock .artifact-shelf,")) + 1,
 );
 ok(sharedBlock.includes("width: auto;"), "CSS: shared rule has width: auto for border-box contract");
 ok(sharedBlock.includes("max-width: none;"), "CSS: shared rule has max-width: none for border-box contract");
 
 ok(
-  includes(stylesSource, ".layout--workbench .session-footer-dock > .composer-wrap,\n.layout--workbench .session-footer-dock > .runtime-config-bar {") &&
+  includes(stylesSource, ".layout--workbench .session-footer-dock .composer-wrap,\n.layout--workbench .session-footer-dock .runtime-config-bar {") &&
     includes(stylesSource, "box-sizing: border-box;"),
   "CSS: high-specificity workbench rule defeats themed composer auto margins",
 );
@@ -358,9 +471,9 @@ ok(
 const cwWidthWorkbench = finalDeclaration(stylesSource, ".layout--workbench .session-footer-dock .composer-wrap", "width");
 ok(cwWidthWorkbench === "auto", `CSS: workbench composer-wrap width is auto (got: ${cwWidthWorkbench})`);
 
-// The runtime-config-bar workbench override must NOT set width itself (inherits from shared rule)
+// The workbench override repeats width explicitly so later theme rules cannot narrow it.
 const rcbWidthOverride = finalDeclaration(stylesSource, ".layout--workbench .session-footer-dock .runtime-config-bar", "width");
-ok(rcbWidthOverride == null, `CSS: runtime-config-bar workbench override does NOT set separate width (got: ${rcbWidthOverride})`);
+ok(rcbWidthOverride === "auto", `CSS: runtime-config-bar workbench override preserves auto width (got: ${rcbWidthOverride})`);
 
 ok(
   includes(runtimeConfigSource, "<ModelSwitcher") && includes(runtimeConfigSource, "onPick={onSwitchModel}"),
@@ -372,7 +485,7 @@ ok(
   "RuntimeConfigBar: context and approval labels use compact meaningful copy",
 );
 ok(
-  includes(runtimeConfigSource, "onSetApprovalMode(next)") && includes(appSource, "onSetApprovalMode={applyToolApprovalMode}"),
+  includes(runtimeConfigSource, "onSetApprovalMode(next)") && includes(appSource, "onSetToolApprovalMode={applyToolApprovalMode}"),
   "RuntimeConfigBar: approval control updates the real session mode",
 );
 
@@ -457,6 +570,30 @@ ok(
   "CSS: new-session focus-visible uses --focus-ring token",
 );
 
+// ── Bottom settings entry: stable native click target ───────────────────
+
+ok(
+  includes(appSource, 'className="workspace-sidebar__settings"') &&
+    includes(appSource, "runKeyboardClick(event, openGeneralSettings)") &&
+    includes(appSource, 'setSettingsTarget("general")'),
+  "App.tsx: Session List bottom settings entry uses the shared general-settings opener",
+);
+ok(
+  finalDeclaration(stylesSource, ".workspace-sidebar__settings", "--wails-draggable") === "no-drag" &&
+    finalDeclaration(stylesSource, ".workspace-sidebar__settings", "pointer-events") === "auto" &&
+    finalDeclaration(stylesSource, ".workspace-sidebar__settings", "touch-action") === "manipulation",
+  "CSS: Session List bottom settings entry remains clickable inside the native window",
+);
+ok(
+  finalDeclaration(stylesSource, ".workspace-sidebar__settings", "flex") === "0 0 36px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar__settings", "flex-basis") === "38px",
+  "CSS: Session List bottom settings entry cannot collapse behind the scrolling tree",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .workspace-sidebar__settings", "margin-bottom") === "20px",
+  "CSS: Windows Session List settings stays above the native bottom resize hit zone",
+);
+
 // ── Scrollbar auto-hide contract ──────────────────────────────────────────
 
 // App.tsx wires the --scrolling class.
@@ -527,13 +664,28 @@ ok(
   "App.tsx: workspace-sidebar brand has PanelLeft collapse button with correct aria",
 );
 
-// App.tsx: expand button in session-header when collapsed
 ok(
-  includes(appSource, 'className={`session-header__expand-btn${sidebarTogglePressed ? " session-header__expand-btn--pressed" : ""}`}') &&
-    includes(appSource, 'className="session-header__identity"') &&
-    includes(appSource, "{sidebarCollapsed && (") &&
-    includes(appSource, '<PanelRight size={15} aria-hidden="true" />'),
-  "App.tsx: session-header shows PanelRight expand button when sidebar is collapsed",
+  includes(appSource, "const workbenchSidebarRestoreControl = sidebarCollapsed ? (") &&
+    includes(appSource, "(showWorkSurface || showCollaborationSurface) && workbenchSidebarRestoreControl") &&
+    includes(appSource, "workbench-surface-sidebar-restore") &&
+    includes(appSource, 'aria-label={sidebarToggleTitle}') &&
+    includes(appSource, '<PanelRight size={15} aria-hidden="true" />') &&
+    finalDeclaration(stylesSource, ".app--workbench .layout--workbench > .workbench-surface-sidebar-restore", "position") === "absolute" &&
+    finalDeclaration(stylesSource, ".app--workbench .layout--workbench > .workbench-surface-sidebar-restore", "--wails-draggable") === "no-drag" &&
+    finalDeclaration(stylesSource, ".app--workbench .layout--workbench > .workbench-surface-sidebar-restore", "left") === "24px" &&
+    includes(stylesSource, ".app--workbench .layout--sidebar-collapsed .wg2-work-outer-header,") &&
+    includes(stylesSource, ".app--workbench .layout--sidebar-collapsed .collab-topicbar,") &&
+    includes(stylesSource, "padding-left: 54px;"),
+  "App.tsx: every collapsed Work and Room state exposes one App-owned sidebar restore control",
+);
+
+// App.tsx: regular session topicbar exposes the expand button when collapsed.
+ok(
+  includes(appSource, '"topicbar__chrome-btn--sidebar"') &&
+    includes(appSource, 'className="topicbar__identity"') &&
+    includes(appSource, "workbenchChromeHidden && sidebarCollapsed && (") &&
+    includes(appSource, '<PanelRight size={15} />'),
+  "App.tsx: topicbar shows PanelRight expand button when sidebar is collapsed",
 );
 
 ok(
@@ -550,6 +702,10 @@ ok(
 ok(
   finalDeclaration(stylesSource, ".workspace-sidebar__collapse-btn", "--wails-draggable") === "no-drag",
   "CSS: collapse button opts out of window dragging",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar__collapse-btn", "margin-right") === "-8px",
+  "CSS: workbench collapse button sits 8px farther right",
 );
 
 // CSS: expand button in session header

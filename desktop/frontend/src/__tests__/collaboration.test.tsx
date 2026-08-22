@@ -1,21 +1,23 @@
 // Run: tsx src/__tests__/collaboration.test.tsx
 
 import { JSDOM } from "jsdom";
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { IntentCountdown } from "../collab/components/IntentCountdown";
 import { ConnectionPanel } from "../collab/components/ConnectionPanel";
+import { CollaborationComposer } from "../collab/components/CollaborationComposer";
 import { CollaborationTimeline } from "../collab/components/CollaborationTimeline";
 import { collabCopy, contributionLabel } from "../collab/copy";
 import { agentCollaborationClock, agentCollaborationRequestID, collabReducer, detectSelfAgentIntent, detectSelfAgentIntentRule, initialCollabState, nextAgentCollaborationBatch, nextAutomaticAgentItem, replayableSelfAgentItems, selectedTimelineItems, visibleCollaborationTimeline } from "../collab/state";
 import { loadCollaborationIdentity, newCollaborationIdentity, saveCollaborationIdentity } from "../collab/identity";
-import { buildCollaborationInvite, parseCollaborationInvite, tryBuildCollaborationInvite } from "../collab/invite";
+import { buildCollaborationInvite, buildCollaborationInviteForOption, collaborationInviteOptions, parseCollaborationInvite, tryBuildCollaborationInvite } from "../collab/invite";
 import { recentAgentActivity } from "../collab/agentActivity";
+import { autoResponseFlags, autoResponseMode, nextApprovalMode, nextAutoResponseMode, nextRecognitionMode } from "../collab/agentPolicy";
 import { activeMention, collaborationMentionCandidates, filterMentionCandidates, insertMention, mentionPayload, mentionRequestID, nextMentionedAgentItem } from "../collab/mentions";
-import type { CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
-import { createMockCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationIntent, normalizeCollaborationItem, normalizeCollaborationState } from "../collab/transport";
+import type { CollaborationMember, CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
+import { createMockCollaborationTransport, createWailsCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationIntent, normalizeCollaborationItem, normalizeCollaborationState } from "../collab/transport";
 import { buildAgreeMessageInput, loadCollaborationState, useCollabController, type CollabController } from "../collab/useCollabController";
 import { LocaleProvider, t } from "../lib/i18n";
 
@@ -68,7 +70,7 @@ async function testWaitingAgentRunDecisions() {
   const render = (agentPrompt?: Parameters<typeof CollaborationTimeline>[0]["agentPrompt"]) => <LocaleProvider><CollaborationTimeline
     items={[waiting]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy transfers={[]}
     agentPrompt={agentPrompt}
-    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onAgreeRun={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
     onRespondAgentRun={(_, response) => decisions.push(response.allow ?? false)} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
     onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
   /></LocaleProvider>;
@@ -78,7 +80,7 @@ async function testWaitingAgentRunDecisions() {
   equal(buttons.map((button) => button.textContent), ["同意", "拒绝"], "waiting Agent Run exposes dedicated agree and reject decisions");
   await act(async () => { buttons[0].click(); buttons[1].click(); });
   equal(decisions, [true, false], "waiting Agent Run decisions resolve the current execution");
-  ok(!document.querySelector(".collab-action-more"), "waiting Agent Run hides the generic agree-and-run action that created a queue entry");
+  ok(!document.querySelector(".collab-action-more"), "waiting Agent Run no longer renders the removed agree-and-run overflow menu");
   await act(async () => root.render(render({ runId: waiting.id, kind: "approval", id: "approval-1", tool: "shell_command", subject: "go test ./desktop", reason: "执行本地测试" })));
   equal([(document.querySelector(".prompt-shelf__badge") as HTMLElement)?.textContent, (document.querySelector(".approval-subject") as HTMLElement)?.textContent, (document.querySelector(".approval-reason") as HTMLElement)?.textContent], ["shell_command", "go test ./desktop", "执行本地测试"], "Room tool approval shows the concrete tool, subject, and reason");
   ok(!document.querySelector(".collab-agent-run__decision"), "structured tool approval replaces the detail-free agree/reject fallback");
@@ -97,7 +99,7 @@ async function testReferenceAndRunResultPresentation() {
   await act(async () => root.render(<LocaleProvider><CollaborationTimeline
     items={[original, run, result]} members={[{ id: "member-b", name: "Bob", online: true, agent: { id: "agent-b", name: "Verifier", status: "idle" } }]}
     selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy={false} transfers={[]}
-    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onAgreeRun={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
     onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
     onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
   /></LocaleProvider>));
@@ -131,7 +133,7 @@ async function testAgentRunResultOutput() {
     items={[completedRun, completedResult, failedRun, cancelledRun]}
     members={[{ id: "member-b", name: "Bob", online: true, agent: { id: "agent-b", name: "Verifier", status: "idle" } }]}
     selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy={false} transfers={[]}
-    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onAgreeRun={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
     onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
     onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
   /></LocaleProvider>));
@@ -153,6 +155,107 @@ async function testAgentRunResultOutput() {
   ok(handoffEl !== null, "handoffs remain visible on merged run/result card");
   ok((handoffEl?.textContent || "").includes("@Verifier"), "handoff addresses target Agent");
 
+  await act(async () => root.unmount());
+}
+
+async function testRequestAgentPopup() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const chatItem = item("chat-request", 1, "检查资源命名规范");
+  const members = [
+    { id: "self", name: "陈程序", online: true, isSelf: true, agent: { id: "self-agent", name: "程序 Agent", status: "idle" } },
+    { id: "planner", name: "林策划", online: true, agent: { id: "planner-agent", name: "策划 Agent", role: "策划", status: "idle" } },
+    { id: "artist", name: "周美术", online: true, agent: { id: "artist-agent", name: "美术 Agent", role: "美术", status: "idle" } },
+    { id: "offline-dev", name: "离线开发", online: false, agent: { id: "offline-agent", name: "离线 Agent", role: "开发", status: "offline" } },
+    { id: "no-role", name: "无名", online: true, agent: { id: "no-role-agent", name: "通用 Agent", status: "idle" } },
+  ];
+  const requests: { memberId: string; text: string }[] = [];
+  await act(async () => root.render(<LocaleProvider><CollaborationTimeline
+    items={[chatItem]} members={members} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy={false} transfers={[]}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={(item, memberId) => requests.push({ memberId, text: item.text })} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+  /></LocaleProvider>));
+
+  const trigger = document.querySelector<HTMLButtonElement>(".collab-request-agent > button");
+  ok(trigger !== null, "request-Agent trigger button is rendered");
+  equal([trigger?.getAttribute("aria-label"), trigger?.getAttribute("aria-expanded")], ["请求其他成员的 Agent", "false"], "trigger exposes the localized target and closed popup state");
+  if (trigger) trigger.getBoundingClientRect = () => ({ top: 700, bottom: 723, left: 0, right: 26, width: 26, height: 23, x: 0, y: 700, toJSON: () => ({}) }) as DOMRect;
+
+  // Open popup
+  await act(async () => trigger?.click());
+  const popup = document.querySelector(".collab-request-agent__popup");
+  ok(popup !== null, "popup opens on click");
+  equal([trigger?.getAttribute("aria-expanded"), popup?.getAttribute("role")], ["true", "group"], "open popup exposes its expanded action group");
+  ok(popup?.classList.contains("collab-request-agent__popup--above"), "popup flips above a trigger near the scroll boundary instead of being clipped");
+
+  // Self, offline members excluded
+  const rows = popup?.querySelectorAll<HTMLButtonElement>("button");
+  equal(rows?.length, 3, "popup shows three eligible members: planner, artist, no-role; excludes self and offline");
+  const labels = [...(rows || [])].map((btn) => btn.textContent);
+  ok(labels.includes("林策划 · 策划 Agent · 策划"), "three-part label: member name, Agent name, and Agent role from member.agent.role");
+  ok(labels.includes("周美术 · 美术 Agent · 美术"), "second eligible member shows correct three-part label");
+  ok(labels.includes("无名 · 通用 Agent · 未填写职责"), "member with no agent.role explicitly reports the missing responsibility");
+
+  // Click third row (no-role member) and verify callback
+  await act(async () => rows?.[2]?.click());
+  equal(requests.length, 1, "selecting a row fires the onRequestAgent callback");
+  equal(requests[0].memberId, "no-role", "callback receives member.id of the selected row");
+  equal(requests[0].text, "检查资源命名规范", "callback receives the current item text");
+  equal(document.querySelector(".collab-request-agent__popup"), null, "popup closes after selecting a row");
+
+  // Verify outside click closes popup
+  await act(async () => trigger?.click());
+  ok(document.querySelector(".collab-request-agent__popup") !== null, "popup reopens");
+  await act(async () => { document.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true })); });
+  equal(document.querySelector(".collab-request-agent__popup"), null, "outside mousedown closes the popup");
+
+  await act(async () => trigger?.click());
+  const escapeRow = document.querySelector<HTMLButtonElement>(".collab-request-agent__popup button");
+  escapeRow?.focus();
+  await act(async () => escapeRow?.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  equal(document.querySelector(".collab-request-agent__popup"), null, "Escape closes the Agent request popup");
+  ok(document.activeElement === trigger, "Escape restores focus to the request-Agent trigger");
+
+  // Empty state: no eligible members
+  const soloMembers = [{ id: "self", name: "陈程序", online: true, isSelf: true, agent: { id: "self-agent", name: "程序 Agent", status: "idle" } }];
+  await act(async () => root.render(<LocaleProvider><CollaborationTimeline
+    items={[chatItem]} members={soloMembers} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy={false} transfers={[]}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+  /></LocaleProvider>));
+  const soloTrigger = document.querySelector<HTMLButtonElement>(".collab-request-agent > button");
+  ok(soloTrigger !== null, "request-Agent trigger still renders with no eligible members");
+  await act(async () => soloTrigger?.click());
+  const emptyText = document.querySelector(".collab-request-agent__empty")?.textContent;
+  ok(emptyText === "没有其他拥有 Agent 的成员在线。", "empty state shows localized message when no eligible members exist");
+  ok(document.querySelector(".collab-request-agent__popup button") === null, "empty popup has no selectable rows and makes no request");
+
+  await act(async () => root.unmount());
+}
+
+async function testRequestAgentPayload() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const transport = createMockCollaborationTransport("request-agent-payload");
+  const post = transport.post.bind(transport);
+  let posted: Parameters<CollaborationTransport["post"]>[0] | undefined;
+  transport.post = async (input) => {
+    posted = input;
+    return post(input);
+  };
+  let controller: CollabController | undefined;
+  function Harness() { controller = useCollabController("request-agent-payload", transport); return null; }
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => { root.render(<LocaleProvider><Harness /></LocaleProvider>); await Promise.resolve(); });
+  await act(async () => controller!.requestAgent("member-reviewer", "检查资源命名规范", ["chat-request"]));
+  equal(
+    posted && { kind: posted.kind, targetMemberID: posted.targetMemberID, text: posted.text, referenceIDs: posted.referenceIDs },
+    { kind: "agent_request", targetMemberID: "member-reviewer", text: "检查资源命名规范", referenceIDs: ["chat-request"] },
+    "message-level Agent delegation sends the selected member, original instruction, and referenced item through the real controller transport",
+  );
   await act(async () => root.unmount());
 }
 
@@ -308,6 +411,145 @@ async function testOfflineSelfAgentIntervention() {
   await act(async () => root.unmount());
 }
 
+async function testComposerOfflineAgentOnly() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  let agentCalls = 0;
+  let chatCalls = 0;
+  let contributionCalls = 0;
+  let requestCalls = 0;
+  let shareCalls = 0;
+  const members: CollaborationMember[] = [
+    { id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent-self", name: "MyAgent", status: "idle" } },
+    { id: "other", name: "Alice", online: true, agent: { id: "agent-other", name: "AliceAgent", status: "idle" } },
+  ];
+  await act(async () => root.render(<LocaleProvider><CollaborationComposer
+    members={members} selfMemberId="self" connected={false} submitKey="enter"
+    onReplyClear={() => {}} onChat={async () => { chatCalls++; }} onAgent={async () => { agentCalls++; }}
+    onContribution={async () => { contributionCalls++; }} onRequest={async () => { requestCalls++; }}
+    onShareFiles={async () => { shareCalls++; }}
+  /></LocaleProvider>));
+  const textarea = document.querySelector("textarea")!;
+  ok(!textarea.disabled, "offline composer textarea remains editable");
+  // All non-agent mode options are disabled when offline.
+  const modeSelect = document.querySelector("select")!;
+  const options = [...modeSelect.querySelectorAll("option")];
+  const agentOption = options.find((opt) => opt.value === "agent")!;
+  const chatOption = options.find((opt) => opt.value === "chat")!;
+  const bothOption = options.find((opt) => opt.value === "both")!;
+  const requestOption = options.find((opt) => opt.value === "request")!;
+  const contributionOption = options.find((opt) => opt.value === "contribution")!;
+  ok(!agentOption.disabled, "agent mode stays enabled while offline");
+  ok(chatOption.disabled, "chat mode is disabled while offline");
+  ok(bothOption.disabled, "both mode is disabled while offline");
+  ok(requestOption.disabled, "request mode is disabled while offline");
+  ok(contributionOption.disabled, "contribution mode is disabled while offline");
+  ok((chatOption.textContent || "").includes("离线"), "chat option shows offline label");
+  ok((bothOption.textContent || "").includes("离线"), "both option shows offline label");
+  equal(modeSelect.value, "agent", "an initially offline composer selects the local Agent mode");
+
+  const sendButton = document.querySelector(".collab-primary-button") as HTMLButtonElement;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")?.set?.call(textarea, "离线继续工作");
+    const propsKey = Object.keys(textarea).find((key) => key.startsWith("__reactProps$"));
+    if (!propsKey) throw new Error("missing textarea React props");
+    (textarea as unknown as Record<string, { onChange(event: { target: HTMLTextAreaElement }): void }>)[propsKey].onChange({ target: textarea });
+  });
+  equal(sendButton.disabled, false, "offline local Agent message can be submitted");
+  await act(async () => { sendButton.click(); await Promise.resolve(); });
+  equal(agentCalls, 1, "offline submit invokes the local Agent");
+  equal(chatCalls, 0, "onChat was not called");
+  equal(contributionCalls, 0, "onContribution was not called");
+  equal(requestCalls, 0, "onRequest was not called");
+  equal(shareCalls, 0, "onShareFiles was not called");
+
+  await act(async () => root.unmount());
+}
+
+async function testComposerAutoSwitchPreservesDraft() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const members: CollaborationMember[] = [
+    { id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent-self", name: "MyAgent", status: "idle" } },
+  ];
+  // Use a harness so connected can be toggled without unmounting the Composer.
+  let setConnected: ((c: boolean) => void) | undefined;
+  function Harness() {
+    const [connected, setC] = useState(true);
+    useEffect(() => { setConnected = setC; }, []);
+    return <LocaleProvider><CollaborationComposer
+      members={members} selfMemberId="self" connected={connected} submitKey="enter"
+      onReplyClear={() => {}} onChat={async () => {}} onAgent={async () => {}}
+      onContribution={async () => {}} onRequest={async () => {}} onShareFiles={async () => {}}
+    /></LocaleProvider>;
+  }
+
+  await act(async () => root.render(<Harness />));
+  const modeSelect = document.querySelector("select") as HTMLSelectElement;
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
+  // Start in chat mode (connected).
+  await act(async () => {
+    (modeSelect as HTMLSelectElement).value = "chat";
+    modeSelect.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  });
+  equal(modeSelect.value, "chat", "starts in chat mode");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")?.set?.call(textarea, "keep this draft");
+    const propsKey = Object.keys(textarea).find((key) => key.startsWith("__reactProps$"));
+    if (!propsKey) throw new Error("missing textarea React props");
+    (textarea as unknown as Record<string, { onChange(event: { target: HTMLTextAreaElement }): void }>)[propsKey].onChange({ target: textarea });
+  });
+  equal(textarea.value, "keep this draft", "chat draft is present before disconnect");
+
+  // Disconnect without unmounting: auto-switch to agent mode.
+  await act(async () => { setConnected!(false); await Promise.resolve(); });
+  equal(modeSelect.value, "agent", "auto-switched to agent mode on disconnect");
+  equal(textarea.value, "keep this draft", "disconnect preserves the draft for the local Agent");
+
+  // Reconnect: agent mode stays but chat is available again.
+  await act(async () => { setConnected!(true); await Promise.resolve(); });
+  const chatOption = [...modeSelect.querySelectorAll("option")].find((o) => o.value === "chat")!;
+  ok(!chatOption.disabled, "chat mode re-enabled after reconnect");
+
+  await act(async () => root.unmount());
+}
+
+async function testComposerReconnectRestoresModes() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const members: CollaborationMember[] = [
+    { id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent-self", name: "MyAgent", status: "idle" } },
+    { id: "other", name: "Alice", online: true, agent: { id: "agent-other", name: "AliceAgent", status: "idle" } },
+  ];
+  const render = (connected: boolean) => <LocaleProvider><CollaborationComposer
+    members={members} selfMemberId="self" connected={connected} submitKey="enter"
+    onReplyClear={() => {}} onChat={async () => {}} onAgent={async () => {}}
+    onContribution={async () => {}} onRequest={async () => {}} onShareFiles={async () => {}}
+  /></LocaleProvider>;
+
+  // Offline: non-agent modes disabled.
+  await act(async () => root.render(render(false)));
+  let modeSelect = document.querySelector("select") as HTMLSelectElement;
+  const offlineOptions = [...modeSelect.querySelectorAll("option")];
+  ok(offlineOptions.find((o) => o.value === "chat")!.disabled, "chat disabled while offline");
+  ok(offlineOptions.find((o) => o.value === "both")!.disabled, "both disabled while offline");
+  ok(offlineOptions.find((o) => o.value === "request")!.disabled, "request disabled while offline");
+
+  // Reconnect: all modes re-enabled.
+  await act(async () => root.render(render(true)));
+  modeSelect = document.querySelector("select") as HTMLSelectElement;
+  const onlineOptions = [...modeSelect.querySelectorAll("option")];
+  ok(!onlineOptions.find((o) => o.value === "chat")!.disabled, "chat re-enabled after reconnect");
+  ok(!onlineOptions.find((o) => o.value === "both")!.disabled, "both re-enabled after reconnect");
+  ok(!onlineOptions.find((o) => o.value === "request")!.disabled, "request re-enabled after reconnect");
+  ok(!onlineOptions.find((o) => o.value === "contribution")!.disabled, "contribution re-enabled after reconnect");
+
+  await act(async () => root.unmount());
+}
+
 async function testMentionStartsAgent() {
   const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
@@ -411,6 +653,8 @@ async function testConnectionPanelWorkspace() {
   ];
   const calls: string[] = [];
   let hostedRoomName = "";
+  let hostedRoomID = "unset";
+  let hostedProtocol = 0;
   let sessionID: string | undefined;
   let workspaceRoot = "";
   let resolving = false;
@@ -419,12 +663,13 @@ async function testConnectionPanelWorkspace() {
     root.render(<LocaleProvider><ConnectionPanel
       sessionID={sessionID}
       status="disconnected"
+      initial={{ room: "", title: "Beta Room", host: "127.0.0.1", port: 39170, latestSequence: 0 }}
       workspaces={workspaces}
       workspaceRoot={workspaceRoot}
       onWorkspaceChange={(value) => { calls.push(`change:${value}`); }}
       sessionResolving={resolving}
       onRetrySession={() => { calls.push("retry"); }}
-      onHost={async (input) => { hostedRoomName = input.roomName || ""; calls.push(`host:${sessionID}`); }}
+      onHost={async (input) => { hostedRoomName = input.roomName || ""; hostedRoomID = input.room; hostedProtocol = input.protocolVersion || 0; calls.push(`host:${sessionID}`); }}
       onJoin={async () => { calls.push(`join:${sessionID}`); }}
       relayConfig={{ preferLAN: true, connectTimeoutSeconds: 10, routeStableSeconds: 60, relays: [{ id: "relay-sg", name: "Singapore", url: "wss://relay.example.test/relay/v1/connect", enabled: true, priority: 100, discovery: true }] }}
       roomQuery={{ rooms: [{ publicRoomId: "public-room", room: "relay-room", name: "Relay Room", description: "Cross-network room", requiresToken: false, hostKey: "host-key", routes: [{ kind: "relay", relayId: "relay-sg", url: "wss://relay.example.test/relay/v1/connect", tunnelId: "tun-1" }], joinRef: "join-ref" }] }}
@@ -515,13 +760,16 @@ async function testConnectionPanelWorkspace() {
     (tabs[1] as HTMLButtonElement).click();
     await Promise.resolve();
   });
-  equal((document.querySelector<HTMLInputElement>('input[name="roomName"]'))?.value, "relay-room", "optional Room details automatically mirrors the required Room name");
+  ok(!document.querySelector('input[name="room"]'), "Host hides the generated Room ID from the editable form");
+  const roomNameInput = document.querySelector<HTMLInputElement>('input[name="roomName"]')!;
+  ok(Boolean(roomNameInput) && roomNameInput.compareDocumentPosition(document.querySelector(".collab-route-picker")!) === dom.window.Node.DOCUMENT_POSITION_FOLLOWING, "Host puts required Room information above connection routes");
+  equal(roomNameInput.value, "Beta Room", "Host keeps the visible Room name independent from the generated Room ID");
   await act(async () => {
     (document.querySelector(".collab-connect-form") as HTMLFormElement).dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   equal(calls.at(-2), "host:session-beta", "Host uses the same explicitly selected Workspace Session");
-  equal(hostedRoomName, "relay-room", "Host submission uses the required Room name when optional Room details stays untouched");
+  equal([hostedRoomName, hostedRoomID, hostedProtocol], ["Beta Room", "", 2], "Host submits display metadata and delegates V2 Room ID generation to the backend");
   await act(async () => {
     (tabs[0] as HTMLButtonElement).click();
     await Promise.resolve();
@@ -790,6 +1038,197 @@ async function testNoCacheSessionEntryWithoutAutoConnect() {
   await act(async () => root.unmount());
 }
 
+async function testHostRestoreMissingSelfSessionId() {
+  // An old persisted Host state may lack selfSessionId. The restore flow
+  // must still recognise the Room and auto-retry, and the cached dispatch
+  // must carry enough context for ownsRoom to resolve correctly.
+  const stale: CollaborationState = {
+    status: "failed", mode: "host", retryable: true,
+    room: { room: "host-room-no-ssid", host: "127.0.0.1", port: 39170, latestSequence: 2 },
+    selfMemberId: "self",
+    // intentionally omit selfSessionId
+    members: [{ id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent", name: "Agent", status: "idle" } }],
+    timeline: [item("host-no-ssid", 1, "离线 Host 消息")],
+    lastError: "port busy",
+  };
+  let retryCalls = 0;
+  const transport: CollaborationTransport = {
+    async getState() { return { ...stale }; },
+    async retry() { retryCalls++; return { ...stale, status: "connected" as const, lastError: undefined }; },
+    async host() { return stale; },
+    async join() { return stale; },
+    async invite() { return { hosts: ["127.0.0.1"], port: 39170, room: "host-room-no-ssid" }; },
+    async leave() {},
+    async post() { return { ok: true }; },
+    async startAgent() { return { ok: true }; },
+    async cancelQueuedTask() { return { ok: true }; },
+    async respond() { return { ok: true }; },
+    async updateAgentConfig(input: any) { stale.agentConfig = input.config; return stale; },
+    async shareFiles() { return []; },
+    async receiveFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "completed", transferred: 1, total: 1 }; },
+    async pauseFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "paused", transferred: 0, total: 1 }; },
+    async resumeFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "downloading", transferred: 0, total: 1 }; },
+    async revokeFile() { return { ok: true }; },
+    subscribeState() { return () => {}; },
+    subscribeEvent() { return () => {}; },
+  };
+  let renderedCached: CollaborationState | undefined;
+  const result = await loadCollaborationState(transport, false, (state) => { renderedCached = state; });
+  equal([renderedCached?.room?.room, renderedCached?.timeline.length], ["host-room-no-ssid", 1],
+    "cached Host Room without selfSessionId is still dispatched to the UI before retry");
+  equal([result.status, result.room?.room, result.members.length, result.timeline.length, retryCalls],
+    ["connected", "host-room-no-ssid", 1, 1, 1],
+    "Host auto-retry succeeds even when the persisted snapshot lacks selfSessionId");
+  ok(result.selfSessionId === undefined, "loadCollaborationState returns the state as-is; selfSessionId backfill is the transport normalizer's job");
+
+  // Verify that collabReducer's STATE action sets selfSessionId when present.
+  const fromReducer = collabReducer(initialCollabState, { type: "STATE", state: { ...stale, selfSessionId: "current-host-session" } });
+  equal(fromReducer.selfSessionId, "current-host-session", "a Host STATE with explicit selfSessionId survives the reducer round-trip");
+  // Verify that when normalizeCollaborationState produces selfSessionId: undefined
+  // (all sources empty), the reducer spread overwrites an existing value. This
+  // is why the transport normalizer must backfill — the TYPE system allows
+  // undefined, but the reducer treats it as an explicit overwrite.
+  const withExplicitUndefined: CollaborationState = { ...stale, selfSessionId: undefined };
+  const afterIncomplete = collabReducer(fromReducer, { type: "STATE", state: withExplicitUndefined });
+  ok(afterIncomplete.selfSessionId === undefined, "an incoming STATE where selfSessionId is explicitly undefined resets it (the normalizer must always backfill)");
+}
+
+async function testClientRestoreMissingSelfSessionId() {
+  // A client-mode cached Room without selfSessionId must also auto-retry
+  // and preserve timeline/members across the restore flow.
+  const stale: CollaborationState = {
+    status: "failed", mode: "client", retryable: true,
+    room: { room: "joined-room-no-ssid", host: "192.168.1.99", port: 39171, latestSequence: 3 },
+    selfMemberId: "self",
+    // intentionally omit selfSessionId
+    members: [{ id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent", name: "Agent", status: "idle" } }],
+    timeline: [item("client-no-ssid", 1, "客户端离线消息")],
+    lastError: "host not reachable",
+  };
+  let retryCalls = 0;
+  const transport: CollaborationTransport = {
+    async getState() { return { ...stale }; },
+    async retry() { retryCalls++; throw new Error("still unreachable"); },
+    async host() { return stale; },
+    async join() { return stale; },
+    async invite() { return { hosts: ["192.168.1.99"], port: 39171, room: "joined-room-no-ssid" }; },
+    async leave() {},
+    async post() { return { ok: true }; },
+    async startAgent() { return { ok: true }; },
+    async cancelQueuedTask() { return { ok: true }; },
+    async respond() { return { ok: true }; },
+    async updateAgentConfig(input: any) { stale.agentConfig = input.config; return stale; },
+    async shareFiles() { return []; },
+    async receiveFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "completed", transferred: 1, total: 1 }; },
+    async pauseFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "paused", transferred: 0, total: 1 }; },
+    async resumeFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "downloading", transferred: 0, total: 1 }; },
+    async revokeFile() { return { ok: true }; },
+    subscribeState() { return () => {}; },
+    subscribeEvent() { return () => {}; },
+  };
+  let renderedCached: CollaborationState | undefined;
+  const result = await loadCollaborationState(transport, false, (state) => { renderedCached = state; });
+  equal([renderedCached?.room?.room, renderedCached?.timeline.length], ["joined-room-no-ssid", 1],
+    "cached client Room without selfSessionId is dispatched before retry");
+  equal([result.status, result.room?.room, result.members.length, result.timeline.length, retryCalls],
+    ["failed", "joined-room-no-ssid", 1, 1, 1],
+    "failed client auto-retry preserves cached Snapshot even without selfSessionId");
+}
+
+async function testExplicitWrongSessionIdRejected() {
+  // When selfSessionId is explicitly set and does not match the current
+  // session, the transport must NOT backfill and the ownership check must
+  // fail. This prevents cross-session Room leakage.
+  const wrongSession: CollaborationState = {
+    status: "connected", mode: "host",
+    room: { room: "other-room", host: "127.0.0.1", port: 39172, latestSequence: 1 },
+    selfMemberId: "self",
+    selfSessionId: "other-session-id",
+    members: [{ id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent", name: "Agent", status: "idle" } }],
+    timeline: [item("other-msg", 1, "其他 session 的消息")],
+  };
+  // Simulate the reducer receiving a STATE from a mismatched session.
+  const reducerState = collabReducer(initialCollabState, { type: "STATE", state: wrongSession });
+  equal(reducerState.selfSessionId, "other-session-id",
+    "explicit selfSessionId from a different session is preserved verbatim");
+  // Ownership check (the same logic as CollaborationWorkspace.ownsRoom):
+  const currentSession = "current-session";
+  const ownsRoom = Boolean(currentSession) && reducerState.selfSessionId === currentSession;
+  ok(!ownsRoom, "explicit mismatched selfSessionId does NOT grant ownsRoom to a different session");
+
+  // The transport normalizer must NOT overwrite an explicit selfSessionId.
+  // (This is the production code path — verify by inspection that the
+  //  backfill guard is `!state.selfSessionId`, not `state.selfSessionId !== sessionID`.)
+  const transportSource = readFileSync(new URL("../collab/transport.ts", import.meta.url), "utf8");
+  ok(transportSource.includes("!state.selfSessionId"),
+    "transport normalizer backfill gate is !state.selfSessionId so explicit values are never overwritten");
+}
+
+async function testNewSessionNoRoomShowsEntry() {
+  // A fresh Session with no persisted Room must stay disconnected and
+  // must NOT auto-retry or inherit a global cached Room.
+  const emptyState: CollaborationState = {
+    status: "disconnected",
+    selfSessionId: "new-empty-session",
+  };
+  const transport: CollaborationTransport = {
+    async getState() { return { ...emptyState }; },
+    async retry() { return { ...emptyState }; },
+    async host() { return emptyState; },
+    async join() { return emptyState; },
+    async invite() { return { hosts: ["127.0.0.1"], port: 39170, room: "never-joined" }; },
+    async leave() {},
+    async post() { return { ok: true }; },
+    async startAgent() { return { ok: true }; },
+    async cancelQueuedTask() { return { ok: true }; },
+    async respond() { return { ok: true }; },
+    async updateAgentConfig() { return emptyState; },
+    async shareFiles() { return []; },
+    async receiveFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "completed", transferred: 1, total: 1 }; },
+    async pauseFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "paused", transferred: 0, total: 1 }; },
+    async resumeFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "downloading", transferred: 0, total: 1 }; },
+    async revokeFile() { return { ok: true }; },
+    subscribeState() { return () => {}; },
+    subscribeEvent() { return () => {}; },
+  };
+  const result = await loadCollaborationState(transport);
+  equal([result.status, result.room, result.mode],
+    ["disconnected", undefined, undefined],
+    "new Session with no cached Room stays disconnected and does not auto-retry");
+}
+
+async function testWailsTransportRestoresSessionOwnership() {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document });
+  let raw: Record<string, unknown> = {
+    status: "failed", mode: "host", retryable: true,
+    room: "owned-host-room", snapshot: { room: { id: "owned-host-room" }, members: [], timeline: [] },
+  };
+  (window as any).go = { main: { App: {
+    GetCollaborationState: async () => raw,
+    RetryCollaboration: async () => { throw new Error("route unavailable"); },
+  } } };
+
+  const hostTransport = createWailsCollaborationTransport("host-session");
+  let cachedHost: CollaborationState | undefined;
+  const host = await loadCollaborationState(hostTransport, false, (state) => { cachedHost = state; });
+  equal([cachedHost?.selfSessionId, host.selfSessionId, host.room?.room], ["host-session", "host-session", "owned-host-room"],
+    "production Wails transport restores ownership for a cached Host Room without selfSessionId");
+
+  raw = { ...raw, mode: "client", room: "owned-client-room", snapshot: { room: { id: "owned-client-room" }, members: [], timeline: [] } };
+  const client = await createWailsCollaborationTransport("client-session").getState();
+  equal([client.selfSessionId, client.room?.room], ["client-session", "owned-client-room"],
+    "production Wails transport restores ownership for a cached client Room without selfSessionId");
+
+  raw = { ...raw, selfSessionId: "other-session" };
+  const mismatched = await createWailsCollaborationTransport("current-session").getState();
+  equal(mismatched.selfSessionId, "other-session", "an explicit different Session owner is never overwritten");
+
+  raw = { status: "disconnected", members: [], timeline: [] };
+  const fresh = await createWailsCollaborationTransport("fresh-session").getState();
+  equal([fresh.selfSessionId, fresh.room], [undefined, undefined], "a fresh Session without a Room does not inherit ownership");
+}
+
 async function main() {
   process.stdout.write("\ncollaboration state and countdown\n");
   const layoutCSS = readFileSync(new URL("../collab/collab.css", import.meta.url), "utf8");
@@ -815,8 +1254,9 @@ async function main() {
   ok(appSource.includes("selectCollaborationWorkspace") && appSource.includes("collabResolveGen.current") && appSource.includes("app.ListWorkspaces()") && appSource.includes("if (!workspaceRoot)"), "the connection dialog resolves the chosen Workspace with a generation guard and never creates a Session for an empty selection");
   ok(appSource.includes('mode="dialog"') && workspaceSource.includes('mode?: "session" | "dialog"'), "connection popup and connected Session have separate presentation modes");
   ok(!workspaceSource.includes("collab-room-rail"), "embedded collaboration view reuses the existing Session List instead of duplicating a Room rail");
-  ok(projectTreeSource.includes("const sourceBadge = collaborationSession ? null : projectTreeSourceBadge(node, t)"), "Room Session keeps its dedicated icon without an external-source badge");
+  ok(projectTreeSource.includes("const sourceBadge = collaborationSession ? null :"), "Room Session keeps its dedicated icon without an external-source badge");
   ok(workspaceSource.includes('const usable = ownsRoom && Boolean(state.room)') && workspaceSource.includes('c("cachedBackground")'), "cached Room context remains usable and is explicitly disclosed while offline");
+  ok(workspaceSource.includes("if (!ownsRoom || !state.room)") && !workspaceSource.includes('c("untitledRoom")'), "a Session without an authoritative Room stays on the connection entry instead of rendering a synthetic Room");
   ok(workspaceSource.includes("handleAction(controller.startAgent") && composerSource.includes("catch {"), "Agent action promises are consumed at both timeline and composer UI boundaries");
   ok(connectionSource.includes("await onHost(") && connectionSource.includes("await onJoin(") && connectionSource.includes("await onConnected?.()"), "popup closes only after Room connection and Session binding both complete");
   ok(connectionSource.includes('c("workspace")') && connectionSource.indexOf('c("workspace")') < connectionSource.indexOf('c("connectionString")'), "the Workspace selector sits before the network fields and is shared by Join and Host");
@@ -828,22 +1268,23 @@ async function main() {
   ok(/\.collab-connect-form > \.collab-primary-button\s*\{[^}]*position:\s*sticky[^}]*bottom:\s*0/.test(layoutCSS), "Room action stays visible at the bottom of a tall form");
   ok(/\.collab-advanced-fields\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/.test(layoutCSS), "optional Room and identity fields use two columns to reduce form height");
   ok(timelineSource.includes("collab-presence-notice") && timelineSource.includes("collab-agent-run__marquee"), "presence events stay lightweight while Agent work uses a fixed animated status card");
-  ok(/\.collab-message-actions\s*\{[^}]*opacity:\s*0/.test(layoutCSS) && timelineSource.includes("MoreHorizontal"), "per-message actions collapse to a hover icon toolbar and overflow menu");
+  ok(/\.collab-message-actions\s*\{[^}]*opacity:\s*0/.test(layoutCSS) && timelineSource.includes("collab-double-bot") && !timelineSource.includes("collab-action-more"), "per-message actions collapse to a hover toolbar with a dedicated multi-Agent request trigger instead of the old overflow action");
+  ok(workspaceSource.includes("controller.requestAgent(memberId, item.text, [item.id])"), "message-level delegation targets the selected member and preserves the current item as request context");
   ok(/\.collab-topicbar\s*\{[^}]*--wails-draggable:\s*drag/.test(layoutCSS) && layoutCSS.includes("--wails-draggable: no-drag"), "collaboration title bar is draggable while controls remain interactive");
   ok(/\.app--windows-frameless\.app--workbench-room \.collab-members\s*\{[^}]*height:\s*100%[^}]*margin-top:\s*0[^}]*padding-top:\s*calc\(20px \+ var\(--windows-window-controls-height\)\)/.test(workbenchCSS), "Room right plate extends behind the caption rail while its content keeps the same safe offset");
   ok(/--collab-bg:\s*var\(--bg\)/.test(layoutCSS) && /--collab-panel:\s*var\(--bg-elev/.test(layoutCSS) && /--collab-text:\s*var\(--fg\)/.test(layoutCSS) && /--collab-accent:\s*var\(--accent\)/.test(layoutCSS), "Room derives surfaces, text, and accents from light/dark Settings theme tokens");
   ok(/\.collab-primary-button\s*\{[^}]*background-color:\s*var\(--control-primary-bg/.test(layoutCSS), "Room primary actions keep a solid accent fallback when a visual style disables gradients");
   ok(handoffCSS.includes("var(--collab-accent)") && handoffCSS.includes("var(--collab-control)") && !handoffCSS.includes("rgba(155, 114, 255"), "Room handoff and reply additions reuse the same theme palette");
   ok(workspaceSource.indexOf("collab-agent-config") < workspaceSource.indexOf("collab-member-section"), "own Agent configuration is placed above the member list");
-  ok(workspaceSource.includes("state.currentRun") && workspaceSource.includes("controller.stopCurrentRun") && workspaceSource.includes('data-phase={state.currentRun.phase}') && layoutCSS.includes(".collab-current-run__stop"), "My Agent panel exposes the current local run phase and an explicit stop control");
-  ok(workspaceSource.includes('c("autoQuestionsShort")') && workspaceSource.includes('c("autoRequestsShort")') && workspaceSource.includes('c("recognitionMode")'), "Agent panel exposes question, operation-request, and recognition-cycle controls");
+  ok(workspaceSource.includes("state.currentRun") && workspaceSource.includes("controller.stopCurrentRun") && workspaceSource.includes('data-phase={state.currentRun.phase}') && layoutCSS.includes(".collab-current-run__stop") && workspaceSource.indexOf('className="collab-agent-queue"') < workspaceSource.indexOf('className="collab-current-run"'), "My Agent run status and stop control live with the queued-task section");
+  ok(workspaceSource.includes('c("autoManualShort")') && workspaceSource.includes('c("autoQuestionsShort")') && workspaceSource.includes('c("autoRequestsShort")') && workspaceSource.includes("cycleApprovalMode") && workspaceSource.includes("cycleResponseMode") && workspaceSource.includes("cycleRecognitionMode") && !workspaceSource.includes("composer-modebar composer-modebar--"), "Agent panel exposes approval, response, and recognition as click-to-cycle controls");
   ok(workspaceSource.includes('c("agentCollaboration")') && workspaceSource.includes('c("agentResponseFrequency")') && workspaceSource.includes("agentClockRemaining") && workspaceSource.includes("autoRespondAgents") && workspaceSource.includes("agentResponseIntervalSeconds") && workspaceSource.includes("agentClockTurns"), "Agent panel exposes independent Agent-to-Agent collaboration, frequency, and configurable clockwork controls");
   ok(workspaceSource.includes("agentCollaborationOpen") && workspaceSource.includes("aria-expanded={agentCollaborationOpen}") && workspaceSource.includes('c("agentClockWind")') && workspaceSource.includes("agentClockWoundAt") && workspaceSource.includes("agentClockUnlimited"), "Agent collaboration section folds and exposes persistent wind-up and unlimited controls");
   ok(/\.collab-agent-peer-policy--open \.collab-agent-peer-summary > svg\s*\{[^}]*rotate\(90deg\)/.test(layoutCSS) && /\.collab-agent-clock-row > button\s*\{/.test(layoutCSS), "fold and wind-up controls have explicit compact rail styling");
   ok(!controllerSource.includes("nextAgentCollaborationBatch") && !controllerSource.includes("batch.handoffs") && !controllerSource.includes("agentCollaborationRequestID") && !controllerSource.includes("autoAgentCollaborationInstruction") && !controllerSource.includes("window.setInterval") && !controllerSource.includes("scanAutomaticResponses") && !controllerSource.includes("scanAgentCollaboration") && !controllerSource.includes("nextMentionedAgentItem"), "Agent collaboration scheduler moved to Go backend — frontend controller has no automatic scheduling");
-  ok(workspaceSource.includes('chooseApprovalMode("ask")') && workspaceSource.includes('chooseApprovalMode("auto")') && workspaceSource.includes('chooseApprovalMode("yolo")') && workspaceSource.includes("controller.updateToolApprovalMode(next)"), "Agent panel exposes the same ask, auto, and YOLO approval modes as a normal Session");
-  ok(/\.collab-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(430px,\s*1fr\)\s+328px/.test(layoutCSS) && /\.collab-agent-alias input,\s*\.collab-agent-scan select,\s*\.collab-agent-scan input\s*\{[^}]*height:\s*38px/.test(layoutCSS) && /\.collab-agent-model \.modelsw__trigger\s*\{[^}]*height:\s*38px[^}]*font-size:\s*13px/.test(layoutCSS), "Agent panel uses a deliberate rail width and one form-control scale");
-  ok(/\.collab-agent-approval \.composer-modebar\s*\{[^}]*height:\s*36px/.test(layoutCSS) && /\.collab-agent-approval \.composer-modebar__item\s*\{[^}]*height:\s*28px/.test(layoutCSS) && /\.collab-agent-policy\s*\{[^}]*grid-template-columns:\s*1fr/.test(layoutCSS) && /\.collab-agent-options\s*\{[^}]*grid-template-columns:\s*repeat\(2[^}]*width:\s*100%/.test(layoutCSS) && /\.collab-agent-options input,\s*\.collab-agent-peer-toggle input,\s*\.collab-agent-peer-switch input\s*\{[^}]*appearance:\s*none[^}]*width:\s*28px[^}]*height:\s*16px/.test(layoutCSS), "automatic-response labels keep a dedicated full-width row above two compact switches");
+  ok(workspaceSource.includes("nextApprovalMode(approvalMode)") && workspaceSource.includes("controller.updateToolApprovalMode(next)"), "Agent panel cycles through the same ask, auto, and YOLO approval modes as a normal Session");
+  ok(/\.collab-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(430px,\s*1fr\)\s+328px/.test(layoutCSS) && /\.collab-agent-model \.modelsw__trigger\s*\{[^}]*height:\s*34px[^}]*font-size:\s*12\.5px/.test(layoutCSS) && /\.collab-agent-context-trigger\s*\{[^}]*min-height:\s*34px/.test(layoutCSS), "Agent panel keeps its deliberate rail width while compacting primary controls to a shared 34px scale");
+  ok(/\.collab-agent-policies\s*\{[^}]*gap:\s*2px[^}]*padding:\s*4px[^}]*border:\s*0/.test(layoutCSS) && /\.collab-agent-policy-row\s*\{[^}]*min-height:\s*34px[^}]*padding:\s*0 4px 0 7px/.test(layoutCSS) && /\.collab-agent-policy-row \+ \.collab-agent-policy-row\s*\{[^}]*border-top:\s*0/.test(layoutCSS) && /\.collab-agent-cycle\s*\{[^}]*justify-content:\s*flex-end[^}]*height:\s*26px[^}]*border:\s*0[^}]*background:\s*transparent/.test(layoutCSS) && workspaceSource.includes("<ChevronsUpDown size={12}"), "approval, automatic response, and recognition use lightweight rows without nested control borders");
   ok(workspaceSource.includes("state.queuedTasks") && workspaceSource.includes("controller.cancelQueuedTask(task.id)") && /\.collab-agent-queue__list\s*\{[^}]*max-height:[^}]*overflow:\s*auto/.test(layoutCSS), "Agent panel shows the bounded queue and lets its owner cancel waiting tasks");
   ok(activityPopoverSource.includes("createPortal") && workspaceSource.includes("onMouseEnter") && workspaceSource.includes("onFocus") && workspaceSource.includes("AgentActivityPopover") && /\.collab-agent-activity-popover\s*\{[^}]*position:\s*fixed/.test(layoutCSS), "running Agent status exposes a non-clipping hover and keyboard-focus activity carousel");
   ok(!composerSource.includes("(agentMode && props.agentBusy)") && !timelineSource.includes('disabled={props.agentBusy}'), "busy Agent actions stay available so new work can be queued");
@@ -851,7 +1292,8 @@ async function main() {
   ok(workspaceSource.includes('c("agentContext")') && workspaceSource.includes("state.agentSources?.agents") && workspaceSource.includes("state.agentSources?.skills") && workspaceSource.includes("toggleContextRef"), "Agent panel exposes explicit AGENTS.md and SKILL.md selection");
   ok(workspaceSource.includes('setProfileEditor("member")') && workspaceSource.includes('setProfileEditor("agent")') && workspaceSource.includes("controller.updateProfile(profile)") && workspaceSource.includes("saveCollaborationIdentity") && avatarSource.includes('canvas.toDataURL("image/webp"'), "member and Agent names/avatars are independently editable, compressed, synced, and cached");
   ok(transportSource.includes("memberAvatar") && transportSource.includes("agentAvatar") && timelineSource.includes("actor?.agent.avatar") && timelineSource.includes("actor?.avatar"), "Room member normalization and timeline rendering preserve both synchronized avatars");
-  ok(workspaceSource.includes("collab-agent-context-trigger") && workspaceSource.includes("contextOpen &&") && /\.collab-config-modal\s*\{[^}]*position:\s*fixed/.test(layoutCSS), "explicit AGENTS.md and Skill selection opens in a dedicated modal");
+  ok(workspaceSource.includes("collab-agent-context-trigger") && workspaceSource.includes("contextOpen &&") && /\.collab-config-modal\s*\{[^}]*position:\s*fixed[^}]*z-index:\s*var\(--z-modal\)/.test(layoutCSS), "explicit AGENTS.md and Skill selection opens in a dedicated modal");
+  ok(/\.app--workbench \.collab-surface:not\(\.collab-surface--dialog\) > \.collab-config-modal\s*\{[^}]*position:\s*fixed[^}]*z-index:\s*var\(--z-modal\)/.test(layoutCSS), "Room config modal overrides the workbench direct-child positioning rule instead of being clipped inside the Room grid");
   ok(workspaceSource.includes("useScrollManager") && workspaceSource.includes("timelineStick.current") && workspaceSource.includes("snapTimelineToBottom()") && workspaceSource.includes("onScroll={onTimelineScroll}"), "Room timeline follows new messages while reusing the shared sticky-bottom guard");
   ok(composerSource.includes("onFilesDroppedIn") && composerSource.includes('"--wails-drop-target": "drop"') && workspaceSource.includes("onShareFiles={controller.shareFiles}"), "Room composer owns native file drops and routes paths to sharing");
   ok(timelineSource.includes("FileCard") && timelineSource.includes("onReceiveFile") && /\.collab-file-progress\s*\{/.test(layoutCSS), "file cards expose receive and resumable progress controls");
@@ -864,8 +1306,21 @@ async function main() {
   equal(parseCollaborationInvite(invite), { host: "192.168.1.8", port: 39170, room: "接口 联调", token: "shared secret" }, "connection string round-trips Room and token");
   const ipv6Invite = buildCollaborationInvite({ host: "::1", port: 39170, room: "room-v6" });
   equal(parseCollaborationInvite(ipv6Invite), { host: "::1", port: 39170, room: "room-v6", token: undefined }, "connection string preserves bracketed IPv6 hosts");
-  const relayInviteValue = { version: 2 as const, room: "跨网联调", hostKey: "sha256:host-key", routes: [{ kind: "lan" as const, host: "192.168.1.8", port: 39170 }, { kind: "relay" as const, relayId: "official-sg", url: "wss://relay.example.test/relay/v1/connect", tunnelId: "tun-1", guestCapability: "cap-1", priority: 100 }], roomToken: "secret" };
+  const relayInviteValue = { version: 2 as const, room: "跨网联调", hostKey: "sha256:host-key", routes: [{ kind: "lan" as const, protocolVersion: 2 as const, host: "192.168.1.8", port: 39170 }, { kind: "relay" as const, relayId: "official-sg", url: "wss://relay.example.test/relay/v1/connect", tunnelId: "tun-1", guestCapability: "cap-1", priority: 100 }], roomToken: "secret" };
   equal(parseCollaborationInvite(buildCollaborationInvite(relayInviteValue)), relayInviteValue, "V2 RouteSet invite round-trips UTF-8 Room, LAN and Relay routes");
+  const selectableInvite = { version: 2 as const, hosts: ["127.0.0.1", "10.0.0.8", "::1"], port: 39170, room: "route-room", token: "secret", hostKey: "sha256:host-key", routes: [
+    { id: "lan:127.0.0.1", kind: "lan" as const, protocolVersion: 2 as const, host: "127.0.0.1", port: 39170 },
+    { id: "relay:sg", kind: "relay" as const, relayId: "official-sg", url: "wss://relay.example.test/relay/v1/connect", tunnelId: "tun-1", guestCapability: "cap-1" },
+    { id: "lan:10.0.0.8", kind: "lan" as const, protocolVersion: 2 as const, host: "10.0.0.8", port: 39170 },
+    { id: "lan:::1", kind: "lan" as const, protocolVersion: 2 as const, host: "::1", port: 39170 },
+  ] };
+  const exportOptions = collaborationInviteOptions(selectableInvite);
+  equal(exportOptions.map((option) => `${option.kind}:${option.label}`), ["relay:official-sg", "lan:10.0.0.8", "lan:127.0.0.1", "lan:::1"], "export routes keep Relay first and loopback addresses last");
+  const relayExport = buildCollaborationInviteForOption(selectableInvite, exportOptions[0]);
+  const lanExport = buildCollaborationInviteForOption(selectableInvite, exportOptions[1]);
+  ok(relayExport !== lanExport, "changing the export route changes the connection string");
+  equal((parseCollaborationInvite(relayExport) as typeof relayInviteValue).routes.map((route) => route.kind), ["relay"], "Relay selection exports only the selected Relay route");
+  equal((parseCollaborationInvite(lanExport) as typeof relayInviteValue).routes.map((route) => route.host), ["10.0.0.8"], "LAN selection exports only the selected IP route");
   let invalidInvite = false;
   try { parseCollaborationInvite("https://example.com/room"); } catch { invalidInvite = true; }
   ok(invalidInvite, "non-WorkGround2 URLs are rejected as Room invites");
@@ -876,6 +1331,7 @@ async function main() {
   equal(tryBuildCollaborationInvite({ version: 2 as const, room: "test", hostKey: "key", routes: [] }), "", "V2 invite without routes returns empty string without throwing");
   ok(tryBuildCollaborationInvite({ host: "192.168.1.8", port: 39170, room: "test" }).startsWith("workground2://"), "valid V1 invite produces workground2 URL");
   ok(workspaceSource.includes('inviteBuildError = invite && !inviteString ? c("connectionStringInvalid")') && workspaceSource.includes("disabled={!inviteString}"), "invalid exported invites stay visible as retryable errors and cannot be copied");
+  ok(workspaceSource.includes("buildCollaborationInviteForOption") && !workspaceSource.includes("invite?.invite ||"), "exported connection strings follow the selected route instead of the prebuilt aggregate invite");
 
   const identityDOM = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
   Object.assign(globalThis, { localStorage: identityDOM.window.localStorage });
@@ -966,6 +1422,13 @@ async function main() {
     outbox: [{ requestId: "queued-chat", status: "pending", item: { id: "outbox:queued-chat", sequence: 4, type: "chat", chat: { id: "outbox:queued-chat", authorId: "self", text: "not swallowed", revision: 1, createdAt: "2026-08-03T10:00:00Z" } } }],
   });
   equal([queuedState.timeline[0].text, queuedState.timeline[0].syncStatus, queuedState.timeline[0].localPending, queuedState.timeline[0].actorName], ["not swallowed", "pending", true, "Me"], "persisted Outbox is visible as a local pending timeline message");
+  const agentRoleState = normalizeCollaborationState({ status: "connected", snapshot: { members: [
+    { id: "nested-role", name: "Nested", agent: { id: "agent-a", name: "A", role: "Backend" } },
+    { ID: "nested-Role", Name: "Nested Legacy", Agent: { ID: "agent-b", Name: "B", Role: "Design" } },
+    { id: "flat-role", name: "Flat", agent: { id: "agent-c", name: "C" }, agentRole: "QA" },
+    { ID: "flat-Role", Name: "Flat Legacy", Agent: { ID: "agent-d", Name: "D" }, AgentRole: "Ops" },
+  ], timeline: [] } });
+  equal(agentRoleState.members.map((member) => member.agent.role), ["Backend", "Design", "QA", "Ops"], "Agent responsibility survives nested and flattened bridge field variants");
   const agentQueueState = normalizeCollaborationState({ status: "connected", room: "room-a", snapshot: { room: { id: "room-a" }, members: [], timeline: [] }, queuedTasks: [{ id: "run-2", requestId: "request-2", instruction: "检查接口", referenceIds: ["message-1"], queuedAt: "2026-08-04T10:00:00Z" }] });
   equal(agentQueueState.queuedTasks, [{ id: "run-2", requestId: "request-2", instruction: "检查接口", referenceIds: ["message-1"], agentRequestId: undefined, queuedAt: "2026-08-04T10:00:00Z" }], "persisted Agent queue survives desktop state normalization");
   const currentRunState = normalizeCollaborationState({ status: "connected", room: "room-a", snapshot: { room: { id: "room-a" }, members: [], timeline: [] }, currentRun: { sessionId: "session-a", runId: "run-1", phase: "waiting_approval", instruction: "检查接口", progress: "等待工具确认", startedAt: 1700000000000, queueCount: 2 } });
@@ -981,6 +1444,13 @@ async function main() {
   equal(normalizeCollaborationIntent({ Intent: "maybe", Source: "llm" }).intent, "chat", "invalid semantic intent safely falls back to chat");
   const configured = normalizeCollaborationState({ status: "connected", memberId: "self", snapshot: { members: [{ id: "self", name: "Me", agent: { id: "agent", name: "Old" } }], timeline: [] }, agentConfig: { alias: "Kite", autoRespondQuestions: true, autoRespondRequests: true, autoRespondAgents: true, agentResponseIntervalSeconds: 15, agentClockTurns: 8, agentClockUnlimited: true, agentClockWoundAt: "2026-08-05T03:04:05Z", recognitionMode: "interval" } });
   equal(configured.agentConfig, { alias: "Kite", autoRespondQuestions: true, autoRespondRequests: true, autoRespondAgents: true, agentResponseIntervalSeconds: 15, agentClockTurns: 8, agentClockUnlimited: true, agentClockWoundAt: "2026-08-05T03:04:05Z", recognitionMode: "interval", contextRefs: [] }, "Agent response policy survives desktop state normalization");
+  equal(initialCollabState.agentConfig.recognitionMode, "interval", "new Room state recognizes conversations every 30 seconds by default");
+  equal(normalizeCollaborationState({ agentConfig: {}, snapshot: {} }).agentConfig.recognitionMode, "interval", "missing persisted recognition policy falls back to 30 seconds");
+  equal([autoResponseMode({ autoRespondQuestions: false, autoRespondRequests: false }), autoResponseMode({ autoRespondQuestions: true, autoRespondRequests: false }), autoResponseMode({ autoRespondQuestions: false, autoRespondRequests: true })], ["manual", "questions", "operations"], "three-level response control maps legacy requests-only state to Operations");
+  equal([autoResponseFlags("manual"), autoResponseFlags("questions"), autoResponseFlags("operations")], [{ autoRespondQuestions: false, autoRespondRequests: false }, { autoRespondQuestions: true, autoRespondRequests: false }, { autoRespondQuestions: true, autoRespondRequests: true }], "three-level response choices persist monotonic question and operation flags");
+  equal([nextAutoResponseMode("manual"), nextAutoResponseMode("questions"), nextAutoResponseMode("operations")], ["questions", "operations", "manual"], "automatic response cycles through all three levels");
+  equal([nextApprovalMode("ask"), nextApprovalMode("auto"), nextApprovalMode("yolo")], ["auto", "yolo", "ask"], "tool approval cycles through ask, auto, and YOLO");
+  equal([nextRecognitionMode("interval"), nextRecognitionMode("message"), nextRecognitionMode("off")], ["message", "off", "interval"], "recognition control cycles 30 seconds, each message, and off without a dropdown");
   const sourceState = normalizeCollaborationState({ status: "connected", memberId: "self", snapshot: { members: [], timeline: [] }, agentConfig: { contextRefs: ["agents:C:/repo/AGENTS.md", "skill:review"] }, agentSources: { agents: [{ id: "agents:C:/repo/AGENTS.md", kind: "agents", name: "AGENTS.md", path: "C:/repo/AGENTS.md", scope: "project" }], skills: [{ id: "skill:review", kind: "skill", name: "review", path: "C:/skills/review/SKILL.md", description: "Review changes", runAs: "inline" }] } });
   equal([sourceState.agentConfig.contextRefs, sourceState.agentSources?.agents[0].path, sourceState.agentSources?.skills[0].runAs, sourceState.agentSources?.skills[0].available], [["agents:C:/repo/AGENTS.md", "skill:review"], "C:/repo/AGENTS.md", "inline", true], "explicit Agent instruction sources survive desktop state normalization");
   const promptState = normalizeCollaborationState({ status: "connected", memberId: "self", toolApprovalMode: "auto", agentPrompt: { runId: "run-1", kind: "approval", id: "approval-1", tool: "shell_command", subject: "go test ./desktop", reason: "执行本地测试" }, snapshot: { members: [], timeline: [] } });
@@ -1088,19 +1558,37 @@ async function main() {
   await testCachedRoomSurvivesFailedRetry();
   await testCachedClientRoomSurvivesFailedRetry();
   await testNoCacheSessionEntryWithoutAutoConnect();
+  await testHostRestoreMissingSelfSessionId();
+  await testClientRestoreMissingSelfSessionId();
+  await testExplicitWrongSessionIdRejected();
+  await testNewSessionNoRoomShowsEntry();
+  await testWailsTransportRestoresSessionOwnership();
 
   await testSessionTransportIsolation();
   await testAgentBusyGuard();
   await testOfflineSelfAgentIntervention();
+  await testComposerOfflineAgentOnly();
+  await testComposerAutoSwitchPreservesDraft();
+  await testComposerReconnectRestoresModes();
   await testMentionStartsAgent();
   await testRoomAgentUsesScopedAutoApproval();
   await testWaitingAgentRunDecisions();
   await testReferenceAndRunResultPresentation();
   await testAgentRunResultOutput();
+  await testRequestAgentPopup();
+  await testRequestAgentPayload();
   await testCountdown();
   await testConnectionPanelWorkspace();
   await testDiscoveryFailureIsHandled();
   await testSessionSwitchIsolation();
+  await testFileCardImagePreview();
+  await testFileCardPreviewFallback();
+  await testOwnFileImagePreviewRetry();
+  await testFileCardIgnoresLatePreview();
+  await testFilePreviewVisibilityAndCache();
+  await testFilePreviewConcurrencyLimit();
+  await testFilePreviewQueuedCancellation();
+  await testFilePreviewCacheBounds();
 
   // Regression: switching rooms isolates timeline
   let roomAState = collabReducer(initialCollabState, { type: "STATE", state: { status: "connected", room: { room: "room-a", host: "127.0.0.1", port: 39170, latestSequence: 3 }, selfMemberId: "self", members: [], timeline: [item("synced-a", 1, "room A synced")] } });
@@ -1129,6 +1617,399 @@ async function main() {
 
   process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
   if (failed) process.exit(1);
+}
+
+async function testFileCardImagePreview() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const previewCalls: string[] = [];
+  const previewFile = async (fileId: string) => {
+    previewCalls.push(fileId);
+    return { mime: "image/png", dataUrl: "data:image/png;base64,abc123" };
+  };
+  const fileItem: CollaborationTimelineItem = {
+    id: "file-img", sequence: 1, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: "img.png", fileName: "img.png", fileSize: 100, fileMime: "image/png", fileSHA256: "abc",
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  };
+  const completedTransfer = { id: "t-img", fileId: "file-img", direction: "receive" as const, name: "img.png", status: "completed" as const, transferred: 100, total: 100 };
+
+  await act(async () => {
+    root.render(<LocaleProvider><CollaborationTimeline
+      items={[fileItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+      transfers={[completedTransfer]}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewFile}
+    /></LocaleProvider>);
+  });
+  // Wait for useEffect to fire.
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  equal(previewCalls, ["file-img"], "completed received file triggers previewFile call");
+  const previewImg = document.querySelector(".collab-file-card__preview img") as HTMLImageElement | null;
+  ok(previewImg !== null, "image preview element is rendered for completed image file");
+  ok(previewImg?.getAttribute("src") === "data:image/png;base64,abc123", "preview img src is the returned dataUrl");
+  ok(previewImg?.getAttribute("loading") === "lazy", "preview img uses lazy loading");
+  ok(previewImg?.getAttribute("alt") === "img.png", "preview img has alt text from file name");
+  await act(async () => root.unmount());
+}
+
+async function testFileCardPreviewFallback() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+
+  // Test 1: previewFile returns null → no preview, normal file card.
+  let previewNullCalls = 0;
+  const previewNull = async () => { previewNullCalls++; return null; };
+  const fileItem: CollaborationTimelineItem = {
+    id: "file-txt", sequence: 1, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: "doc.txt", fileName: "doc.txt", fileSize: 50, fileMime: "text/plain", fileSHA256: "def",
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  };
+  const completedTransfer = { id: "t-txt", fileId: "file-txt", direction: "receive" as const, name: "doc.txt", status: "completed" as const, transferred: 50, total: 50 };
+
+  await act(async () => {
+    root.render(<LocaleProvider><CollaborationTimeline
+      items={[fileItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+      transfers={[completedTransfer]}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewNull}
+    /></LocaleProvider>);
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  ok(document.querySelector(".collab-file-card__preview") === null, "non-image preview (null) shows no image preview element");
+  ok(document.querySelector(".collab-file-card__icon svg") !== null, "file icon is shown when preview is unavailable");
+  equal(previewNullCalls, 0, "plain files do not call the image preview bridge");
+
+  // Test 2: Non-completed file → previewFile not called.
+  await act(async () => root.unmount());
+  const root2 = createRoot(document.getElementById("root")!);
+  let previewCalledForIncomplete = false;
+  const previewIncomplete = async () => { previewCalledForIncomplete = true; return null; };
+  const incompleteTransfer = { id: "t-inc", fileId: "file-txt", direction: "receive" as const, name: "doc.txt", status: "downloading" as const, transferred: 20, total: 50 };
+
+  await act(async () => {
+    root2.render(<LocaleProvider><CollaborationTimeline
+      items={[fileItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+      transfers={[incompleteTransfer]}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewIncomplete}
+    /></LocaleProvider>);
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  ok(!previewCalledForIncomplete, "incomplete file transfer does not call previewFile");
+
+  // Test 3: Existing file operations still rendered.
+  const buttons = document.querySelectorAll(".collab-file-card__actions button");
+  const buttonTexts = [...buttons].map((btn) => btn.textContent?.trim() || "");
+  ok(buttonTexts.some((t) => t.includes("Pause") || t.includes("暂停")), "pause button is visible for downloading file transfer");
+
+  await act(async () => root2.unmount());
+}
+
+async function testOwnFileImagePreviewRetry() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const fileItem: CollaborationTimelineItem = {
+    id: "file-own-img", sequence: 1, revision: 1, kind: "file", actorId: "self", actorName: "Me",
+    text: "own.png", fileName: "own.png", fileSize: 100, fileMime: "application/octet-stream", fileSHA256: "abc",
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  };
+  const transfer = { id: "share:file-own-img", fileId: "file-own-img", direction: "share" as const, name: "own.png", status: "available" as const, transferred: 100, total: 100 };
+  let calls = 0;
+  const previewFile = async () => {
+    calls++;
+    if (calls === 1) throw new Error("temporary read failure");
+    return { mime: "image/png", dataUrl: "data:image/png;base64,b3du" };
+  };
+
+  await act(async () => {
+    root.render(<LocaleProvider><CollaborationTimeline
+      items={[fileItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy transfers={[transfer]}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewFile}
+    /></LocaleProvider>);
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+  const retry = document.querySelector(".collab-file-card__preview-error button") as HTMLButtonElement | null;
+  ok(retry !== null, "own shared image exposes a preview retry after a transient read failure");
+  await act(async () => { retry?.click(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+  equal(calls, 2, "own shared image preview retries explicitly");
+  const image = document.querySelector(".collab-file-card__preview img") as HTMLImageElement | null;
+  ok(image?.getAttribute("decoding") === "async", "own shared image renders with asynchronous decoding");
+  ok(image?.getAttribute("draggable") === "false", "inline image preview is not draggable");
+  await act(async () => root.unmount());
+}
+
+async function testFileCardIgnoresLatePreview() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const fileItem: CollaborationTimelineItem = {
+    id: "file-late", sequence: 1, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: "late.png", fileName: "late.png", fileSize: 100, fileMime: "image/png", fileSHA256: "abc",
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  };
+  let resolvePreview: ((value: { mime: string; dataUrl: string }) => void) | undefined;
+  const previewFile = () => new Promise<{ mime: string; dataUrl: string }>((resolve) => { resolvePreview = resolve; });
+  const render = (status: "completed" | "downloading") => <LocaleProvider><CollaborationTimeline
+    items={[fileItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+    transfers={[{ id: "t-late", fileId: fileItem.id, direction: "receive", name: "late.png", status, transferred: status === "completed" ? 100 : 50, total: 100 }]}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+    previewFile={previewFile}
+  /></LocaleProvider>;
+
+  await act(async () => root.render(render("completed")));
+  await act(async () => root.render(render("downloading")));
+  await act(async () => {
+    resolvePreview?.({ mime: "image/png", dataUrl: "data:image/png;base64,bGF0ZQ==" });
+    await Promise.resolve();
+  });
+  ok(document.querySelector(".collab-file-card__preview") === null, "late preview result cannot appear after transfer state changes");
+  await act(async () => root.unmount());
+}
+
+async function testFilePreviewVisibilityAndCache() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const originalObserver = globalThis.IntersectionObserver;
+  let observed: Element | undefined;
+  let reveal: (() => void) | undefined;
+  let hide: (() => void) | undefined;
+  class TestIntersectionObserver {
+    readonly root = null;
+    readonly rootMargin = "0px";
+    readonly thresholds = [0];
+    private active = true;
+    constructor(callback: IntersectionObserverCallback) {
+      reveal = () => { if (this.active) callback([{ isIntersecting: true, target: observed } as IntersectionObserverEntry], this as unknown as IntersectionObserver); };
+      hide = () => { if (this.active) callback([{ isIntersecting: false, target: observed } as IntersectionObserverEntry], this as unknown as IntersectionObserver); };
+    }
+    observe(target: Element) { observed = target; }
+    disconnect() { this.active = false; }
+    unobserve() {}
+    takeRecords(): IntersectionObserverEntry[] { return []; }
+  }
+  globalThis.IntersectionObserver = TestIntersectionObserver as unknown as typeof IntersectionObserver;
+
+  const fileItem: CollaborationTimelineItem = {
+    id: "file-visible", sequence: 1, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: "visible.png", fileName: "visible.png", fileSize: 100, fileMime: "image/png", fileSHA256: "abc",
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  };
+  const transfer = { id: "t-visible", fileId: fileItem.id, direction: "receive" as const, name: "visible.png", status: "completed" as const, transferred: 100, total: 100 };
+  let calls = 0;
+  const previewFile = async () => {
+    calls++;
+    return { mime: "image/png", dataUrl: "data:image/png;base64,dmlzaWJsZQ==" };
+  };
+  const render = (currentItem = fileItem) => <LocaleProvider><CollaborationTimeline
+    items={[currentItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy transfers={[transfer]}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+    previewFile={previewFile}
+  /></LocaleProvider>;
+
+  const container = document.getElementById("root")!;
+  const root = createRoot(container);
+  await act(async () => { root.render(render()); await Promise.resolve(); });
+  equal(calls, 0, "image preview waits until its card intersects the viewport");
+  await act(async () => { reveal?.(); await Promise.resolve(); });
+  equal(calls, 1, "visible image starts one preview request");
+  ok(document.querySelector(".collab-file-card__preview img") !== null, "visible image renders after intersection");
+  await act(async () => { hide?.(); await Promise.resolve(); });
+  ok(document.querySelector(".collab-file-card__preview") === null, "image preview leaves the DOM after its card exits the viewport");
+  await act(async () => { reveal?.(); await Promise.resolve(); });
+  equal(calls, 1, "re-entering the viewport can reuse a completed cached preview");
+  ok(document.querySelector(".collab-file-card__preview img") !== null, "image preview renders again after re-entering the viewport");
+  await act(async () => root.unmount());
+
+  if (originalObserver) globalThis.IntersectionObserver = originalObserver;
+  else delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+  const remount = createRoot(container);
+  await act(async () => { remount.render(render()); await Promise.resolve(); });
+  equal(calls, 1, "remount reuses the preview cache for the same loader and file id");
+  ok(document.querySelector(".collab-file-card__preview img") !== null, "cached preview still renders directly");
+  await act(async () => {
+    remount.render(render({ ...fileItem, fileSHA256: "different-sha", fileSize: 101, fileMime: "image/jpeg" }));
+    await Promise.resolve();
+  });
+  equal(calls, 2, "same file id with a different content identity does not reuse a stale preview across Rooms");
+  await act(async () => remount.unmount());
+}
+
+async function testFilePreviewConcurrencyLimit() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const originalObserver = globalThis.IntersectionObserver;
+  delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+  const items: CollaborationTimelineItem[] = [1, 2, 3].map((index) => ({
+    id: `file-limit-${index}`, sequence: index, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: `limit-${index}.png`, fileName: `limit-${index}.png`, fileSize: 100, fileMime: "image/png", fileSHA256: `sha-${index}`,
+    createdAt: `2026-08-03T00:00:0${index}Z`, referenceIds: [],
+  }));
+  const calls: string[] = [];
+  const pending: Array<(value: null) => void> = [];
+  const previewFile = (fileId: string) => {
+    calls.push(fileId);
+    return new Promise<null>((resolve) => pending.push(resolve));
+  };
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<LocaleProvider><CollaborationTimeline
+      items={items} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+      transfers={items.map((entry) => ({ id: `t-${entry.id}`, fileId: entry.id, direction: "receive", name: entry.fileName || entry.id, status: "completed", transferred: 100, total: 100 }))}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewFile}
+    /></LocaleProvider>);
+    await Promise.resolve();
+  });
+  equal(calls.length, 2, "preview scheduler starts at most two global requests");
+  await act(async () => { pending.shift()?.(null); await Promise.resolve(); await Promise.resolve(); });
+  equal(calls.length, 3, "preview scheduler starts the next request after one slot completes");
+  await act(async () => {
+    for (const resolve of pending.splice(0)) resolve(null);
+    await Promise.resolve();
+  });
+  await act(async () => root.unmount());
+  if (originalObserver) globalThis.IntersectionObserver = originalObserver;
+}
+
+async function testFilePreviewQueuedCancellation() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const originalObserver = globalThis.IntersectionObserver;
+  const observers = new Map<Element, { callback: IntersectionObserverCallback; observer: IntersectionObserver; active: boolean }>();
+  class TestIntersectionObserver {
+    readonly root = null;
+    readonly rootMargin = "0px";
+    readonly thresholds = [0];
+    private target?: Element;
+    constructor(private callback: IntersectionObserverCallback) {}
+    observe(target: Element) {
+      this.target = target;
+      observers.set(target, { callback: this.callback, observer: this as unknown as IntersectionObserver, active: true });
+    }
+    disconnect() {
+      if (this.target) {
+        const value = observers.get(this.target);
+        if (value) value.active = false;
+      }
+    }
+    unobserve() {}
+    takeRecords(): IntersectionObserverEntry[] { return []; }
+  }
+  globalThis.IntersectionObserver = TestIntersectionObserver as unknown as typeof IntersectionObserver;
+  const emit = (target: Element, isIntersecting: boolean) => {
+    const value = observers.get(target);
+    if (value?.active) value.callback([{ isIntersecting, target } as IntersectionObserverEntry], value.observer);
+  };
+  const items: CollaborationTimelineItem[] = [1, 2, 3].map((index) => ({
+    id: `file-cancel-${index}`, sequence: index, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: `cancel-${index}.png`, fileName: `cancel-${index}.png`, fileSize: 100, fileMime: "image/png", fileSHA256: `cancel-sha-${index}`,
+    createdAt: `2026-08-03T00:00:0${index}Z`, referenceIds: [],
+  }));
+  const calls: string[] = [];
+  const pending = new Map<string, (value: null) => void>();
+  const previewFile = (fileId: string) => {
+    calls.push(fileId);
+    return new Promise<null>((resolve) => pending.set(fileId, resolve));
+  };
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<LocaleProvider><CollaborationTimeline
+      items={items} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+      transfers={items.map((entry) => ({ id: `t-${entry.id}`, fileId: entry.id, direction: "receive", name: entry.fileName || entry.id, status: "completed", transferred: 100, total: 100 }))}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewFile}
+    /></LocaleProvider>);
+    await Promise.resolve();
+  });
+  const cards = [...document.querySelectorAll(".collab-file-card")];
+  await act(async () => { cards.forEach((card) => emit(card, true)); await Promise.resolve(); });
+  equal(calls, [items[0].id, items[1].id], "only two visible preview loaders start while the third request remains queued");
+  await act(async () => { emit(cards[2], false); await Promise.resolve(); });
+  pending.get(items[0].id)?.(null);
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  equal(calls, [items[0].id, items[1].id], "a queued preview does not call its loader after the card leaves the viewport");
+  await act(async () => { emit(cards[2], true); await Promise.resolve(); });
+  equal(calls, [items[0].id, items[1].id, items[2].id], "the cancelled card can queue a fresh preview after re-entering the viewport");
+  pending.get(items[1].id)?.(null);
+  pending.get(items[2].id)?.(null);
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => root.unmount());
+  if (originalObserver) globalThis.IntersectionObserver = originalObserver;
+  else delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+}
+
+async function testFilePreviewCacheBounds() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const originalObserver = globalThis.IntersectionObserver;
+  delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+  const makeItem = (id: string, size = 100): CollaborationTimelineItem => ({
+    id, sequence: Number(id.replace(/\D/g, "")) || 1, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: `${id}.png`, fileName: `${id}.png`, fileSize: size, fileMime: "image/png", fileSHA256: `sha-${id}`,
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  });
+  const render = (items: CollaborationTimelineItem[], previewFile: (fileId: string) => Promise<{ mime: string; dataUrl: string }>) => <LocaleProvider><CollaborationTimeline
+    items={items} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+    transfers={items.map((entry) => ({ id: `t-${entry.id}`, fileId: entry.id, direction: "receive" as const, name: entry.fileName || entry.id, status: "completed" as const, transferred: entry.fileSize || 0, total: entry.fileSize || 0 }))}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+    previewFile={previewFile}
+  /></LocaleProvider>;
+  const container = document.getElementById("root")!;
+
+  const countItems = Array.from({ length: 17 }, (_, index) => makeItem(`cache-count-${index + 1}`));
+  let countCalls = 0;
+  const countLoader = async () => {
+    countCalls++;
+    return { mime: "image/png", dataUrl: "data:image/png;base64,Y2FjaGU=" };
+  };
+  const countRoot = createRoot(container);
+  await act(async () => { countRoot.render(render(countItems, countLoader)); await new Promise((resolve) => setTimeout(resolve, 30)); });
+  equal(countCalls, 17, "preview cache loads every distinct visible image");
+  await act(async () => countRoot.unmount());
+  const countRemount = createRoot(container);
+  await act(async () => { countRemount.render(render([countItems[0]], countLoader)); await new Promise((resolve) => setTimeout(resolve, 10)); });
+  equal(countCalls, 18, "preview cache evicts the oldest entry after its 16-item limit and can reload it");
+  await act(async () => countRemount.unmount());
+
+  const byteItems = [makeItem("cache-bytes-1", 9 * 1024 * 1024), makeItem("cache-bytes-2", 9 * 1024 * 1024)];
+  const largeDataUrl = `data:image/png;base64,${"A".repeat(9 * 1024 * 1024)}`;
+  let byteCalls = 0;
+  const byteLoader = async () => {
+    byteCalls++;
+    return { mime: "image/png", dataUrl: largeDataUrl };
+  };
+  const byteRoot = createRoot(container);
+  await act(async () => { byteRoot.render(render(byteItems, byteLoader)); await new Promise((resolve) => setTimeout(resolve, 30)); });
+  equal(byteCalls, 2, "preview cache loads entries that individually fit its byte budget");
+  await act(async () => byteRoot.unmount());
+  const byteRemount = createRoot(container);
+  await act(async () => { byteRemount.render(render([byteItems[0]], byteLoader)); await new Promise((resolve) => setTimeout(resolve, 10)); });
+  equal(byteCalls, 3, "preview cache evicts the oldest DataURL above its 16 MiB total and can reload it");
+  await act(async () => byteRemount.unmount());
+  if (originalObserver) globalThis.IntersectionObserver = originalObserver;
 }
 
 void main();

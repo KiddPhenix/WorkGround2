@@ -8,6 +8,7 @@ import { activeMention, collaborationMentionCandidates, filterMentionCandidates,
 import type { CollaborationMember, CollaborationTimelineItem } from "../types";
 
 type ComposerMode = "chat" | "contribution" | "agent" | "both" | "request";
+const roomModes = new Set<ComposerMode>(["chat", "contribution", "both", "request"]);
 
 interface CollaborationComposerProps {
   members: CollaborationMember[];
@@ -28,7 +29,7 @@ interface CollaborationComposerProps {
 export function CollaborationComposer(props: CollaborationComposerProps) {
   const c = collabCopy(useT());
   const [draft, setDraft] = useState("");
-  const [mode, setMode] = useState<ComposerMode>("chat");
+  const [mode, setMode] = useState<ComposerMode>(() => props.connected ? "chat" : "agent");
   const [target, setTarget] = useState("");
   const [contributionKind, setContributionKind] = useState("proposal");
   const [sending, setSending] = useState(false);
@@ -41,9 +42,11 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  const prevConnected = useRef(props.connected);
   const value = draft;
   const others = props.members.filter((member) => member.online && member.id !== props.selfMemberId);
   const agentMode = mode === "agent" || mode === "both";
+  const modeNeedsRoom = roomModes.has(mode);
   const mentionEnabled = mode === "chat" || mode === "both";
   const mentionCandidates = collaborationMentionCandidates(props.members, props.selfMemberId, props.connected);
   const mention = mentionEnabled ? activeMention(value, cursor) : undefined;
@@ -66,9 +69,24 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
       textareaRef.current?.setSelectionRange(next.cursor, next.cursor);
     });
   };
+  // When Room disconnects, auto-switch to Agent mode and preserve the draft.
+  useEffect(() => {
+    if (prevConnected.current && !props.connected && modeNeedsRoom) {
+      setMode("agent");
+    }
+    prevConnected.current = props.connected;
+  }, [props.connected, modeNeedsRoom]);
+
+  // Room-dependent reply is meaningless while offline.
+  useEffect(() => {
+    if (!props.connected && props.replyTo) props.onReplyClear();
+  }, [props.connected, props.replyTo, props.onReplyClear]);
+
   const submit = async () => {
     const text = value.trim();
     if (!text || sending || props.disabled) return;
+    // Non-agent modes require a live Room connection.
+    if (modeNeedsRoom && !props.connected) return;
     const mentions = mentionPayload(text, selectedMentions);
     const referenceIDs = props.replyTo ? [props.replyTo.id] : [];
     setSending(true);
@@ -107,12 +125,14 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
 
   useEffect(() => onFilesDroppedIn(() => rootRef.current, (paths) => {
     if (props.disabled || sharing || paths.length === 0) return;
+    if (!props.connected) return;
     setDragging(false);
     setSharing(true);
     void props.onShareFiles(paths).catch(() => {}).finally(() => setSharing(false));
-  }), [props.disabled, props.onShareFiles, sharing]);
+  }), [props.connected, props.disabled, props.onShareFiles, sharing]);
 
   const dragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!props.connected) return;
     if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
@@ -124,11 +144,11 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
     {props.replyTo && <div className="collab-composer-reply"><Reply size={13} /><span><strong>{c("replyingTo", { name: props.replyTo.actorName })}</strong><small>{props.replyTo.text}</small></span><button type="button" aria-label={c("cancelReply")} title={c("cancelReply")} onClick={props.onReplyClear}><X size={14} /></button></div>}
     <div className="collab-composer-mode">
       <select value={mode} onChange={(event) => setMode(event.target.value as ComposerMode)} aria-label={c("messageType")}>
-        <option value="chat">{c("teamChat")}</option>
-        <option value="contribution">{c("contribution")}</option>
+        <option value="chat" disabled={!props.connected}>{c("teamChat")}{!props.connected ? ` · ${c("offline")}` : ""}</option>
+        <option value="contribution" disabled={!props.connected}>{c("contribution")}{!props.connected ? ` · ${c("offline")}` : ""}</option>
         <option value="agent">{c("myAgent")}</option>
-        <option value="both">{c("chatAndAgent")}</option>
-        <option value="request">{c("requestOther")}</option>
+        <option value="both" disabled={!props.connected}>{c("chatAndAgent")}{!props.connected ? ` · ${c("offline")}` : ""}</option>
+        <option value="request" disabled={!props.connected}>{c("requestOther")}{!props.connected ? ` · ${c("offline")}` : ""}</option>
       </select>
       {mode === "request" && <select required value={target} onChange={(event) => setTarget(event.target.value)} aria-label={c("requestOther")}>
         <option value="">—</option>{others.map((member) => <option key={member.id} value={member.id}>{member.name} · {member.agent.name}</option>)}
