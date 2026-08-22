@@ -815,7 +815,7 @@ assert.match(css, /\.desktop-icon-popup__workspace-actions button\.subtle:not\(:
 assert.match(css, /\.desktop-icon-popup__workspace-actions button\.desktop-icon-popup__workspace-delete:not\(:disabled\):hover[^}]*background:/, "workspace delete keeps a distinct destructive hover surface");
 assert.match(css, /\.desktop-icon-popup__workspace-count button:not\(:disabled\):hover/, "workspace count choices expose hover feedback while enabled");
 assert.match(css, /\.desktop-icon-popup__workspace-pin:not\(:disabled\):hover/, "workspace pin exposes hover feedback while enabled");
-assert.match(css, /\.desktop-icon-popup__workspace-pin\s*\{[^}]*margin-right:\s*6px;/, "workspace pin stays clear of the popup scrollbar");
+assert.match(css, /\.desktop-icon-popup__workspace-pin\s*\{[^}]*margin-right:\s*12px;/, "workspace and Room pins stay clear of the popup scrollbar");
 assert.match(css, /\.desktop-icon-popup__workspace-pin\[aria-pressed="true"\]/, "the pinned state has a distinct pressed style");
 assert.match(css, /\.desktop-icon-popup__workspace-count button\[aria-pressed="true"\]/, "the selected desktop workspace count has a distinct pressed style");
 assert.match(component, /Array\.from\(\{ length: WORKSPACE_PIN_LIMIT \}/, "the workspace footer always renders the fixed slot count");
@@ -1017,6 +1017,10 @@ assert.match(component, /visibleDesktopIcons\(mergedItems, roomIconsVisible\)/, 
 assert.match(component, /!collapsed && rows\.top\.length > 0/, "a fully hidden Room row leaves no empty reserved row on the desktop");
 assert.doesNotMatch(component, /openCollaborationDialog|CreateCollaboration|HostRoom|JoinRoom/, "RoomsManager never re-implements the Host/Join Room form; the root App owns openCollaborationDialog");
 assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__rooms\)/, "the rooms popup keeps the same bounded popup layout as the workspace manager");
+assert.match(css, /\.desktop-icon-popup__room-visibility button:not\(:disabled\):hover[^}]*background:/, "the Room icon visibility switch exposes hover feedback");
+assert.match(css, /\.desktop-icon-popup__room-visibility button\[aria-checked="true"\]:not\(:disabled\):hover[^}]*background:/, "the enabled Room icon visibility switch keeps a distinct hover state");
+assert.match(css, /\.desktop-icon-popup__room-notification button:not\(:disabled\):hover[^}]*background:/, "Room notification choices expose hover feedback");
+assert.match(css, /\.desktop-icon-popup__room-notification button\[aria-checked="true"\]:not\(:disabled\):hover[^}]*background:/, "the selected Room notification choice keeps a distinct hover state");
 assert.match(css, /\.desktop-icon-popup__room-slots[^}]*grid-template-columns:\s*repeat\(7, minmax\(0, 1fr\)\)/, "the Room pin summary renders seven equal slots");
 assert.match(component, /item\.kind === "room"[\s\S]{0,180}<RoomGlyph icon=\{projectIconKey\(item\.icon\)\}[\s\S]{0,220}item\.notifications\.some\(\(notice\) => notice\.attention\) && <AtSign className="desktop-icon__room-mention"/, "a configured Room glyph scans every unread notice and retains the distinct mention badge");
 assert.match(component, /desktop-icon-popup__eyebrow--mention[\s\S]{0,180}notice\.title \|\| roomAttentionLabel\(attention\)/, "mention popup headings preserve the backend author-aware title and use the local label only as fallback");
