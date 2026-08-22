@@ -19,6 +19,38 @@ type vocabularySkillActivator interface {
 	ActivateSkillVocabulary(name string) (vocabulary.RefreshResult, error)
 }
 
+// CompleteVocabulary returns completion candidates from the active tab's
+// controller snapshot — the same data source the main Composer's vocabulary
+// menu uses. The desktop widget has no tab of its own until a conversation is
+// started, so it completes against the app's current session. An empty result
+// (no active controller) simply closes the widget's suggestion list.
+func (a *App) CompleteVocabulary(prefix string, limit int) ([]vocabulary.Match, error) {
+	ctrl := a.activeCtrl()
+	if ctrl == nil {
+		return []vocabulary.Match{}, nil
+	}
+	completer, ok := ctrl.(vocabularyCompleter)
+	if !ok {
+		return []vocabulary.Match{}, nil
+	}
+	return completer.CompleteVocabulary(strings.TrimSpace(prefix), limit), nil
+}
+
+// RecordVocabularyUse records an accepted suggestion against the active tab.
+// Unknown entries are treated as already satisfied so delayed/retried UI calls
+// remain safe.
+func (a *App) RecordVocabularyUse(id, useID string) error {
+	ctrl := a.activeCtrl()
+	if ctrl == nil {
+		return nil
+	}
+	recorder, ok := ctrl.(vocabularyUseRecorder)
+	if !ok {
+		return nil
+	}
+	return recorder.RecordVocabularyUse(strings.TrimSpace(id), strings.TrimSpace(useID))
+}
+
 // CompleteVocabularyForTab returns completion candidates from the target tab's
 // controller snapshot. The tab ID is mandatory so a delayed response from a
 // previous workspace can never leak into the active composer.

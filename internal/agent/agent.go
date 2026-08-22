@@ -439,6 +439,12 @@ type Agent struct {
 	// stormSig: a model keeps doing the same successful write, so there is no
 	// error for the failure-only storm breaker to see.
 	repeatSuccessCounts map[string]int
+
+	// anchored, when non-nil, arms the DeepSeek two-phase bootstrap: the first
+	// model request exposes only the bootstrap trio (bash/read_file/edit_file)
+	// and a shortened system prompt, then the full catalog returns after the
+	// first assistant reply. Never demotes. See anchored.go.
+	anchored *anchoredBootstrap
 }
 
 // KeepPolicy is a bitmask controlling which messages are preserved beyond the
@@ -918,6 +924,16 @@ type Options struct {
 	// and ClassifySemanticIntent returns a safe fallback. The main session
 	// model is never used for this purpose.
 	SemanticIntentProvider provider.Provider
+
+	// AnchoredBootstrapSystemPrompt, when non-empty, arms the two-phase DeepSeek
+	// bootstrap for this agent: the first model request exposes only
+	// bash/read_file/edit_file and this (shorter) system prompt; after the
+	// first assistant reply the full tool catalog and the session's full
+	// system prompt return. The value must be a strict prefix of the session
+	// system prompt — the full prompt with its trailing memory/skills sections
+	// removed — so the provider prefix cache keeps the leading tokens warm
+	// across promotion. Empty disables the mechanism.
+	AnchoredBootstrapSystemPrompt string
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -1001,6 +1017,16 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		maxSubagentDepth:        maxSubagentDepth,
 		memoryCompiler:          opts.MemoryCompiler,
 		memoryCompilerVerbosity: normalizeMemoryCompilerVerbosity(opts.MemoryCompilerVerbosity),
+	}
+	if opts.AnchoredBootstrapSystemPrompt != "" {
+		a.anchored = &anchoredBootstrap{
+			bootstrapSystemPrompt: opts.AnchoredBootstrapSystemPrompt,
+			bootstrapTools: map[string]struct{}{
+				"bash":      {},
+				"read_file": {},
+				"edit_file": {},
+			},
+		}
 	}
 	if opts.SemanticIntentProvider != nil {
 		a.intent = newSemanticIntentClassifier(opts.SemanticIntentProvider)
@@ -1105,12 +1131,13 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 			a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(midTurnSteerMessage(text)), Origin: provider.MessageOriginHost})
 			a.sink.Emit(event.Event{Kind: event.Steer, Text: text})
 		}
-		schemas := a.tools.Schemas()
+		schemas := a.effectiveSchemas()
 		prefixShape := a.capturePrefixShape(schemas)
 		prevPrefixShape := a.lastPrefixShape
 		if !a.haveLastPrefixShape {
 			prevPrefixShape = prefixShape
 		}
+		a.maybeNoticeAnchored()
 
 		text, reasoning, signature, calls, usage, interrupted, partialToolStarted, err := a.stream(ctx, step+1)
 		if err != nil {
@@ -1758,8 +1785,8 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 		a.sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: info.Attempt, RetryMax: info.Max})
 	})
 	ch, err := a.prov.Stream(ctx, provider.Request{
-		Messages:    a.session.Messages,
-		Tools:       a.tools.Schemas(),
+		Messages:    a.effectiveMessages(),
+		Tools:       a.effectiveSchemas(),
 		Temperature: a.temperature,
 	})
 	if err != nil {
@@ -1905,7 +1932,13 @@ func (a *Agent) memoryCitations() []provider.MemoryCitation {
 }
 
 func (a *Agent) capturePrefixShape(schemas []provider.ToolSchema) PrefixShape {
-	return CaptureShape(a.systemPrompt(), schemas, a.session.RewriteVersion())
+	sys := a.systemPrompt()
+	if a.anchoredBootstrapActive() {
+		// The request actually sends the bootstrap prefix version while
+		// unpromoted; hash that so cache-miss diagnostics match the wire.
+		sys = a.anchored.bootstrapSystemPrompt
+	}
+	return CaptureShape(sys, schemas, a.session.RewriteVersion())
 }
 
 func (a *Agent) systemPrompt() string {

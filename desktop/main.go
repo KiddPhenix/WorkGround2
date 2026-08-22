@@ -113,7 +113,6 @@ func main() {
 	if zf, ok := loadZoomFactor(); ok && zf > 0 {
 		zoomFactor = zf
 	}
-
 	err := wails.Run(&options.App{
 		Title:     "WorkGround2",
 		Width:     width,

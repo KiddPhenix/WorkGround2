@@ -1,0 +1,644 @@
+{
+  "version": 1,
+  "canvas": {
+    "width": 64,
+    "height": 64,
+    "viewBox": "0 0 64 64"
+  },
+  "format": {
+    "source": "ImageGen PNG masters; SVG retained as metadata/reference",
+    "raster": "PNG 64x64",
+    "transparent": true,
+    "flat": false,
+    "gradients": true,
+    "shadows": true
+  },
+  "layerOrder": [
+    "frame",
+    "headwear",
+    "eyes",
+    "workspaceBadge",
+    "taskTool"
+  ],
+  "identityRule": {
+    "headwear": "Choose exactly one robot head module from compatibility slot A or B.",
+    "stableSeed": "sessionId",
+    "semantic": false
+  },
+  "hats": [
+    {
+      "id": "baseball-cap",
+      "label": "Signal Antenna",
+      "svg": "svg/hats/baseball-cap.svg",
+      "png": "png/hats/baseball-cap.png"
+    },
+    {
+      "id": "beanie",
+      "label": "Twin Antennae",
+      "svg": "svg/hats/beanie.svg",
+      "png": "png/hats/beanie.png"
+    },
+    {
+      "id": "beret",
+      "label": "Sensor Dome",
+      "svg": "svg/hats/beret.svg",
+      "png": "png/hats/beret.png"
+    },
+    {
+      "id": "bucket-hat",
+      "label": "Vent Crest",
+      "svg": "svg/hats/bucket-hat.svg",
+      "png": "png/hats/bucket-hat.png"
+    },
+    {
+      "id": "fedora",
+      "label": "LED Status Bar",
+      "svg": "svg/hats/fedora.svg",
+      "png": "png/hats/fedora.png"
+    },
+    {
+      "id": "bowler",
+      "label": "Radar Dish",
+      "svg": "svg/hats/bowler.svg",
+      "png": "png/hats/bowler.png"
+    },
+    {
+      "id": "newsboy-cap",
+      "label": "Sensor Ears",
+      "svg": "svg/hats/newsboy-cap.svg",
+      "png": "png/hats/newsboy-cap.png"
+    },
+    {
+      "id": "cowboy-hat",
+      "label": "Camera Turret",
+      "svg": "svg/hats/cowboy-hat.svg",
+      "png": "png/hats/cowboy-hat.png"
+    },
+    {
+      "id": "sailor-cap",
+      "label": "Communication Loop",
+      "svg": "svg/hats/sailor-cap.svg",
+      "png": "png/hats/sailor-cap.png"
+    },
+    {
+      "id": "sun-hat",
+      "label": "Signal Nodes",
+      "svg": "svg/hats/sun-hat.svg",
+      "png": "png/hats/sun-hat.png"
+    },
+    {
+      "id": "top-hat",
+      "label": "Armor Fin",
+      "svg": "svg/hats/top-hat.svg",
+      "png": "png/hats/top-hat.png"
+    },
+    {
+      "id": "crown",
+      "label": "Stabilizer Fins",
+      "svg": "svg/hats/crown.svg",
+      "png": "png/hats/crown.png"
+    },
+    {
+      "id": "party-hat",
+      "label": "Emergency Beacon",
+      "svg": "svg/hats/party-hat.svg",
+      "png": "png/hats/party-hat.png"
+    },
+    {
+      "id": "wizard-hat",
+      "label": "Armor Crown",
+      "svg": "svg/hats/wizard-hat.svg",
+      "png": "png/hats/wizard-hat.png"
+    },
+    {
+      "id": "flat-cap",
+      "label": "Receiver Pod",
+      "svg": "svg/hats/flat-cap.svg",
+      "png": "png/hats/flat-cap.png"
+    }
+  ],
+  "hair": [
+    {
+      "id": "side-swept",
+      "label": "Signal Blade",
+      "svg": "svg/hair/side-swept.svg",
+      "png": "png/hair/side-swept.png"
+    },
+    {
+      "id": "quiff",
+      "label": "Audio Sensors",
+      "svg": "svg/hair/quiff.svg",
+      "png": "png/hair/quiff.png"
+    },
+    {
+      "id": "mohawk",
+      "label": "Vent Module",
+      "svg": "svg/hair/mohawk.svg",
+      "png": "png/hair/mohawk.png"
+    },
+    {
+      "id": "twin-tufts",
+      "label": "Hologram Projector",
+      "svg": "svg/hair/twin-tufts.svg",
+      "png": "png/hair/twin-tufts.png"
+    },
+    {
+      "id": "single-curl",
+      "label": "Lightning Rods",
+      "svg": "svg/hair/single-curl.svg",
+      "png": "png/hair/single-curl.png"
+    },
+    {
+      "id": "slick-back",
+      "label": "Crescent Scanner",
+      "svg": "svg/hair/slick-back.svg",
+      "png": "png/hair/slick-back.png"
+    },
+    {
+      "id": "messy-spikes",
+      "label": "Equalizer Panel",
+      "svg": "svg/hair/messy-spikes.svg",
+      "png": "png/hair/messy-spikes.png"
+    },
+    {
+      "id": "bowl-cut",
+      "label": "Siren Pair",
+      "svg": "svg/hair/bowl-cut.svg",
+      "png": "png/hair/bowl-cut.png"
+    },
+    {
+      "id": "center-part",
+      "label": "Mechanical Ears",
+      "svg": "svg/hair/center-part.svg",
+      "png": "png/hair/center-part.png"
+    },
+    {
+      "id": "wave",
+      "label": "Energy Indicator",
+      "svg": "svg/hair/wave.svg",
+      "png": "png/hair/wave.png"
+    },
+    {
+      "id": "top-knot",
+      "label": "Dorsal Plates",
+      "svg": "svg/hair/top-knot.svg",
+      "png": "png/hair/top-knot.png"
+    },
+    {
+      "id": "pompadour",
+      "label": "Radar Eyes",
+      "svg": "svg/hair/pompadour.svg",
+      "png": "png/hair/pompadour.png"
+    },
+    {
+      "id": "afro-puff",
+      "label": "V Crest",
+      "svg": "svg/hair/afro-puff.svg",
+      "png": "png/hair/afro-puff.png"
+    },
+    {
+      "id": "lightning-fringe",
+      "label": "Network Array",
+      "svg": "svg/hair/lightning-fringe.svg",
+      "png": "png/hair/lightning-fringe.png"
+    },
+    {
+      "id": "short-crop",
+      "label": "Compass Pod",
+      "svg": "svg/hair/short-crop.svg",
+      "png": "png/hair/short-crop.png"
+    }
+  ],
+  "frames": [
+    {
+      "id": "violet",
+      "label": "Violet",
+      "color": "#7B61FF",
+      "svg": "svg/frames/violet.svg",
+      "png": "png/frames/violet.png"
+    },
+    {
+      "id": "cobalt",
+      "label": "Cobalt",
+      "color": "#3478F6",
+      "svg": "svg/frames/cobalt.svg",
+      "png": "png/frames/cobalt.png"
+    },
+    {
+      "id": "cyan",
+      "label": "Cyan",
+      "color": "#22B8F0",
+      "svg": "svg/frames/cyan.svg",
+      "png": "png/frames/cyan.png"
+    },
+    {
+      "id": "teal",
+      "label": "Teal",
+      "color": "#20B8A6",
+      "svg": "svg/frames/teal.svg",
+      "png": "png/frames/teal.png"
+    },
+    {
+      "id": "green",
+      "label": "Green",
+      "color": "#42C96B",
+      "svg": "svg/frames/green.svg",
+      "png": "png/frames/green.png"
+    },
+    {
+      "id": "lime",
+      "label": "Lime",
+      "color": "#A7D92D",
+      "svg": "svg/frames/lime.svg",
+      "png": "png/frames/lime.png"
+    },
+    {
+      "id": "amber",
+      "label": "Amber",
+      "color": "#F3B83F",
+      "svg": "svg/frames/amber.svg",
+      "png": "png/frames/amber.png"
+    },
+    {
+      "id": "orange",
+      "label": "Orange",
+      "color": "#F47A32",
+      "svg": "svg/frames/orange.svg",
+      "png": "png/frames/orange.png"
+    },
+    {
+      "id": "coral",
+      "label": "Coral",
+      "color": "#EF5D78",
+      "svg": "svg/frames/coral.svg",
+      "png": "png/frames/coral.png"
+    }
+  ],
+  "tools": [
+    {
+      "id": "code",
+      "label": "Code",
+      "accent": "#7B61FF",
+      "svg": "svg/tools/code.svg",
+      "png": "png/tools/code.png"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal",
+      "accent": "#3478F6",
+      "svg": "svg/tools/terminal.svg",
+      "png": "png/tools/terminal.png"
+    },
+    {
+      "id": "review",
+      "label": "Review",
+      "accent": "#22B8F0",
+      "svg": "svg/tools/review.svg",
+      "png": "png/tools/review.png"
+    },
+    {
+      "id": "debug",
+      "label": "Debug",
+      "accent": "#42C96B",
+      "svg": "svg/tools/debug.svg",
+      "png": "png/tools/debug.png"
+    },
+    {
+      "id": "test",
+      "label": "Test",
+      "accent": "#A7D92D",
+      "svg": "svg/tools/test.svg",
+      "png": "png/tools/test.png"
+    },
+    {
+      "id": "research",
+      "label": "Research",
+      "accent": "#22B8F0",
+      "svg": "svg/tools/research.svg",
+      "png": "png/tools/research.png"
+    },
+    {
+      "id": "browser",
+      "label": "Browser",
+      "accent": "#3478F6",
+      "svg": "svg/tools/browser.svg",
+      "png": "png/tools/browser.png"
+    },
+    {
+      "id": "writing",
+      "label": "Writing",
+      "accent": "#F3B83F",
+      "svg": "svg/tools/writing.svg",
+      "png": "png/tools/writing.png"
+    },
+    {
+      "id": "docs",
+      "label": "Documents",
+      "accent": "#22B8F0",
+      "svg": "svg/tools/docs.svg",
+      "png": "png/tools/docs.png"
+    },
+    {
+      "id": "plan",
+      "label": "Planning",
+      "accent": "#F3B83F",
+      "svg": "svg/tools/plan.svg",
+      "png": "png/tools/plan.png"
+    },
+    {
+      "id": "data",
+      "label": "Data",
+      "accent": "#20B8A6",
+      "svg": "svg/tools/data.svg",
+      "png": "png/tools/data.png"
+    },
+    {
+      "id": "database",
+      "label": "Database",
+      "accent": "#20B8A6",
+      "svg": "svg/tools/database.svg",
+      "png": "png/tools/database.png"
+    },
+    {
+      "id": "design",
+      "label": "Design",
+      "accent": "#EF5D78",
+      "svg": "svg/tools/design.svg",
+      "png": "png/tools/design.png"
+    },
+    {
+      "id": "image",
+      "label": "Image",
+      "accent": "#EF5D78",
+      "svg": "svg/tools/image.svg",
+      "png": "png/tools/image.png"
+    },
+    {
+      "id": "chat",
+      "label": "Communication",
+      "accent": "#22B8F0",
+      "svg": "svg/tools/chat.svg",
+      "png": "png/tools/chat.png"
+    },
+    {
+      "id": "deploy",
+      "label": "Deploy",
+      "accent": "#F47A32",
+      "svg": "svg/tools/deploy.svg",
+      "png": "png/tools/deploy.png"
+    },
+    {
+      "id": "build",
+      "label": "Build",
+      "accent": "#F3B83F",
+      "svg": "svg/tools/build.svg",
+      "png": "png/tools/build.png"
+    },
+    {
+      "id": "git",
+      "label": "Git",
+      "accent": "#F47A32",
+      "svg": "svg/tools/git.svg",
+      "png": "png/tools/git.png"
+    },
+    {
+      "id": "files",
+      "label": "Files",
+      "accent": "#3478F6",
+      "svg": "svg/tools/files.svg",
+      "png": "png/tools/files.png"
+    },
+    {
+      "id": "automation",
+      "label": "Automation",
+      "accent": "#7B61FF",
+      "svg": "svg/tools/automation.svg",
+      "png": "png/tools/automation.png"
+    },
+    {
+      "id": "security",
+      "label": "Security",
+      "accent": "#42C96B",
+      "svg": "svg/tools/security.svg",
+      "png": "png/tools/security.png"
+    },
+    {
+      "id": "config",
+      "label": "Configuration",
+      "accent": "#8D9AAA",
+      "svg": "svg/tools/config.svg",
+      "png": "png/tools/config.png"
+    },
+    {
+      "id": "monitor",
+      "label": "Monitor",
+      "accent": "#42C96B",
+      "svg": "svg/tools/monitor.svg",
+      "png": "png/tools/monitor.png"
+    },
+    {
+      "id": "general",
+      "label": "General",
+      "accent": "#8D9AAA",
+      "svg": "svg/tools/general.svg",
+      "png": "png/tools/general.png"
+    }
+  ],
+  "eyes": [
+    {
+      "id": "running",
+      "label": "Running",
+      "color": "#16C8EA",
+      "fps": 6,
+      "loop": true,
+      "holdLast": false,
+      "frameWidth": 64,
+      "frameHeight": 64,
+      "frames": [
+        {
+          "svg": "svg/eyes/running/frame-00.svg",
+          "png": "png/eyes/running/frame-00.png"
+        },
+        {
+          "svg": "svg/eyes/running/frame-01.svg",
+          "png": "png/eyes/running/frame-01.png"
+        },
+        {
+          "svg": "svg/eyes/running/frame-02.svg",
+          "png": "png/eyes/running/frame-02.png"
+        },
+        {
+          "svg": "svg/eyes/running/frame-03.svg",
+          "png": "png/eyes/running/frame-03.png"
+        },
+        {
+          "svg": "svg/eyes/running/frame-04.svg",
+          "png": "png/eyes/running/frame-04.png"
+        },
+        {
+          "svg": "svg/eyes/running/frame-05.svg",
+          "png": "png/eyes/running/frame-05.png"
+        }
+      ],
+      "sprite": "sprites/eyes/running.png"
+    },
+    {
+      "id": "problem",
+      "label": "Problem",
+      "color": "#FFB020",
+      "fps": 3,
+      "loop": true,
+      "holdLast": false,
+      "frameWidth": 64,
+      "frameHeight": 64,
+      "frames": [
+        {
+          "svg": "svg/eyes/problem/frame-00.svg",
+          "png": "png/eyes/problem/frame-00.png"
+        },
+        {
+          "svg": "svg/eyes/problem/frame-01.svg",
+          "png": "png/eyes/problem/frame-01.png"
+        },
+        {
+          "svg": "svg/eyes/problem/frame-02.svg",
+          "png": "png/eyes/problem/frame-02.png"
+        },
+        {
+          "svg": "svg/eyes/problem/frame-03.svg",
+          "png": "png/eyes/problem/frame-03.png"
+        },
+        {
+          "svg": "svg/eyes/problem/frame-04.svg",
+          "png": "png/eyes/problem/frame-04.png"
+        },
+        {
+          "svg": "svg/eyes/problem/frame-05.svg",
+          "png": "png/eyes/problem/frame-05.png"
+        }
+      ],
+      "sprite": "sprites/eyes/problem.png"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "color": "#9AD51F",
+      "fps": 8,
+      "loop": false,
+      "holdLast": true,
+      "frameWidth": 64,
+      "frameHeight": 64,
+      "frames": [
+        {
+          "svg": "svg/eyes/success/frame-00.svg",
+          "png": "png/eyes/success/frame-00.png"
+        },
+        {
+          "svg": "svg/eyes/success/frame-01.svg",
+          "png": "png/eyes/success/frame-01.png"
+        },
+        {
+          "svg": "svg/eyes/success/frame-02.svg",
+          "png": "png/eyes/success/frame-02.png"
+        },
+        {
+          "svg": "svg/eyes/success/frame-03.svg",
+          "png": "png/eyes/success/frame-03.png"
+        },
+        {
+          "svg": "svg/eyes/success/frame-04.svg",
+          "png": "png/eyes/success/frame-04.png"
+        },
+        {
+          "svg": "svg/eyes/success/frame-05.svg",
+          "png": "png/eyes/success/frame-05.png"
+        }
+      ],
+      "sprite": "sprites/eyes/success.png"
+    },
+    {
+      "id": "failure",
+      "label": "Failure",
+      "color": "#FF4D4F",
+      "fps": 8,
+      "loop": false,
+      "holdLast": true,
+      "frameWidth": 64,
+      "frameHeight": 64,
+      "frames": [
+        {
+          "svg": "svg/eyes/failure/frame-00.svg",
+          "png": "png/eyes/failure/frame-00.png"
+        },
+        {
+          "svg": "svg/eyes/failure/frame-01.svg",
+          "png": "png/eyes/failure/frame-01.png"
+        },
+        {
+          "svg": "svg/eyes/failure/frame-02.svg",
+          "png": "png/eyes/failure/frame-02.png"
+        },
+        {
+          "svg": "svg/eyes/failure/frame-03.svg",
+          "png": "png/eyes/failure/frame-03.png"
+        },
+        {
+          "svg": "svg/eyes/failure/frame-04.svg",
+          "png": "png/eyes/failure/frame-04.png"
+        },
+        {
+          "svg": "svg/eyes/failure/frame-05.svg",
+          "png": "png/eyes/failure/frame-05.png"
+        }
+      ],
+      "sprite": "sprites/eyes/failure.png"
+    },
+    {
+      "id": "cleanup",
+      "label": "Cleanup",
+      "color": "#9098A3",
+      "fps": 2,
+      "loop": true,
+      "holdLast": false,
+      "frameWidth": 64,
+      "frameHeight": 64,
+      "frames": [
+        {
+          "svg": "svg/eyes/cleanup/frame-00.svg",
+          "png": "png/eyes/cleanup/frame-00.png"
+        },
+        {
+          "svg": "svg/eyes/cleanup/frame-01.svg",
+          "png": "png/eyes/cleanup/frame-01.png"
+        },
+        {
+          "svg": "svg/eyes/cleanup/frame-02.svg",
+          "png": "png/eyes/cleanup/frame-02.png"
+        },
+        {
+          "svg": "svg/eyes/cleanup/frame-03.svg",
+          "png": "png/eyes/cleanup/frame-03.png"
+        },
+        {
+          "svg": "svg/eyes/cleanup/frame-04.svg",
+          "png": "png/eyes/cleanup/frame-04.png"
+        },
+        {
+          "svg": "svg/eyes/cleanup/frame-05.svg",
+          "png": "png/eyes/cleanup/frame-05.png"
+        }
+      ],
+      "sprite": "sprites/eyes/cleanup.png"
+    }
+  ],
+  "templates": {
+    "workspaceBadge": {
+      "svg": "svg/templates/workspace-badge.svg",
+      "png": "png/templates/workspace-badge.png"
+    },
+    "neutralLedGrid": {
+      "svg": "svg/templates/neutral-led-grid.svg",
+      "png": "png/templates/neutral-led-grid.png"
+    }
+  }
+}

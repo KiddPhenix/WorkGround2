@@ -1255,6 +1255,8 @@ async function main() {
   ok(appSource.includes('mode="dialog"') && workspaceSource.includes('mode?: "session" | "dialog"'), "connection popup and connected Session have separate presentation modes");
   ok(!workspaceSource.includes("collab-room-rail"), "embedded collaboration view reuses the existing Session List instead of duplicating a Room rail");
   ok(projectTreeSource.includes("const sourceBadge = collaborationSession ? null :"), "Room Session keeps its dedicated icon without an external-source badge");
+  ok(appSource.match(/activeContentVisible=\{!widgetActive\}/g)?.length === 2, "both ProjectTree layouts receive the real main-content visibility boundary");
+  ok(projectTreeSource.includes("if (!activeContentVisible) return;") && projectTreeSource.includes("activeContentVisible, activeScope"), "a hidden ProjectTree cannot auto-clear the active Room unread state");
   ok(workspaceSource.includes('const usable = ownsRoom && Boolean(state.room)') && workspaceSource.includes('c("cachedBackground")'), "cached Room context remains usable and is explicitly disclosed while offline");
   ok(workspaceSource.includes("if (!ownsRoom || !state.room)") && !workspaceSource.includes('c("untitledRoom")'), "a Session without an authoritative Room stays on the connection entry instead of rendering a synthetic Room");
   ok(workspaceSource.includes("handleAction(controller.startAgent") && composerSource.includes("catch {"), "Agent action promises are consumed at both timeline and composer UI boundaries");

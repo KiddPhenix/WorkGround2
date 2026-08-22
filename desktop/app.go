@@ -137,6 +137,12 @@ type App struct {
 	dshWorkbenchMu sync.Mutex
 	dshWorkbenches map[string]*dshWorkbench
 
+	// runHub owns external managed-agent projections independently from local
+	// tabs. Initialization failures remain visible through the Wails snapshot;
+	// they never disable the rest of Desktop.
+	runHub    *desktopRunHub
+	runHubErr error
+
 	// tabsSaveMu serializes writes to desktop-tabs.json and its fixed .tmp path.
 	tabsSaveMu             sync.Mutex
 	tabsSaveVersion        uint64 // protected by mu; assigned when collecting a snapshot
@@ -152,6 +158,26 @@ type App struct {
 	trayReady           bool
 	tray                *desktopTray
 
+	// widgetModeEnter overrides the shared widget entry transition used by
+	// startup and close handling (test-only seam; nil uses EnterWidgetMode).
+	widgetModeEnter func() error
+
+	// widgetTaskbarToggle overrides the native taskbar-button switch used by
+	// widget-mode transitions (test-only seam; nil uses the platform impl,
+	// which is a no-op outside Windows).
+	widgetTaskbarToggle func(hide bool) error
+
+	// widgetWindowOps overrides the native window geometry interaction used by
+	// widget-mode transitions and style switches (test-only seam; nil uses the
+	// Wails/Win32 runtime). Injecting it lets tests drive the real orchestration
+	// paths (Enter/ExitWidgetMode, SetDesktopWidgetStyle) without a live window.
+	widgetWindowOps *widgetWindowOps
+
+	// windowSetAlwaysOnTop overrides the runtime always-on-top flag used by
+	// SetDesktopWidgetAlwaysOnTop while widget mode is active (test-only seam;
+	// nil wraps runtime.WindowSetAlwaysOnTop).
+	windowSetAlwaysOnTop func(on bool) error
+
 	mediaTokens     *mediaTokenStore
 	background      *sessionBackgroundService
 	botInstalls     map[string]*botInstallSession
@@ -161,8 +187,11 @@ type App struct {
 	decisionCancel  context.CancelFunc
 	decisionApplyMu sync.Mutex
 	decisionSending atomic.Bool
-	ownerIdleProbe  func() (time.Duration, error) // nil uses the platform probe
-	ownerNow        func() time.Time              // nil uses time.Now
+	// ownerDecisionEnabled 是“主人决策”功能的运行时开关，由 NewApp 从
+	// ownerDecisionFeatureEnabled 初始化（当前默认关闭）。测试可显式覆盖。
+	ownerDecisionEnabled bool
+	ownerIdleProbe       func() (time.Duration, error) // nil uses the platform probe
+	ownerNow             func() time.Time              // nil uses time.Now
 
 	unreadMu           sync.RWMutex
 	unreadStore        *unread.Store
@@ -213,10 +242,17 @@ type App struct {
 	// collaborations owns one isolated Room runtime per collaboration Session.
 	// It has its own lock so network reconnects and Wails calls never contend
 	// with tab selection; each runtime owns its connection, outbox and Agent runs.
-	collaborationMu    sync.Mutex
-	collaborations     map[string]*desktopCollaboration
-	collaborationLANMu sync.Mutex
-	collaborationLAN   *collaborationLANHost
+	collaborationMu               sync.Mutex
+	collaborations                map[string]*desktopCollaboration
+	collaborationAuthorityMu      sync.Mutex
+	collaborationAuthority        *collaborationAuthority
+	collaborationLANMu            sync.Mutex
+	collaborationLAN              *collaborationLANHost
+	collaborationRestoreMu        sync.Mutex
+	collaborationReconcileMu      sync.Mutex
+	collaborationReconcileEnabled bool
+	collaborationReconcileRunning bool
+	collaborationReconcilePending bool
 
 	configRebuildNeeded atomic.Bool // set by deferred config saves when a turn is running
 
@@ -224,15 +260,51 @@ type App struct {
 	// action ledger. It is intentionally independent from a.mu: widget actions
 	// may call normal tab APIs, which acquire a.mu themselves.
 	widgetMu             sync.Mutex
+	widgetRegionMu       sync.Mutex
 	widgetActionMu       sync.Mutex
 	widgetConversationMu sync.Mutex
 	widgetMode           bool
+	widgetStyle          string
+	widgetSurfaceGen     int64 // protected by widgetMu; rejects stale resize calls
+	widgetSurfaceState   WidgetWindowState
 	widgetStateLoaded    bool
 	widgetState          widgetPersistedState
 	widgetIdleSince      int64 // protected by widgetActionMu
 	widgetInfoMu         sync.Mutex
 	widgetInfoCache      widgetInfoCache
 	widgetSystemProbe    func() WidgetSystemInfo
+
+	// iconWidgetMu owns the additive desktop-icon widget projection. The
+	// pager widget above remains available; both views consume the same
+	// Controller/unread sources and only persist presentation receipts here.
+	iconWidgetMu          sync.Mutex
+	iconWidgetStateLoaded bool
+	iconWidgetState       desktopIconPersistedState
+	iconWidgetStateErr    error
+	iconWidgetWindowErr   error
+
+	// iconDiagMu serializes appends to the per-user icon widget diagnostics
+	// log so concurrent hover traces can never interleave NDJSON lines.
+	iconDiagMu sync.Mutex
+
+	// completionSummaryGen is the injection seam for async news-style
+	// completion summaries (nil uses the configured provider backend).
+	// completionSummaryInFlight is the singleflight slot map; both are
+	// guarded by iconWidgetMu.
+	completionSummaryGen      completionSummaryGenerator
+	completionSummaryInFlight map[string]*completionSummaryCall
+
+	// dailyRoutineMu serializes the atomic workspace-owned routine store. The
+	// operation registry only coalesces the same request; unrelated workspaces
+	// remain concurrent while a provider or Controller call is in flight.
+	dailyRoutineMu   sync.Mutex
+	dailyRoutineOpMu sync.Mutex
+	dailyRoutineOps  map[string]*dailyRoutineOpLock
+	dailyRoutineGen  dailyRoutineGenerator
+
+	// widgetSessionNameGen is the test seam for QuickStart's one-shot session
+	// naming call. Nil uses the configured provider selected for the new turn.
+	widgetSessionNameGen widgetSessionNameGenerator
 
 	sessionRefs    work.SessionRefStore
 	sessionRefsErr error
@@ -412,27 +484,32 @@ func (a *App) workspaceMediaMiddleware() func(http.Handler) http.Handler {
 // last session's desktop-tabs.json.
 func NewApp() *App {
 	a := &App{
-		tabs:             map[string]*WorkspaceTab{},
-		detachedSessions: map[string]*WorkspaceTab{},
-		workWatches:      map[string]*workViewWatch{},
-		mediaTokens:      newMediaTokenStore(),
-		background:       newSessionBackgroundService(),
-		botInstalls:      map[string]*botInstallSession{},
-		botRuntime:       newDesktopBotRuntime(),
-		dshWorkbenches:   map[string]*dshWorkbench{},
+		tabs:                      map[string]*WorkspaceTab{},
+		detachedSessions:          map[string]*WorkspaceTab{},
+		workWatches:               map[string]*workViewWatch{},
+		mediaTokens:               newMediaTokenStore(),
+		background:                newSessionBackgroundService(),
+		botInstalls:               map[string]*botInstallSession{},
+		botRuntime:                newDesktopBotRuntime(),
+		dshWorkbenches:            map[string]*dshWorkbench{},
+		completionSummaryInFlight: map[string]*completionSummaryCall{},
 	}
 	root := strings.TrimSpace(config.MemoryUserDir())
 	decisionPath := ""
 	if root != "" {
 		decisionPath = filepath.Join(root, "decision-broker-v1.json")
 	}
-	a.decisionBroker, a.decisionErr = decision.Open(decisionPath)
+	a.ownerDecisionEnabled = ownerDecisionFeatureEnabled
+	if a.ownerDecisionEnabled {
+		a.decisionBroker, a.decisionErr = decision.Open(decisionPath)
+	}
 	if root == "" {
 		a.sessionRefsErr = errors.New("session ref data directory is unavailable")
 		a.unreadErr = errors.New("unread data directory is unavailable")
 		return a
 	}
 	a.unreadStore, a.unreadErr = unread.Open(filepath.Join(root, "unread-v1.json"))
+	a.runHub, a.runHubErr = newDesktopRunHub(filepath.Join(root, "runhub"))
 	a.sessionRefs, a.sessionRefsErr = work.NewFileSessionRefStore(
 		filepath.Join(root, "work-session-refs-v1.json"),
 		work.WithRetention(30*24*time.Hour),
@@ -483,6 +560,9 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	if a.forceQuit.Swap(false) || consumeSystemQuitRequested() {
 		return false
 	}
+	if a.closeToWidget() {
+		return true
+	}
 	cfg, _, err := a.loadDesktopUserConfigForEdit()
 	if err != nil {
 		cfg = config.LoadForEdit(config.UserConfigPath())
@@ -498,6 +578,46 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		return true
 	}
 	return false
+}
+
+// closeToWidget switches the window into widget mode instead of closing, when
+// the widget feature is enabled. It reuses EnterWidgetMode so the transition
+// shares one idempotent code path with the UI and repeated closes are harmless.
+// Returns true when the close was absorbed by the widget. A disabled widget
+// quietly keeps the configured close policy; transition failures are logged
+// before that same fallback so the app never gets stuck.
+func (a *App) closeToWidget() bool {
+	entered, err := a.enterWidgetIfEnabled()
+	if err != nil {
+		slog.Error("desktop: enter widget mode on close failed, falling back to default close behavior", "err", err)
+		return false
+	}
+	return entered
+}
+
+func (a *App) enterWidgetIfEnabled() (bool, error) {
+	enabled, _, err := a.desktopWidgetPreferences()
+	if err != nil || !enabled {
+		return false, err
+	}
+	if err := a.enterWidgetMode(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (a *App) enterWidgetMode() error {
+	enter := a.widgetModeEnter
+	if enter == nil {
+		enter = func() error {
+			if a.ctx == nil {
+				return errors.New("desktop window is not ready")
+			}
+			_, err := a.EnterWidgetMode()
+			return err
+		}
+	}
+	return enter()
 }
 
 const backgroundCloseTrayReadyTimeout = 500 * time.Millisecond
@@ -677,6 +797,7 @@ func (a *App) restoreOrBuildTabs() {
 			tab.SessionPath = strings.TrimSpace(entry.SessionPath)
 			tab.SessionID = strings.TrimSpace(entry.SessionID)
 			tab.pendingRemoteInput = entry.PendingRemoteInput
+			tab.createRequestID = strings.TrimSpace(entry.CreateRequestID)
 			a.trackSession(tab)
 			tab.ReadOnly = entry.ReadOnly
 			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
@@ -705,23 +826,24 @@ func (a *App) restoreOrBuildTabs() {
 		for _, tab := range toBuild {
 			a.startTabControllerBuild(tab)
 		}
-		a.restoreCollaborationRuntimes()
-		a.startRecoveryGC()
-		a.startExternalSessionGC()
-		return
+	} else {
+		// First launch: create a default Global tab.
+		tab := a.createTabEntry("global", globalTabWorkspaceRoot(), "")
+		a.trackSession(tab)
+		tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
+		tab.TopicTitle = "Global"
+		a.mu.Lock()
+		a.tabs[tab.ID] = tab
+		a.tabOrder = append(a.tabOrder, tab.ID)
+		a.activeTabID = tab.ID
+		a.mu.Unlock()
+		a.startTabControllerBuild(tab)
 	}
 
-	// First launch: create a default Global tab.
-	tab := a.createTabEntry("global", globalTabWorkspaceRoot(), "")
-	a.trackSession(tab)
-	tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
-	tab.TopicTitle = "Global"
-	a.mu.Lock()
-	a.tabs[tab.ID] = tab
-	a.tabOrder = append(a.tabOrder, tab.ID)
-	a.activeTabID = tab.ID
-	a.mu.Unlock()
-	a.startTabControllerBuild(tab)
+	// Background Room residency is independent from the restored UI tabs.
+	// Reconcile it exactly once after either tab branch has established the
+	// Desktop's basic Session state.
+	a.restoreCollaborationRuntimes()
 	a.startRecoveryGC()
 	a.startExternalSessionGC()
 }
@@ -766,6 +888,9 @@ func (a *App) snapshotAllTabs() {
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
 	a.stopDecisionRuntime()
+	if a.runHub != nil {
+		a.runHub.close()
+	}
 	a.closeDSHWorkbenches()
 	a.closeCollaborations()
 	if a.heartbeat != nil {
@@ -836,6 +961,15 @@ func (a *App) domReady(_ context.Context) {
 
 	if ok && state.Maximised {
 		runtime.WindowMaximise(a.ctx)
+	}
+
+	// Enter widget mode before the first WindowShow so the app opens directly
+	// as the icons widget without flashing the main window. The React
+	// side reconciles the late widget:mode event via IsWidgetMode. When the
+	// widget is disabled or the transition fails, fall through to the normal
+	// main-window show with the error logged.
+	if _, enterErr := a.enterWidgetIfEnabled(); enterErr != nil {
+		slog.Error("desktop: enter widget mode at startup failed, showing main window", "err", enterErr)
 	}
 
 	runtime.WindowShow(a.ctx)
@@ -1214,6 +1348,7 @@ func (a *App) ensureTabControllerWorkspace(tab *WorkspaceTab) error {
 		tab.Ready = false
 		clearTabStartupError(tab)
 		tab.ActivityStatus = ""
+		tab.ActivityText = ""
 		if tab.sink == nil {
 			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 		}
@@ -3784,6 +3919,7 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 		tab.Ready = false
 		clearTabStartupError(tab)
 		tab.ActivityStatus = ""
+		tab.ActivityText = ""
 		tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 		a.saveTabsLocked()
 		a.mu.Unlock()
@@ -3821,6 +3957,7 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 	tab.Ready = false
 	clearTabStartupError(tab)
 	tab.ActivityStatus = ""
+	tab.ActivityText = ""
 	tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 	a.saveTabsLocked()
 	a.mu.Unlock()
@@ -8488,6 +8625,18 @@ func (a *App) ListDirForTab(tabID, rel string) []DirEntry {
 	if !ok {
 		return []DirEntry{}
 	}
+	return a.listDirForWorkspace(root, ctrl, rel)
+}
+
+// ListDirForWorkspace lists one directory level against an explicit workspace
+// root, so the desktop widget's QuickStart can complete "@" file references
+// against the workspace it will actually start the conversation in. An empty
+// root keeps the legacy CWD behaviour of ListDir.
+func (a *App) ListDirForWorkspace(root, rel string) []DirEntry {
+	return a.listDirForWorkspace(strings.TrimSpace(root), nil, rel)
+}
+
+func (a *App) listDirForWorkspace(root string, ctrl control.SessionAPI, rel string) []DirEntry {
 	if browser := externalFolderRefBrowserFromController(ctrl); browser != nil {
 		if entries, handled := browser.ListExternalFolderRefDir(rel); handled {
 			return externalFolderDirEntries(entries)
@@ -8541,6 +8690,17 @@ func (a *App) SearchFileRefsForTab(tabID, query string) []DirEntry {
 	if !ok {
 		return []DirEntry{}
 	}
+	return a.searchFileRefsForWorkspace(root, ctrl, query)
+}
+
+// SearchFileRefsForWorkspace searches file references against an explicit
+// workspace root — the widget-side counterpart of ListDirForWorkspace. An empty
+// root keeps the legacy CWD behaviour of SearchFileRefs.
+func (a *App) SearchFileRefsForWorkspace(root, query string) []DirEntry {
+	return a.searchFileRefsForWorkspace(strings.TrimSpace(root), nil, query)
+}
+
+func (a *App) searchFileRefsForWorkspace(root string, ctrl control.SessionAPI, query string) []DirEntry {
 	base, err := workspaceBaseFromRoot(root)
 	if err != nil {
 		return []DirEntry{}

@@ -1,6 +1,11 @@
 package main
 
-import "github.com/wailsapp/wails/v2/pkg/runtime"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+)
 
 // MinimiseMainWindow backs the Windows frameless titlebar controls.
 func (a *App) MinimiseMainWindow() {
@@ -38,4 +43,20 @@ func (a *App) CloseMainWindow() {
 	}
 	a.forceQuit.Store(true)
 	runtime.Quit(a.ctx)
+}
+
+// DismissMainWindow removes the active session's retained widget icon when it
+// is currently visible, then enters widget mode. A missing icon is a successful
+// no-op, so repeated clicks safely retry only the window transition.
+func (a *App) DismissMainWindow() error {
+	if a.ctx == nil {
+		return errors.New("desktop window is not ready")
+	}
+	if _, err := a.removeActiveSessionDesktopIcon(); err != nil {
+		return err
+	}
+	if err := a.enterWidgetMode(); err != nil {
+		return fmt.Errorf("enter widget mode after dismiss: %w", err)
+	}
+	return nil
 }

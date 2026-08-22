@@ -186,6 +186,84 @@ func TestDesktopRoomUnreadUsesStableSessionAndRoomIdentity(t *testing.T) {
 	}
 }
 
+// TestUnreadTargetVisibleWidgetModeBlocksBackgroundAutoRead pins the visibility
+// gate: while the main window is in widget mode the background active tab is
+// hidden behind the widget, so session/work targets must never count as
+// visible; normal window mode keeps the existing visible-equals-read semantics.
+func TestUnreadTargetVisibleWidgetModeBlocksBackgroundAutoRead(t *testing.T) {
+	app := &App{
+		widgetMode: true,
+		tabs: map[string]*WorkspaceTab{
+			"tab-1": {ID: "tab-1", SessionID: "session-1", workID: "work-1"},
+		},
+		activeTabID: "tab-1",
+	}
+	for _, probe := range []struct{ sessionID, workID string }{
+		{"session-1", ""},
+		{"", "work-1"},
+		{`path:D:\sessions\session-1.jsonl`, ""},
+	} {
+		if app.unreadTargetVisible(probe.sessionID, probe.workID) {
+			t.Fatalf("widget mode treated background target %q/%q as visible", probe.sessionID, probe.workID)
+		}
+	}
+	app.widgetMode = false
+	for _, probe := range []struct{ sessionID, workID string }{
+		{"session-1", ""},
+		{"", "work-1"},
+	} {
+		if !app.unreadTargetVisible(probe.sessionID, probe.workID) {
+			t.Fatalf("normal window mode did not treat %q/%q as visible", probe.sessionID, probe.workID)
+		}
+	}
+}
+
+// TestDesktopRoomUnreadRespectsWidgetModeVisibility verifies the Room unread
+// projection honors the widget-mode visibility gate: with widgetMode=true even
+// a matching active Room keeps a new remote message unread, while
+// widgetMode=false keeps the existing auto-read behavior for the visible Room.
+func TestDesktopRoomUnreadRespectsWidgetModeVisibility(t *testing.T) {
+	observe := func(widgetMode, matchActive bool) unread.Summary {
+		store, err := unread.Open(filepath.Join(t.TempDir(), "unread.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tabs := map[string]*WorkspaceTab{}
+		active := ""
+		if matchActive {
+			tabs["tab-1"] = &WorkspaceTab{ID: "tab-1", SessionID: "owner-session"}
+			active = "tab-1"
+		}
+		app := &App{unreadStore: store, widgetMode: widgetMode, tabs: tabs, activeTabID: active}
+		created := time.Date(2026, 8, 8, 6, 0, 0, 0, time.UTC)
+		c := &desktopCollaboration{
+			app: app, ownerSessionID: "owner-session", ownerSessionPath: `D:\sessions\owner.jsonl`,
+			state: CollaborationState{
+				Room: "room", MemberID: "self", AgentID: "self-agent", SessionID: "room-session",
+				Snapshot: collab.Snapshot{Room: collab.Room{ID: "room", Name: "Team", CreatedAt: created, LatestSequence: 2}, LatestSequence: 2},
+			},
+		}
+		c.observeUnread()
+		c.state.Snapshot.LatestSequence = 3
+		c.state.Snapshot.Room.LatestSequence = 3
+		c.state.Snapshot.Timeline = []collab.TimelineItem{{
+			ID: "chat", Sequence: 3, Type: collab.TimelineChat,
+			Chat: &collab.ChatMessage{ID: "chat", AuthorID: "other", MentionAgentIDs: []string{"self-agent"}, CreatedAt: created.Add(time.Minute)},
+		}}
+		c.observeUnread()
+		return app.UnreadState().Summary
+	}
+	if got := observe(true, true); got.TotalUnread != 1 {
+		t.Fatalf("widget mode with matching active Room = %+v, want 1 pending remote message", got)
+	}
+	if got := observe(false, true); got.TotalUnread != 0 {
+		t.Fatalf("normal window with matching active Room = %+v, want auto-read", got)
+	}
+	if got := observe(false, false); got.TotalUnread != 1 {
+		t.Fatalf("normal window without active Room = %+v, want 1 pending", got)
+	}
+}
+
 func TestResolveLegacySessionUnreadByExactBranchID(t *testing.T) {
 	dir := t.TempDir()
 	sessionPath := filepath.Join(dir, "session_f719de92b7ada7e462b8afd646331866.jsonl")

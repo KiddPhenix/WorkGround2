@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/collab"
 )
 
@@ -662,9 +663,49 @@ func TestSchedulerStartupResidencyRestoresRuntime(t *testing.T) {
 	}
 }
 
+func TestSchedulerOffTabTransportResidencyDoesNotQueueAgentRun(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent help", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.startAgentHook = nil
+	c.agentReady = func(string) (bool, error) { return false, nil }
+
+	c.scheduler.scheduleOnce(context.Background(), c, wakeSignal)
+	c.mu.RLock()
+	starts := len(c.starts)
+	queued := len(c.queuedRuns)
+	c.mu.RUnlock()
+	if starts != 0 || queued != 0 {
+		t.Fatalf("off-tab scheduler queued Agent work: starts=%d queued=%d", starts, queued)
+	}
+}
+
 func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	if err := addProject(root, ""); err != nil {
+		t.Fatal(err)
+	}
 	app := NewApp()
-	sessionPath := filepath.Join(t.TempDir(), "inactive-room.jsonl")
+	defer app.closeCollaborations()
+	sessionDir := desktopSessionDir(root)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(sessionDir, "inactive-room.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(sessionPath, agent.BranchMeta{
+		ID: string(agent.BranchID(sessionPath)), Scope: "project", WorkspaceRoot: root,
+		TopicID: "topic-registered-room", TopicTitle: "Registered Room", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureTopicIndexed("project", root, "topic-registered-room", "Registered Room", topicTitleSourceAuto); err != nil {
+		t.Fatal(err)
+	}
 	sessionID := "session_scheduler_restore_registered"
 	tab := &WorkspaceTab{ID: "inactive-room", SessionID: sessionID, SessionPath: sessionPath}
 	app.trackSession(tab)
@@ -675,7 +716,10 @@ func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
 	writeState := func(name, id string) string {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), name)
-		data, err := json.Marshal(collaborationPersistedState{SessionID: id, SessionPath: sessionPath})
+		data, err := json.Marshal(collaborationPersistedState{
+			Mode: "client", Host: "127.0.0.1", Room: "room-stale-check",
+			SessionID: id, SessionPath: sessionPath,
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -685,7 +729,8 @@ func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
 		return path
 	}
 
-	app.restoreOneCollaboration(writeState("registered.json", sessionID))
+	noopStart := func(*desktopCollaboration, string) {}
+	app.restoreOneCollaborationWithRegistry(writeState("registered.json", sessionID), noopStart, loadProjectsFile())
 	app.collaborationMu.Lock()
 	registered := app.collaborations[sessionID]
 	app.collaborationMu.Unlock()
@@ -693,13 +738,68 @@ func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
 		t.Fatal("inactive registered Room Session was not restored")
 	}
 
+	stalePath := filepath.Join(sessionDir, "stale-room.jsonl")
+	if err := os.WriteFile(stalePath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(stalePath, agent.BranchMeta{
+		ID: string(agent.BranchID(stalePath)), Scope: "project", WorkspaceRoot: root,
+		TopicID: "topic-removed-room", TopicTitle: "Removed Room", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	staleID := "session_scheduler_restore_stale"
-	app.restoreOneCollaboration(writeState("stale.json", staleID))
+	staleState := filepath.Join(t.TempDir(), "stale.json")
+	data, err := json.Marshal(collaborationPersistedState{
+		Mode: "client", Host: "127.0.0.1", Room: "room-stale-check",
+		SessionID: staleID, SessionPath: stalePath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleState, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.restoreOneCollaborationWithRegistry(staleState, noopStart, loadProjectsFile())
 	app.collaborationMu.Lock()
 	stale := app.collaborations[staleID]
 	app.collaborationMu.Unlock()
 	if stale != nil {
 		t.Fatal("closed Room cache must not create a ghost Agent runtime")
+	}
+
+	trashDir := filepath.Join(sessionDir, sessionTrashDir, "trashed-room.jsonl")
+	if err := os.MkdirAll(trashDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	trashPath := filepath.Join(trashDir, "trashed-room.jsonl")
+	if err := os.WriteFile(trashPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(trashPath, agent.BranchMeta{
+		ID: string(agent.BranchID(trashPath)), Scope: "project", WorkspaceRoot: root,
+		TopicID: "topic-registered-room", TopicTitle: "Registered Room", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	trashID := "session_scheduler_restore_trash"
+	trashState := filepath.Join(t.TempDir(), "trash.json")
+	data, err = json.Marshal(collaborationPersistedState{
+		Mode: "client", Host: "127.0.0.1", Room: "room-trash-check",
+		SessionID: trashID, SessionPath: trashPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trashState, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.restoreOneCollaborationWithRegistry(trashState, noopStart, loadProjectsFile())
+	app.collaborationMu.Lock()
+	trashed := app.collaborations[trashID]
+	app.collaborationMu.Unlock()
+	if trashed != nil {
+		t.Fatal("trashed Room Session was restored")
 	}
 }
 

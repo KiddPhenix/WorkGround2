@@ -4,8 +4,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -24,11 +26,18 @@ var (
 	procEnumDisplay       = user32.NewProc("EnumDisplayMonitors")
 	procMonitorFromWindow = user32.NewProc("MonitorFromWindow")
 	procGetMonitorInfoW   = user32.NewProc("GetMonitorInfoW")
+	procGetClientRect     = user32.NewProc("GetClientRect")
 	procSetWindowRgn      = user32.NewProc("SetWindowRgn")
 	procCreatePolygonRgn  = gdi32.NewProc("CreatePolygonRgn")
+	procCreateRectRgn     = gdi32.NewProc("CreateRectRgn")
+	procCombineRgn        = gdi32.NewProc("CombineRgn")
 	procDeleteObject      = gdi32.NewProc("DeleteObject")
 	procGetDpiForMonitor  = shcore.NewProc("GetDpiForMonitor")
 	procDwmFlush          = dwmapi.NewProc("DwmFlush")
+	procGetWindowLongW    = user32.NewProc("GetWindowLongW")
+	procSetWindowLongW    = user32.NewProc("SetWindowLongW")
+	procShowWindow        = user32.NewProc("ShowWindow")
+	procIsWindowVisible   = user32.NewProc("IsWindowVisible")
 )
 
 type w32Point struct {
@@ -64,6 +73,20 @@ const (
 	redrawUpdateNow       = 0x0100
 	redrawFrame           = 0x0400
 	widgetRedrawFlags     = redrawInvalidate | redrawErase | redrawAllChildren | redrawUpdateNow | redrawFrame
+
+	gwlExStyle int32 = -20
+	swHide           = 0
+	swShow           = 5
+
+	// Extended window styles that control taskbar presence. Every other bit is
+	// preserved verbatim when switching, never cleared.
+	wsExTransparent         = 0x00000020
+	wsExToolWindow          = 0x00000080
+	wsExControlParent       = 0x00010000
+	wsExAppWindow           = 0x00040000
+	wsExLayered             = 0x00080000
+	wsExNoRedirectionBitmap = 0x00200000
+	wsExNoActivate          = 0x08000000
 )
 
 type widgetMonitor struct {
@@ -341,6 +364,93 @@ func defaultWidgetWindowStateForWorkArea(work w32Rect, dpi uint32) WidgetWindowS
 	return state
 }
 
+func nativeDefaultDesktopIconWindowState(_ context.Context) (WidgetWindowState, bool) {
+	hwnd := findWidgetHWND()
+	if hwnd == 0 {
+		return WidgetWindowState{}, false
+	}
+	monitor, _, _ := procMonitorFromWindow.Call(uintptr(hwnd), monitorDefaultNearest)
+	if monitor == 0 {
+		return WidgetWindowState{}, false
+	}
+	info := w32MonitorInfo{Size: uint32(unsafe.Sizeof(w32MonitorInfo{}))}
+	ret, _, _ := procGetMonitorInfoW.Call(monitor, uintptr(unsafe.Pointer(&info)))
+	if ret == 0 {
+		return WidgetWindowState{}, false
+	}
+	dpi, _, _ := procGetDpiForWindow.Call(uintptr(hwnd))
+	return defaultDesktopIconWindowStateForWorkArea(info.Work, uint32(dpi)), true
+}
+
+func defaultDesktopIconWindowStateForWorkArea(work w32Rect, dpi uint32) WidgetWindowState {
+	logicalWidth := scaleToDefaultDPI(int(work.Right-work.Left), dpi)
+	logicalHeight := scaleToDefaultDPI(int(work.Bottom-work.Top), dpi)
+	// The icon canvas is a bounded transparent surface anchored to the
+	// bottom-right corner. It follows the desktopIcon defaults with the same
+	// edge/bottom gap semantics as the pager, but never fills or exceeds the
+	// work area — a full-screen WebView2 surface is what drives the periodic
+	// DWM/GPU peaks.
+	width := min(desktopIconWidth, max(desktopIconMinWidth, logicalWidth-widgetEdgeGap*2))
+	height := min(desktopIconHeight, max(desktopIconMinHeight, logicalHeight-widgetBottomGap*2))
+	width = min(width, logicalWidth)
+	height = min(height, logicalHeight)
+	return WidgetWindowState{
+		Width:  width,
+		Height: height,
+		X:      max(int(work.Left), int(work.Right)-scaleForDPI(width+widgetEdgeGap, dpi)),
+		Y:      max(int(work.Top), int(work.Bottom)-scaleForDPI(height+widgetBottomGap, dpi)),
+	}
+}
+
+// desktopIconSurfaceStateForWorkArea clamps a requested icon-surface content
+// size (plus its safety envelope) to the current work area and anchors it at
+// the bottom-right corner. The 1080x720 constants are only the initial size:
+// dense/zoomed icon rows and tall management popups may grow beyond them.
+func desktopIconSurfaceStateForWorkArea(work w32Rect, dpi uint32, width, height, envelope int) WidgetWindowState {
+	width = max(0, width)
+	height = max(0, height)
+	envelope = max(0, envelope)
+	contentWidth := width + envelope*2
+	contentHeight := height + envelope*2
+	logicalWidth := scaleToDefaultDPI(int(work.Right-work.Left), dpi)
+	logicalHeight := scaleToDefaultDPI(int(work.Bottom-work.Top), dpi)
+	targetWidth := max(desktopIconMinWidth, contentWidth)
+	targetHeight := max(desktopIconMinHeight, contentHeight)
+	targetWidth = min(targetWidth, logicalWidth)
+	targetHeight = min(targetHeight, logicalHeight)
+	return WidgetWindowState{
+		Width:  targetWidth,
+		Height: targetHeight,
+		X:      max(int(work.Left), int(work.Right)-scaleForDPI(targetWidth+widgetEdgeGap, dpi)),
+		Y:      max(int(work.Top), int(work.Bottom)-scaleForDPI(targetHeight+widgetBottomGap, dpi)),
+	}
+}
+
+// applyDesktopIconSurface resizes the native icon window to the requested
+// surface bounds. It re-reads the monitor that owns the window on every call so
+// display/DPI changes are picked up instead of a stale persisted geometry.
+func applyDesktopIconSurface(_ context.Context, input DesktopIconSurfaceInput) (WidgetWindowState, error) {
+	hwnd := findWidgetHWND()
+	if hwnd == 0 {
+		return WidgetWindowState{}, fmt.Errorf("applyDesktopIconSurface: window not found")
+	}
+	monitor, _, _ := procMonitorFromWindow.Call(uintptr(hwnd), monitorDefaultNearest)
+	if monitor == 0 {
+		return WidgetWindowState{}, fmt.Errorf("applyDesktopIconSurface: monitor not found")
+	}
+	info := w32MonitorInfo{Size: uint32(unsafe.Sizeof(w32MonitorInfo{}))}
+	ret, _, _ := procGetMonitorInfoW.Call(monitor, uintptr(unsafe.Pointer(&info)))
+	if ret == 0 {
+		return WidgetWindowState{}, fmt.Errorf("applyDesktopIconSurface: monitor info unavailable")
+	}
+	dpi, _, _ := procGetDpiForWindow.Call(uintptr(hwnd))
+	state := desktopIconSurfaceStateForWorkArea(info.Work, uint32(dpi), input.Width, input.Height, input.Envelope)
+	if err := setDesktopWindowBounds(nil, state.Width, state.Height, state.X, state.Y); err != nil {
+		return WidgetWindowState{}, err
+	}
+	return state, nil
+}
+
 // setWidgetWindowRegion clips the native window to the same octagonal shape as
 // the CSS clip-path on .widget-shell. width and height come from Wails window
 // coordinates; SetWindowRgn needs them scaled by the target window DPI.
@@ -377,6 +487,55 @@ func setWidgetWindowRegion(width, height int) error {
 	return redrawWidgetWindow(hwnd)
 }
 
+func setDesktopIconHitRegions(rects []DesktopIconRect) error {
+	hwnd := findWidgetHWND()
+	if hwnd == 0 {
+		return fmt.Errorf("setDesktopIconHitRegions: window not found")
+	}
+	if len(rects) == 0 {
+		return fmt.Errorf("setDesktopIconHitRegions: at least one hit rectangle is required")
+	}
+	var client w32Rect
+	ret, _, _ := procGetClientRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&client)))
+	if ret == 0 {
+		return fmt.Errorf("setDesktopIconHitRegions: GetClientRect failed")
+	}
+	rects = normalizeDesktopIconRects(rects, int(client.Right-client.Left), int(client.Bottom-client.Top))
+	if len(rects) == 0 {
+		return fmt.Errorf("setDesktopIconHitRegions: no hit rectangle intersects the client area")
+	}
+	combined, _, _ := procCreateRectRgn.Call(0, 0, 0, 0)
+	if combined == 0 {
+		return fmt.Errorf("setDesktopIconHitRegions: CreateRectRgn failed")
+	}
+	for _, rect := range rects {
+		left, top := rect.X, rect.Y
+		right, bottom := rect.X+rect.Width, rect.Y+rect.Height
+		part, _, _ := procCreateRectRgn.Call(uintptr(left), uintptr(top), uintptr(right), uintptr(bottom))
+		if part == 0 {
+			procDeleteObject.Call(combined)
+			return fmt.Errorf("setDesktopIconHitRegions: CreateRectRgn part failed")
+		}
+		result, _, _ := procCombineRgn.Call(combined, combined, part, 2) // RGN_OR
+		procDeleteObject.Call(part)
+		if result == 0 {
+			procDeleteObject.Call(combined)
+			return fmt.Errorf("setDesktopIconHitRegions: CombineRgn failed")
+		}
+	}
+	// Replace the region in one operation. Restoring the full window before every
+	// update makes the whole transparent surface flash during icon clicks.
+	ret, _, _ = procSetWindowRgn.Call(uintptr(hwnd), combined, 1)
+	if ret == 0 {
+		procDeleteObject.Call(combined)
+		return fmt.Errorf("setDesktopIconHitRegions: apply hit region failed")
+	}
+	// bRedraw=TRUE already invalidates the visible region. A second synchronous
+	// RedrawWindow/DwmFlush can present the old and new transparent surfaces in
+	// separate frames, which exposes region edges as orange seams.
+	return nil
+}
+
 // clearWidgetWindowRegion restores the native window to a full rectangle.
 // Idempotent — safe to call even when no region is active.
 func clearWidgetWindowRegion() error {
@@ -390,4 +549,215 @@ func clearWidgetWindowRegion() error {
 		return fmt.Errorf("clearWidgetWindowRegion: SetWindowRgn failed")
 	}
 	return redrawWidgetWindow(hwnd)
+}
+
+// widgetTaskbarOps are the raw window operations a taskbar style switch needs.
+// The production wiring talks to user32; tests inject fakes so no real Explorer
+// or taskbar is touched.
+type widgetTaskbarOps struct {
+	findHWND func() syscall.Handle
+	getStyle func(syscall.Handle) (uint32, error)
+	setStyle func(syscall.Handle, uint32) error
+	visible  func(syscall.Handle) bool
+	show     func(syscall.Handle, bool) error
+	frame    func(syscall.Handle) error
+}
+
+// widgetTaskbarStyleState retains the pre-transition visibility intent if both
+// the final Show and rollback Show fail. It is keyed to the current HWND and
+// protected because native taskbar calls may also be exercised independently
+// of App.transitionWidgetMode's widgetMu boundary.
+type widgetTaskbarStyleState struct {
+	mu             sync.Mutex
+	hwnd           syscall.Handle
+	pendingVisible bool
+}
+
+var nativeWidgetTaskbarStyleState widgetTaskbarStyleState
+
+// widgetTaskbarTargetStyle returns the extended style with the taskbar bits
+// switched for the requested visibility. hide removes WS_EX_APPWINDOW and adds
+// WS_EX_TOOLWINDOW; show reverses that. Every unrelated bit is preserved.
+func widgetTaskbarTargetStyle(style uint32, hide bool) uint32 {
+	if hide {
+		return (style &^ wsExAppWindow) | wsExToolWindow
+	}
+	return (style &^ wsExToolWindow) | wsExAppWindow
+}
+
+// setWidgetTaskbarStyle switches the taskbar presence of the Wails window.
+// Idempotent unless a prior failed transition left a pending visible intent.
+// Visible windows follow the Windows dynamic-taskbar refresh order Hide →
+// SetWindowLongW → SetWindowPos(SWP_FRAMECHANGED) → Show. StartHidden windows
+// are never shown early. A pending visible intent is cleared only after Show
+// succeeds and IsWindowVisible confirms recovery.
+func setWidgetTaskbarStyle(state *widgetTaskbarStyleState, ops widgetTaskbarOps, hide bool) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	hwnd := ops.findHWND()
+	if hwnd == 0 {
+		state.hwnd = 0
+		state.pendingVisible = false
+		return errors.New("setWidgetTaskbarStyle: window not found")
+	}
+	if state.hwnd != hwnd {
+		state.hwnd = hwnd
+		state.pendingVisible = false
+	}
+	style, err := ops.getStyle(hwnd)
+	if err != nil {
+		return fmt.Errorf("setWidgetTaskbarStyle: read window style: %w", err)
+	}
+	target := widgetTaskbarTargetStyle(style, hide)
+	if target == style {
+		if state.pendingVisible {
+			if err := showWidgetTaskbarWindow(state, ops, hwnd); err != nil {
+				return fmt.Errorf("setWidgetTaskbarStyle: restore pending window visibility: %w", err)
+			}
+		}
+		return nil
+	}
+	wasVisible := ops.visible(hwnd)
+	if wasVisible {
+		state.pendingVisible = true
+		if err := ops.show(hwnd, false); err != nil {
+			return errors.Join(
+				fmt.Errorf("setWidgetTaskbarStyle: hide window before style change: %w", err),
+				showWidgetTaskbarWindow(state, ops, hwnd),
+			)
+		}
+	}
+	if err := ops.setStyle(hwnd, target); err != nil {
+		return errors.Join(
+			fmt.Errorf("setWidgetTaskbarStyle: apply %s style: %w", widgetTaskbarModeName(hide), err),
+			restoreWidgetTaskbarState(state, ops, hwnd, style),
+		)
+	}
+	if err := ops.frame(hwnd); err != nil {
+		return errors.Join(
+			fmt.Errorf("setWidgetTaskbarStyle: refresh frame cache: %w", err),
+			restoreWidgetTaskbarState(state, ops, hwnd, style),
+		)
+	}
+	if state.pendingVisible {
+		if err := showWidgetTaskbarWindow(state, ops, hwnd); err != nil {
+			return errors.Join(
+				fmt.Errorf("setWidgetTaskbarStyle: show window after style change: %w", err),
+				restoreWidgetTaskbarState(state, ops, hwnd, style),
+			)
+		}
+	}
+	return nil
+}
+
+// restoreWidgetTaskbarState best-effort restores the original extended style,
+// frame cache, and any retained visible intent after a failed style switch.
+func restoreWidgetTaskbarState(state *widgetTaskbarStyleState, ops widgetTaskbarOps, hwnd syscall.Handle, style uint32) error {
+	var errs []error
+	if err := ops.setStyle(hwnd, style); err != nil {
+		errs = append(errs, fmt.Errorf("restore window style: %w", err))
+	}
+	if err := ops.frame(hwnd); err != nil {
+		errs = append(errs, fmt.Errorf("restore frame cache: %w", err))
+	}
+	if state.pendingVisible {
+		if err := showWidgetTaskbarWindow(state, ops, hwnd); err != nil {
+			errs = append(errs, fmt.Errorf("restore window visibility: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func showWidgetTaskbarWindow(state *widgetTaskbarStyleState, ops widgetTaskbarOps, hwnd syscall.Handle) error {
+	if err := ops.show(hwnd, true); err != nil {
+		return err
+	}
+	if !ops.visible(hwnd) {
+		return errors.New("ShowWindow returned but window remains hidden")
+	}
+	state.pendingVisible = false
+	return nil
+}
+
+func widgetTaskbarModeName(hide bool) string {
+	if hide {
+		return "hide"
+	}
+	return "show"
+}
+
+// windowLongIndex sign-extends the Win32 int index on every Windows architecture.
+func windowLongIndex(index int32) uintptr { return uintptr(index) }
+
+// widgetTaskbarGetStyle reads GWL_EXSTYLE through the architecture-independent
+// GetWindowLongW API. LONG is always 32 bits, so uint32 preserves every style
+// bit without depending on pointer size. A zero result is an error only when
+// the call's cleared-then-read last-error is non-zero.
+func widgetTaskbarGetStyle(hwnd syscall.Handle) (uint32, error) {
+	style, _, callErr := procGetWindowLongW.Call(uintptr(hwnd), windowLongIndex(gwlExStyle))
+	if style == 0 && callErr != syscall.Errno(0) {
+		return 0, fmt.Errorf("GetWindowLongW(GWL_EXSTYLE): %w", callErr)
+	}
+	return uint32(style), nil
+}
+
+// widgetTaskbarSetStyle writes the 32-bit extended style with SetWindowLongW.
+// Its zero return is ambiguous and is disambiguated using the captured error.
+func widgetTaskbarSetStyle(hwnd syscall.Handle, style uint32) error {
+	ret, _, callErr := procSetWindowLongW.Call(uintptr(hwnd), windowLongIndex(gwlExStyle), uintptr(style))
+	if ret == 0 && callErr != syscall.Errno(0) {
+		return fmt.Errorf("SetWindowLongW(GWL_EXSTYLE): %w", callErr)
+	}
+	return nil
+}
+
+// widgetTaskbarIsVisible reports whether the window is currently visible.
+func widgetTaskbarIsVisible(hwnd syscall.Handle) bool {
+	ret, _, _ := procIsWindowVisible.Call(uintptr(hwnd))
+	return ret != 0
+}
+
+// widgetTaskbarShowWindow hides or shows the window. ShowWindow returns the
+// previous visibility, which is 0 both for a previously hidden window and for a
+// failure; the cleared-then-read last error disambiguates the two.
+func widgetTaskbarShowWindow(hwnd syscall.Handle, show bool) error {
+	cmd := uintptr(swHide)
+	if show {
+		cmd = swShow
+	}
+	prev, _, callErr := procShowWindow.Call(uintptr(hwnd), cmd)
+	if prev == 0 && callErr != syscall.Errno(0) {
+		name := "show"
+		if !show {
+			name = "hide"
+		}
+		return fmt.Errorf("ShowWindow(%s): %w", name, callErr)
+	}
+	return nil
+}
+
+// widgetTaskbarRefreshFrame nudges the non-client frame cache so Explorer
+// re-evaluates the taskbar button after the extended style changed.
+func widgetTaskbarRefreshFrame(hwnd syscall.Handle) error {
+	flags := uintptr(windowPosNoMove | windowPosNoSize | windowPosNoZOrder | windowPosNoActivate | windowPosFrameChanged | windowPosNoOwnerOrder)
+	ret, _, callErr := procSetWindowPos.Call(uintptr(hwnd), 0, 0, 0, 0, 0, flags)
+	if ret == 0 {
+		return fmt.Errorf("SetWindowPos(SWP_FRAMECHANGED): %w", callErr)
+	}
+	return nil
+}
+
+// setWidgetTaskbarHidden hides or restores the taskbar button of the native
+// Wails window. Idempotent and safe to retry; see setWidgetTaskbarStyle for the
+// refresh order and rollback behavior.
+func setWidgetTaskbarHidden(hide bool) error {
+	return setWidgetTaskbarStyle(&nativeWidgetTaskbarStyleState, widgetTaskbarOps{
+		findHWND: func() syscall.Handle { return findWidgetHWND() },
+		getStyle: widgetTaskbarGetStyle,
+		setStyle: widgetTaskbarSetStyle,
+		visible:  widgetTaskbarIsVisible,
+		show:     widgetTaskbarShowWindow,
+		frame:    widgetTaskbarRefreshFrame,
+	}, hide)
 }

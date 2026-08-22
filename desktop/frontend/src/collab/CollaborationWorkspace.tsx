@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { Bot, Check, ChevronRight, ChevronsUpDown, Circle, CircleAlert, Copy, ImagePlus, LogOut, Pencil, RadioTower, RefreshCw, Settings2, Share2, Trash2, Users, X } from "lucide-react";
 import { useI18n } from "../lib/i18n";
 import { ModelSwitcher } from "../components/ModelSwitcher";
@@ -36,6 +36,7 @@ interface CollaborationWorkspaceProps {
   sessionResolving?: boolean;
   sessionError?: string;
   onRetrySession?(): void;
+  windowActions?: ReactNode;
 }
 
 function statusLabel(status: string, c: ReturnType<typeof collabCopy>) {
@@ -69,7 +70,7 @@ async function copyText(value: string): Promise<void> {
   if (!copied) throw new Error("copy failed");
 }
 
-export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onClose, onConnected, onConnectRequest, submitKey = "enter", modelLabel = "—", onSwitchModel = async () => {}, workspaces = [], workspaceRoot = "", onWorkspaceChange = () => {}, sessionResolving = false, sessionError, onRetrySession = () => {} }: CollaborationWorkspaceProps) {
+export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onClose, onConnected, onConnectRequest, submitKey = "enter", modelLabel = "—", onSwitchModel = async () => {}, workspaces = [], workspaceRoot = "", onWorkspaceChange = () => {}, sessionResolving = false, sessionError, onRetrySession = () => {}, windowActions }: CollaborationWorkspaceProps) {
   const { t } = useI18n();
   const c = collabCopy(t);
   const controller = useCollabController(sessionID || "");
@@ -311,6 +312,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             </div>}
             <button type="button" className="collab-icon-button" aria-label={c("leave")} title={c("leave")} onClick={() => void controller.leave()}><LogOut size={17} /></button>
           </div>
+          {windowActions}
         </header>
 
         {(state.actionError || state.status === "syncing" || state.status === "reconnecting" || state.status === "failed" || Boolean(state.unsyncedCount)) && <div className={`collab-status-banner collab-status-banner--${state.actionError ? "action" : state.status}`} role="status">

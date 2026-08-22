@@ -68,6 +68,7 @@ type WorkspaceTab struct {
 	sessionLease        *agent.SessionLease
 
 	ActivityStatus string // transient project-tree status for the in-flight turn
+	ActivityText   string // latest compact reasoning/tool activity for desktop surfaces
 
 	// Per-turn autosave per tab.
 	saveMu             sync.Mutex
@@ -117,10 +118,12 @@ type WorkspaceTab struct {
 	sessionKind       agent.SessionKind // "normal", "work", or "collaboration"
 	workID            string            // bound Work ID (only when sessionKind == "work")
 	workRequestID     string            // idempotency key that created the Work Session
+	createRequestID   string            // idempotency key that created an ordinary blank session
 }
 
 const (
 	topicStatusThinking            = "thinking"
+	topicStatusRunning             = "running"
 	topicStatusStreaming           = "streaming"
 	topicStatusWaitingConfirmation = "waiting_confirmation"
 	topicStatusBackgroundJob       = "background_job"
@@ -475,6 +478,7 @@ func cloneDetachedRuntimeTab(tab *WorkspaceTab, key, path string) *WorkspaceTab 
 		remoteSubmitErr:     tab.remoteSubmitErr,
 		sink:                tab.sink,
 		ActivityStatus:      tab.ActivityStatus,
+		ActivityText:        tab.ActivityText,
 		readTelemetry:       readTelemetry,
 		usageTelemetry:      usageTelemetry,
 		model:               tab.model,
@@ -552,6 +556,7 @@ func applyRuntimeTab(target, source *WorkspaceTab, path string, wailsCtx context
 	}
 	target.remoteSubmitting = false
 	target.ActivityStatus = source.ActivityStatus
+	target.ActivityText = source.ActivityText
 	target.model = source.model
 	target.effort = cloneStringPtr(source.effort)
 	target.tokenMode = source.tokenMode
@@ -931,8 +936,7 @@ func (s *tabEventSink) Emit(e event.Event) {
 	}
 	s.emitRuntimeEvent(eventChannel, w)
 	if s.app != nil {
-		if status, update := topicActivityStatusFromEvent(e); update {
-			changed := s.app.setTabActivityStatus(s.tabID, status)
+		if changed, update := s.app.observeTabActivity(s.tabID, e); update {
 			if changed || isBackgroundJobLifecycleNotice(e) {
 				s.app.emitProjectTreeChanged()
 			}
@@ -1090,8 +1094,10 @@ func (e *asyncRuntimeEmitter) run() {
 
 func topicActivityStatusFromEvent(e event.Event) (string, bool) {
 	switch e.Kind {
-	case event.TurnStarted, event.Reasoning, event.ToolDispatch, event.ToolProgress, event.ToolResult, event.CompactionStarted, event.CompactionDone, event.Retrying:
+	case event.TurnStarted, event.Reasoning, event.Phase:
 		return topicStatusThinking, true
+	case event.ToolDispatch, event.ToolProgress, event.ToolResult, event.CompactionStarted, event.CompactionDone, event.Retrying:
+		return topicStatusRunning, true
 	case event.Text, event.Message:
 		return topicStatusStreaming, true
 	case event.ApprovalRequest, event.AskRequest:
@@ -1369,6 +1375,8 @@ type TabMeta struct {
 	BackgroundOnly      bool                     `json:"backgroundOnly"`
 	ActiveRuntimeWork   bool                     `json:"activeRuntimeWork"`
 	TurnStartedAt       int64                    `json:"turnStartedAt,omitempty"`
+	ActivityStatus      string                   `json:"activityStatus,omitempty"`
+	ActivityText        string                   `json:"activityText,omitempty"`
 	Mode                string                   `json:"mode"`
 	CollaborationMode   string                   `json:"collaborationMode"`
 	ToolApprovalMode    string                   `json:"toolApprovalMode"`
@@ -1386,6 +1394,14 @@ type TabMeta struct {
 	SessionKind         string                   `json:"sessionKind,omitempty"` // "normal" | "work" | "collaboration"
 	WorkID              string                   `json:"workId,omitempty"`      // bound Work ID
 	WorkRequestID       string                   `json:"workRequestId,omitempty"`
+}
+
+// CreateBlankSessionInput is the public intent for creating an ordinary blank
+// session. RequestID makes retries safe across renderer retries and restarts.
+type CreateBlankSessionInput struct {
+	Scope         string `json:"scope"`
+	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
+	RequestID     string `json:"requestId"`
 }
 
 func enrichTabMeta(meta TabMeta) TabMeta {
@@ -1440,6 +1456,8 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		m.ProjectIcon = projectIcon(tab.WorkspaceRoot)
 	}
 	m.SessionDisplayTitle = tabSessionDisplayTitle(tab)
+	m.ActivityStatus = tab.ActivityStatus
+	m.ActivityText = tab.ActivityText
 
 	// Populate session kind and work ID from tab runtime state.
 	if tab.sessionKind != "" {
@@ -1928,6 +1946,27 @@ func (a *App) EnsureBlankSurface(scope, workspaceRoot string) (TabMeta, error) {
 	return a.keepOnlyVisibleTab(meta.ID)
 }
 
+// CreateBlankSession creates and activates a new ordinary blank session for
+// the target scope. Unlike EnsureBlankTab it never reuses an already-open
+// blank tab. The project tree and desktop workspace icons share this entrance
+// so both interactions have identical creation and single-surface behavior.
+func (a *App) CreateBlankSession(input CreateBlankSessionInput) (TabMeta, error) {
+	requestID := strings.TrimSpace(input.RequestID)
+	if requestID == "" {
+		return TabMeta{}, errors.New("requestId is required")
+	}
+	if !a.singleSurfaceLayoutEnabled() {
+		return a.createBlankTab(input.Scope, input.WorkspaceRoot, false, requestID)
+	}
+	a.singleSurfaceMu.Lock()
+	defer a.singleSurfaceMu.Unlock()
+	meta, err := a.createBlankTab(input.Scope, input.WorkspaceRoot, false, requestID)
+	if err != nil {
+		return TabMeta{}, err
+	}
+	return a.keepOnlyVisibleTab(meta.ID)
+}
+
 func tabMatchesTopicTarget(tab *WorkspaceTab, scope, workspaceRoot, topicID string) bool {
 	if tab == nil || tab.Scope != scope || tab.TopicID != topicID {
 		return false
@@ -1948,6 +1987,10 @@ func tabInWorkspace(tab *WorkspaceTab, workspaceRoot string) bool {
 // creates one if none exists. Reusing a blank tab keeps repeated "new session"
 // clicks from piling up empty conversations.
 func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
+	return a.createBlankTab(scope, workspaceRoot, true, "")
+}
+
+func (a *App) createBlankTab(scope, workspaceRoot string, reuseOpen bool, requestID string) (TabMeta, error) {
 	scope = strings.TrimSpace(scope)
 	if scope != "project" {
 		scope = "global"
@@ -1982,18 +2025,37 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 	defaultModel, defaultToolApprovalMode := desktopNewSessionDefaults()
 
 	a.mu.Lock()
-	for _, id := range a.orderedTabIDsLocked() {
-		tab := a.tabs[id]
-		if a.blankTabMatchesTargetLocked(tab, scope, workspaceRoot) {
-			if err := resetReusableBlankTabTitle(tab, scope, workspaceRoot); err != nil {
+	if requestID != "" {
+		for _, id := range a.orderedTabIDsLocked() {
+			tab := a.tabs[id]
+			if tab == nil || tab.createRequestID != requestID {
+				continue
+			}
+			if tab.Scope != scope || (scope == "project" && normalizeProjectRoot(tab.WorkspaceRoot) != normalizeProjectRoot(workspaceRoot)) {
 				a.mu.Unlock()
-				return TabMeta{}, err
+				return TabMeta{}, errors.New("requestId was already used for another blank-session target")
 			}
 			a.activeTabID = tab.ID
 			meta := a.tabMeta(tab, true)
 			a.saveTabsLocked()
 			a.mu.Unlock()
 			return enrichTabMeta(meta), nil
+		}
+	}
+	if reuseOpen {
+		for _, id := range a.orderedTabIDsLocked() {
+			tab := a.tabs[id]
+			if a.blankTabMatchesTargetLocked(tab, scope, workspaceRoot) {
+				if err := resetReusableBlankTabTitle(tab, scope, workspaceRoot); err != nil {
+					a.mu.Unlock()
+					return TabMeta{}, err
+				}
+				a.activeTabID = tab.ID
+				meta := a.tabMeta(tab, true)
+				a.saveTabsLocked()
+				a.mu.Unlock()
+				return enrichTabMeta(meta), nil
+			}
 		}
 	}
 
@@ -2035,6 +2097,7 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 			toolApprovalMode: inheritedToolApprovalMode,
 			disabledMCP:      inheritedDisabledMCP,
 			mcpOrder:         inheritedMCPOrder,
+			createRequestID:  requestID,
 		}
 		created.sink = &tabEventSink{tabID: tabID, app: a}
 		a.tabs[tabID] = created
@@ -2080,6 +2143,7 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 		toolApprovalMode: inheritedToolApprovalMode,
 		disabledMCP:      inheritedDisabledMCP,
 		mcpOrder:         inheritedMCPOrder,
+		createRequestID:  requestID,
 	}
 	created.sink = &tabEventSink{tabID: tabID, app: a}
 	a.tabs[tabID] = created
@@ -4252,7 +4316,10 @@ func topicTitleFromText(text string) string {
 
 const desktopProjectsFile = "desktop-projects.json"
 const tabsFileName = "desktop-tabs.json"
-const desktopGlobalOrderToken = "__global__"
+const (
+	desktopGlobalOrderToken  = "__global__"
+	desktopWorkspacePinLimit = 4
+)
 const legacyProjectSidebarRecoveryMarker = "desktop-projects-legacy-recovered"
 
 var desktopProjectsFileMu sync.Mutex
@@ -4292,6 +4359,7 @@ type desktopTabEntry struct {
 	Goal               string  `json:"goal,omitempty"`
 	ToolApprovalMode   string  `json:"toolApprovalMode,omitempty"`
 	PendingRemoteInput string  `json:"pendingRemoteInput,omitempty"`
+	CreateRequestID    string  `json:"createRequestId,omitempty"`
 }
 
 type desktopTabsFile struct {
@@ -4362,6 +4430,7 @@ func (a *App) saveTabsCollectLocked() (string, []desktopTabEntry, string, uint64
 				Goal:               persistedTabGoal(tab),
 				ToolApprovalMode:   persistedToolApprovalMode(currentTabToolApprovalMode(tab)),
 				PendingRemoteInput: tab.pendingRemoteInput,
+				CreateRequestID:    tab.createRequestID,
 			})
 		}
 	}
@@ -4975,7 +5044,11 @@ func normalizeProjectColor(color string) string {
 func normalizeProjectIcon(icon string) string {
 	icon = strings.TrimSpace(strings.ToLower(icon))
 	switch icon {
-	case "star", "bookmark", "code", "terminal", "bolt":
+	case "star", "bookmark", "code", "terminal", "bolt",
+		"browser", "build", "cmd", "cpp", "csharp", "dart", "data", "database",
+		"delegate", "design", "discussion", "document", "edit", "folder", "game", "go", "java",
+		"javascript", "music", "php", "presentation", "publish", "python", "react",
+		"new", "research", "run", "rust", "sport", "sync", "test", "typescript", "unity", "video":
 		return icon
 	default:
 		// Empty and unknown values preserve the backwards-compatible dot icon.
@@ -6152,6 +6225,12 @@ func (a *App) SetProjectPinned(workspaceRoot string, pinned bool) error {
 		}
 		next := removeString(f.PinnedProjects, root)
 		if pinned {
+			if containsDesktopString(f.PinnedProjects, root) {
+				return false, nil
+			}
+			if len(uniqueStrings(next)) >= desktopWorkspacePinLimit {
+				return false, fmt.Errorf("desktop workspace pin limit reached (%d)", desktopWorkspacePinLimit)
+			}
 			next = prependUniqueString(f.PinnedProjects, root)
 		}
 		if sameStringList(next, f.PinnedProjects) {
@@ -6336,23 +6415,86 @@ func (a *App) updateTopicSessionTitles(topicID, title string) {
 	}
 }
 
-func (a *App) setTabActivityStatus(tabID, status string) bool {
+func (a *App) observeTabActivity(tabID string, e event.Event) (bool, bool) {
+	status, update := topicActivityStatusFromEvent(e)
+	if !update {
+		return false, false
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	tab := a.tabByEventSinkIDLocked(tabID)
 	if tab == nil {
-		return false
+		return false, true
 	}
-	status = normalizeTopicStatus(status)
-	if tab.ActivityStatus == status {
-		return false
-	}
+	status = normalizeTabActivityStatus(status)
+	previous := tab.ActivityStatus
+	changed := previous != status
 	tab.ActivityStatus = status
-	return true
+	tab.ActivityText = nextTabActivityText(tab.ActivityText, previous, e)
+	return changed, true
+}
+
+func normalizeTabActivityStatus(status string) string {
+	if status == topicStatusRunning {
+		return status
+	}
+	return normalizeTopicStatus(status)
+}
+
+func nextTabActivityText(current, previousStatus string, e event.Event) string {
+	switch e.Kind {
+	case event.TurnStarted, event.TurnDone, event.ApprovalRequest, event.AskRequest:
+		return ""
+	case event.Reasoning:
+		if previousStatus != topicStatusThinking {
+			current = ""
+		}
+		return tailActivityText(current+e.Text, 160)
+	case event.Text:
+		if previousStatus != topicStatusStreaming {
+			current = ""
+		}
+		return tailActivityText(current+e.Text, 160)
+	case event.Message, event.Phase:
+		return tailActivityText(e.Text, 160)
+	case event.ToolDispatch:
+		return toolActivityText(e.Tool.Name, "执行中")
+	case event.ToolResult:
+		return toolActivityText(e.Tool.Name, "执行完成")
+	case event.CompactionStarted:
+		return "正在整理上下文"
+	case event.CompactionDone:
+		return "上下文整理完成"
+	case event.Retrying:
+		if e.RetryMax > 0 {
+			return fmt.Sprintf("正在重试 %d/%d", e.RetryAttempt, e.RetryMax)
+		}
+		return "正在重试"
+	default:
+		return current
+	}
+}
+
+func toolActivityText(name, suffix string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "工具" + suffix
+	}
+	return name + " " + suffix
+}
+
+func tailActivityText(text string, limit int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if limit > 0 && len(runes) > limit {
+		runes = runes[len(runes)-limit:]
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 func (a *App) emitProjectTreeChanged() {
 	projectSessionCache.invalidate()
+	a.scheduleCollaborationRuntimeReconcile()
 	if a.projectTreeChangedHook != nil {
 		a.projectTreeChangedHook()
 		return
@@ -6387,6 +6529,7 @@ func (a *App) emitRuntimeEvent(name string, payload ...interface{}) {
 
 // DeleteTopic removes a topic and its title metadata.
 func (a *App) DeleteTopic(topicID string) error {
+	roomSessionPaths := a.collaborationSessionPathsForTopic(topicID)
 	f := loadProjectsFile()
 	found := false
 	for _, p := range f.Projects {
@@ -6440,6 +6583,7 @@ func (a *App) DeleteTopic(topicID string) error {
 	if err := removeTopicFromProjectsFile(topicID); err != nil {
 		return err
 	}
+	a.closeCollaborationRuntimesForSessionPaths(roomSessionPaths)
 	a.emitProjectTreeChanged()
 	return nil
 }
@@ -6500,6 +6644,10 @@ func (a *App) TrashTopic(topicID string) error {
 	if err != nil {
 		return err
 	}
+	roomSessionPaths := make([]string, 0, len(targets))
+	for _, target := range targets {
+		roomSessionPaths = append(roomSessionPaths, target.sessionPath)
+	}
 	removed, fallback := a.removeTopicRuntimeBindings(topicID)
 	if err := a.prepareRemovedSessionRuntimes(removed); err != nil {
 		a.closeRemovedSessionRuntimes(removed)
@@ -6538,6 +6686,10 @@ func (a *App) TrashTopic(topicID string) error {
 	if err := a.DeleteTopic(topicID); err != nil {
 		return err
 	}
+	// DeleteTopic cannot rediscover Room metadata after the session artifacts
+	// have already moved to trash, so converge the off-tab runtime map using
+	// the validated paths captured above.
+	a.closeCollaborationRuntimesForSessionPaths(roomSessionPaths)
 	if fallback.needs {
 		fallback.topicID = ""
 		if err := a.openFallbackRuntime(fallback); err != nil {
@@ -6859,6 +7011,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			result.orphans = orphanWorkSessionsForDir(dir)
 			projectSessionCache.put(dir, infos, titles, cacheToken)
 			projectSessionCache.putOrphans(dir, result.orphans, cacheToken)
+			a.scheduleCollaborationRuntimeReconcile()
 			result.infos = infos
 			result.titles = titles
 			result.ok = true

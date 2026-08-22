@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -399,43 +400,49 @@ type desktopCollaboration struct {
 	roomInstance       string
 	shareAuthority     string
 
-	opMu            sync.Mutex
-	autoReceiveMu   sync.Mutex
-	mu              sync.RWMutex
-	state           CollaborationState
-	fileOffers      map[string]collab.FileOffer
-	fileOffersReady bool
-	conn            *collaborationConnection
-	outbox          []collab.CommandEnvelope
-	outboxFailures  map[string]string
-	starts          map[string]collaborationStartRecord
-	runs            map[string]*collaborationAgentRun
-	queuedRuns      []*collaborationAgentRun
-	queueWaiting    bool
-	recoveredRuns   []collaborationPersistedRun
-	leaveError      string
-	recovery        collaborationPersistedState
-	shares          map[string]collaborationSharedFile
-	transfers       map[string]*CollaborationFileTransfer
-	transferArchive map[string]*CollaborationFileTransfer
-	transferCancel  map[string]context.CancelFunc
-	transferRun     map[string]uint64
-	transferLocks   map[string]*sync.Mutex
-	restoreOnce     sync.Once
-	ownedParts      map[string]os.FileInfo
-	autoReceiveSem  chan struct{}
-	autoRetryDelay  func(int) time.Duration
-	autoRetryAfter  map[string]time.Time
-	autoRetryTimer  *time.Timer
-	autoRetryAt     time.Time
-	autoScanActive  bool
-	autoScanAgain   bool
-	autoScanClosed  bool
-	verifiedFiles   map[string]collaborationVerifiedFile
-	relayChunkCache map[string]collaborationRelayChunk
-	relayChunkBytes int64
-	relayChunkClock uint64
-	fileOrigin      *collaborationFileOrigin
+	opMu               sync.Mutex
+	autoReceiveMu      sync.Mutex
+	mu                 sync.RWMutex
+	state              CollaborationState
+	fileOffers         map[string]collab.FileOffer
+	fileOffersReady    bool
+	conn               *collaborationConnection
+	outbox             []collab.CommandEnvelope
+	outboxFailures     map[string]string
+	starts             map[string]collaborationStartRecord
+	runs               map[string]*collaborationAgentRun
+	queuedRuns         []*collaborationAgentRun
+	queueWaiting       bool
+	recoveredRuns      []collaborationPersistedRun
+	leaveError         string
+	recovery           collaborationPersistedState
+	shares             map[string]collaborationSharedFile
+	transfers          map[string]*CollaborationFileTransfer
+	transferArchive    map[string]*CollaborationFileTransfer
+	transferCancel     map[string]context.CancelFunc
+	transferRun        map[string]uint64
+	transferLocks      map[string]*sync.Mutex
+	restoreOnce        sync.Once
+	updateOnce         sync.Once
+	updateCancel       context.CancelFunc
+	updateDone         chan struct{}
+	initialUpdateDelay func() time.Duration
+	updateDelay        func() time.Duration
+	streamRetryDelay   func(int, uint64) time.Duration
+	ownedParts         map[string]os.FileInfo
+	autoReceiveSem     chan struct{}
+	autoRetryDelay     func(int) time.Duration
+	autoRetryAfter     map[string]time.Time
+	autoRetryTimer     *time.Timer
+	autoRetryAt        time.Time
+	autoScanActive     bool
+	autoScanAgain      bool
+	autoScanClosed     bool
+	verifiedFiles      map[string]collaborationVerifiedFile
+	relayChunkCache    map[string]collaborationRelayChunk
+	relayChunkBytes    int64
+	relayChunkClock    uint64
+	fileOrigin         *collaborationFileOrigin
 
 	persistPath       string
 	legacyPersistPath string
@@ -461,6 +468,9 @@ type desktopCollaboration struct {
 }
 
 type collaborationConnection struct {
+	syncMu              sync.Mutex
+	failoverMu          sync.Mutex
+	failoverActive      bool
 	peer                collaborationPeer
 	filePeer            collaborationFilePeer
 	host                *http.Server
@@ -622,7 +632,14 @@ type collaborationPersistedRun struct {
 
 func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	sessionID = strings.TrimSpace(sessionID)
-	var sessionPath, sessionTitle, workspaceRoot string
+	sessionPath, sessionTitle, workspaceRoot := collaborationSessionOwner(app, sessionID)
+	return newDesktopCollaborationForSession(app, sessionID, sessionPath, sessionTitle, workspaceRoot)
+}
+
+func collaborationSessionOwner(app *App, sessionID string) (sessionPath, sessionTitle, workspaceRoot string) {
+	if app == nil {
+		return "", "", ""
+	}
 	if tab := app.sessionByID(sessionID); tab != nil {
 		app.mu.RLock()
 		sessionPath = collaborationOwnerSessionPath(tab.currentSessionPath())
@@ -630,6 +647,16 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 		workspaceRoot = normalizeProjectRoot(tab.WorkspaceRoot)
 		app.mu.RUnlock()
 	}
+	return sessionPath, sessionTitle, workspaceRoot
+}
+
+// newDesktopCollaborationForSession also supports a persisted Room whose tab
+// is not currently mounted. Room caches are keyed by the durable Session path,
+// so restoring with only the Session ID would silently read a different file
+// and leave the maintenance/unread runtime empty.
+func newDesktopCollaborationForSession(app *App, sessionID, sessionPath, sessionTitle, workspaceRoot string) *desktopCollaboration {
+	sessionID = strings.TrimSpace(sessionID)
+	sessionPath = collaborationOwnerSessionPath(sessionPath)
 	c := &desktopCollaboration{
 		app:                app,
 		ownerSessionID:     sessionID,
@@ -657,7 +684,7 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	c.setSecret = func(key, value string) error { _, err := config.SetCredential(key, value); return err }
 	c.getSecret = func(key string) string { return config.ResolveCredential(key).Value }
 	c.removeSecret = config.RemoveCredential
-	c.validateAgent = c.validateLocalController
+	c.validateAgent = c.validateCollaborationIdentity
 	c.agentReady = app.collaborationAgentReady
 	c.waitAgentReady = app.waitCollaborationAgentReady
 	c.prepareAgentInput = app.prepareCollaborationAgentInput
@@ -743,6 +770,57 @@ func (a *App) collaborationRuntime(sessionID string) (*desktopCollaboration, err
 	if sessionID == "" {
 		return nil, fmt.Errorf("sessionId is required")
 	}
+	sessionPath, sessionTitle, workspaceRoot := collaborationSessionOwner(a, sessionID)
+	a.collaborationMu.Lock()
+	if a.collaborations == nil {
+		a.collaborations = make(map[string]*desktopCollaboration)
+	}
+	if runtime := a.collaborations[sessionID]; runtime != nil {
+		a.collaborationMu.Unlock()
+		return runtime, nil
+	}
+	var replaced []*desktopCollaboration
+	if sessionPath != "" {
+		seen := make(map[*desktopCollaboration]bool)
+		for ownerID, runtime := range a.collaborations {
+			if runtime == nil || runtime.ownerSessionPath != sessionPath {
+				continue
+			}
+			delete(a.collaborations, ownerID)
+			if !seen[runtime] {
+				seen[runtime] = true
+				replaced = append(replaced, runtime)
+			}
+		}
+	}
+	runtime := newDesktopCollaborationForSession(a, sessionID, sessionPath, sessionTitle, workspaceRoot)
+	a.collaborations[sessionID] = runtime
+	a.collaborationMu.Unlock()
+	for _, stale := range replaced {
+		stale.close()
+	}
+	runtime.startUpdateLoop(a.bootContext())
+	return runtime, nil
+}
+
+// collaborationRuntimeForPersisted restores an unmounted Room from its
+// SessionPath-keyed cache. The project-tree sidecar is the authority that this
+// cache still belongs to a live local Room; incomplete/orphaned historical
+// cache files remain ignored.
+func (a *App) collaborationRuntimeForPersisted(p collaborationPersistedState) (*desktopCollaboration, error) {
+	sessionID := strings.TrimSpace(p.SessionID)
+	sessionPath := collaborationOwnerSessionPath(p.SessionPath)
+	if sessionID == "" || sessionPath == "" {
+		return nil, fmt.Errorf("persisted collaboration Session identity is incomplete")
+	}
+	meta, ok, err := agent.LoadBranchMeta(sessionPath)
+	if err != nil {
+		return nil, fmt.Errorf("load persisted collaboration Session: %w", err)
+	}
+	if !ok || meta.SessionKind != agent.SessionKindCollaboration {
+		return nil, errCollaborationSessionUnregistered
+	}
+
 	a.collaborationMu.Lock()
 	defer a.collaborationMu.Unlock()
 	if a.collaborations == nil {
@@ -751,8 +829,20 @@ func (a *App) collaborationRuntime(sessionID string) (*desktopCollaboration, err
 	if runtime := a.collaborations[sessionID]; runtime != nil {
 		return runtime, nil
 	}
-	runtime := newDesktopCollaboration(a, sessionID)
+	for _, runtime := range a.collaborations {
+		if runtime != nil && runtime.ownerSessionPath == sessionPath {
+			return runtime, nil
+		}
+	}
+	runtime := newDesktopCollaborationForSession(
+		a,
+		sessionID,
+		sessionPath,
+		firstNonEmpty(strings.TrimSpace(meta.CustomTitle), strings.TrimSpace(meta.TopicTitle), strings.TrimSpace(p.RoomName)),
+		normalizeProjectRoot(meta.WorkspaceRoot),
+	)
 	a.collaborations[sessionID] = runtime
+	runtime.startUpdateLoop(a.bootContext())
 	return runtime, nil
 }
 
@@ -778,6 +868,78 @@ func (a *App) closeCollaborations() {
 	cancel()
 }
 
+// collaborationSessionPathsForTopic snapshots the live Room runtimes owned by
+// one topic before that topic's metadata is removed. Branch metadata is read
+// outside collaborationMu; runtime shutdown likewise happens outside the lock.
+func (a *App) collaborationSessionPathsForTopic(topicID string) []string {
+	topicID = strings.TrimSpace(topicID)
+	if a == nil || topicID == "" {
+		return nil
+	}
+	a.collaborationMu.Lock()
+	paths := make([]string, 0, len(a.collaborations))
+	for _, runtime := range a.collaborations {
+		if runtime != nil {
+			paths = append(paths, runtime.ownerSessionPath)
+		}
+	}
+	a.collaborationMu.Unlock()
+
+	seen := map[string]bool{}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = collaborationOwnerSessionPath(path)
+		if path == "" || seen[path] {
+			continue
+		}
+		meta, ok, err := agent.LoadBranchMeta(path)
+		if err != nil || !ok || meta.SessionKind != agent.SessionKindCollaboration || strings.TrimSpace(meta.TopicID) != topicID {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
+}
+
+// closeCollaborationRuntimesForSessionPaths removes matching Room runtimes
+// from the App before closing them. Repeated calls are safe, and close never
+// runs while collaborationMu is held, so a transport shutdown cannot block
+// unrelated Room lookup or create a lock-order cycle.
+func (a *App) closeCollaborationRuntimesForSessionPaths(sessionPaths []string) {
+	if a == nil || len(sessionPaths) == 0 {
+		return
+	}
+	targets := map[string]bool{}
+	for _, path := range sessionPaths {
+		if key := sessionRuntimeKey(collaborationOwnerSessionPath(path)); key != "" {
+			targets[key] = true
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	a.collaborationMu.Lock()
+	seen := map[*desktopCollaboration]bool{}
+	runtimes := make([]*desktopCollaboration, 0, len(targets))
+	for sessionID, runtime := range a.collaborations {
+		if runtime == nil || !targets[sessionRuntimeKey(runtime.ownerSessionPath)] {
+			continue
+		}
+		delete(a.collaborations, sessionID)
+		if !seen[runtime] {
+			seen[runtime] = true
+			runtimes = append(runtimes, runtime)
+		}
+	}
+	a.collaborationMu.Unlock()
+
+	for _, runtime := range runtimes {
+		runtime.close()
+	}
+}
+
 // restoreCollaborationRuntimes scans the persisted collaboration states on
 // disk and reinstantiates a desktopCollaboration runtime for each one, then
 // attempts an async reconnection. This is called during Desktop startup so
@@ -788,10 +950,144 @@ func (a *App) closeCollaborations() {
 // Errors are recorded in the runtime state and surfaced to the frontend when
 // the user eventually opens that Room tab.
 func (a *App) restoreCollaborationRuntimes() {
+	available, err := collaborationPersistedStatesAvailable()
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "collaboration restore: inspect state dir: %v\n", err)
+		}
+		return
+	}
+	if !available {
+		return
+	}
+	a.collaborationReconcileMu.Lock()
+	a.collaborationReconcileEnabled = true
+	a.collaborationReconcileMu.Unlock()
+	a.reconcileCollaborationRuntimes()
+}
+
+func collaborationPersistedStatesAvailable() (bool, error) {
+	root := strings.TrimSpace(config.MemoryUserDir())
+	if root == "" {
+		return false, nil
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "desktop-collaboration-v2"))
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// scheduleCollaborationRuntimeReconcile coalesces project-tree changes and
+// late session-directory cache fills. A cold ListProjectTree call may return a
+// partial tree after its bounded timeout; the successful background load asks
+// for another authority scan so a Host Room cannot remain dormant until its UI
+// tab is opened. The pending bit prevents a completion that arrives during an
+// active scan from being lost.
+func (a *App) scheduleCollaborationRuntimeReconcile() {
+	if a == nil {
+		return
+	}
+	a.collaborationReconcileMu.Lock()
+	if !a.collaborationReconcileEnabled {
+		a.collaborationReconcileMu.Unlock()
+		return
+	}
+	a.collaborationReconcilePending = true
+	if a.collaborationReconcileRunning {
+		a.collaborationReconcileMu.Unlock()
+		return
+	}
+	a.collaborationReconcileRunning = true
+	a.collaborationReconcileMu.Unlock()
+
+	go a.collaborationRuntimeReconcileLoop()
+}
+
+func (a *App) collaborationRuntimeReconcileLoop() {
+	for {
+		a.collaborationReconcileMu.Lock()
+		a.collaborationReconcilePending = false
+		a.collaborationReconcileMu.Unlock()
+
+		a.reconcileCollaborationRuntimes()
+
+		a.collaborationReconcileMu.Lock()
+		if !a.collaborationReconcilePending {
+			a.collaborationReconcileRunning = false
+			a.collaborationReconcileMu.Unlock()
+			return
+		}
+		a.collaborationReconcileMu.Unlock()
+	}
+}
+
+func (a *App) reconcileCollaborationRuntimes() {
+	if a == nil {
+		return
+	}
+	a.collaborationRestoreMu.Lock()
+	defer a.collaborationRestoreMu.Unlock()
 	a.restoreCollaborationRuntimesWith(a.startCollaborationRestore)
 }
 
 type collaborationRestoreStart func(*desktopCollaboration, string)
+
+var errCollaborationSessionUnregistered = errors.New("persisted collaboration Session is no longer registered")
+
+// collaborationSessionRegistered checks the durable Room ownership records
+// directly. ListProjectTree is a UI projection with a bounded cache-backed
+// scan; using it as startup authority can leave a valid Host dormant until the
+// Room UI happens to trigger another runtime lookup.
+func collaborationSessionRegistered(sessionPath string, projects desktopProjectFile) bool {
+	ownerPath := collaborationOwnerSessionPath(sessionPath)
+	if ownerPath == "" || collaborationSessionPathInTrash(ownerPath) {
+		return false
+	}
+	info, err := os.Stat(ownerPath)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	meta, ok, err := agent.LoadBranchMeta(ownerPath)
+	if err != nil || !ok || meta.SessionKind != agent.SessionKindCollaboration {
+		return false
+	}
+	topicID := strings.TrimSpace(meta.TopicID)
+	if topicID == "" {
+		return false
+	}
+	root := normalizeProjectRoot(meta.WorkspaceRoot)
+	if strings.TrimSpace(meta.Scope) == "global" || (strings.TrimSpace(meta.Scope) == "" && root == "") {
+		return containsDesktopString(projects.GlobalTopics, topicID) || containsDesktopString(projects.GlobalPinnedTopics, topicID)
+	}
+	if root == "" {
+		return false
+	}
+	for _, project := range projects.Projects {
+		if normalizeProjectRoot(project.Root) != root {
+			continue
+		}
+		return containsDesktopString(project.Topics, topicID) || containsDesktopString(project.PinnedTopics, topicID)
+	}
+	return false
+}
+
+func collaborationSessionPathInTrash(sessionPath string) bool {
+	for path := filepath.Clean(sessionPath); ; path = filepath.Dir(path) {
+		if strings.EqualFold(filepath.Base(path), sessionTrashDir) {
+			return true
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return false
+		}
+	}
+}
 
 func (a *App) restoreCollaborationRuntimesWith(start collaborationRestoreStart) {
 	root := strings.TrimSpace(config.MemoryUserDir())
@@ -806,12 +1102,19 @@ func (a *App) restoreCollaborationRuntimesWith(start collaborationRestoreStart) 
 		}
 		return
 	}
+	// Build the current durable Topic registry once. The cache directory retains
+	// old states for recovery, so a complete cache alone must never resurrect a
+	// Room that was left, deleted, trashed, or removed from a topic.
+	a.restoreCollaborationRuntimesWithRegistry(entries, stateDir, start, loadProjectsFile())
+}
+
+func (a *App) restoreCollaborationRuntimesWithRegistry(entries []os.DirEntry, stateDir string, start collaborationRestoreStart, projects desktopProjectFile) {
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		persistPath := filepath.Join(stateDir, entry.Name())
-		a.restoreOneCollaborationWith(persistPath, start)
+		a.restoreOneCollaborationWithRegistry(persistPath, start, projects)
 	}
 }
 
@@ -820,6 +1123,10 @@ func (a *App) restoreOneCollaboration(persistPath string) {
 }
 
 func (a *App) restoreOneCollaborationWith(persistPath string, start collaborationRestoreStart) {
+	a.restoreOneCollaborationWithRegistry(persistPath, start, loadProjectsFile())
+}
+
+func (a *App) restoreOneCollaborationWithRegistry(persistPath string, start collaborationRestoreStart, projects desktopProjectFile) {
 	var persisted collaborationPersistedState
 	if err := readPersistFile(persistPath, &persisted); err != nil {
 		fmt.Fprintf(os.Stderr, "collaboration restore: read %s: %v\n", persistPath, err)
@@ -829,21 +1136,40 @@ func (a *App) restoreOneCollaborationWith(persistPath string, start collaboratio
 		return
 	}
 	tab := a.sessionByID(persisted.SessionID)
-	if tab == nil {
+	if persisted.Mode == "" || persisted.Host == "" || persisted.Room == "" {
+		return
+	}
+	ownerPath := strings.TrimSpace(persisted.SessionPath)
+	if ownerPath == "" && tab != nil {
+		ownerPath = tab.currentSessionPath()
+	}
+	if !collaborationSessionRegistered(ownerPath, projects) {
 		return
 	}
 	// Recovery branches are an implementation detail of durable Session saves.
 	// Compare both sides through the same logical Room owner identity used by
 	// newDesktopCollaboration, otherwise a recovered tab rejects the original
 	// Host cache during startup and leaves the UI with a disconnected shell.
-	livePath := collaborationOwnerSessionPath(tab.currentSessionPath())
+	livePath := ""
+	if tab != nil {
+		livePath = collaborationOwnerSessionPath(tab.currentSessionPath())
+	}
 	persistedPath := collaborationOwnerSessionPath(persisted.SessionPath)
 	if livePath != "" && persistedPath != "" && livePath != persistedPath {
 		return
 	}
 	// Skip sessions that have already been restored (idempotent).
-	runtime, err := a.collaborationRuntime(persisted.SessionID)
+	var runtime *desktopCollaboration
+	var err error
+	if tab != nil {
+		runtime, err = a.collaborationRuntime(persisted.SessionID)
+	} else {
+		runtime, err = a.collaborationRuntimeForPersisted(persisted)
+	}
 	if err != nil {
+		if errors.Is(err, errCollaborationSessionUnregistered) {
+			return
+		}
 		fmt.Fprintf(os.Stderr, "collaboration restore: runtime %s: %v\n", persisted.SessionID, err)
 		return
 	}
@@ -856,9 +1182,10 @@ func (a *App) restoreOneCollaborationWith(persistPath string, start collaboratio
 	// Loading it again here would duplicate recovered queue entries.
 	p := runtime.repairPersisted(runtime.readPersisted())
 	if p.Mode != "" && p.Host != "" && p.Room != "" && p.SessionID != "" {
-		// Old builds could leave both original-path and recovery-path cache
-		// files for one logical Room. The runtime is keyed by SessionID, so
-		// only one startup reconnect may run even when the scan sees both.
+		// Restore transport residency for every authoritative Room, regardless
+		// of whether a tab or Agent Controller is mounted. Old builds could leave
+		// both original-path and recovery-path caches; scheduleRestore keeps the
+		// startup activation idempotent for that logical Room.
 		runtime.scheduleRestore(func() {
 			start(runtime, persisted.SessionID)
 		})
@@ -867,13 +1194,19 @@ func (a *App) restoreOneCollaborationWith(persistPath string, start collaboratio
 
 func (a *App) startCollaborationRestore(runtime *desktopCollaboration, sessionID string) {
 	go func() {
-		readyCtx, cancel := context.WithTimeout(a.bootContext(), 2*time.Minute)
-		defer cancel()
-		if err := a.waitCollaborationAgentReady(readyCtx, sessionID); err != nil {
-			runtime.failState("failed", fmt.Errorf("restore collaboration Agent workspace: %w", err), true)
-			return
+		// Network residency is independent from Agent Controller readiness. The
+		// scheduler resolves Agent readiness only when it actually has work.
+		state, err := runtime.retry(a.bootContext())
+		if err != nil {
+			slog.Warn("desktop: collaboration startup restore failed",
+				"session", strings.TrimSpace(sessionID),
+				"room", state.Room,
+				"host", state.Host,
+				"port", state.Port,
+				"retryable", state.Retryable,
+				"err", err,
+			)
 		}
-		_, _ = runtime.retry(a.bootContext())
 	}()
 }
 
@@ -1974,8 +2307,8 @@ func (c *desktopCollaboration) leaveCurrent(ctx context.Context) error {
 }
 
 func (c *desktopCollaboration) close() {
+	c.stopUpdateLoop()
 	c.opMu.Lock()
-	defer c.opMu.Unlock()
 	c.mu.Lock()
 	conn := c.conn
 	c.persistLocked()
@@ -1991,6 +2324,8 @@ func (c *desktopCollaboration) close() {
 		cancel()
 	}
 	c.closeFileTransfers()
+	c.opMu.Unlock()
+	c.waitUpdateLoop()
 }
 
 func (c *desktopCollaboration) post(ctx context.Context, input PostCollaborationMessageInput) (CollaborationActionResult, error) {
@@ -2011,6 +2346,15 @@ func (c *desktopCollaboration) post(ctx context.Context, input PostCollaboration
 func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, error) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
+	return c.retryLocked(ctx, true)
+}
+
+// retryLocked refreshes or rebuilds the current Room connection. manual is
+// deliberately explicit: only a user-requested retry may release commands
+// that previously failed with a non-retryable response.
+//
+// c.opMu must be held by the caller.
+func (c *desktopCollaboration) retryLocked(ctx context.Context, manual bool) (CollaborationState, error) {
 	c.mu.Lock()
 	conn := c.conn
 	pendingLeave := c.leaveError != ""
@@ -2019,8 +2363,10 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 		err := c.leaveCurrent(ctx)
 		return c.snapshot(), err
 	}
-	for requestID := range c.outboxFailures {
-		delete(c.outboxFailures, requestID)
+	if manual {
+		for requestID := range c.outboxFailures {
+			delete(c.outboxFailures, requestID)
+		}
 	}
 	c.state.Status = "reconnecting"
 	c.state.LastError = ""
@@ -2032,7 +2378,8 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 	if conn == nil {
 		p := c.repairPersisted(c.readPersisted())
 		if p.Mode == "" || p.Host == "" || p.Room == "" || p.SessionID == "" {
-			return c.snapshot(), fmt.Errorf("collaboration connection must be joined again")
+			err := fmt.Errorf("collaboration connection must be joined again")
+			return c.failState("failed", err, true), err
 		}
 		identity, err := c.localIdentity(p.MemberID, p.MemberName, p.MemberAvatar, p.MemberRole, p.AgentID, p.AgentName, p.AgentAvatar, p.AgentRole, p.SessionID, p.Room)
 		if err != nil {
@@ -2084,6 +2431,7 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 		c.retryRelayBindings(ctx, conn)
 	}
 	c.syncConnection(ctx, conn)
+	c.ensureConnectionLoop(conn)
 	return c.snapshot(), nil
 }
 
@@ -2561,6 +2909,30 @@ func (c *desktopCollaboration) validateLocalController(sessionID string) error {
 	return err
 }
 
+// validateCollaborationIdentity keeps transport activation independent from a
+// mounted Agent Controller. Foreground Host/Join still validates the live tab;
+// a resident Room restored after restart instead proves that its durable owner
+// Session is registered as collaboration metadata. Agent execution continues
+// to use collaborationAgentReady and therefore cannot run without a Controller.
+func (c *desktopCollaboration) validateCollaborationIdentity(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if c == nil || sessionID == "" || sessionID != strings.TrimSpace(c.ownerSessionID) {
+		return fmt.Errorf("session %q does not own this collaboration runtime", sessionID)
+	}
+	if c.app != nil && c.app.sessionByID(sessionID) != nil {
+		return c.validateLocalController(sessionID)
+	}
+	path := collaborationOwnerSessionPath(c.ownerSessionPath)
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil {
+		return fmt.Errorf("load collaboration Session identity: %w", err)
+	}
+	if path == "" || !ok || meta.SessionKind != agent.SessionKindCollaboration {
+		return fmt.Errorf("session %q is not a registered collaboration Session", sessionID)
+	}
+	return nil
+}
+
 func (a *App) collaborationAgentReady(sessionID string) (bool, error) {
 	if a == nil {
 		return false, fmt.Errorf("desktop application is unavailable")
@@ -2768,10 +3140,7 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 		go c.scheduler.run(schedCtx, c)
 	}
 
-	loopCtx, cancel := context.WithCancel(c.app.bootContext())
-	conn.cancel = cancel
-	conn.done = make(chan struct{})
-	go c.connectionLoop(loopCtx, conn)
+	c.ensureConnectionLoop(conn)
 	go c.restoreFileOrigins(conn)
 	c.signalAutoReceiveFiles()
 	go c.resumeWaitingFileTransfers()

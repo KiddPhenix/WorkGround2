@@ -194,6 +194,47 @@ func TestJoinExposesTypedResumeRequirement(t *testing.T) {
 	requireCode(t, err, CodeResumeNeeded)
 }
 
+func TestRecoverHostMemberRotatesStaleSessionWithoutRelaxingJoin(t *testing.T) {
+	service, _, original := newTestService(t, "")
+	newer, err := service.Join(context.Background(), JoinInput{
+		RequestID: "join-newer", Room: "room", Member: memberDesc("a", "agent-a"), ResumeSession: original.ConnectionSession,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staleInput := JoinInput{
+		RequestID: "join-stale", Room: "room", Member: memberDesc("a", "agent-a"), ResumeSession: original.ConnectionSession,
+	}
+	if _, err := service.Join(context.Background(), staleInput); err == nil {
+		t.Fatal("ordinary Join accepted a revoked session")
+	} else {
+		requireCode(t, err, CodeResumeNeeded)
+	}
+	recovered, err := service.RecoverHostMember(context.Background(), staleInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovered.Rejoined || recovered.LatestSequence != newer.LatestSequence+1 || recovered.ConnectionSession == original.ConnectionSession || recovered.ConnectionSession == newer.ConnectionSession {
+		t.Fatalf("recovered Host member has invalid rejoin state or sequence: rejoined=%v sequence=%d", recovered.Rejoined, recovered.LatestSequence)
+	}
+	duplicate, err := service.RecoverHostMember(context.Background(), staleInput)
+	if err != nil || duplicate.ConnectionSession != recovered.ConnectionSession || duplicate.LatestSequence != recovered.LatestSequence {
+		t.Fatalf("repeated Host recovery was not idempotent: sequence=%d err=%v", duplicate.LatestSequence, err)
+	}
+	if _, err := service.Snapshot(context.Background(), "room", original.ConnectionSession); err == nil {
+		t.Fatal("original revoked session remained valid")
+	}
+	if _, err := service.Snapshot(context.Background(), "room", newer.ConnectionSession); err == nil {
+		t.Fatal("superseded session remained valid")
+	}
+	if _, err := service.Snapshot(context.Background(), "room", recovered.ConnectionSession); err != nil {
+		t.Fatalf("recovered session is invalid: %v", err)
+	}
+	_, err = service.RecoverHostMember(context.Background(), JoinInput{RequestID: "recover-missing", Room: "room", Member: memberDesc("missing", "agent-missing")})
+	requireCode(t, err, CodeNotFound)
+}
+
 func TestMemberCanRenameOwnAgentIdempotently(t *testing.T) {
 	service, dir, joined := newTestService(t, "")
 	memberAvatar := "data:image/png;base64,iVBORw0KGgo="
@@ -524,6 +565,161 @@ func TestJournalTailRepairSurvivesAnotherRestart(t *testing.T) {
 	}
 	if got := snapshot.Timeline[len(snapshot.Timeline)-1].Chat.Text; got != "survives" {
 		t.Fatalf("last chat = %q", got)
+	}
+}
+
+func TestJournalSequenceConflictIsQueuedAndRebased(t *testing.T) {
+	dir := t.TempDir()
+	primary, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryService := NewService(primary)
+	if _, err := primaryService.CreateRoom(context.Background(), CreateRoomInput{RequestID: "create", ID: "room", Name: "Room"}); err != nil {
+		t.Fatal(err)
+	}
+	joined, err := primaryService.Join(context.Background(), JoinInput{RequestID: "join", Room: "room", Member: memberDesc("a", "agent-a")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleService := NewService(stale)
+	if _, err := primaryService.Submit(context.Background(), env("chat-primary", "a", joined.ConnectionSession, Command{Type: CommandPostChat, Chat: &PostChatInput{Text: "primary"}})); err != nil {
+		t.Fatal(err)
+	}
+	staleReceipt, err := staleService.Submit(context.Background(), env("chat-stale", "a", joined.ConnectionSession, Command{Type: CommandPostChat, Chat: &PostChatInput{Text: "stale"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(reopened)
+	snapshot, err := service.Snapshot(context.Background(), "room", joined.ConnectionSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.LatestSequence != 4 {
+		t.Fatalf("latest sequence = %d, want 4", snapshot.LatestSequence)
+	}
+	if len(snapshot.Timeline) != 3 {
+		t.Fatalf("timeline length = %d, want join + 2 chats", len(snapshot.Timeline))
+	}
+	last := snapshot.Timeline[len(snapshot.Timeline)-1]
+	if last.Sequence != 4 || last.Chat == nil || last.Chat.Text != "stale" {
+		t.Fatalf("rebased timeline item = %#v", last)
+	}
+	events := eventsFrom(t, service, joined.ConnectionSession, 0)
+	if events[len(events)-1].EventID == staleReceipt.EventIDs[0] {
+		t.Fatalf("queued event kept conflicting id %q", staleReceipt.EventIDs[0])
+	}
+	seenIDs := make(map[string]struct{}, len(events))
+	for i, event := range events {
+		want := uint64(i + 1)
+		if event.Sequence != want {
+			t.Fatalf("event %d sequence = %d, want %d", i, event.Sequence, want)
+		}
+		if _, duplicate := seenIDs[event.EventID]; duplicate {
+			t.Fatalf("duplicate event id %q", event.EventID)
+		}
+		seenIDs[event.EventID] = struct{}{}
+	}
+
+	backups, err := filepath.Glob(filepath.Join(dir, "room", journalName+".repair-*.bak"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("repair backups = %v, want exactly one", backups)
+	}
+	if _, err := OpenFileStore(dir); err != nil {
+		t.Fatal(err)
+	}
+	backupsAfterRestart, err := filepath.Glob(filepath.Join(dir, "room", journalName+".repair-*.bak"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backupsAfterRestart) != 1 {
+		t.Fatalf("repair is not idempotent, backups = %v", backupsAfterRestart)
+	}
+}
+
+func TestJournalDuplicateChatIsPreservedWithNewIDs(t *testing.T) {
+	service, dir, joined := newTestService(t, "")
+	if _, err := service.Submit(context.Background(), env("chat", "a", joined.ConnectionSession, Command{Type: CommandPostChat, Chat: &PostChatInput{Text: "duplicate me"}})); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "room", journalName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(data), []byte{'\n'})
+	if len(lines) == 0 {
+		t.Fatal("journal is empty")
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(append(append([]byte(nil), lines[len(lines)-1]...), '\n')); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := NewService(reopened).Snapshot(context.Background(), "room", joined.ConnectionSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Timeline) != 3 {
+		t.Fatalf("timeline length = %d, want join + duplicated chats", len(snapshot.Timeline))
+	}
+	first, second := snapshot.Timeline[1], snapshot.Timeline[2]
+	if first.Chat == nil || second.Chat == nil || first.Chat.Text != second.Chat.Text {
+		t.Fatalf("duplicate chats were not preserved: %#v %#v", first, second)
+	}
+	if second.Sequence != 4 || first.ID == second.ID || first.Chat.ID == second.Chat.ID {
+		t.Fatalf("duplicate chat was not rebased with new IDs: %#v %#v", first, second)
+	}
+}
+
+func TestJournalDuplicateRoomCreationDoesNotBlockReplay(t *testing.T) {
+	dir := t.TempDir()
+	first, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := CreateRoomInput{RequestID: "create", ID: "room", Name: "Room"}
+	if _, err := NewService(first).CreateRoom(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewService(stale).CreateRoom(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, ok := reopened.room("room")
+	if !ok || state.Room.LatestSequence != 1 || len(state.Events) != 1 {
+		t.Fatalf("repaired room state = %#v", state)
 	}
 }
 

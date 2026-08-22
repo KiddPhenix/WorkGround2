@@ -117,6 +117,10 @@ func (a *App) acceptIMUnread(msg bot.InboundMessage) (bot.InboundAcceptance, err
 	a.recordUnreadError(nil)
 	if !receipt.Duplicate {
 		a.emitUnreadState(a.UnreadState())
+		// 新入站消息到达后立即重试待投递的主人决策：微信通道的 context_token
+		// 只在收到用户消息时刷新，主动推送若因 token 缺失/过期失败会进入退避重试，
+		// 这里让刚发消息的用户立刻收到补送的通知/问题，而不是等下一次退避窗口。
+		a.kickDecisionDeliveries(a.bootContext())
 	}
 	return bot.InboundAcceptance{Duplicate: receipt.Duplicate}, nil
 }
@@ -173,16 +177,30 @@ func (c *desktopCollaboration) observeUnread() {
 	}
 	before := store.Summary().Revision
 	created := snapshot.Room.CreatedAt.UTC().Format(time.RFC3339Nano)
-	identity := strings.Join([]string{persistenceKey, room, created}, "\x00")
+	// Room.CreatedAt is optional in older cached snapshots and can arrive only
+	// after the first reconnect. It must not participate in the canonical key:
+	// otherwise one real Room becomes a second unread conversation precisely
+	// when the first new message arrives, and ObserveRoom treats that message as
+	// an already-read first baseline. Pass both legacy key shapes so the store
+	// atomically folds existing waterlines into the stable Room identity.
+	identity := strings.Join([]string{persistenceKey, room}, "\x00")
+	missingCreated := time.Time{}.UTC().Format(time.RFC3339Nano)
+	legacy := []string{
+		stableCollaborationID("room_unread", strings.Join([]string{persistenceKey, room, missingCreated}, "\x00")),
+	}
+	if created != missingCreated {
+		legacy = append(legacy, stableCollaborationID("room_unread", strings.Join([]string{persistenceKey, room, created}, "\x00")))
+	}
 	_, err = store.ObserveRoom(unread.RoomInput{
-		ConversationKey: stableCollaborationID("room_unread", identity),
-		SessionID:       sessionID,
-		Title:           firstNonEmpty(strings.TrimSpace(snapshot.Room.Name), strings.TrimSpace(room)),
-		LocalMemberID:   memberID,
-		LocalAgentID:    agentID,
-		Snapshot:        snapshot,
-		ObservedAt:      time.Now().UTC(),
-		Read:            c.app.unreadTargetVisible(sessionID, ""),
+		ConversationKey:        stableCollaborationID("room_unread", identity),
+		LegacyConversationKeys: legacy,
+		SessionID:              sessionID,
+		Title:                  firstNonEmpty(strings.TrimSpace(snapshot.Room.Name), strings.TrimSpace(room)),
+		LocalMemberID:          memberID,
+		LocalAgentID:           agentID,
+		Snapshot:               snapshot,
+		ObservedAt:             time.Now().UTC(),
+		Read:                   c.app.unreadTargetVisible(sessionID, ""),
 	})
 	if err != nil {
 		c.app.recordUnreadError(fmt.Errorf("project Room unread: %w", err))
@@ -207,6 +225,16 @@ func (a *App) unreadTargetVisible(sessionID, workID string) bool {
 		return false
 	}
 	sessionID, workID = strings.TrimSpace(sessionID), strings.TrimSpace(workID)
+	// 小组件模式下主窗口被小组件遮挡，后台 active tab 一律不可视为可见：
+	// 新消息必须保持未读，退出小组件后才按普通窗口语义自动已读。widgetMode
+	// 由 widgetMu 保护；这里先取位再释放，绝不同时持有 widgetMu 与 a.mu，
+	// 避免与现有锁顺序交叉产生死锁。
+	a.widgetMu.Lock()
+	widgetMode := a.widgetMode
+	a.widgetMu.Unlock()
+	if widgetMode {
+		return false
+	}
 	a.mu.RLock()
 	tab := a.tabs[a.activeTabID]
 	if tab == nil {

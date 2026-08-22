@@ -235,7 +235,7 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 		subReg := SubagentToolRegistryForDepth(t.parentReg, nil, childDepth, maxDepth)
 		subReg = FilterRegistry(subReg, nil, "request_help")
 
-		run, prepErr := t.prepareRun(ctx, subReg, ref, requestID)
+		run, prepErr := t.prepareRun(ctx, subReg, ref, requestID, prompt)
 		if prepErr != nil {
 			failures = append(failures, fmt.Sprintf("%s: prepare transcript: %v", ref, prepErr))
 			emitProgress("candidate_failed", ref, attempt+1, prepErr)
@@ -371,7 +371,7 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 		cap, requestID, strings.Join(attempted, ", "))
 }
 
-func (t *RequestHelpTool) prepareRun(ctx context.Context, subReg *tool.Registry, modelRef, requestID string) (*SubagentRun, error) {
+func (t *RequestHelpTool) prepareRun(ctx context.Context, subReg *tool.Registry, modelRef, requestID, description string) (*SubagentRun, error) {
 	parentSession := strings.TrimSpace(ParentSession(ctx))
 	if t.transcripts == nil || parentSession == "" {
 		return EphemeralSubagentRun(RequestHelpSystemPrompt), nil
@@ -380,6 +380,7 @@ func (t *RequestHelpTool) prepareRun(ctx context.Context, subReg *tool.Registry,
 	return t.transcripts.PrepareFresh(SubagentSpec{
 		Kind:             "request_help",
 		Name:             "request_help:" + requestID,
+		Description:      description,
 		WorkspaceRoot:    t.workspaceRoot,
 		ParentSession:    parentSession,
 		ParentToolCallID: parentID,

@@ -1,6 +1,5 @@
 ---
 import Base from '../layouts/Base.astro';
-import community from '../data/community.json';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const R2_LATEST = 'https://dl.WorkGround2.io/latest';
@@ -19,13 +18,7 @@ try {
 } catch {}
 const R2_DESKTOP = `https://dl.WorkGround2.io/desktop-${desktopVersion}`;
 
-const fmtN = (n) => Number(n).toLocaleString('en-US');
-const avClass = (i) => 'av' + (i % 5 === 2 ? ' sm' : i % 7 === 3 ? ' lg' : '');
-const half = Math.ceil(community.list.length / 2);
-const rowA = community.list.slice(0, half);
-const rowB = community.list.slice(half);
-
-const desc = "Open-source AI coding agent for your terminal and browser, engineered around DeepSeek's byte-stable prefix cache. Long sessions hold 90%+ cache hit and input-token cost collapses to ~1/5. A single Go binary. npm · Homebrew · desktop · web UI. MIT.";
+const desc = "Open-source AI coding workbench that handles the hard parts so you can just build: cache-first long sessions (90%+ cache hit, input cost ~1/5), automatic capability routing, approval + sandbox + rewind, and multi-agent collaboration. One Go binary. npm · Homebrew · desktop · web UI. MIT.";
 const ld = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
@@ -41,9 +34,9 @@ const ld = {
 };
 ---
 <Base
-  title="WorkGround2 — DeepSeek-native coding agent for your terminal"
-  titleEn="WorkGround2 — DeepSeek-native coding agent for your terminal"
-  titleZh="WorkGround2 — DeepSeek 原生的终端编码 Agent"
+  title="WorkGround2 — The hard parts, handled"
+  titleEn="WorkGround2 — The hard parts, handled"
+  titleZh="WorkGround2 — 复杂的事交给我"
   description={desc}>
 
   <script type="application/ld+json" set:html={JSON.stringify(ld)} slot="head" is:inline />
@@ -72,14 +65,14 @@ const ld = {
   <section class="hero">
     <canvas class="hero-dots"></canvas>
     <div class="wrap">
-      <div class="eyebrow reveal"><span class="dot"></span><span class="l-en">DeepSeek-native · built for your terminal · MIT</span><span class="l-zh">DeepSeek 原生 · 为终端而生 · MIT</span></div>
+      <div class="eyebrow reveal"><span class="dot"></span><span class="l-en">The hard parts, handled · local-first · MIT</span><span class="l-zh">复杂的事交给我 · 本地优先 · MIT</span></div>
       <h1 class="reveal" style="--d:0.06s">
-        <span class="l-en">A <span class="grad">DeepSeek</span>-native agent<br />for your terminal.</span>
-        <span class="l-zh"><span class="grad">DeepSeek</span> 原生的<br />终端编码 Agent。</span>
+        <span class="l-en"><span class="grad">The hard parts</span>, handled.<br />You just build.</span>
+        <span class="l-zh"><span class="grad">复杂的事</span>我来做好，<br />你只管开心地写代码。</span>
       </h1>
       <p class="sub reveal" style="--d:0.12s">
-        <span class="l-en">The loop is append-only, aligned to DeepSeek's byte-stable prefix cache — so long sessions hold <b>90%+ cache hit</b> and input-token cost collapses to <b>~1/5</b>. Terminal-first, with a local browser UI when you want one.</span>
-        <span class="l-zh">运行循环 append-only,对齐 DeepSeek 字节稳定的 prefix-cache —— 长会话缓存命中 <b>90%+</b>,输入 token 成本降到 <b>约 1/5</b>。终端优先,需要时也可启动本地浏览器 UI。</span>
+        <span class="l-en">Cost, capabilities, safety, collaboration — WorkGround2 handles the hard parts. Long sessions hold <b>90%+ cache hit</b> and input-token cost drops to <b>~1/5</b>; missing capabilities auto-route to helper models; edits stay approvable and rewindable.</span>
+        <span class="l-zh">成本、能力、安全、协作——这些复杂的事 WorkGround2 都替你扛。长会话缓存命中 <b>90%+</b>、token 成本降到 <b>约 1/5</b>；主模型缺的能力自动路由；改动可批准、可回滚。</span>
       </p>
       <div class="hero-cta reveal" style="--d:0.18s">
         <a class="btn btn-dark" data-os-dl data-goto="desktop" href="#start"><span class="l-en">Download for <span class="os-name">macOS</span></span><span class="l-zh">下载 <span class="os-name">macOS</span> 版</span></a>
@@ -139,6 +132,12 @@ const ld = {
           <h3><span class="l-en">Terminal or browser</span><span class="l-zh">终端或浏览器</span></h3>
           <p><span class="l-en">Use <code>WorkGround2</code> in the terminal, or run <code>WorkGround2 serve</code> for a local browser UI with approvals, Goal, todos, and balance.</span><span class="l-zh">在终端使用 <code>WorkGround2</code>,或运行 <code>WorkGround2 serve</code> 打开本地浏览器 UI,包含审批、Goal、Todo 与余额。</span></p>
           <code class="feat-chip">$ WorkGround2 serve --auth token</code>
+        </div>
+        <div class="feat feat-wide reveal" style="--d:0.04s">
+          <span class="tag">07 / collaboration</span>
+          <h3><span class="l-en">Everyone brings their own agent.</span><span class="l-zh">每人一个自己的 Agent。</span></h3>
+          <p><span class="l-en">Join a Room — each person keeps their own agent, workspace and context, while proposals, deliverables, issues and verifications flow across the team. Offline-tolerant, idempotent, eventually consistent.</span><span class="l-zh">进入同一个 Room——每个人保留自己的 Agent、工作区与上下文，意见、交付物、问题与验证结果在团队间自动流转。支持离线、幂等、最终一致。</span></p>
+          <code class="feat-chip">Host IP · Port · Room → join</code>
         </div>
       </div>
     </div>
@@ -219,29 +218,8 @@ const ld = {
     <div class="wrap">
       <div class="sec-head split reveal">
         <span class="kicker"><span class="l-en">Community</span><span class="l-zh">社区共建</span></span>
-        <h2><span class="l-en">Built in the open, with <span class="em">{community.contributors} contributors.</span></span><span class="l-zh">开源共建,感谢 <span class="em">{community.contributors} 位贡献者。</span></span></h2>
-        <p><span class="l-en">WorkGround2 is MIT-licensed and developed in public. Every issue, every PR, every late-night review made it what it is — thank you.</span><span class="l-zh">WorkGround2 采用 MIT 许可,开放开发。每一个 issue、每一条 PR、每一次深夜 review,成就了今天的它——谢谢你们。</span></p>
-      </div>
-    </div>
-    <div class="crew reveal" aria-hidden="false">
-      <div class="crew-row">
-        <span class="crew-set">
-          {rowA.map((c, i) => (
-            <a class={avClass(i)} data-h={`@${c.login}`} href={c.url} target="_blank" rel="noreferrer" aria-label={c.login}>
-              <img src={c.avatar} alt={c.login} loading="lazy" width="60" height="60" />
-            </a>
-          ))}
-        </span>
-      </div>
-      <div class="crew-row rev">
-        <span class="crew-set">
-          {rowB.map((c, i) => (
-            <a class={avClass(i + 3)} data-h={`@${c.login}`} href={c.url} target="_blank" rel="noreferrer" aria-label={c.login}>
-              <img src={c.avatar} alt={c.login} loading="lazy" width="60" height="60" />
-            </a>
-          ))}
-          <a class="av you" data-h="this could be you · 虚位以待" href={`${repo}/issues`} target="_blank" rel="noreferrer">+</a>
-        </span>
+        <h2><span class="l-en">Built in the open — <span class="em">be an early contributor.</span></span><span class="l-zh">开源共建，<span class="em">邀请你成为首批贡献者。</span></span></h2>
+        <p><span class="l-en">WorkGround2 is MIT-licensed and developed in public. Star it, open an issue, send a PR, or share a real session — every contribution moves it forward.</span><span class="l-zh">WorkGround2 采用 MIT 许可，开放开发。点个 star、提个 issue、发个 PR，或分享一次真实的使用过程——每个贡献都会推动它前进。</span></p>
       </div>
     </div>
     <div class="wrap">
@@ -249,7 +227,7 @@ const ld = {
         <a class="btn btn-dark" href={repo}><span class="l-en">Contribute on GitHub</span><span class="l-zh">在 GitHub 上参与贡献</span></a>
         <a class="btn btn-ghost" href={`${repo}/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22`}><span class="l-en">Good first issues →</span><span class="l-zh">新手友好任务 →</span></a>
       </div>
-      <div class="crew-note reveal"><span class="l-en">{fmtN(community.stars)} stars · {fmtN(community.mergedPrs)} merged PRs · every avatar above is a real contributor</span><span class="l-zh">{fmtN(community.stars)} stars · {fmtN(community.mergedPrs)} 个已合并 PR · 上面每个头像都是一位真实贡献者</span></div>
+
     </div>
   </section>
 

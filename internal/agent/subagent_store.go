@@ -36,6 +36,7 @@ type SubagentMeta struct {
 	Status           SubagentStatus `json:"status"`
 	Kind             string         `json:"kind"` // task | skill | request_help
 	Name             string         `json:"name"`
+	Description      string         `json:"description,omitempty"`
 	WorkspaceRoot    string         `json:"workspaceRoot"`
 	ParentSession    string         `json:"parentSession,omitempty"`
 	ParentToolCallID string         `json:"parentToolCallId,omitempty"`
@@ -51,6 +52,7 @@ type SubagentMeta struct {
 type SubagentSpec struct {
 	Kind             string
 	Name             string
+	Description      string
 	WorkspaceRoot    string
 	ParentSession    string
 	ParentToolCallID string
@@ -79,6 +81,17 @@ type SubagentArtifact struct {
 	SessionPath string
 	MetaPath    string
 	Meta        SubagentMeta
+}
+
+// RunningSubagent is the metadata-only widget projection of one persisted
+// running sub-agent. It never loads the transcript during polling.
+type RunningSubagent struct {
+	Ref           string
+	ParentSession string
+	Kind          string
+	Name          string
+	Description   string
+	UpdatedAt     time.Time
 }
 
 func (r *SubagentRun) Release() {
@@ -169,6 +182,76 @@ func ListSubagentsByParent(sessionDir, parentSession string) ([]SubagentArtifact
 		})
 	}
 	return out, nil
+}
+
+// RunningSubagents returns persisted running sub-agents from one session dir.
+// It preserves usable entries when sibling metadata is damaged and returns
+// the joined scan error so polling callers can expose and retry it.
+func RunningSubagents(sessionDir string) ([]RunningSubagent, error) {
+	items := []RunningSubagent{}
+	if strings.TrimSpace(sessionDir) == "" {
+		return items, nil
+	}
+	dir := filepath.Join(sessionDir, "subagents")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return items, nil
+		}
+		return nil, err
+	}
+	var errs []error
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".meta.json") {
+			continue
+		}
+		ref := strings.TrimSuffix(entry.Name(), ".meta.json")
+		if !validSubagentRef(ref) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("read subagent metadata %q: %w", ref, err))
+			continue
+		}
+		var meta SubagentMeta
+		if err := json.Unmarshal(data, &meta); err != nil {
+			errs = append(errs, fmt.Errorf("decode subagent metadata %q: %w", ref, err))
+			continue
+		}
+		if meta.Status != SubagentRunning {
+			continue
+		}
+		parent := strings.TrimSpace(meta.ParentSession)
+		if parent == "" {
+			// A persisted "running" artifact without a parent owner is corrupt;
+			// surface it instead of silently dropping it from the counts.
+			errs = append(errs, fmt.Errorf("subagent metadata %q is running without a parent session", ref))
+			continue
+		}
+		item := RunningSubagent{
+			Ref: ref, ParentSession: parent, Kind: strings.TrimSpace(meta.Kind),
+			Name: strings.TrimSpace(meta.Name), Description: strings.TrimSpace(meta.Description), UpdatedAt: meta.UpdatedAt,
+		}
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if !items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return items[i].UpdatedAt.After(items[j].UpdatedAt)
+		}
+		return items[i].Ref < items[j].Ref
+	})
+	return items, errors.Join(errs...)
+}
+
+// RunningSubagentCounts retains the small count API for non-widget callers.
+func RunningSubagentCounts(sessionDir string) (map[string]int, error) {
+	items, err := RunningSubagents(sessionDir)
+	counts := map[string]int{}
+	for _, item := range items {
+		counts[item.ParentSession]++
+	}
+	return counts, err
 }
 
 // DeleteSubagentsByParent permanently removes sub-agent artifacts owned by a
@@ -288,6 +371,7 @@ func (s *SubagentStore) PrepareContinue(ref string, spec SubagentSpec) (*Subagen
 	}
 	meta.ParentSession = spec.ParentSession
 	meta.ParentToolCallID = spec.ParentToolCallID
+	meta.Description = conciseSubagentDescription(spec.Description)
 	return &SubagentRun{Ref: ref, Session: sess, Meta: meta, store: s, release: release}, nil
 }
 
@@ -576,6 +660,7 @@ func metaFromSpec(ref string, status SubagentStatus, created, updated time.Time,
 		Status:           status,
 		Kind:             strings.TrimSpace(spec.Kind),
 		Name:             strings.TrimSpace(spec.Name),
+		Description:      conciseSubagentDescription(spec.Description),
 		WorkspaceRoot:    strings.TrimSpace(spec.WorkspaceRoot),
 		ParentSession:    strings.TrimSpace(spec.ParentSession),
 		ParentToolCallID: strings.TrimSpace(spec.ParentToolCallID),
@@ -585,6 +670,15 @@ func metaFromSpec(ref string, status SubagentStatus, created, updated time.Time,
 		Model:            strings.TrimSpace(spec.Model),
 		Effort:           strings.TrimSpace(spec.Effort),
 	}
+}
+
+func conciseSubagentDescription(text string) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	runes := []rune(text)
+	if len(runes) <= 160 {
+		return text
+	}
+	return strings.TrimSpace(string(runes[:157])) + "..."
 }
 
 func validateMeta(meta SubagentMeta, spec SubagentSpec) error {

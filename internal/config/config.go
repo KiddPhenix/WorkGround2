@@ -108,6 +108,10 @@ type DesktopConfig struct {
 	WidgetEnabled           *bool                          `toml:"widget_enabled"`             // show the widget entry in the window frame; nil keeps the default enabled
 	WidgetAlwaysOnTop       *bool                          `toml:"widget_always_on_top"`       // keep the widget window always-on-top; nil keeps the default enabled
 	WidgetSkin              string                         `toml:"widget_skin"`                // widget visual skin: classic|bp|instant|pet|recorder; empty/unknown → classic
+	WidgetStyle             string                         `toml:"widget_style"`               // icons-only; legacy pager/empty values normalize to icons
+	HoverStatusDelayMs      *int                           `toml:"hover_status_delay_ms"`      // icon widget read-only preview delay; nil defaults to 1200
+	WidgetShowDelegation    *bool                          `toml:"widget_show_delegation"`     // show the 委托 icon; nil defaults to hidden
+	WidgetShowExternalTools *bool                          `toml:"widget_show_external_tools"` // show the external AI tool (DSH) icon; nil defaults to hidden
 	SessionBackground       DesktopSessionBackgroundConfig `toml:"session_background"`         // desktop Session background image pool and rotation
 }
 
@@ -611,6 +615,42 @@ func (c *Config) DesktopWidgetSkin() string {
 		return skin
 	}
 	return "classic"
+}
+
+// DesktopWidgetStyle returns the desktop widget presentation. The widget is
+// icons-only: any legacy "pager" or unknown persisted value normalizes to
+// "icons", so old configurations never re-enter the pager at runtime.
+func (c *Config) DesktopWidgetStyle() string {
+	return "icons"
+}
+
+// DesktopHoverStatusDelayMs returns the icon preview delay. Zero disables the
+// delayed preview while preserving immediate hover feedback.
+func (c *Config) DesktopHoverStatusDelayMs() int {
+	if c == nil || c.Desktop.HoverStatusDelayMs == nil {
+		return 1200
+	}
+	return max(0, min(*c.Desktop.HoverStatusDelayMs, 10000))
+}
+
+// DesktopWidgetShowDelegation reports whether the 委托 icon is shown in the
+// icon widget. Missing and new-install configurations default to false, so the
+// icon stays hidden until the user opts in.
+func (c *Config) DesktopWidgetShowDelegation() bool {
+	if c == nil || c.Desktop.WidgetShowDelegation == nil {
+		return false
+	}
+	return *c.Desktop.WidgetShowDelegation
+}
+
+// DesktopWidgetShowExternalTools reports whether the external AI tool (DSH)
+// icon is shown in the icon widget. Missing and new-install configurations
+// default to false, so the icon stays hidden until the user opts in.
+func (c *Config) DesktopWidgetShowExternalTools() bool {
+	if c == nil || c.Desktop.WidgetShowExternalTools == nil {
+		return false
+	}
+	return *c.Desktop.WidgetShowExternalTools
 }
 
 // LSPConfig governs the optional Language Server Protocol tools (lsp_definition,
@@ -1210,6 +1250,22 @@ type AgentConfig struct {
 	// AssistMaxAttempts bounds how many candidate providers are tried per
 	// request_help call. Zero (default) means 3.
 	AssistMaxAttempts int `toml:"assist_max_attempts"`
+	// AnchoredBootstrap gates the DeepSeek two-phase bootstrap: the first
+	// model request exposes only bash + read_file + edit_file with the
+	// memory/skills injection deferred, then the full catalog returns after
+	// the first assistant reply and stays resident (compaction never demotes).
+	// Auto: enabled by default for DeepSeek-family providers; opt out with
+	// anchored_bootstrap = false.
+	AnchoredBootstrap *bool `toml:"anchored_bootstrap"`
+}
+
+// AnchoredBootstrapEnabled reports whether the DeepSeek two-phase bootstrap
+// is enabled. Missing config defaults to true (auto).
+func (c *Config) AnchoredBootstrapEnabled() bool {
+	if c == nil || c.Agent.AnchoredBootstrap == nil {
+		return true
+	}
+	return *c.Agent.AnchoredBootstrap
 }
 
 // MemoryCompilerConfig controls the v5 execution-memory compiler.

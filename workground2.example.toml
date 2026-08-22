@@ -36,6 +36,11 @@ planner_max_steps = 0    # user/global only; planner read-only tool-call rounds;
 temperature       = 0.0
 auto_plan         = "off"   # user-level only; ignored in project WorkGround2.toml
 memory_compiler = { enabled = true }   # user-level only; Memory v5 execution compiler
+# anchored_bootstrap = true   # DeepSeek two-phase bootstrap: first request exposes bash+read_file+edit_file
+#                             # with memory/skills injection deferred, full catalog after the first reply.
+#                             # DeepSeek-family providers only; default true. Set false to disable.
+#                             # No-op when the project has no memory/skills injection to defer.
+#                             # Skipped automatically when a conversation starts with a URL/web request.
 # reasoning_language = "auto"   # visible reasoning text: auto|zh|en
 # auto_plan_classifier = "deepseek-flash"   # optional; only used for borderline tasks
 soft_compact_ratio  = 0.5   # notice only; keeps the cache-first prefix intact

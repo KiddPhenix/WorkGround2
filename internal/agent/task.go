@@ -446,7 +446,11 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	subReg := t.buildSubReg(p.Tools, childDepth)
 	modelRef, effortRef := t.effectiveProfile(p.Model, p.Effort)
 	parentID, parent, _, _ := CallContext(ctx)
-	run, err := t.prepareTranscriptRun(subReg, modelRef, effortRef, ParentSession(ctx), parentID, p.ContinueFrom, p.ForkFrom)
+	description := strings.TrimSpace(p.Description)
+	if description == "" {
+		description = p.Prompt
+	}
+	run, err := t.prepareTranscriptRun(subReg, modelRef, effortRef, ParentSession(ctx), parentID, description, p.ContinueFrom, p.ForkFrom)
 	if err != nil {
 		return "", err
 	}
@@ -504,6 +508,15 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	// Foreground: run synchronously, nesting events under this call.
+	// Persist the running state before entering the provider stream so desktop
+	// projections can observe foreground delegation while the parent turn is
+	// still active. Background runs do the same immediately before job start.
+	if t.transcripts != nil && run != nil && run.Ref != "" {
+		if err := t.transcripts.MarkRunning(run); err != nil {
+			run.Release()
+			return "", err
+		}
+	}
 	defer run.Release()
 	answer, err := t.runSubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, run.Session, childDepth)
 	if err != nil {
@@ -518,7 +531,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	return GuardSubagentHostDecisionText(answer), nil
 }
 
-func (t *TaskTool) prepareTranscriptRun(subReg *tool.Registry, modelRef, effortRef, parentSession, parentID, continueFrom, legacyForkFrom string) (*SubagentRun, error) {
+func (t *TaskTool) prepareTranscriptRun(subReg *tool.Registry, modelRef, effortRef, parentSession, parentID, description, continueFrom, legacyForkFrom string) (*SubagentRun, error) {
 	continueFrom = strings.TrimSpace(continueFrom)
 	legacyForkFrom = strings.TrimSpace(legacyForkFrom)
 	parentSession = strings.TrimSpace(parentSession)
@@ -542,6 +555,7 @@ func (t *TaskTool) prepareTranscriptRun(subReg *tool.Registry, modelRef, effortR
 	spec := SubagentSpec{
 		Kind:             "task",
 		Name:             "task",
+		Description:      description,
 		WorkspaceRoot:    t.workspaceRoot,
 		ParentSession:    parentSession,
 		ParentToolCallID: parentID,

@@ -887,6 +887,104 @@ func TestBeforeCloseAllowsSystemQuitWhenBackgroundCloseEnabled(t *testing.T) {
 	}
 }
 
+func TestBeforeCloseEntersWidgetModeWhenEnabled(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	entered := 0
+	app.widgetModeEnter = func() error { entered++; return nil }
+	if prevent := app.beforeClose(context.Background()); !prevent {
+		t.Fatal("close with widget enabled should be absorbed by widget mode")
+	}
+	if entered != 1 {
+		t.Fatalf("widget entry calls = %d, want 1", entered)
+	}
+}
+
+func TestBeforeCloseWidgetIdempotentOnRepeatedClose(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.widgetMode = true // already compact: repeated close must stay in the widget
+	entered := 0
+	app.widgetModeEnter = func() error { entered++; return nil }
+	for i := 0; i < 2; i++ {
+		if prevent := app.beforeClose(context.Background()); !prevent {
+			t.Fatalf("repeated close in widget mode (call %d) must keep the widget", i+1)
+		}
+	}
+	if entered != 2 {
+		t.Fatalf("widget entry calls = %d, want 2 (one per close)", entered)
+	}
+}
+
+func TestBeforeCloseWidgetDisabledFallsBackToQuit(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	if err := userCfg.SetDesktopCloseBehavior("quit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := userCfg.SetDesktopWidgetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.widgetModeEnter = func() error {
+		t.Fatal("disabled widget must not attempt the transition")
+		return nil
+	}
+	if prevent := app.beforeClose(context.Background()); prevent {
+		t.Fatal("disabled widget must fall back to quit")
+	}
+}
+
+func TestBeforeCloseWidgetFailureFallsBackToQuit(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	if err := userCfg.SetDesktopCloseBehavior("quit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.widgetModeEnter = func() error { return errors.New("window resize failed") }
+	if prevent := app.beforeClose(context.Background()); prevent {
+		t.Fatal("widget transition failure must fall back to quit")
+	}
+}
+
+func TestBeforeCloseForceQuitBypassesWidget(t *testing.T) {
+	app := NewApp()
+	entered := 0
+	app.widgetModeEnter = func() error { entered++; return nil }
+	app.forceQuit.Store(true)
+	if prevent := app.beforeClose(context.Background()); prevent {
+		t.Fatal("forceQuit must bypass widget close absorption")
+	}
+	if entered != 0 {
+		t.Fatalf("widget entry calls = %d, want 0", entered)
+	}
+}
+
+func TestBeforeCloseSystemQuitBypassesWidget(t *testing.T) {
+	consumeSystemQuitRequested()
+	t.Cleanup(func() { consumeSystemQuitRequested() })
+	app := NewApp()
+	entered := 0
+	app.widgetModeEnter = func() error { entered++; return nil }
+	markSystemQuitRequested()
+	if prevent := app.beforeClose(context.Background()); prevent {
+		t.Fatal("system quit must bypass widget close absorption")
+	}
+	if entered != 0 {
+		t.Fatalf("widget entry calls = %d, want 0", entered)
+	}
+	if consumeSystemQuitRequested() {
+		t.Fatal("system quit marker should be consumed by beforeClose")
+	}
+}
+
 func TestBackgroundCloseHideStrategyByPlatform(t *testing.T) {
 	tests := []struct {
 		goos string
@@ -1130,6 +1228,9 @@ status_bar_items = ["cost", "balance"]
 	if got.WidgetSkin != "pet" {
 		t.Fatalf("desktop widget skin = %q, want pet", got.WidgetSkin)
 	}
+	if got.WidgetStyle != "icons" {
+		t.Fatalf("desktop widget style = %q, want icons", got.WidgetStyle)
+	}
 }
 
 func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayload(t *testing.T) {
@@ -1177,6 +1278,9 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	if got.WidgetSkin != "recorder" {
 		t.Fatalf("DesktopStartupSettings widget skin = %q, want recorder", got.WidgetSkin)
 	}
+	if got.WidgetStyle != "icons" {
+		t.Fatalf("DesktopStartupSettings widget style = %q, want icons", got.WidgetStyle)
+	}
 	if !got.Bot.Enabled || !got.Bot.Allowlist.Enabled || !reflect.DeepEqual(got.Bot.Allowlist.QQUsers, []string{"alice"}) {
 		t.Fatalf("DesktopStartupSettings bot settings = %+v, want lightweight bot snapshot", got.Bot)
 	}
@@ -1204,6 +1308,25 @@ func TestSetDesktopWidgetSkinPersistsAndRejectsUnknown(t *testing.T) {
 	}
 	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetSkin(); got != "pet" {
 		t.Fatalf("failed update changed widget skin to %q, want pet", got)
+	}
+}
+
+func TestSetDesktopWidgetStyleOnlyAcceptsIcons(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	for i := 0; i < 2; i++ {
+		if err := app.SetDesktopWidgetStyle("icons"); err != nil {
+			t.Fatalf("SetDesktopWidgetStyle(icons) attempt %d: %v", i+1, err)
+		}
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetStyle(); got != "icons" {
+		t.Fatalf("persisted widget style = %q, want icons", got)
+	}
+	if err := app.SetDesktopWidgetStyle("pager"); err == nil {
+		t.Fatal("SetDesktopWidgetStyle(pager) should fail")
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetStyle(); got != "icons" {
+		t.Fatalf("failed update changed widget style to %q, want icons", got)
 	}
 }
 
@@ -3679,6 +3802,47 @@ func TestFileRefsForTabIgnoreActiveParentWorkspace(t *testing.T) {
 	}
 	if got := app.ListDirForTab("missing", ""); got == nil || len(got) != 0 {
 		t.Fatalf("ListDirForTab(missing) = %+v, want non-nil empty result", got)
+	}
+}
+
+func TestFileRefsForWorkspaceRootResolveExplicitly(t *testing.T) {
+	firstRoot := robustTempDir(t)
+	secondRoot := robustTempDir(t)
+	for root, files := range map[string]map[string]string{
+		firstRoot: {
+			"first-only.txt": "first",
+			"shared.txt":     "first shared",
+		},
+		secondRoot: {
+			"second-only.txt": "second",
+			"shared.txt":      "second shared",
+		},
+	} {
+		for name, body := range files {
+			if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	app := &App{}
+
+	listed := app.ListDirForWorkspace(firstRoot, "")
+	if !hasDirEntry(listed, "first-only.txt") || hasDirEntry(listed, "second-only.txt") {
+		t.Fatalf("ListDirForWorkspace(first) = %+v, want only first root entries", listed)
+	}
+	other := app.ListDirForWorkspace(secondRoot, "")
+	if !hasDirEntry(other, "second-only.txt") || hasDirEntry(other, "first-only.txt") {
+		t.Fatalf("ListDirForWorkspace(second) = %+v, want only second root entries", other)
+	}
+	if found := app.SearchFileRefsForWorkspace(secondRoot, "shared"); !hasDirEntry(found, "shared.txt") {
+		t.Fatalf("SearchFileRefsForWorkspace(second) = %+v, want second root shared.txt", found)
+	}
+	if got := app.ListDirForWorkspace(filepath.Join(secondRoot, "missing"), ""); got == nil || len(got) != 0 {
+		t.Fatalf("ListDirForWorkspace(missing) = %+v, want non-nil empty result", got)
+	}
+	if got := app.SearchFileRefsForWorkspace("", "anything"); got == nil {
+		t.Fatalf("SearchFileRefsForWorkspace(\"\") = %+v, want non-nil result", got)
 	}
 }
 

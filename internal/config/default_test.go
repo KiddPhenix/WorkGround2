@@ -24,6 +24,18 @@ func TestDefaultMemoryCompilerEnabled(t *testing.T) {
 	}
 }
 
+func TestAnchoredBootstrapDefaultsEnabled(t *testing.T) {
+	cfg := Default()
+	if !cfg.AnchoredBootstrapEnabled() {
+		t.Fatal("anchored_bootstrap must default to enabled for deepseek providers")
+	}
+	off := false
+	cfg.Agent.AnchoredBootstrap = &off
+	if cfg.AnchoredBootstrapEnabled() {
+		t.Fatal("anchored_bootstrap = false must disable the mechanism")
+	}
+}
+
 func TestDefaultDesktopAppearanceAutoGraphite(t *testing.T) {
 	cfg := Default()
 	if got := cfg.DesktopTheme(); got != "auto" {

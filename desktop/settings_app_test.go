@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1445,5 +1446,712 @@ allow_insecure = true
 	got := NewApp().Settings().Collaboration
 	if !got.PreferLAN || len(got.Relays) != 0 {
 		t.Fatalf("Settings collaboration = %+v, want user defaults", got)
+	}
+}
+
+// SetDesktopWidgetAlwaysOnTop applies the runtime flag immediately while widget
+// mode is active, persists the config in the same serialized step as widget
+// transitions, and rolls the runtime flag back when the persist fails. Outside
+// widget mode (or without a live window) it only persists, as before.
+func TestSetDesktopWidgetAlwaysOnTopRuntimeWhileWidgetActive(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	var applied []bool
+	app := &App{ctx: context.Background(), widgetMode: true, windowSetAlwaysOnTop: func(on bool) error { applied = append(applied, on); return nil }}
+	if err := app.SetDesktopWidgetAlwaysOnTop(false); err != nil {
+		t.Fatalf("SetDesktopWidgetAlwaysOnTop(false): %v", err)
+	}
+	if want := []bool{false}; !reflect.DeepEqual(applied, want) {
+		t.Fatalf("runtime calls = %v, want %v", applied, want)
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetAlwaysOnTop(); got {
+		t.Fatal("config still always-on-top after SetDesktopWidgetAlwaysOnTop(false)")
+	}
+	if err := app.SetDesktopWidgetAlwaysOnTop(true); err != nil {
+		t.Fatalf("SetDesktopWidgetAlwaysOnTop(true): %v", err)
+	}
+	if want := []bool{false, true}; !reflect.DeepEqual(applied, want) {
+		t.Fatalf("runtime calls = %v, want %v", applied, want)
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetAlwaysOnTop(); !got {
+		t.Fatal("config not always-on-top after SetDesktopWidgetAlwaysOnTop(true)")
+	}
+	// Repeated calls are safe: the runtime re-applies and the persist is idempotent.
+	if err := app.SetDesktopWidgetAlwaysOnTop(true); err != nil {
+		t.Fatalf("repeat SetDesktopWidgetAlwaysOnTop(true): %v", err)
+	}
+}
+
+func TestSetDesktopWidgetAlwaysOnTopRollsBackRuntimeOnPersistFailure(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	// Occupy the config directory with a regular file so the atomic persist
+	// (which MkdirAll's the parent) fails after the runtime flag was applied.
+	configDir := filepath.Dir(config.UserConfigPath())
+	if err := os.MkdirAll(filepath.Dir(configDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configDir, []byte("occupied"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var applied []bool
+	app := &App{ctx: context.Background(), widgetMode: true, windowSetAlwaysOnTop: func(on bool) error { applied = append(applied, on); return nil }}
+	if err := app.SetDesktopWidgetAlwaysOnTop(false); err == nil {
+		t.Fatal("SetDesktopWidgetAlwaysOnTop(false) succeeded with a blocked config write")
+	}
+	// The default config keeps always-on-top enabled, so the failed toggle
+	// must roll the runtime flag back to true.
+	if want := []bool{false, true}; !reflect.DeepEqual(applied, want) {
+		t.Fatalf("runtime calls = %v, want apply-then-rollback %v", applied, want)
+	}
+}
+
+func TestSetDesktopWidgetAlwaysOnTopOutsideWidgetPersistsOnly(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	var applied []bool
+	seam := func(on bool) error { applied = append(applied, on); return nil }
+	// Not in widget mode: no runtime call, only the persisted config.
+	app := &App{windowSetAlwaysOnTop: seam}
+	if err := app.SetDesktopWidgetAlwaysOnTop(false); err != nil {
+		t.Fatalf("SetDesktopWidgetAlwaysOnTop(false): %v", err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("runtime calls outside widget mode = %v, want none", applied)
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetAlwaysOnTop(); got {
+		t.Fatal("config still always-on-top outside widget mode")
+	}
+	// Widget mode without a live window (ctx nil) also persists only.
+	app = &App{widgetMode: true, windowSetAlwaysOnTop: seam}
+	if err := app.SetDesktopWidgetAlwaysOnTop(true); err != nil {
+		t.Fatalf("SetDesktopWidgetAlwaysOnTop(true) without ctx: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("runtime calls without a live window = %v, want none", applied)
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetAlwaysOnTop(); !got {
+		t.Fatal("config not always-on-top after persist-only set")
+	}
+}
+
+// --- orchestration: the always-on-top setter, widget transitions and the
+// style switch all serialize on widgetMu so a concurrent toggle can never
+// interleave between a config read and its dependent native apply ---
+
+// TestAlwaysOnTopToggleSerialisesWithWidgetTransition locks the toggle's
+// runtime apply + config persist behind widgetMu and proves a concurrent
+// widget transition cannot interleave (and vice versa).
+func TestAlwaysOnTopToggleSerialisesWithWidgetTransition(t *testing.T) {
+	t.Run("toggle in flight blocks transition", func(t *testing.T) {
+		isolateDesktopUserDirs(t)
+		app := &App{ctx: context.Background(), widgetMode: true}
+		applied := make(chan bool, 2)
+		release := make(chan struct{})
+		app.windowSetAlwaysOnTop = func(on bool) error {
+			applied <- on
+			<-release
+			return nil
+		}
+		toggleDone := make(chan error, 1)
+		go func() { toggleDone <- app.SetDesktopWidgetAlwaysOnTop(false) }()
+		if got := <-applied; got {
+			t.Fatalf("toggle applied %v, want false", got)
+		}
+		transitionStarted := make(chan struct{})
+		transitionDone := make(chan error, 1)
+		go func() {
+			_, err := app.transitionWidgetMode(false, func() error {
+				close(transitionStarted)
+				return nil
+			})
+			transitionDone <- err
+		}()
+		select {
+		case <-transitionStarted:
+			t.Fatal("widget transition interleaved with the toggle's apply/persist")
+		case <-time.After(50 * time.Millisecond):
+		}
+		close(release)
+		if err := <-toggleDone; err != nil {
+			t.Fatalf("toggle: %v", err)
+		}
+		if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetAlwaysOnTop(); got {
+			t.Fatal("config still always-on-top after the serialized toggle")
+		}
+		select {
+		case <-transitionStarted:
+		case <-time.After(time.Second):
+			t.Fatal("transition did not resume after the toggle")
+		}
+		if err := <-transitionDone; err != nil {
+			t.Fatalf("transition: %v", err)
+		}
+	})
+
+	t.Run("transition in flight blocks toggle runtime apply", func(t *testing.T) {
+		isolateDesktopUserDirs(t)
+		app := &App{ctx: context.Background(), widgetMode: true}
+		readDone := make(chan struct{})
+		release := make(chan struct{})
+		// Mirror applyEnterWidgetMode: the transition reads the persisted
+		// always-on-top preference inside its widgetMu critical section.
+		transitionApply := func() error {
+			if _, _, err := app.desktopWidgetPreferences(); err != nil {
+				return err
+			}
+			close(readDone)
+			<-release
+			return nil
+		}
+		transitionDone := make(chan error, 1)
+		go func() {
+			_, err := app.transitionWidgetMode(false, transitionApply)
+			transitionDone <- err
+		}()
+		<-readDone
+
+		applied := make(chan bool, 2)
+		app.windowSetAlwaysOnTop = func(on bool) error { applied <- on; return nil }
+		toggleDone := make(chan error, 1)
+		go func() { toggleDone <- app.SetDesktopWidgetAlwaysOnTop(false) }()
+		select {
+		case on := <-applied:
+			t.Fatalf("toggle applied %v while the transition held widgetMu", on)
+		case <-time.After(50 * time.Millisecond):
+		}
+		close(release)
+		if err := <-transitionDone; err != nil {
+			t.Fatalf("transition: %v", err)
+		}
+		// The transition exited widget mode, so the queued toggle degrades to
+		// the inactive persist-only path: no runtime apply, config persisted.
+		if err := <-toggleDone; err != nil {
+			t.Fatalf("toggle: %v", err)
+		}
+		select {
+		case on := <-applied:
+			t.Fatalf("toggle applied runtime %v after widget mode exited", on)
+		default:
+		}
+		if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetAlwaysOnTop(); got {
+			t.Fatal("config not always-on-top=false after the queued toggle")
+		}
+	})
+}
+
+// TestAlwaysOnTopToggleRuntimeFailureDoesNotPersist: a runtime apply failure
+// returns immediately and must never persist the unapplied preference.
+func TestAlwaysOnTopToggleRuntimeFailureDoesNotPersist(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	applyErr := errors.New("window always-on-top apply failed")
+	var applied []bool
+	app := &App{
+		ctx:        context.Background(),
+		widgetMode: true,
+		windowSetAlwaysOnTop: func(on bool) error {
+			applied = append(applied, on)
+			return applyErr
+		},
+	}
+	if err := app.SetDesktopWidgetAlwaysOnTop(false); !errors.Is(err, applyErr) {
+		t.Fatalf("SetDesktopWidgetAlwaysOnTop(false) = %v, want %v", err, applyErr)
+	}
+	if want := []bool{false}; !reflect.DeepEqual(applied, want) {
+		t.Fatalf("runtime calls = %v, want %v", applied, want)
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetAlwaysOnTop(); !got {
+		t.Fatal("config persisted the always-on-top change that failed at runtime")
+	}
+}
+
+// TestAlwaysOnTopTogglePersistAndRollbackFailureReturnsBoth: when the persist
+// fails and the runtime rollback also fails, the caller receives both errors.
+func TestAlwaysOnTopTogglePersistAndRollbackFailureReturnsBoth(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	configDir := filepath.Dir(config.UserConfigPath())
+	if err := os.MkdirAll(filepath.Dir(configDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configDir, []byte("occupied"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rollbackErr := errors.New("rollback always-on-top failed")
+	calls := 0
+	app := &App{
+		ctx:        context.Background(),
+		widgetMode: true,
+		windowSetAlwaysOnTop: func(on bool) error {
+			calls++
+			if calls > 1 {
+				return rollbackErr
+			}
+			return nil
+		},
+	}
+	err := app.SetDesktopWidgetAlwaysOnTop(false)
+	if err == nil {
+		t.Fatal("SetDesktopWidgetAlwaysOnTop(false) succeeded with a blocked config write")
+	}
+	// The returned error must carry both the persist failure and the failed
+	// rollback; if only the persist error were returned, the rollback failure
+	// would be invisible.
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("error must surface the rollback failure: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("runtime calls = %d, want apply-then-rollback (2)", calls)
+	}
+}
+
+// TestDesktopStartupSettingsProjectsAlwaysOnTopFalse: the startup contract must
+// project the persisted false value, never assume the default true.
+func TestDesktopStartupSettingsProjectsAlwaysOnTopFalse(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := &App{}
+	if got := app.DesktopStartupSettings().WidgetAlwaysOnTop; !got {
+		t.Fatal("default startup settings must keep always-on-top enabled")
+	}
+	if err := app.SetDesktopWidgetAlwaysOnTop(false); err != nil {
+		t.Fatalf("SetDesktopWidgetAlwaysOnTop(false): %v", err)
+	}
+	if got := app.DesktopStartupSettings().WidgetAlwaysOnTop; got {
+		t.Fatal("startup settings must project the persisted false value")
+	}
+}
+
+// TestSwitchWidgetStyleBranchesAreDeterministic covers the switchDesktopWidgetStyle
+// branches that need no live native window: outside widget mode it is a no-op,
+// and a style that already matches the runtime mirror reads config under
+// widgetMu and returns without touching the window.
+func TestSwitchWidgetStyleBranchesAreDeterministic(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := &App{ctx: context.Background()}
+	previous, err := app.switchDesktopWidgetStyle("icons")
+	if err != nil || previous != "" {
+		t.Fatalf("switch outside widget mode = (%q, %v), want no-op", previous, err)
+	}
+	app = &App{ctx: context.Background(), widgetMode: true, widgetStyle: "icons"}
+	previous, err = app.switchDesktopWidgetStyle("icons")
+	if err != nil || previous != "icons" {
+		t.Fatalf("no-op switch = (%q, %v), want previous style retained", previous, err)
+	}
+}
+
+// TestSetWidgetStylePersistsWithoutWindow: with widget mode inactive the style
+// setter only persists (the switch is a no-op), and a blocked persist rolls
+// back through the same no-op path without touching the window.
+func TestSetWidgetStylePersistsWithoutWindow(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := &App{}
+	if err := app.SetDesktopWidgetStyle("icons"); err != nil {
+		t.Fatalf("SetDesktopWidgetStyle(icons): %v", err)
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetStyle(); got != "icons" {
+		t.Fatalf("config widget style = %q, want icons", got)
+	}
+	// Block the next persist the same way the toggle tests do: replace the
+	// config directory with a regular file so the atomic save cannot MkdirAll
+	// its parent. The style setter must surface the failure and leave the
+	// previous persisted value intact.
+	configPath := config.UserConfigPath()
+	configDir := filepath.Dir(configPath)
+	if err := os.Remove(configPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(configDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configDir, []byte("occupied"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SetDesktopWidgetStyle("icons"); err == nil {
+		t.Fatal("SetDesktopWidgetStyle succeeded with a blocked config write")
+	}
+}
+
+// --- widget style orchestration tests ---
+//
+// These exercise the real SetDesktopWidgetStyle / applyEnterWidgetMode /
+// applyExitWidgetMode paths with the native window geometry replaced by the
+// widgetWindowOps seam, instead of mirroring the orchestration logic.
+
+type widgetApplyRecord struct {
+	state       WidgetWindowState
+	alwaysOnTop bool
+	icons       bool
+}
+
+// widgetStyleTestApp builds an App whose native window geometry is fully
+// replaced by the given ops seam, so the real Enter/Exit/SetDesktopWidgetStyle
+// orchestration runs without a live Wails/Win32 window. Both widget geometry
+// files are pre-seeded so the transitions never fall back to
+// default-window computation (which needs a live window).
+func widgetStyleTestApp(t *testing.T, ops *widgetWindowOps) *App {
+	t.Helper()
+	isolateDesktopUserDirs(t)
+	app := &App{
+		// ctx intentionally left nil: every runtime access in the exercised
+		// paths routes through the ops seam, and a nil ctx keeps
+		// runtime.EventsEmit behind its guard instead of panicking on an
+		// unbound context.
+		widgetWindowOps:     ops,
+		widgetTaskbarToggle: func(bool) error { return nil },
+	}
+	if ops.read == nil {
+		ops.read = func() (WidgetWindowState, bool) {
+			// The current window geometry always matches the active style, as
+			// in production: icon geometry when the mirror says icons (the
+			// exit/save path validates against desktopIconMin*), pager
+			// geometry otherwise (the switch path reloads it within the pager
+			// bounds validation).
+			if app.widgetStyle == "icons" {
+				return WidgetWindowState{Width: desktopIconWidth, Height: desktopIconHeight, X: 10, Y: 10}, false
+			}
+			return WidgetWindowState{Width: widgetDefaultWidth, Height: widgetDefaultHeight, X: 10, Y: 10}, false
+		}
+	}
+	if ops.normalize == nil {
+		ops.normalize = func(state WidgetWindowState) (WidgetWindowState, error) { return state, nil }
+	}
+	if ops.applyWidget == nil {
+		ops.applyWidget = func(WidgetWindowState, bool, bool) error { return nil }
+	}
+	if ops.restoreMain == nil {
+		ops.restoreMain = func(DesktopWindowState, bool) error { return nil }
+	}
+	if err := saveWidgetWindowState(WidgetWindowState{Width: widgetDefaultWidth, Height: widgetDefaultHeight, X: 120, Y: 80}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveDesktopIconWindowState(WidgetWindowState{Width: desktopIconWidth, Height: desktopIconHeight, X: 120, Y: 80}); err != nil {
+		t.Fatal(err)
+	}
+	return app
+}
+
+// blockConfigWrite makes the next user-config persist fail the same way the
+// always-on-top toggle tests do: the config directory is replaced by a regular
+// file so the atomic save cannot MkdirAll its parent.
+func blockConfigWrite(t *testing.T) {
+	t.Helper()
+	configPath := config.UserConfigPath()
+	configDir := filepath.Dir(configPath)
+	if err := os.Remove(configPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Remove(configDir); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configDir, []byte("occupied"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// persistedWidgetStyleRaw returns the raw persisted desktop.widget_style field
+// (not the icons-only getter), so tests can tell whether the setter actually
+// wrote the config.
+func persistedWidgetStyleRaw(t *testing.T) string {
+	t.Helper()
+	return config.LoadForEdit(config.UserConfigPath()).Desktop.WidgetStyle
+}
+
+// TestSetWidgetStyleActiveSwitchAppliesGeometryAndPersists: an active native
+// switch runs the real switchDesktopWidgetStyleLocked path — it reads the
+// persisted always-on-top flag, applies the target geometry once, updates the
+// runtime mirror, and persists the style under the same widgetMu lock.
+func TestSetWidgetStyleActiveSwitchAppliesGeometryAndPersists(t *testing.T) {
+	var applies []widgetApplyRecord
+	reads := 0
+	ops := &widgetWindowOps{
+		read: func() (WidgetWindowState, bool) {
+			reads++
+			// Pager-legal geometry: the switch saves and reloads this size
+			// (the runtime mirror is still the legacy pager style).
+			return WidgetWindowState{Width: widgetDefaultWidth, Height: widgetDefaultHeight, X: 10, Y: 10}, false
+		},
+		applyWidget: func(state WidgetWindowState, alwaysOnTop bool, icons bool) error {
+			applies = append(applies, widgetApplyRecord{state: state, alwaysOnTop: alwaysOnTop, icons: icons})
+			return nil
+		},
+	}
+	app := widgetStyleTestApp(t, ops)
+	// Legacy runtime mirror: a pre-icons build could leave widgetStyle as the
+	// old pager value; the setter must switch it to icons in one step.
+	app.widgetMode = true
+	app.widgetStyle = "pager"
+
+	if err := app.SetDesktopWidgetStyle("icons"); err != nil {
+		t.Fatalf("SetDesktopWidgetStyle(icons): %v", err)
+	}
+	if len(applies) != 1 {
+		t.Fatalf("geometry applies = %d, want exactly the switch (no rollback)", len(applies))
+	}
+	if !applies[0].icons {
+		t.Fatalf("switch to icons applied pager geometry (icons=%v)", applies[0].icons)
+	}
+	if !applies[0].alwaysOnTop {
+		t.Fatal("the switch must carry the persisted always-on-top flag")
+	}
+	if app.widgetStyle != "icons" {
+		t.Fatalf("runtime mirror = %q, want icons", app.widgetStyle)
+	}
+	if got := persistedWidgetStyleRaw(t); got != "icons" {
+		t.Fatalf("persisted style = %q, want icons", got)
+	}
+	if reads == 0 {
+		t.Fatal("the switch never read the current window geometry")
+	}
+}
+
+// TestSetWidgetStylePersistFailureRollsBackRuntime: when the persist fails the
+// setter restores the runtime to the previous style under the same widgetMu
+// boundary, so the window and the stored preference never diverge.
+func TestSetWidgetStylePersistFailureRollsBackRuntime(t *testing.T) {
+	var applies []widgetApplyRecord
+	ops := &widgetWindowOps{
+		applyWidget: func(state WidgetWindowState, alwaysOnTop bool, icons bool) error {
+			applies = append(applies, widgetApplyRecord{state: state, alwaysOnTop: alwaysOnTop, icons: icons})
+			return nil
+		},
+	}
+	app := widgetStyleTestApp(t, ops)
+	app.widgetMode = true
+	app.widgetStyle = "pager"
+
+	blockConfigWrite(t)
+	if err := app.SetDesktopWidgetStyle("icons"); err == nil {
+		t.Fatal("SetDesktopWidgetStyle succeeded with a blocked config write")
+	}
+	if len(applies) != 2 {
+		t.Fatalf("geometry applies = %d, want switch then rollback (2)", len(applies))
+	}
+	if !applies[0].icons || applies[1].icons {
+		t.Fatalf("apply order wrong: first icons=%v (switch), second icons=%v (rollback to pager)", applies[0].icons, applies[1].icons)
+	}
+	if app.widgetStyle != "pager" {
+		t.Fatalf("runtime mirror = %q, want the pre-switch pager restored", app.widgetStyle)
+	}
+	if got := persistedWidgetStyleRaw(t); got == "icons" {
+		t.Fatal("a failed persist must not write the new style")
+	}
+}
+
+// TestSetWidgetStylePersistAndRollbackFailureReturnsBoth: when the persist and
+// the runtime rollback both fail, the caller receives both errors.
+func TestSetWidgetStylePersistAndRollbackFailureReturnsBoth(t *testing.T) {
+	rollbackErr := errors.New("rollback to pager geometry failed")
+	var applies []widgetApplyRecord
+	ops := &widgetWindowOps{
+		applyWidget: func(state WidgetWindowState, alwaysOnTop bool, icons bool) error {
+			applies = append(applies, widgetApplyRecord{state: state, alwaysOnTop: alwaysOnTop, icons: icons})
+			if !icons {
+				return rollbackErr
+			}
+			return nil
+		},
+	}
+	app := widgetStyleTestApp(t, ops)
+	app.widgetMode = true
+	app.widgetStyle = "pager"
+
+	blockConfigWrite(t)
+	err := app.SetDesktopWidgetStyle("icons")
+	if err == nil {
+		t.Fatal("SetDesktopWidgetStyle succeeded with a blocked config write")
+	}
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("error must surface the rollback failure: %v", err)
+	}
+	// Sequence: the icons switch, the failed pager rollback, then the
+	// switch-internal recovery that puts the window back on the icons surface.
+	if len(applies) != 3 {
+		t.Fatalf("geometry applies = %d, want switch, failed pager rollback, and icons recovery (3)", len(applies))
+	}
+	if !applies[0].icons || applies[1].icons || !applies[2].icons {
+		t.Fatalf("apply order wrong: want icons, pager, icons; got %+v", applies)
+	}
+	if app.widgetStyle != "icons" {
+		t.Fatalf("runtime mirror = %q, want icons (the failed rollback must not flip it)", app.widgetStyle)
+	}
+}
+
+// TestSetWidgetStyleInactivePersistFailureNeverTouchesWindow: an inactive
+// setter (previous == "") never switched the window, so a failed persist must
+// not roll anything back — and in particular must never switch an active
+// window to the empty style.
+func TestSetWidgetStyleInactivePersistFailureNeverTouchesWindow(t *testing.T) {
+	var applies []widgetApplyRecord
+	ops := &widgetWindowOps{
+		applyWidget: func(state WidgetWindowState, alwaysOnTop bool, icons bool) error {
+			applies = append(applies, widgetApplyRecord{state: state, alwaysOnTop: alwaysOnTop, icons: icons})
+			return nil
+		},
+	}
+	app := widgetStyleTestApp(t, ops)
+	app.widgetMode = false
+
+	blockConfigWrite(t)
+	if err := app.SetDesktopWidgetStyle("icons"); err == nil {
+		t.Fatal("SetDesktopWidgetStyle succeeded with a blocked config write")
+	}
+	if len(applies) != 0 {
+		t.Fatalf("inactive setter applied %d geometries, want none (no rollback to an empty style)", len(applies))
+	}
+	if app.widgetStyle != "" {
+		t.Fatalf("runtime mirror = %q, want untouched", app.widgetStyle)
+	}
+}
+
+// TestSetWidgetStyleSetterSerializedAgainstEnter: the inactive setter holds
+// widgetMu across its persist, so a concurrent Enter cannot read the config
+// between the switch and the save and apply a stale style to the window.
+func TestSetWidgetStyleSetterSerializedAgainstEnter(t *testing.T) {
+	applied := make(chan widgetApplyRecord, 8)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	ops := &widgetWindowOps{
+		applyWidget: func(state WidgetWindowState, alwaysOnTop bool, icons bool) error {
+			applied <- widgetApplyRecord{state: state, alwaysOnTop: alwaysOnTop, icons: icons}
+			close(entered)
+			<-release
+			return nil
+		},
+	}
+	app := widgetStyleTestApp(t, ops)
+
+	enterDone := make(chan error, 1)
+	go func() {
+		_, err := app.transitionWidgetMode(true, func() error { return app.applyEnterWidgetMode() })
+		enterDone <- err
+	}()
+	<-entered
+
+	setDone := make(chan error, 1)
+	go func() { setDone <- app.SetDesktopWidgetStyle("icons") }()
+	select {
+	case err := <-setDone:
+		t.Fatalf("setter completed while the enter transition held widgetMu: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-enterDone; err != nil {
+		t.Fatalf("enter transition: %v", err)
+	}
+	if !app.IsWidgetMode() {
+		t.Fatal("enter transition did not activate widget mode")
+	}
+	if err := <-setDone; err != nil {
+		t.Fatalf("setter after enter: %v", err)
+	}
+	// The setter ran after the enter transition under the same lock: the
+	// runtime mirror and the persisted config both say icons, and the style
+	// switch itself was a no-op (enter already applied icons).
+	if app.widgetStyle != "icons" {
+		t.Fatalf("runtime mirror = %q, want icons", app.widgetStyle)
+	}
+	if got := persistedWidgetStyleRaw(t); got != "icons" {
+		t.Fatalf("persisted style = %q, want icons", got)
+	}
+	if len(applied) != 1 {
+		t.Fatalf("geometry applies = %d, want only the enter transition (the style switch was a no-op)", len(applied))
+	}
+}
+
+// TestSetWidgetStyleSetterSerializedAgainstExit: the same single widgetMu
+// boundary serializes an inactive setter against a concurrent Exit, so the
+// persist cannot release the lock early and race the exit's state publish.
+func TestSetWidgetStyleSetterSerializedAgainstExit(t *testing.T) {
+	restoreStarted := make(chan struct{})
+	release := make(chan struct{})
+	ops := &widgetWindowOps{
+		restoreMain: func(DesktopWindowState, bool) error {
+			close(restoreStarted)
+			<-release
+			return nil
+		},
+	}
+	app := widgetStyleTestApp(t, ops)
+	app.widgetMode = true
+	app.widgetStyle = "icons"
+
+	exitDone := make(chan error, 1)
+	go func() {
+		_, err := app.transitionWidgetMode(false, func() error { return app.applyExitWidgetMode() })
+		exitDone <- err
+	}()
+	<-restoreStarted
+
+	setDone := make(chan error, 1)
+	go func() { setDone <- app.SetDesktopWidgetStyle("icons") }()
+	select {
+	case err := <-setDone:
+		t.Fatalf("setter completed while the exit transition held widgetMu: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-exitDone; err != nil {
+		t.Fatalf("exit transition: %v", err)
+	}
+	if app.IsWidgetMode() {
+		t.Fatal("exit transition did not leave widget mode")
+	}
+	if err := <-setDone; err != nil {
+		t.Fatalf("setter after exit: %v", err)
+	}
+	// The queued setter persisted after the exit under the same lock; the
+	// inactive runtime and the config cannot diverge.
+	if got := persistedWidgetStyleRaw(t); got != "icons" {
+		t.Fatalf("persisted style = %q, want icons", got)
+	}
+}
+
+// TestApplyEnterWidgetModeRealPath: the real enter orchestration reads the
+// persisted preferences and geometry, applies the icons surface with the
+// persisted always-on-top flag, hides the taskbar, and updates the runtime
+// mirror — all inside transitionWidgetMode's widgetMu critical section.
+func TestApplyEnterWidgetModeRealPath(t *testing.T) {
+	var applies []widgetApplyRecord
+	var taskbars []bool
+	reads := 0
+	ops := &widgetWindowOps{
+		read: func() (WidgetWindowState, bool) {
+			reads++
+			return WidgetWindowState{Width: 1280, Height: 800, X: 10, Y: 10}, true
+		},
+		applyWidget: func(state WidgetWindowState, alwaysOnTop bool, icons bool) error {
+			applies = append(applies, widgetApplyRecord{state: state, alwaysOnTop: alwaysOnTop, icons: icons})
+			return nil
+		},
+	}
+	app := widgetStyleTestApp(t, ops)
+	app.widgetTaskbarToggle = func(hide bool) error {
+		taskbars = append(taskbars, hide)
+		return nil
+	}
+
+	changed, err := app.transitionWidgetMode(true, func() error { return app.applyEnterWidgetMode() })
+	if err != nil {
+		t.Fatalf("applyEnterWidgetMode: %v", err)
+	}
+	if !changed || !app.IsWidgetMode() {
+		t.Fatalf("enter transition: changed=%v mode=%v", changed, app.IsWidgetMode())
+	}
+	if len(applies) != 1 || !applies[0].icons {
+		t.Fatalf("enter applied %d geometries (icons=%v), want exactly the icons surface", len(applies), len(applies) > 0 && applies[0].icons)
+	}
+	if !applies[0].alwaysOnTop {
+		t.Fatal("enter must apply the persisted always-on-top flag")
+	}
+	if app.widgetStyle != "icons" {
+		t.Fatalf("runtime mirror = %q, want icons", app.widgetStyle)
+	}
+	if reads == 0 {
+		t.Fatal("enter never read the current window geometry")
+	}
+	if !reflect.DeepEqual(taskbars, []bool{true}) {
+		t.Fatalf("taskbar calls = %v, want exactly one hide", taskbars)
+	}
+	// The main geometry was preserved into the real state file.
+	if _, ok := loadWindowState(); !ok {
+		t.Fatal("enter did not preserve the main window geometry")
 	}
 }

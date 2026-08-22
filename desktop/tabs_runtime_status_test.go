@@ -17,6 +17,46 @@ import (
 	"workground2/internal/jobs"
 )
 
+func TestTopicActivityStatusDistinguishesThinkingAndRunning(t *testing.T) {
+	tests := []struct {
+		name string
+		kind event.Kind
+		want string
+	}{
+		{name: "reasoning", kind: event.Reasoning, want: topicStatusThinking},
+		{name: "tool dispatch", kind: event.ToolDispatch, want: topicStatusRunning},
+		{name: "tool progress", kind: event.ToolProgress, want: topicStatusRunning},
+		{name: "tool result", kind: event.ToolResult, want: topicStatusRunning},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, update := topicActivityStatusFromEvent(event.Event{Kind: tt.kind})
+			if !update || got != tt.want {
+				t.Fatalf("status = %q update=%v, want %q true", got, update, tt.want)
+			}
+		})
+	}
+}
+
+func TestNextTabActivityTextKeepsLiveReasoningTail(t *testing.T) {
+	got := nextTabActivityText("", "", event.Event{Kind: event.Reasoning, Text: "先分析现有状态，"})
+	got = nextTabActivityText(got, topicStatusThinking, event.Event{Kind: event.Reasoning, Text: "再核对工具调用。"})
+	if got != "先分析现有状态，再核对工具调用。" {
+		t.Fatalf("reasoning text = %q", got)
+	}
+	got = nextTabActivityText(got, topicStatusThinking, event.Event{Kind: event.ToolDispatch, Tool: event.Tool{Name: "read_file"}})
+	if got != "read_file 执行中" {
+		t.Fatalf("tool text = %q", got)
+	}
+	got = nextTabActivityText(got, topicStatusRunning, event.Event{Kind: event.Reasoning, Text: "读取完成，继续判断。"})
+	if got != "读取完成，继续判断。" {
+		t.Fatalf("reasoning after tool = %q, want a clean real reasoning stream", got)
+	}
+	if got := nextTabActivityText(got, topicStatusThinking, event.Event{Kind: event.TurnDone}); got != "" {
+		t.Fatalf("turn done text = %q, want cleared", got)
+	}
+}
+
 func TestProjectTreeShowsDetachedRuntimeStatus(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := desktopSessionDir(globalTabWorkspaceRoot())

@@ -46,6 +46,7 @@ import (
 	"workground2/internal/planmode"
 	"workground2/internal/plugin"
 	"workground2/internal/provider"
+	"workground2/internal/provider/openai"
 	"workground2/internal/sandbox"
 	"workground2/internal/skill"
 	"workground2/internal/skillshare"
@@ -346,6 +347,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w %q (configured: %s); note: defining [[providers]] replaces the built-in presets, so add a [[providers]] entry for it or use a configured name, or run `WorkGround2 setup` to reconfigure", ErrUnknownModel, modelName, providerNames(cfg))
 	}
+	// Anchored bootstrap applies to DeepSeek-family providers only, using the
+	// same rule the openai provider uses for its deepseek protocol detection
+	// (openai.go: protocol == "deepseek", or an unset protocol against a
+	// deepseek base URL). Config defaults to enabled; opt out per install.
+	useAnchoredBootstrap := cfg.AnchoredBootstrapEnabled() && isDeepSeekProvider(entry)
 	modelRef := entry.Name + "/" + entry.Model
 	if opts.EffortOverride != nil {
 		entry.Effort = *opts.EffortOverride
@@ -449,6 +455,18 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		if envSection != "" {
 			sysPrompt += "\n\n" + envSection
 		}
+	}
+
+	// Two-phase DeepSeek bootstrap: snapshot the prompt assembled so far
+	// (base + style + policies + environment) BEFORE the memory/skills
+	// injection appends below. The snapshot is a strict prefix of the full
+	// prompt, so the provider's prefix cache keeps these leading tokens warm
+	// when promotion restores the injected sections. The agent swaps it into
+	// the first request only; the durable session log always keeps the full
+	// prompt.
+	bootstrapPrompt := ""
+	if useAnchoredBootstrap {
+		bootstrapPrompt = sysPrompt
 	}
 
 	// Persistent memory (WorkGround2.md / AGENTS.md hierarchy + auto-memory index)
@@ -1051,6 +1069,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			spec := agent.SubagentSpec{
 				Kind:             "skill",
 				Name:             sk.Name,
+				Description:      task,
 				WorkspaceRoot:    root,
 				ParentSession:    parentSession,
 				ParentToolCallID: parentID,
@@ -1322,7 +1341,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 
-	executor := agent.New(execProv, reg, execSess, newAgentOptions(jm), sink)
+	// Two-phase DeepSeek bootstrap arms ONLY the main executor session — task
+	// executors, subagents, and the planner keep their own prompts and full
+	// catalogs. The durable session log always stores the full prompt; the
+	// agent swaps the bootstrap prefix in for the first request only.
+	execOpts := newAgentOptions(jm)
+	if useAnchoredBootstrap && bootstrapPrompt != "" {
+		execOpts.AnchoredBootstrapSystemPrompt = bootstrapPrompt
+	}
+	executor := agent.New(execProv, reg, execSess, execOpts, sink)
 
 	var runner agent.Runner = executor
 	label := entry.Model
@@ -1908,6 +1935,18 @@ func subagentEffectiveIdentity(cfg *config.Config, baseModelRef string, base *co
 // going through the full Build.
 func NewProvider(e *config.ProviderEntry) (provider.Provider, error) {
 	return NewProviderWithProxy(e, netclient.ProxySpec{Mode: netclient.ModeAuto})
+}
+
+// isDeepSeekProvider reports whether the entry is a DeepSeek-family provider,
+// using the same rule the openai provider applies to its deepseek protocol
+// detection: an explicit "deepseek" reasoning_protocol, or an unset protocol
+// against a deepseek base URL.
+func isDeepSeekProvider(e *config.ProviderEntry) bool {
+	if e == nil || e.Kind != "openai" {
+		return false
+	}
+	protocol := config.ReasoningProtocolForEntry(e)
+	return protocol == "deepseek" || (protocol == "" && openai.IsDeepSeek(e.BaseURL))
 }
 
 // NewProviderWithProxy builds a provider.Provider with the configured ordinary

@@ -78,6 +78,52 @@ func TestTaskToolCancelDuringStuckProviderReturnsPromptly(t *testing.T) {
 	}
 }
 
+func TestTaskToolPersistsRunningForegroundState(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	sub := foregroundBlockingProvider{started: started, release: release}
+	sessionDir := t.TempDir()
+	store := NewSubagentStore(filepath.Join(sessionDir, "subagents"))
+	task := NewTaskTool(sub, nil, tool.NewRegistry(), 20, 0, 0, 0, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil).
+		WithTranscripts(store, sessionDir, "base-model", "base-effort")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := task.Execute(testTaskContext(), []byte(`{"prompt":"observable foreground task"}`))
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("foreground sub-agent did not start")
+	}
+	counts, err := RunningSubagentCounts(sessionDir)
+	if err != nil {
+		t.Fatalf("RunningSubagentCounts while running: %v", err)
+	}
+	if counts["parent-session"] != 1 {
+		t.Fatalf("running counts = %v, want parent-session:1", counts)
+	}
+
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("foreground sub-agent did not finish")
+	}
+	counts, err = RunningSubagentCounts(sessionDir)
+	if err != nil {
+		t.Fatalf("RunningSubagentCounts after completion: %v", err)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("running counts after completion = %v, want empty", counts)
+	}
+}
+
 func TestTaskToolSchemaExposesOnlyContinueFromForPersistence(t *testing.T) {
 	task := NewTaskTool(&mockProvider{name: "sub"}, nil, tool.NewRegistry(), 20, 0, 0, 0, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil)
 	schema := string(task.Schema())
@@ -875,4 +921,27 @@ func (p panicProvider) Name() string { return p.name }
 
 func (p panicProvider) Stream(context.Context, provider.Request) (<-chan provider.Chunk, error) {
 	panic("subagent boom")
+}
+
+type foregroundBlockingProvider struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p foregroundBlockingProvider) Name() string { return "foreground-blocking" }
+
+func (p foregroundBlockingProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk, 2)
+	close(p.started)
+	go func() {
+		defer close(ch)
+		select {
+		case <-ctx.Done():
+			ch <- provider.Chunk{Type: provider.ChunkError, Err: ctx.Err()}
+		case <-p.release:
+			ch <- provider.Chunk{Type: provider.ChunkText, Text: "done"}
+			ch <- provider.Chunk{Type: provider.ChunkDone}
+		}
+	}()
+	return ch, nil
 }

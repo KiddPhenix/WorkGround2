@@ -65,7 +65,8 @@ import { AppChrome } from "./components/AppChrome";
 import { ShortcutsCheatsheet } from "./components/ShortcutsCheatsheet";
 import { ProjectTree } from "./components/ProjectTree";
 import { SessionBackground } from "./components/SessionBackground";
-import { AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
+import { AddOnLauncherButton, AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
+import { SessionStatusIndicators } from "./components/SessionStatusIndicators";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
 import { WorkCard } from "./components/work/WorkCard";
@@ -178,7 +179,7 @@ import { useGlobalShortcut } from "./lib/keyboardShortcuts";
 import { topicShortcutIndexFromEvent, useTopicShortcuts, type TopicShortcutEntry } from "./lib/topicShortcuts";
 import { composerDraftKeyForTab } from "./lib/composerDraftKey";
 import logoWordmark from "./assets/logo-wordmark.png";
-import { WidgetMode } from "./components/widget/WidgetMode";
+import { DesktopIconMode } from "./components/widget/DesktopIconMode";
 import { createWidgetModeCoordinator } from "./lib/widgetModeCoordinator";
 import { CollaborationWorkspace } from "./collab/CollaborationWorkspace";
 import type { CollaborationWorkspaceOption } from "./collab/types";
@@ -309,8 +310,16 @@ function writeWorkDraft(requestID: string, prompt: string): void {
   } catch { /* localStorage unavailable */ }
 }
 
-function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEnabled: boolean; onEnterWidgetMode: () => void | Promise<void> }) {
+function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode, onDismissWindow }: { widgetEnabled: boolean; onEnterWidgetMode: () => void | Promise<void>; onDismissWindow: () => void | Promise<void> }) {
   const { maximised, syncMaximised } = useWindowsMaximisedState();
+
+  const minimizeWindow = useCallback(() => {
+    if (widgetEnabled) {
+      void onEnterWidgetMode();
+      return;
+    }
+    void app.MinimiseMainWindow();
+  }, [onEnterWidgetMode, widgetEnabled]);
 
   const toggleMaximise = useCallback(() => {
     void app.ToggleMaximiseMainWindow()
@@ -320,31 +329,17 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
 
   return (
     <div className="windows-window-controls" aria-label="Window controls">
-      {widgetEnabled && (
-	  <button
-		className="windows-window-control windows-window-control--widget"
-		type="button"
-		aria-label="进入小组件模式"
-		title="小组件模式"
-		onPointerDown={stopFramelessPointerDown}
-		onPointerUp={(event) => runFramelessPointerAction(event, () => void onEnterWidgetMode())}
-		onMouseDown={stopFramelessMouseDown}
-		onClick={(event) => runKeyboardClick(event, () => void onEnterWidgetMode())}
-	  >
-		<PictureInPicture2 size={13} strokeWidth={1.8} />
-	  </button>
-      )}
       <button
-        className="windows-window-control windows-window-control--minimize"
+        className={`windows-window-control windows-window-control--minimize${widgetEnabled ? " windows-window-control--widget" : ""}`}
         type="button"
-        aria-label="Minimize window"
-        title="Minimize"
+        aria-label={widgetEnabled ? "收起到小组件" : "Minimize window"}
+        title={widgetEnabled ? "收起到小组件" : "Minimize"}
         onPointerDown={stopFramelessPointerDown}
-        onPointerUp={(event) => runFramelessPointerAction(event, () => void app.MinimiseMainWindow())}
+        onPointerUp={(event) => runFramelessPointerAction(event, minimizeWindow)}
         onMouseDown={stopFramelessMouseDown}
-        onClick={(event) => runKeyboardClick(event, () => void app.MinimiseMainWindow())}
+        onClick={(event) => runKeyboardClick(event, minimizeWindow)}
       >
-        <Minus size={13} strokeWidth={1.9} />
+        {widgetEnabled ? <PictureInPicture2 size={13} strokeWidth={1.8} /> : <Minus size={13} strokeWidth={1.9} />}
       </button>
       <button
         className="windows-window-control windows-window-control--maximize"
@@ -360,14 +355,14 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
         {maximised ? <RestoreIcon size={12} strokeWidth={1.75} /> : <Square size={11} strokeWidth={1.8} />}
       </button>
       <button
-        className="windows-window-control windows-window-control--close"
+        className="windows-window-control windows-window-control--dismiss"
         type="button"
-        aria-label="Close window"
-        title="Close"
+        aria-label="Dismiss window"
+        title="Dismiss"
         onPointerDown={stopFramelessPointerDown}
-        onPointerUp={(event) => runFramelessPointerAction(event, () => void app.CloseMainWindow())}
+        onPointerUp={(event) => runFramelessPointerAction(event, () => void onDismissWindow())}
         onMouseDown={stopFramelessMouseDown}
-        onClick={(event) => runKeyboardClick(event, () => void app.CloseMainWindow())}
+        onClick={(event) => runKeyboardClick(event, () => void onDismissWindow())}
       >
         <X size={13} strokeWidth={1.9} />
       </button>
@@ -1089,7 +1084,7 @@ function linkedSessionOwnerWorkID(sessionSource: string | undefined): string {
   return sessionSource?.match(/^work:([^/]+)(?:\/|$)/)?.[1]?.trim() ?? "";
 }
 
-function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEnabled: boolean; widgetActive: boolean; onEnterWidgetMode: () => void | Promise<void> }) {
+function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWidgetMode, onDismissWindow, collabDialogSignal = 0 }: { widgetEnabled: boolean; widgetActive: boolean; ownerDecisionEnabled: boolean; onEnterWidgetMode: () => void | Promise<void>; onDismissWindow: () => void | Promise<void>; collabDialogSignal?: number }) {
   const {
     state,
     activeTabId,
@@ -1134,6 +1129,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     reorderTabs,
     openTopicSession,
     openLinkedSession,
+    createBlankSession,
     activateTopic,
     activateLinkedSession,
     syncActiveTab,
@@ -3159,6 +3155,17 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     enqueueNavigation({ kind: "blank", scope, workspaceRoot: scope === "project" ? workspaceRoot : "" }),
   [enqueueNavigation]);
 
+  const createProjectSession = useCallback(async (scope: string, workspaceRoot: string): Promise<void> => {
+    if (scope !== "project") return openBlankSession(scope, "");
+    try {
+      await createBlankSession("project", workspaceRoot, `blank-session-${crypto.randomUUID()}`, singleSurfaceLayout);
+      await refreshTabMetas();
+    } catch (err: any) {
+      showToast(err?.message || String(err), "error");
+      throw err;
+    }
+  }, [createBlankSession, openBlankSession, refreshTabMetas, showToast, singleSurfaceLayout]);
+
   const handleNewTab = useCallback(async () => {
     closeTransientOverlays();
     setSidebarImDetailConnectionId("");
@@ -3447,6 +3454,18 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     if (initial && !initialSession) void selectCollaborationWorkspace(initial.root);
   }, [activeTab?.scope, activeTab?.workspaceRoot, closeTransientOverlays, selectCollaborationWorkspace, tabMetas]);
 
+  // The Rooms widget requests a new Room by exiting widget mode first and then
+  // bumping the root App's monotonic signal. A ref remembers the last applied
+  // signal so the dialog opens exactly once per request: never on the initial
+  // mount (0) and never again when unrelated state recreates this callback.
+  const appliedCollabDialogSignal = useRef(0);
+  useEffect(() => {
+    if (collabDialogSignal > 0 && collabDialogSignal !== appliedCollabDialogSignal.current) {
+      appliedCollabDialogSignal.current = collabDialogSignal;
+      void openCollaborationDialog();
+    }
+  }, [collabDialogSignal, openCollaborationDialog]);
+
   const finishCollaborationConnect = useCallback(async () => {
     await refreshProjectsAndTabs();
     setCollaborationDialog(null);
@@ -3718,15 +3737,31 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     ? Math.min(100, Math.round((state.context.used / state.context.window) * 100))
     : 0;
 
+  // The top-right window action rail is owned by App and shared verbatim by
+  // Session and Room so the two surfaces stay identical without a state copy.
+  const sessionWindowActions: ReactNode = (
+    <div className="session-window-actions">
+      <SessionStatusIndicators
+        tabs={runtimeTabMetas}
+        activeTabId={activeTabId || ""}
+        onSwitchTab={(tab) => { void handleOpenRuntimeTab(tab); }}
+        t={t}
+      />
+      <AddOnLauncherButton />
+      <button type="button" className="session-header__more-btn" aria-label={t("topicBar.command")} onClick={() => { void openPalette(); }}>
+        <Command size={16} />
+      </button>
+    </div>
+  );
+
   const sessionSurfaceProps: SessionSurfaceProps = {
     activeTabId: activeTabId || "",
     activeSessionId,
     renderSessionId,
-    runtimeTabMetas,
+    windowActions: sessionWindowActions,
     displayItems,
     live: state.live,
     running: state.running || rewindCommitting,
-    memoryRunning: state.running,
     controllerReady,
     footerHeight,
     transcriptHydrating,
@@ -3771,9 +3806,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     composerDisabled: rewindCommitting || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending,
     workSendAvailable,
     workSendSelected,
-    sidebarCollapsed,
-    sidebarToggleTitle,
-    sidebarTogglePressed,
     headerTitle: irisFixtureActive
       ? "桌面信息架构重构"
       : sidebarImDetailConnection
@@ -3807,10 +3839,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     onSetTokenMode: applyTokenMode,
     onCancelClearContext: cancelClearContext,
     onConfirmClearContext: () => { void confirmClearContext(); },
-    onToggleSidebar: toggleSidebar,
-    onOpenPalette: () => { void openPalette(); },
     onEnterWidgetMode,
-    onSwitchTab: (tab) => { void handleOpenRuntimeTab(tab); },
     onSetInsertTarget: setWorkspaceInsertTarget,
     onRevisePlan: setPendingPlanRevision,
     onExitPlan: async () => { await applyCollaborationMode("normal"); },
@@ -4088,6 +4117,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         className={[
         "app",
         widgetActive ? "app--widget-hidden" : "",
+        settingsTarget !== null ? "app--settings-open" : "",
         `app--${desktopPlatform}`,
         windowsFramelessChrome ? "app--windows-frameless" : "",
         browserPreviewChrome ? "app--browser-preview" : "",
@@ -4132,16 +4162,18 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                   draggable={false}
                 />
                 <div className="workspace-sidebar__brand-actions">
-                  <Tooltip label="主人决策" side="bottom">
-                    <button
-                      className="workspace-sidebar__decision-btn"
-                      type="button"
-                      onClick={() => setDecisionCenterOpen(true)}
-                      aria-label="打开主人决策"
-                    >
-                      <MessageCircleQuestion size={15} aria-hidden="true" />
-                    </button>
-                  </Tooltip>
+                  {ownerDecisionEnabled && (
+                    <Tooltip label="主人决策" side="bottom">
+                      <button
+                        className="workspace-sidebar__decision-btn"
+                        type="button"
+                        onClick={() => setDecisionCenterOpen(true)}
+                        aria-label="打开主人决策"
+                      >
+                        <MessageCircleQuestion size={15} aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  )}
                   <Tooltip label={sidebarToggleTitle} side="right">
                     <button
                       className={`workspace-sidebar__collapse-btn${sidebarTogglePressed ? " workspace-sidebar__collapse-btn--pressed" : ""}`}
@@ -4197,11 +4229,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                   activeWorkspaceRoot={activeTab?.workspaceRoot}
                   activeTopicId={activeTab?.topicId}
                   activeSessionPath={activeTab?.sessionPath}
+                  activeContentVisible={!widgetActive}
                   imTopicSources={imTopicSources}
                   onOpenTopic={handleOpenTopic}
                   onOpenCrewSession={handleOpenCrewSession}
                   onOpenProjectHistory={openProjectHistory}
-                  onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
+                  onCreateTopic={createProjectSession}
                   onTopicsChanged={refreshProjectsAndTabs}
                   onRenameTopic={renameTopic}
                   onRenameSession={renameSidebarSession}
@@ -4232,7 +4265,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               </button>
             </aside>
 
-            {(showWorkSurface || showCollaborationSurface) && workbenchSidebarRestoreControl}
+            {workbenchSidebarRestoreControl}
 
             {showCollaborationSurface && activeTab?.sessionId ? (
               <CollaborationWorkspace
@@ -4242,6 +4275,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 modelLabel={state.meta?.label ?? t("status.connecting")}
                 onSwitchModel={switchModel}
                 onConnectRequest={() => { void openCollaborationDialog(activeTab.sessionId); }}
+                windowActions={sessionWindowActions}
               />
             ) : showWorkSurface && activeTab?.workId && !workUnavailable ? (
               <div
@@ -4495,11 +4529,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               activeWorkspaceRoot={activeTab?.workspaceRoot}
               activeTopicId={activeTab?.topicId}
               activeSessionPath={activeTab?.sessionPath}
+              activeContentVisible={!widgetActive}
               imTopicSources={imTopicSources}
               onOpenTopic={handleOpenTopic}
               onOpenCrewSession={handleOpenCrewSession}
               onOpenProjectHistory={openProjectHistory}
-              onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
+              onCreateTopic={createProjectSession}
               onTopicsChanged={refreshProjectsAndTabs}
               onRenameTopic={renameTopic}
               onRenameSession={renameSidebarSession}
@@ -5189,7 +5224,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       )}
 
 	  <Suspense fallback={null}>
-		<DecisionCenter open={decisionCenterOpen} onClose={() => setDecisionCenterOpen(false)} />
+		{ownerDecisionEnabled && <DecisionCenter open={decisionCenterOpen} onClose={() => setDecisionCenterOpen(false)} />}
 	  </Suspense>
 
       {settingsTarget !== null && (
@@ -5264,7 +5299,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         />
       )}
       {windowsFramelessChrome && <WindowsResizeHandles />}
-      {windowsFramelessChrome && <WindowsWindowControls widgetEnabled={widgetEnabled} onEnterWidgetMode={onEnterWidgetMode} />}
+      {windowsFramelessChrome && <WindowsWindowControls widgetEnabled={widgetEnabled} onEnterWidgetMode={onEnterWidgetMode} onDismissWindow={onDismissWindow} />}
     </div>
     </ShellExpandProvider>
   );
@@ -5273,21 +5308,79 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 export default function App() {
   const [widgetMode, setWidgetMode] = useState(false);
   const [widgetEnabled, setWidgetEnabled] = useState(true);
-  const [composerSubmitKey, setComposerSubmitKey] = useState<ComposerSubmitKey>("enter");
+  // ownerDecisionEnabled mirrors the backend ownerDecisionFeatureEnabled kill
+  // switch (default off): while disabled, the sidebar entry and the decision
+  // centre stay hidden and no decision state is subscribed.
+  const [ownerDecisionEnabled, setOwnerDecisionEnabled] = useState(false);
+  // Monotonic collaboration-dialog request signal: the Rooms widget exits
+  // widget mode first and bumps this counter only on a successful exit, so
+  // MainApp opens the Host/Join Room form exactly once per request.
+  const [collabDialogSignal, setCollabDialogSignal] = useState(0);
   const { showToast } = useToast();
-  const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetMode), []);
+  const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetMode, () => {
+    useLayoutStore.getState().setSidebarCollapsed(true);
+    useOverlayStore.getState().setSidebarSearchOpen(false);
+  }), []);
   const reportWidgetError = useCallback((cause: unknown) => {
     showToast(cause instanceof Error ? cause.message : String(cause), "error");
   }, [showToast]);
   const enterWidgetMode = useCallback(
-    () => widgetCoordinator.enter().catch(reportWidgetError),
+		() => widgetCoordinator.enter().catch(reportWidgetError),
     [reportWidgetError, widgetCoordinator],
   );
+  const dismissMainWindow = useCallback(
+    () => app.DismissMainWindow().catch(reportWidgetError),
+    [reportWidgetError],
+  );
+  // Opening an existing Room exits the widget and focuses the tab that
+  // OpenTopicSession returned. The exit promise is returned so the Rooms
+  // popup can surface a failed exit (the main window is still hidden, so a
+  // main-window toast would be invisible); the tab itself stays open and the
+  // same 打开 click becomes a safe retry.
+  const openWidgetRoom = useCallback((tabID: string) => {
+    return widgetCoordinator.exit(tabID);
+  }, [widgetCoordinator]);
+  // Opening the main window from the quick toolbar exits widget mode through
+  // the shared coordinator; a failed exit rejects so the widget keeps the
+  // error visible and the same 打开主窗口 click becomes a safe retry.
+  const openWidgetMain = useCallback(() => {
+    return widgetCoordinator.exit();
+  }, [widgetCoordinator]);
+  // A new Room exits the widget first and bumps the dialog signal only when
+  // the exit succeeded; a failed exit must never open the dialog from the
+  // still-hidden widget window. The ref guards the async exit round-trip so a
+  // fast double-click cannot bump the signal twice.
+  const widgetRoomRequest = useRef(false);
+  const requestWidgetRoomDialog = useCallback(() => {
+    if (widgetRoomRequest.current) return;
+    widgetRoomRequest.current = true;
+    void widgetCoordinator.exit().then(() => setCollabDialogSignal((count) => count + 1)).catch(reportWidgetError).finally(() => { widgetRoomRequest.current = false; });
+  }, [reportWidgetError, widgetCoordinator]);
+
+  // Settings from the widget anchor exits widget mode first and only then
+  // reveals the settings panel; a failed exit must never open settings from
+  // the still-hidden widget window. The ref guards the async exit round-trip
+  // so a fast double right-click cannot open settings twice, and the promise
+  // rejection surfaces in the widget's own visible error toast (the main
+  // window is hidden, so a main-window toast would be invisible) — the same
+  // 设置 click then becomes a safe retry.
+  const widgetSettingsRequest = useRef(false);
+  const openWidgetSettings = useCallback(async () => {
+    if (widgetSettingsRequest.current) return;
+    widgetSettingsRequest.current = true;
+    try {
+      await widgetCoordinator.exit();
+      useOverlayStore.getState().setSettingsFocus(null);
+      useOverlayStore.getState().setSettingsTarget("general");
+    } finally {
+      widgetSettingsRequest.current = false;
+    }
+  }, [widgetCoordinator]);
 
   useEffect(() => {
     app.DesktopStartupSettings().then((s) => {
-      setComposerSubmitKey(normalizeComposerSubmitKey(s.composerSubmitKey));
       setWidgetEnabled(s.widgetEnabled);
+      setOwnerDecisionEnabled(s.ownerDecisionEnabled === true);
     }).catch(() => {});
   }, []);
 
@@ -5325,8 +5418,8 @@ export default function App() {
 
   return (
 	<>
-	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} onEnterWidgetMode={enterWidgetMode} />
-	  {widgetMode && <WidgetMode onExit={() => widgetCoordinator.sync(false)} submitKey={composerSubmitKey} />}
+	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} onDismissWindow={dismissMainWindow} collabDialogSignal={collabDialogSignal} />
+	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} />}
 	</>
   );
 }
