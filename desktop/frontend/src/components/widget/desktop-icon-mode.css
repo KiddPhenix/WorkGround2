@@ -348,18 +348,9 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__workspace-head button { min-height: 30px; padding: 4px 12px; }
 .desktop-icon-popup__workspace-head button:not(:disabled):hover { filter: brightness(1.18); }
 .desktop-icon-popup__room-settings { flex: 0 0 auto; margin-top: 9px; border-block: 1px solid rgb(255 255 255 / 8%); }
-.desktop-icon-popup__room-visibility, .desktop-icon-popup__room-notification { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
-.desktop-icon-popup__room-notification { border-top: 1px solid rgb(255 255 255 / 6%); }
-.desktop-icon-popup__room-visibility > span { display: grid; gap: 2px; color: #d8dae2; font-size: 11px; }
+.desktop-icon-popup__room-notification { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
 .desktop-icon-popup__room-notification > span { display: grid; gap: 2px; color: #d8dae2; font-size: 11px; }
-.desktop-icon-popup__room-visibility small, .desktop-icon-popup__room-notification small { color: #858b98; font-size: 9px; }
-.desktop-icon-popup__room-visibility button { position: relative; flex: 0 0 auto; width: 36px; height: 20px; min-height: 20px; padding: 0; border: 1px solid rgb(255 255 255 / 16%); border-radius: 999px; background: #30333d; }
-.desktop-icon-popup__room-visibility button i { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #aeb3bf; transition: transform .14s ease, background .14s ease; }
-.desktop-icon-popup__room-visibility button[aria-checked="true"] { border-color: #9b82ed; background: #6045ad; }
-.desktop-icon-popup__room-visibility button:not(:disabled):hover { border-color: rgb(173 146 255 / 50%); background: #3a3e4a; }
-.desktop-icon-popup__room-visibility button[aria-checked="true"]:not(:disabled):hover { border-color: #b49cff; background: #7255c4; }
-.desktop-icon-popup__room-visibility button[aria-checked="true"] i { background: #fff; transform: translateX(16px); }
-.desktop-icon-popup__room-visibility button:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
+.desktop-icon-popup__room-notification small { color: #858b98; font-size: 9px; }
 .desktop-icon-popup__room-notification > div { display: grid; grid-template-columns: repeat(2, 42px); gap: 3px; }
 .desktop-icon-popup__room-notification button { min-width: 0; min-height: 26px; padding: 3px 6px; border: 1px solid rgb(255 255 255 / 14%); border-radius: 6px; color: #9da2ae; background: rgb(255 255 255 / 3%); font-size: 10px; }
 .desktop-icon-popup__room-notification button[aria-checked="true"] { border-color: #9b82ed; color: #f3efff; background: #6045ad; }
@@ -413,6 +404,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__workspace-pins-head svg { width: 12px; height: 12px; color: #ad92ff; }
 .desktop-icon-popup__workspace-pins-head small { color: #969ba8; font-size: 10px; }
 .desktop-icon-popup__workspace-slots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
+.desktop-icon-popup__room-count > div { grid-template-columns: repeat(8, 28px); }
 .desktop-icon-popup__room-slots { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
 .desktop-icon-popup__room-slots .desktop-icon-popup__workspace-slot { min-height: 32px; padding: 3px 4px; }
 .desktop-icon-popup__workspace-slot { display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; min-height: 34px; padding: 4px 6px; border: 1px dashed rgb(255 255 255 / 14%); border-radius: 7px; color: #6f7480; background: rgb(255 255 255 / 2%); font-size: 10px; }
