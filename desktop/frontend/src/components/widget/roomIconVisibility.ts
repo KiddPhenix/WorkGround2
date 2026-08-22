@@ -29,5 +29,5 @@ export function writeRoomIconVisibility(storage: RoomIconStorage, visible: boole
 }
 
 export function visibleDesktopIcons(items: DesktopIconItem[], showRooms: boolean): DesktopIconItem[] {
-  return showRooms ? items : items.filter((item) => item.kind !== "room");
+  return showRooms ? items : items.filter((item) => item.kind !== "room" || item.unreadCount > 0);
 }

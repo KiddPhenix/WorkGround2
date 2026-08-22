@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,6 +24,10 @@ import (
 const (
 	collaborationHeartbeatInterval = 95 * time.Second
 	collaborationMemberStaleAfter  = 4 * collaborationHeartbeatInterval
+	// A stream can end briefly without invalidating its connection session.
+	// Give the active peer several in-place stream retries before considering a
+	// different configured route; a route switch performs a remote Join.
+	collaborationRouteFailoverAttempts = 3
 )
 
 func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCollaborationRoomInput, identity collab.MemberDescriptor, resume string) (*collaborationConnection, error) {
@@ -49,13 +54,16 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 	var err error
 	actualPort := 0
 	routes := make([]CollaborationRouteState, 0, 1+len(input.RelayIDs))
-	var authority *collaborationAuthority
+	if c.app == nil {
+		return nil, fmt.Errorf("collaboration authority owner is unavailable")
+	}
+	authority, err := c.app.openCollaborationAuthority(ctx, input)
+	if err != nil {
+		return nil, err
+	}
 	if lanEnabled && protocolVersion == collaborationProtocolV2 {
-		if c.app == nil {
-			err = fmt.Errorf("shared collaboration V2 listener is unavailable")
-		} else {
-			authority, actualPort, releaseLAN, err = c.app.sharedCollaborationLAN().register(ctx, input)
-		}
+		owner := collaborationPersistenceKey(c.ownerSessionID, c.ownerSessionPath)
+		actualPort, releaseLAN, err = c.app.sharedCollaborationLAN().register(input, authority, owner)
 		if err != nil {
 			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: protocolVersion}, Status: "failed", LastError: err.Error(), Retryable: true})
 		} else {
@@ -67,11 +75,6 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: collaborationProtocolV1}, Status: "failed", LastError: err.Error(), Retryable: true})
 		} else {
 			actualPort = listener.Addr().(*net.TCPAddr).Port
-			authority, err = openCollaborationAuthority(ctx, input)
-			if err != nil {
-				_ = listener.Close()
-				return nil, err
-			}
 			server = &http.Server{Handler: collab.NewHandler(authority.service, authority.hub), ReadHeaderTimeout: 10 * time.Second}
 			go func() {
 				if serveErr := server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
@@ -83,22 +86,17 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 	} else {
 		routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: protocolVersion}, Status: "disabled"})
 	}
-	if authority == nil {
-		authority, err = openCollaborationAuthority(ctx, input)
-		if err != nil {
-			if server != nil {
-				_ = server.Shutdown(context.Background())
-			}
-			if releaseLAN != nil {
-				releaseLAN()
-			}
-			return nil, err
+	service, hub := authority.service, authority.hub
+	joinInput := collab.JoinInput{
+		RequestID: newCollaborationRequestID("join"), Room: room, Token: strings.TrimSpace(input.Token), Member: identity, ResumeSession: strings.TrimSpace(resume),
+	}
+	joined, err := service.Join(ctx, joinInput)
+	if err != nil && collaborationMemberResumeRequired(err) {
+		joined, err = service.RecoverHostMember(ctx, joinInput)
+		if err == nil {
+			slog.Warn("desktop: recovered stale collaboration Host session", "room", room, "member", identity.ID)
 		}
 	}
-	service, hub := authority.service, authority.hub
-	joined, err := service.Join(ctx, collab.JoinInput{
-		RequestID: newCollaborationRequestID("join"), Room: room, Token: strings.TrimSpace(input.Token), Member: identity, ResumeSession: strings.TrimSpace(resume),
-	})
 	if err != nil {
 		if server != nil {
 			_ = server.Shutdown(context.Background())
@@ -825,13 +823,16 @@ func (c *desktopCollaboration) connectionLoop(ctx context.Context, conn *collabo
 			return
 		}
 		c.markReconnect(conn, err)
-		if conn.mode == "client" && c.startRouteFailover(conn) {
-			return
-		}
 		if streamed || time.Since(started) >= 5*time.Second {
 			attempt = 0
 		}
+		if conn.mode == "client" && err != nil && attempt+1 >= collaborationRouteFailoverAttempts {
+			c.startRouteFailover(conn)
+		}
 		delay := collaborationReconnectDelay(attempt, uint64(time.Now().UnixNano()))
+		if c.streamRetryDelay != nil {
+			delay = c.streamRetryDelay(attempt, uint64(time.Now().UnixNano()))
+		}
 		if attempt < 16 {
 			attempt++
 		}
@@ -846,14 +847,57 @@ func (c *desktopCollaboration) connectionLoop(ctx context.Context, conn *collabo
 }
 
 func (c *desktopCollaboration) startRouteFailover(failed *collaborationConnection) bool {
-	if len(failed.routes) == 0 {
+	routes := collaborationAlternativeRoutes(failed)
+	if len(routes) == 0 {
 		return false
 	}
-	go c.failoverConnection(failed)
+	failed.failoverMu.Lock()
+	if failed.failoverActive {
+		failed.failoverMu.Unlock()
+		return false
+	}
+	failed.failoverActive = true
+	failed.failoverMu.Unlock()
+	go c.failoverConnection(failed, routes)
 	return true
 }
 
-func (c *desktopCollaboration) failoverConnection(failed *collaborationConnection) {
+func collaborationAlternativeRoutes(failed *collaborationConnection) []CollaborationRouteInput {
+	if failed == nil {
+		return nil
+	}
+	routes := make([]CollaborationRouteInput, 0, len(failed.routes))
+	seen := map[string]struct{}{}
+	for _, state := range failed.routes {
+		if state.Active {
+			seen[collaborationRouteIdentity(state.CollaborationRouteInput)] = struct{}{}
+		}
+	}
+	for _, state := range failed.routes {
+		if state.Active {
+			continue
+		}
+		route := state.CollaborationRouteInput
+		key := collaborationRouteIdentity(route)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		routes = append(routes, route)
+	}
+	return routes
+}
+
+func collaborationRouteIdentity(route CollaborationRouteInput) string {
+	return strings.ToLower(strings.TrimSpace(route.Kind)) + "\x00" + strings.ToLower(strings.TrimSpace(route.Host)) + "\x00" + strconv.Itoa(route.Port) + "\x00" + strings.TrimSpace(route.RelayID) + "\x00" + strings.TrimSpace(route.URL) + "\x00" + strings.TrimSpace(route.TunnelID)
+}
+
+func (c *desktopCollaboration) failoverConnection(failed *collaborationConnection, routes []CollaborationRouteInput) {
+	defer func() {
+		failed.failoverMu.Lock()
+		failed.failoverActive = false
+		failed.failoverMu.Unlock()
+	}()
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 	c.mu.RLock()
@@ -862,38 +906,35 @@ func (c *desktopCollaboration) failoverConnection(failed *collaborationConnectio
 	if !current {
 		return
 	}
-	routes := make([]CollaborationRouteInput, 0, len(failed.routes))
-	var active []CollaborationRouteInput
-	for _, state := range failed.routes {
-		route := state.CollaborationRouteInput
+	for i := range routes {
+		route := &routes[i]
 		if route.Kind == "relay" && route.GuestCapability == "" {
 			if ref := failed.guestCapabilityRefs[route.RelayID]; ref != "" {
 				route.GuestCapability = c.getSecret(ref)
 			}
 		}
-		if state.Active {
-			route.Priority = -1
-			active = append(active, route)
-		} else {
-			routes = append(routes, route)
-		}
 	}
-	routes = append(routes, active...)
 	identity := collab.MemberDescriptor{
 		ID: failed.memberID, Name: failed.memberName, Avatar: failed.memberAvatar, Role: failed.memberRole,
 		Agent: collab.AgentDescriptor{ID: failed.agentID, Name: failed.agentName, Avatar: failed.agentAvatar, Role: failed.agentRole},
 	}
-	conn, err := c.openJoinedRoom(c.app.bootContext(), JoinCollaborationRoomInput{
+	openJoin := c.openJoin
+	if openJoin == nil {
+		openJoin = c.openJoinedRoom
+	}
+	conn, err := openJoin(c.app.bootContext(), JoinCollaborationRoomInput{
 		Room: failed.room, Token: failed.joinToken, MemberID: failed.memberID, MemberName: failed.memberName,
 		MemberAvatar: failed.memberAvatar, MemberRole: failed.memberRole, AgentID: failed.agentID, AgentName: failed.agentName,
 		AgentAvatar: failed.agentAvatar, AgentRole: failed.agentRole, SessionID: failed.sessionID, Routes: routes, HostKey: failed.hostKey,
 	}, identity, failed.connectionSession)
 	if err != nil {
-		c.failState("failed", err, true)
+		// Keep the current peer/session alive. Its stream loop continues retrying
+		// while a later bounded failover attempt may recover another route.
+		c.markReconnect(failed, err)
 		return
 	}
 	if _, err := c.installConnection(conn); err != nil {
-		c.failState("failed", err, true)
+		c.markReconnect(failed, err)
 	}
 }
 
@@ -986,6 +1027,8 @@ func (c *desktopCollaboration) consumeStreamEvent(ctx context.Context, conn *col
 }
 
 func (c *desktopCollaboration) syncConnection(ctx context.Context, conn *collaborationConnection) {
+	conn.syncMu.Lock()
+	defer conn.syncMu.Unlock()
 	if !c.drainOutbox(ctx, conn) {
 		return
 	}

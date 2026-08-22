@@ -739,6 +739,28 @@ func TestResolveWidgetWorkspaceRejectsTransient(t *testing.T) {
 	}
 }
 
+func TestResolveWidgetWorkspaceAllowsPinnedTransient(t *testing.T) {
+	candidates := []widgetWorkspaceCandidate{
+		{Scope: "project", Root: `D:\Work\WG2广告`, Name: "WG2广告", Aliases: []string{"WG2广告"}, Transient: true, Pinned: true, Order: 0},
+	}
+	route, err := resolveWidgetWorkspace("project:D:\\Work\\WG2广告", "test", candidates)
+	if err != nil {
+		t.Fatalf("pinned transient must be manually selectable: %v", err)
+	}
+	if route.Root != `D:\Work\WG2广告` || route.Name != "WG2广告" || route.Reason != "手动选择" || route.ReasonCode != widgetRouteManual {
+		t.Fatalf("pinned transient route = %#v", route)
+	}
+}
+
+func TestResolveWidgetWorkspaceUnpinnedTransientStillRejected(t *testing.T) {
+	candidates := []widgetWorkspaceCandidate{
+		{Scope: "project", Root: `D:\Work\WG2广告`, Name: "WG2广告", Aliases: []string{"WG2广告"}, Transient: true, Pinned: false, Order: 0},
+	}
+	if _, err := resolveWidgetWorkspace("project:D:\\Work\\WG2广告", "test", candidates); err == nil {
+		t.Fatal("unpinned transient must stay rejected for manual selection")
+	}
+}
+
 func TestResolveWidgetWorkspaceRejectsExpired(t *testing.T) {
 	candidates := []widgetWorkspaceCandidate{
 		{Scope: "project", Root: `D:\Work\WorkGround2`, Name: "WorkGround2", Aliases: []string{"WorkGround2"}, Order: 0},

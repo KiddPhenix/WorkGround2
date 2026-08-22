@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1982,6 +1983,78 @@ func TestTrashTopicMovesRelatedSessionsToTrash(t *testing.T) {
 	}
 	if got := loadTopicTitle(projectRoot, topicID); got != "" {
 		t.Fatalf("topic title should be removed, got %q", got)
+	}
+}
+
+func offTabRoomTopicRuntime(t *testing.T, suffix string) (*App, *desktopCollaboration, string, string) {
+	t.Helper()
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	topicID := "topic_room_runtime_" + suffix
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	title := "Room runtime " + suffix
+	if err := setTopicTitle(projectRoot, topicID, title); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSession(t, dir, "room-runtime-"+suffix+".jsonl", topicID, title, projectRoot)
+	meta, ok, err := agent.LoadBranchMeta(sessionPath)
+	if err != nil || !ok {
+		t.Fatalf("load Room meta: ok=%v err=%v", ok, err)
+	}
+	meta.ID = "room-runtime-session-" + suffix
+	meta.SessionKind = agent.SessionKindCollaboration
+	if err := agent.SaveBranchMeta(sessionPath, meta); err != nil {
+		t.Fatalf("save Room meta: %v", err)
+	}
+
+	app := NewApp()
+	runtime := newDesktopCollaborationForSession(app, meta.ID, sessionPath, meta.TopicTitle, projectRoot)
+	runtime.initialUpdateDelay = func() time.Duration { return time.Hour }
+	runtime.startUpdateLoop(context.Background())
+	app.collaborations = map[string]*desktopCollaboration{meta.ID: runtime}
+	return app, runtime, topicID, sessionPath
+}
+
+func assertOffTabRoomStopped(t *testing.T, app *App, runtime *desktopCollaboration) {
+	t.Helper()
+	app.collaborationMu.Lock()
+	remaining := len(app.collaborations)
+	app.collaborationMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("removed Room left %d collaboration runtimes", remaining)
+	}
+	select {
+	case <-runtime.updateDone:
+	default:
+		t.Fatal("removed Room update loop is still running")
+	}
+	app.closeCollaborationRuntimesForSessionPaths([]string{runtime.ownerSessionPath})
+}
+
+func TestTrashTopicStopsOffTabCollaborationRuntime(t *testing.T) {
+	app, runtime, topicID, _ := offTabRoomTopicRuntime(t, "trash")
+
+	if err := app.TrashTopic(topicID); err != nil {
+		t.Fatalf("trash Room topic: %v", err)
+	}
+	assertOffTabRoomStopped(t, app, runtime)
+}
+
+func TestDeleteTopicStopsOffTabCollaborationRuntime(t *testing.T) {
+	app, runtime, topicID, sessionPath := offTabRoomTopicRuntime(t, "delete")
+
+	if err := app.DeleteTopic(topicID); err != nil {
+		t.Fatalf("delete Room topic: %v", err)
+	}
+	assertOffTabRoomStopped(t, app, runtime)
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("DeleteTopic should retain Room session history: %v", err)
 	}
 }
 

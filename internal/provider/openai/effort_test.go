@@ -89,6 +89,26 @@ func TestDeepSeekFlashEffortLowAccepted(t *testing.T) {
 	}
 }
 
+func TestDeepSeekFlashVisionExpEffortLowAccepted(t *testing.T) {
+	const deepseek = "https://api.deepseek.com/v1"
+
+	// Flash vision variants keep Flash's effort scale (low|high|max).
+	for _, effort := range []string{"low", "high", "max"} {
+		c := newClientWithModel(t, deepseek, "deepseek-v4-flash-vision-exp", effort)
+		if c.effort != effort {
+			t.Errorf("Flash-vision effort=%q: got %q, want %q", effort, c.effort, effort)
+		}
+	}
+
+	// Flash-vision still rejects non-Flash efforts like medium.
+	if _, err := New(provider.Config{
+		Name: "flash-vision", BaseURL: deepseek, Model: "deepseek-v4-flash-vision-exp", APIKey: "k",
+		Extra: map[string]any{"effort": "medium"},
+	}); err == nil || !strings.Contains(err.Error(), "low, high, or max") {
+		t.Fatalf("Flash-vision should reject medium effort, got: %v", err)
+	}
+}
+
 func TestDeepSeekProRejectsLowEffort(t *testing.T) {
 	const deepseek = "https://api.deepseek.com/v1"
 

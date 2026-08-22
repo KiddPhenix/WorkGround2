@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"workground2/internal/provider"
 	"workground2/internal/tool"
@@ -802,6 +804,68 @@ func TestRunningSubagentCountsMissingDirIsNotAnError(t *testing.T) {
 	if len(counts) != 0 {
 		t.Fatalf("counts = %v, want empty", counts)
 	}
+}
+
+func TestRunningSubagentsUsesMetaWithoutTranscript(t *testing.T) {
+	sessionDir := t.TempDir()
+	dir := filepath.Join(sessionDir, "subagents")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ref := "sa_20260102_030405_000000000_aabbccddeeff"
+	meta := SubagentMeta{Ref: ref, Status: SubagentRunning, Kind: "task", Name: "task", Description: "实现委托列表", ParentSession: "parent-a", UpdatedAt: time.Now()}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ref+".meta.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := RunningSubagents(sessionDir)
+	if err != nil {
+		t.Fatalf("RunningSubagents without transcript: %v", err)
+	}
+	if len(items) != 1 || items[0].Description != "实现委托列表" || items[0].ParentSession != "parent-a" {
+		t.Fatalf("running items = %+v", items)
+	}
+}
+
+func TestSubagentDescriptionIsDisplayOnly(t *testing.T) {
+	store := NewSubagentStore(t.TempDir())
+	spec := testSubagentSpec(t, "review")
+	spec.Description = strings.Repeat("委托内容 ", 40)
+	run, err := store.PrepareFresh(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Meta.Description == "" || len([]rune(run.Meta.Description)) > 160 {
+		t.Fatalf("description = %q", run.Meta.Description)
+	}
+	run.Session.Add(provider.Message{Role: provider.RoleUser, Content: "review"})
+	run.Session.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
+	if err := store.SaveCompleted(run); err != nil {
+		t.Fatal(err)
+	}
+	run.Release()
+	spec.Description = "重试时的新显示文案"
+	continued, err := store.PrepareContinue(run.Ref, spec)
+	if err != nil {
+		t.Fatalf("display-only description changed continuation identity: %v", err)
+	}
+	if continued.Meta.Description != spec.Description {
+		t.Fatalf("continued description = %q, want current task %q", continued.Meta.Description, spec.Description)
+	}
+	if err := store.MarkRunning(continued); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := store.LoadMeta(run.Ref)
+	if err != nil || persisted.Description != spec.Description {
+		t.Fatalf("persisted continued description = %q err=%v", persisted.Description, err)
+	}
+	if err := store.SaveCompleted(continued); err != nil {
+		t.Fatal(err)
+	}
+	continued.Release()
 }
 
 func TestRunningSubagentCountsSurfacesCorruptMeta(t *testing.T) {

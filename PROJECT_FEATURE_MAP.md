@@ -11,6 +11,13 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 
 ## Entries
 
+### 日常 / Daily Routine
+- Location: `desktop/daily_routine.go`, `desktop/daily_routine_test.go`, `desktop/app.go`, `desktop/widget_icon_mode.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/__tests__/desktop-icon-mode.test.ts`
+- Summary: Workspace 级日常模板支持从 Session 对话/工具记录严格提炼、本地原子持久化与损坏恢复；Workspace 图标可列出、执行、改名和幂等删除，执行通过可确认的普通 user-turn 链路创建并恢复 Session。前后端 requestId、迟到结果、busy、renderer 重启和 workspace 切换均有隔离与安全重试。
+- Keywords: 日常, Daily Routine, I will do it again, DesktopIconMode, CreateBlankSession, TrySubmitUserTurn, daily-routines-v1.json
+- Source: verified-by-search
+- Updated: 2026-08-21
+
 ### AddOn 框架与插件包
 - Location: `internal/pluginpkg`, `internal/installsource`, `internal/config/plugin_packages.go`, `desktop/plugin_packages_app.go`, `docs/addons`, `pkg/drawaddon`
 - Summary: AddOn 的安装来源、包清单、启用状态、运行时能力合并、桌面管理和宿主接口集中在这些位置。
@@ -229,11 +236,11 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 - Updated: 2026-08-20
 
 ### 图标小组件
-- Location: `desktop/widget_icon_mode.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktopIconLayout.ts`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`
-- Summary: 图标小组件的任务图标、锚点、弹层布局、搜索、通知续聊、Workspace 和 Room 管理入口位于这些位置。
-- Keywords: DesktopIconMode, task icon, anchor, popup, search, NoticeBody, Workspace, Room
+- Location: `desktop/widget_icon_mode.go`, `desktop/widget_room_pins.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/roomsManager.ts`, `desktop/frontend/src/components/widget/roomNotifications.ts`, `internal/unread`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`
+- Summary: 图标小组件集中管理任务、Workspace 和 Room 图标及弹层；Room 子链路负责独立 Pin、自定义图标、常驻/未读强显、数字或逐条提醒与 @ 分类。
+- Keywords: DesktopIconMode, task icon, Workspace, Room, RoomsManager, roomNotifications, room pins, unread
 - Source: verified-by-search
-- Updated: 2026-08-20
+- Updated: 2026-08-21
 
 ### 图标小组件快速新建
 - Location: `desktop/widget_conversation.go`, `desktop/frontend/src/components/widget/widgetQuickStartJobs.ts`, `desktop/frontend/src/components/widget/quickStartPreferences.ts`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`

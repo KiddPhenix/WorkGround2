@@ -469,6 +469,10 @@ func (a *App) switchDesktopWidgetStyleLocked(style string) (string, error) {
 		return previous, errors.Join(err, rollback(oldState, alwaysOnTop))
 	}
 	a.widgetStyle = style
+	if style == "icons" {
+		a.widgetSurfaceGen = 0
+		a.widgetSurfaceState = normalized
+	}
 	return previous, nil
 }
 
@@ -563,6 +567,10 @@ func (a *App) applyEnterWidgetMode() error {
 		return err
 	}
 	a.widgetStyle = style
+	if style == "icons" {
+		a.widgetSurfaceGen = 0
+		a.widgetSurfaceState = state
+	}
 	return nil
 }
 
@@ -787,6 +795,131 @@ func (a *App) widgetSubagentCounts(sources []widgetSource) (map[widgetSubagentKe
 		}
 	}
 	return counts, errors.Join(errs...)
+}
+
+// widgetDelegations builds the typed running-delegation projection consumed by
+// icon mode. Each session directory is scanned once, persisted sub-agents win
+// over linked BackgroundOnly/CLI signals for the same parent, and every target
+// carries the exact session identity needed for navigation.
+func (a *App) widgetDelegations(sources []widgetSource) ([]DesktopIconDelegation, map[widgetSubagentKey]int, error) {
+	dirs := map[string]bool{}
+	parents := map[widgetSubagentKey]widgetSource{}
+	for _, source := range sources {
+		if dir := strings.TrimSpace(source.sessionDir); dir != "" {
+			dir = filepath.Clean(dir)
+			dirs[dir] = true
+		}
+		key := newWidgetSubagentKey(source.sessionDir, source.branchID)
+		if key.sessionDir == "" || key.branchID == "" {
+			continue
+		}
+		current, ok := parents[key]
+		if !ok || (!current.meta.Active && source.meta.Active) {
+			parents[key] = source
+		}
+	}
+
+	counts := map[widgetSubagentKey]int{}
+	byID := map[string]DesktopIconDelegation{}
+	var errs []error
+	dirList := make([]string, 0, len(dirs))
+	for dir := range dirs {
+		dirList = append(dirList, dir)
+	}
+	sort.Strings(dirList)
+	for _, dir := range dirList {
+		runs, err := agent.RunningSubagents(dir)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		for _, run := range runs {
+			key := newWidgetSubagentKey(dir, run.ParentSession)
+			counts[key]++
+			parent, found := parents[key]
+			content := conciseWidgetText(strings.TrimSpace(run.Description), 120)
+			if content == "" {
+				label := firstNonEmpty(strings.TrimSpace(run.Name), strings.TrimSpace(run.Kind), "委托任务")
+				content = conciseWidgetText(label+" · "+run.Ref, 120)
+			}
+			item := DesktopIconDelegation{
+				ID:      "subagent:" + widgetRevision(dir, run.Ref),
+				Kind:    "subagent",
+				Content: content,
+				Status:  "running",
+			}
+			if !run.UpdatedAt.IsZero() {
+				item.UpdatedAt = run.UpdatedAt.UnixMilli()
+			}
+			if found {
+				meta := parent.meta
+				item.SessionTitle = firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "所属 Session")
+				item.WorkspaceName = firstNonEmpty(strings.TrimSpace(meta.WorkspaceName), "WorkGround2")
+				item.SessionRef = desktopIconTaskRef(meta.Scope, meta.WorkspaceRoot, meta.TopicID, meta.SessionPath)
+			} else {
+				item.SessionTitle = "Session " + run.ParentSession
+				errs = append(errs, fmt.Errorf("running delegation %q has no loaded parent session identity", run.Ref))
+			}
+			byID[item.ID] = item
+		}
+	}
+
+	for _, source := range sources {
+		meta := source.meta
+		isCLI := strings.EqualFold(strings.TrimSpace(meta.SessionSource), "cli")
+		if (!meta.BackgroundOnly && !isCLI) || !meta.RunningWork {
+			continue
+		}
+		if counts[newWidgetSubagentKey(source.sessionDir, source.branchID)] > 0 {
+			continue
+		}
+		kind, fallback := "background", "后台委托"
+		if isCLI {
+			kind, fallback = "cli", "CLI 委托"
+		}
+		item := DesktopIconDelegation{
+			ID:            kind + ":" + widgetRevision(firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID)), strings.TrimSpace(meta.SessionPath)),
+			Kind:          kind,
+			Content:       conciseWidgetText(firstNonEmpty(strings.TrimSpace(source.requestText), strings.TrimSpace(meta.ActivityText), strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), fallback), 120),
+			Status:        "running",
+			SessionTitle:  firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "所属 Session"),
+			WorkspaceName: firstNonEmpty(strings.TrimSpace(meta.WorkspaceName), "WorkGround2"),
+			UpdatedAt:     meta.TurnStartedAt,
+			SessionRef:    desktopIconTaskRef(meta.Scope, meta.WorkspaceRoot, meta.TopicID, meta.SessionPath),
+		}
+		byID[item.ID] = item
+	}
+
+	items := make([]DesktopIconDelegation, 0, len(byID))
+	for _, item := range byID {
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].UpdatedAt != items[j].UpdatedAt {
+			return items[i].UpdatedAt > items[j].UpdatedAt
+		}
+		if items[i].SessionTitle != items[j].SessionTitle {
+			return items[i].SessionTitle < items[j].SessionTitle
+		}
+		return items[i].ID < items[j].ID
+	})
+	return items, counts, errors.Join(errs...)
+}
+
+func widgetSourceIsSubagent(source widgetSource) bool {
+	if strings.EqualFold(strings.TrimSpace(source.meta.SessionSource), "subagent") {
+		return true
+	}
+	path := strings.TrimSpace(source.meta.SessionPath)
+	if path == "" {
+		return false
+	}
+	if strings.EqualFold(filepath.Base(filepath.Dir(filepath.Clean(path))), "subagents") {
+		return true
+	}
+	if dir := strings.TrimSpace(source.sessionDir); dir != "" {
+		return strings.EqualFold(filepath.Clean(filepath.Dir(path)), filepath.Join(filepath.Clean(dir), "subagents"))
+	}
+	return false
 }
 
 // retryLeaseTabs retries startup after a session lease becomes available.

@@ -59,7 +59,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-anchor { --wails-draggable: drag; display: grid; place-items: center; width: 34px; height: 34px; padding: 4px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 10px; background: rgb(22 25 33 / 92%); box-shadow: 0 6px 16px rgb(0 0 0 / 38%); cursor: grab; user-select: none; }
 .desktop-icon-anchor:hover { border-color: rgb(193 210 255 / 40%); }
 .desktop-icon-anchor--menu-open, .desktop-icon-anchor--quick-open { border-color: rgb(193 210 255 / 62%); }
-.desktop-icon-anchor img { width: 100%; height: 100%; pointer-events: none; user-select: none; will-change: transform; backface-visibility: hidden; animation: desktop-icon-anchor-keepalive 6s ease-in-out infinite; }
+.desktop-icon-anchor img { width: 100%; height: 100%; pointer-events: none; user-select: none; will-change: transform; backface-visibility: hidden; animation: desktop-icon-anchor-keepalive 180s steps(1, end) infinite; }
 /* The quick toolbar renders inline in the control row between the collapse
    toggle and the WG2 anchor: it must never float above the cluster (no
    absolute positioning), so the toolbar scales and wraps with the cluster and
@@ -84,7 +84,9 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
   --wails-draggable: no-drag;
 }
 .desktop-icon-collapse:focus-visible, .desktop-icon-anchor:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
-.desktop-icon-wrap { position: relative; width: 62px; flex: 0 0 62px; }
+.desktop-icon-wrap { position: relative; width: 62px; flex: 0 0 62px; transition: transform 120ms ease, filter 120ms ease; }
+.desktop-icon-wrap.is-dragging { z-index: 7; filter: drop-shadow(0 9px 8px rgb(0 0 0 / 38%)); transform: translateY(-6px) scale(1.035); }
+.desktop-icon-wrap.is-dragging .desktop-icon { cursor: grabbing; }
 
 .desktop-icon {
   position: relative;
@@ -106,6 +108,8 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon:hover .desktop-icon__art { transform: translateY(-2px); }
 .desktop-icon--pending .desktop-icon__art::after { content: ""; position: absolute; inset: -3px; border: 1px solid rgb(168 140 255 / 62%); border-radius: 16px; box-shadow: 0 0 8px rgb(116 80 223 / 26%); pointer-events: none; animation: desktop-icon-pending-breathe 2.2s ease-in-out infinite; }
 .desktop-icon__art > svg { width: 29px; height: 29px; stroke-width: 1.7; }
+.desktop-icon__art > .desktop-icon__room-mention { position: absolute; right: 4px; bottom: 4px; width: 16px; height: 16px; padding: 2px; border: 1px solid #171922; border-radius: 50%; color: #fff2cc; background: #c46b1b; stroke-width: 2.8; box-shadow: 0 0 8px rgb(240 142 50 / 72%); }
+.desktop-icon:has(.desktop-icon__room-mention) .desktop-icon__art { border-color: rgb(245 166 82 / 72%); background: linear-gradient(145deg, #493526, #1c1a1d); box-shadow: 0 8px 18px rgb(0 0 0 / 35%), 0 0 12px rgb(221 122 34 / 28%); }
 .desktop-icon__matte { display: block; width: 50px; height: 50px; object-fit: contain; filter: drop-shadow(0 5px 8px rgb(0 0 0 / 28%)); pointer-events: none; user-select: none; }
 /* 真实 task 使用可组合 Agent Icon，透明画布直接填满 58px 桌面图标位；
    图层定位与缺图降级由 agent-icon.css 负责。 */
@@ -162,12 +166,15 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
   box-shadow: 0 14px 38px rgb(0 0 0 / 48%);
   backdrop-filter: blur(18px);
 }
-/* The search popup bounds its height on the inner column (see
-   .desktop-icon-popup__search), never here: this outer box keeps overflow
-   visible so the shadow and the bottom arrow are never clipped, and the
-   zoomed 100vh constant is gone because maxHeight and bottom share the same
-   reverse-zoomed logical coordinate system via --popup-max-height. */
-.desktop-icon-popup:has(.desktop-icon-popup__search) { box-sizing: border-box; display: flex; }
+/* Search reserves the same seven-row frame in every data state. The measured
+   anchor budget can still shrink the border-box on short viewports; only the
+   inner column clips/scrolls, so the outer shadow and arrow stay visible. */
+.desktop-icon-popup:has(.desktop-icon-popup__search) {
+  box-sizing: border-box;
+  display: flex;
+  height: min(calc(var(--popup-pad-y, 15px) + var(--popup-pad-y, 15px) + 354px), var(--popup-max-height, 420px));
+  max-height: var(--popup-max-height, 420px);
+}
 /* Hover preview text wraps inside the 300px box: continuous Chinese breaks
    between ideographs, mixed CJK/ASCII wraps at spaces, and unbroken URL/path/
    token runs break via overflow-wrap:anywhere (word-break:break-word is the
@@ -184,6 +191,9 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 }
 .desktop-icon-popup__arrow { position: absolute; left: var(--arrow-left); bottom: -7px; width: 13px; height: 13px; transform: translateX(-50%) rotate(45deg); border-right: 1px solid rgb(184 169 238 / 32%); border-bottom: 1px solid rgb(184 169 238 / 32%); background: #191b22; }
 .desktop-icon-popup__eyebrow { margin-bottom: 5px; color: #ad92ff; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.desktop-icon-popup__eyebrow--mention { display: flex; align-items: center; gap: 5px; color: #ffc879; }
+.desktop-icon-popup__eyebrow--mention svg { width: 14px; height: 14px; stroke-width: 2.7; }
+.desktop-icon-popup--mention { border-color: rgb(241 157 67 / 68%); box-shadow: 0 14px 38px rgb(0 0 0 / 48%), 0 0 18px rgb(218 120 35 / 24%); }
 .desktop-icon-popup strong { display: block; font-size: 15px; }
 .desktop-icon-popup p { margin: 8px 0 12px; color: #d8dbe4; line-height: 1.45; }
 .desktop-icon-popup button, .desktop-icon-popup input, .desktop-icon-popup textarea, .desktop-icon-menu button { min-height: 36px; font: inherit; }
@@ -282,35 +292,77 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__settings-error button { min-height: 28px; padding: 3px 8px; font-size: 11px; }
 .desktop-icon-popup__dsh-warning { margin: 8px 0 0; color: #c8a7ff; font-size: 11px; line-height: 1.45; }
 .desktop-icon-popup__error, .desktop-icon-toast { color: #ffacb7; }
-/* The height budget is the TS-computed logical --popup-max-height minus the
-   popup's own vertical padding/border, so a maxHeight-tall popup lands with
-   its top edge on the safe margin. The column keeps the searchbox fixed and
-   lets the single state/content region shrink and scroll. */
-.desktop-icon-popup__search { display: flex; flex: 1; min-height: 0; flex-direction: column; max-height: max(0px, calc(var(--popup-max-height, 420px) - 2 * var(--popup-pad-y, 15px) - 2px)); }
+/* The parent owns the stable/safe outer height. This inner column consumes the
+   resulting content box and contains every state without affecting geometry. */
+.desktop-icon-popup__search { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .desktop-icon-popup__searchbox { display: grid; flex: 0 0 auto; grid-template-columns: 22px 1fr 36px; align-items: center; gap: 7px; }
 .desktop-icon-popup__searchbox svg { width: 18px; }
 .desktop-icon-popup__searchbox button { padding: 4px; border: 0; background: transparent; }
-.desktop-icon-popup__search-content { flex: 1 1 auto; min-height: 0; max-height: calc(7 * 44px); overflow-y: auto; overflow-wrap: anywhere; margin-top: 8px; }
+.desktop-icon-popup__search-content { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; margin-top: 8px; }
 .desktop-icon-popup__search-content > .desktop-icon-popup__error,
 .desktop-icon-popup__search-content > .desktop-icon-popup__empty { margin: 0; }
 .desktop-icon-popup__results { min-height: 0; }
 .desktop-icon-popup__results > button { display: grid; width: 100%; min-height: 44px; text-align: left; border-width: 0 0 1px; border-radius: 0; background: transparent; }
 .desktop-icon-popup__results small { color: #969ba8; }
-.desktop-icon-popup:has(.desktop-icon-popup__workspaces), .desktop-icon-popup:has(.desktop-icon-popup__rooms) { box-sizing: border-box; display: flex; width: min(420px, calc(100vw - 20px)); max-height: var(--popup-max-height, 420px); }
-.desktop-icon-popup__workspaces { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.desktop-icon-popup:has(.desktop-icon-popup__delegations) { box-sizing: border-box; display: flex; width: min(390px, calc(100vw - 20px)); max-height: var(--popup-max-height, 420px); }
+.desktop-icon-popup__delegations { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+.desktop-icon-popup__delegation-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.desktop-icon-popup__delegation-head button { padding: 4px; border: 0; background: transparent; }
+.desktop-icon-popup__delegation-head svg { width: 16px; }
+.desktop-icon-popup__delegation-error { margin: 8px 0 0; color: #e4a15b; font-size: 12px; overflow-wrap: anywhere; }
+.desktop-icon-popup__delegation-list { min-height: 0; margin-top: 8px; overflow-y: auto; }
+.desktop-icon-popup__delegation-list > button { display: grid; width: 100%; min-height: 52px; padding: 8px 4px; text-align: left; border-width: 0 0 1px; border-radius: 0; background: transparent; }
+.desktop-icon-popup__delegation-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-icon-popup__delegation-list small { color: #969ba8; }
+.desktop-icon-popup__delegation-list small b { color: #68bb86; }
+.desktop-icon-popup:has(.desktop-icon-popup__workspaces), .desktop-icon-popup:has(.desktop-icon-popup__rooms), .desktop-icon-popup:has(.desktop-icon-popup__routines) { box-sizing: border-box; display: flex; width: min(420px, calc(100vw - 20px)); max-height: min(620px, var(--popup-max-height, 620px)); }
+.desktop-icon-popup__workspaces { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+.desktop-icon-popup__routines { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+.desktop-icon-popup__routine-list { min-height: 0; margin-top: 8px; overflow-y: auto; }
+.desktop-icon-popup__routine-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgb(255 255 255 / 8%); }
+.desktop-icon-popup__routine-row:last-child { border-bottom: 0; }
+.desktop-icon-popup__routine-copy { display: grid; flex: 1 1 auto; min-width: 0; gap: 2px; }
+.desktop-icon-popup__routine-copy strong, .desktop-icon-popup__routine-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-icon-popup__routine-copy strong { font-size: 13px; }
+.desktop-icon-popup__routine-copy small { color: #969ba8; font-size: 10px; }
+.desktop-icon-popup__routine-actions { display: flex; flex: 0 0 auto; gap: 5px; }
+.desktop-icon-popup__routine-actions button { min-height: 28px; padding: 3px 9px; font-size: 11px; }
+.desktop-icon-popup__routine-actions button.subtle { display: grid; place-items: center; width: 28px; padding: 0; }
+.desktop-icon-popup__routine-actions button:not(:disabled):hover,
+.desktop-icon-popup__routine-rename button:not(:disabled):hover,
+.desktop-icon-popup__routine-error button:not(:disabled):hover,
+.desktop-icon-popup__workspace-foot button:not(:disabled):hover { filter: brightness(1.18); }
+.desktop-icon-popup__routine-actions button.subtle:not(:disabled):hover,
+.desktop-icon-popup__routine-rename button.subtle:not(:disabled):hover,
+.desktop-icon-popup__workspace-foot button.subtle:not(:disabled):hover { border-color: rgb(255 255 255 / 28%); color: #fff; background: rgb(255 255 255 / 9%); filter: none; }
+.desktop-icon-popup__routine-actions button.danger:not(:disabled):hover { border-color: #d76474; background: #84394a; filter: none; }
+.desktop-icon-popup__routine-actions svg { width: 13px; height: 13px; }
+.desktop-icon-popup__routine-rename { display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto auto; gap: 5px; }
+.desktop-icon-popup__routine-rename input { min-width: 0; min-height: 30px; padding: 4px 8px; }
+.desktop-icon-popup__routine-rename button { min-height: 30px; padding: 4px 8px; }
+.desktop-icon-popup__routine-error { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 7px 8px; border: 1px solid rgb(167 70 85 / 45%); border-radius: 7px; color: #ffacb7; background: rgb(87 34 43 / 38%); font-size: 11px; }
+.desktop-icon-popup__routine-error span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.desktop-icon-popup__routine-error button { min-height: 26px; padding: 3px 8px; }
 .desktop-icon-popup__workspace-head { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; }
 .desktop-icon-popup__workspace-head strong { font-size: 15px; }
 .desktop-icon-popup__workspace-head button { min-height: 30px; padding: 4px 12px; }
-.desktop-icon-popup__room-visibility { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; padding: 8px 0; border-block: 1px solid rgb(255 255 255 / 8%); }
+.desktop-icon-popup__room-settings { flex: 0 0 auto; margin-top: 9px; border-block: 1px solid rgb(255 255 255 / 8%); }
+.desktop-icon-popup__room-visibility, .desktop-icon-popup__room-notification { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.desktop-icon-popup__room-notification { border-top: 1px solid rgb(255 255 255 / 6%); }
 .desktop-icon-popup__room-visibility > span { display: grid; gap: 2px; color: #d8dae2; font-size: 11px; }
-.desktop-icon-popup__room-visibility small { color: #858b98; font-size: 9px; }
+.desktop-icon-popup__room-notification > span { display: grid; gap: 2px; color: #d8dae2; font-size: 11px; }
+.desktop-icon-popup__room-visibility small, .desktop-icon-popup__room-notification small { color: #858b98; font-size: 9px; }
 .desktop-icon-popup__room-visibility button { position: relative; flex: 0 0 auto; width: 36px; height: 20px; min-height: 20px; padding: 0; border: 1px solid rgb(255 255 255 / 16%); border-radius: 999px; background: #30333d; }
 .desktop-icon-popup__room-visibility button i { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #aeb3bf; transition: transform .14s ease, background .14s ease; }
 .desktop-icon-popup__room-visibility button[aria-checked="true"] { border-color: #9b82ed; background: #6045ad; }
 .desktop-icon-popup__room-visibility button[aria-checked="true"] i { background: #fff; transform: translateX(16px); }
 .desktop-icon-popup__room-visibility button:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
+.desktop-icon-popup__room-notification > div { display: grid; grid-template-columns: repeat(2, 42px); gap: 3px; }
+.desktop-icon-popup__room-notification button { min-width: 0; min-height: 26px; padding: 3px 6px; border: 1px solid rgb(255 255 255 / 14%); border-radius: 6px; color: #9da2ae; background: rgb(255 255 255 / 3%); font-size: 10px; }
+.desktop-icon-popup__room-notification button[aria-checked="true"] { border-color: #9b82ed; color: #f3efff; background: #6045ad; }
+.desktop-icon-popup__room-notification button:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
 .desktop-icon-popup__workspace-note { margin: 14px 0 4px; color: #969ba8; font-size: 12px; text-align: center; }
-.desktop-icon-popup__workspace-list { flex: 1 1 auto; min-height: 0; max-height: calc(5 * 72px); overflow-x: hidden; overflow-y: auto; margin-top: 8px; padding-right: 2px; }
+.desktop-icon-popup__workspace-list { flex: 1 1 auto; min-height: 0; max-height: 360px; overflow-x: hidden; overflow-y: auto; margin-top: 8px; padding-right: 2px; }
 .desktop-icon-popup__workspace-row { padding: 7px 0; border-bottom: 1px solid rgb(255 255 255 / 8%); }
 .desktop-icon-popup__workspace-row.is-armed { margin: 0 -6px; padding: 7px 6px; border-radius: 8px; background: rgb(167 70 85 / 12%); }
 .desktop-icon-popup__workspace-row:last-child { border-bottom: 0; }
@@ -349,6 +401,8 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__workspace-pins-head svg { width: 12px; height: 12px; color: #ad92ff; }
 .desktop-icon-popup__workspace-pins-head small { color: #969ba8; font-size: 10px; }
 .desktop-icon-popup__workspace-slots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
+.desktop-icon-popup__room-slots { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.desktop-icon-popup__room-slots .desktop-icon-popup__workspace-slot { min-height: 32px; padding: 3px 4px; }
 .desktop-icon-popup__workspace-slot { display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; min-height: 34px; padding: 4px 6px; border: 1px dashed rgb(255 255 255 / 14%); border-radius: 7px; color: #6f7480; background: rgb(255 255 255 / 2%); font-size: 10px; }
 .desktop-icon-popup__workspace-slot.is-filled { justify-content: flex-start; border-style: solid; border-color: rgb(142 116 227 / 42%); color: #ddd4fb; background: rgb(94 67 181 / 13%); }
 .desktop-icon-popup__workspace-slot svg { flex: 0 0 auto; }
@@ -362,6 +416,11 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-menu { position: absolute; right: 0; bottom: 78px; z-index: 4; display: grid; min-width: 126px; padding: 5px; border: 1px solid #414550; border-radius: 8px; background: #1c1f27; box-shadow: 0 10px 28px rgb(0 0 0 / 48%); }
 .desktop-icon-menu button { padding: 6px 9px; border: 0; color: #e8eaf0; background: transparent; text-align: left; }
 .desktop-icon-menu button:hover { background: #353947; }
+.desktop-icon-menu__rename { display: grid; gap: 5px; padding: 3px; }
+.desktop-icon-menu__rename input { box-sizing: border-box; width: 190px; min-height: 30px; padding: 4px 7px; border: 1px solid #575c6a; border-radius: 6px; color: #f4f5f9; background: #151820; outline: none; }
+.desktop-icon-menu__rename input:focus { border-color: #9b82ed; box-shadow: 0 0 0 2px rgb(155 130 237 / 18%); }
+.desktop-icon-menu__rename > div { display: flex; justify-content: flex-end; gap: 4px; }
+.desktop-icon-menu__rename > div button { border: 1px solid rgb(255 255 255 / 12%); border-radius: 5px; }
 .desktop-icon-toast { position: absolute; left: 12px; bottom: 12px; display: flex; align-items: center; gap: 8px; max-width: 420px; padding: 9px 12px; border: 1px solid #8f3949; border-radius: 8px; background: #321c23; }
 .desktop-icon-toast button { width: 28px; height: 28px; border: 0; color: inherit; background: transparent; }
 .desktop-icon-toast svg { width: 16px; }

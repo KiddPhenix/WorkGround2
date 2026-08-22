@@ -320,8 +320,10 @@ func TestRelayHostBridgeJoinSubmitAndSnapshot(t *testing.T) {
 
 	secrets := map[string]string{}
 	var secretsMu sync.Mutex
+	app := &App{}
 	newRuntime := func() *desktopCollaboration {
 		return &desktopCollaboration{
+			app:       app,
 			state:     CollaborationState{Status: "disconnected"},
 			shares:    map[string]collaborationSharedFile{},
 			setSecret: func(key, value string) error { secretsMu.Lock(); secrets[key] = value; secretsMu.Unlock(); return nil },

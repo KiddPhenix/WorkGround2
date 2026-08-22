@@ -11,13 +11,14 @@ import type { AgentIconViewModel } from "./types";
 
 /**
  * 条目是否渲染 Agent Icon：真实 task/session（kind === "task" 且非
- * QuickStart 乐观条目）。QuickStart 尚未形成真实 session，保留旧图标；
- * 形成真实 task 后由后端快照提供 sessionRef/sessionId，进入此路径。
+ * QuickStart 乐观条目），以及后端已绑定真实 session 身份的 IM person。
+ * 未解析的 IM 行保留通用 Users 图标，避免按会话标题猜身份。
  */
 export function isAgentIconItem(item: DesktopIconItem): boolean {
   // "opt:" 前缀与 widgetQuickStartJobs.QUICK_JOB_OPTIMISTIC_PREFIX 契约一致
   // （契约测试双向断言，防止漂移）。
-  return item.kind === "task" && !item.id.startsWith("opt:");
+  if (item.kind === "task") return !item.id.startsWith("opt:");
+  return item.kind === "person" && Boolean(item.sessionId?.trim() || item.sessionRef?.sessionPath?.trim() || item.sessionRef?.topicId?.trim());
 }
 
 export function buildAgentIconViewModel(item: DesktopIconItem): AgentIconViewModel {

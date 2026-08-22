@@ -242,10 +242,17 @@ type App struct {
 	// collaborations owns one isolated Room runtime per collaboration Session.
 	// It has its own lock so network reconnects and Wails calls never contend
 	// with tab selection; each runtime owns its connection, outbox and Agent runs.
-	collaborationMu    sync.Mutex
-	collaborations     map[string]*desktopCollaboration
-	collaborationLANMu sync.Mutex
-	collaborationLAN   *collaborationLANHost
+	collaborationMu               sync.Mutex
+	collaborations                map[string]*desktopCollaboration
+	collaborationAuthorityMu      sync.Mutex
+	collaborationAuthority        *collaborationAuthority
+	collaborationLANMu            sync.Mutex
+	collaborationLAN              *collaborationLANHost
+	collaborationRestoreMu        sync.Mutex
+	collaborationReconcileMu      sync.Mutex
+	collaborationReconcileEnabled bool
+	collaborationReconcileRunning bool
+	collaborationReconcilePending bool
 
 	configRebuildNeeded atomic.Bool // set by deferred config saves when a turn is running
 
@@ -258,6 +265,8 @@ type App struct {
 	widgetConversationMu sync.Mutex
 	widgetMode           bool
 	widgetStyle          string
+	widgetSurfaceGen     int64 // protected by widgetMu; rejects stale resize calls
+	widgetSurfaceState   WidgetWindowState
 	widgetStateLoaded    bool
 	widgetState          widgetPersistedState
 	widgetIdleSince      int64 // protected by widgetActionMu
@@ -284,6 +293,18 @@ type App struct {
 	// guarded by iconWidgetMu.
 	completionSummaryGen      completionSummaryGenerator
 	completionSummaryInFlight map[string]*completionSummaryCall
+
+	// dailyRoutineMu serializes the atomic workspace-owned routine store. The
+	// operation registry only coalesces the same request; unrelated workspaces
+	// remain concurrent while a provider or Controller call is in flight.
+	dailyRoutineMu   sync.Mutex
+	dailyRoutineOpMu sync.Mutex
+	dailyRoutineOps  map[string]*dailyRoutineOpLock
+	dailyRoutineGen  dailyRoutineGenerator
+
+	// widgetSessionNameGen is the test seam for QuickStart's one-shot session
+	// naming call. Nil uses the configured provider selected for the new turn.
+	widgetSessionNameGen widgetSessionNameGenerator
 
 	sessionRefs    work.SessionRefStore
 	sessionRefsErr error
@@ -776,6 +797,7 @@ func (a *App) restoreOrBuildTabs() {
 			tab.SessionPath = strings.TrimSpace(entry.SessionPath)
 			tab.SessionID = strings.TrimSpace(entry.SessionID)
 			tab.pendingRemoteInput = entry.PendingRemoteInput
+			tab.createRequestID = strings.TrimSpace(entry.CreateRequestID)
 			a.trackSession(tab)
 			tab.ReadOnly = entry.ReadOnly
 			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
@@ -804,23 +826,24 @@ func (a *App) restoreOrBuildTabs() {
 		for _, tab := range toBuild {
 			a.startTabControllerBuild(tab)
 		}
-		a.restoreCollaborationRuntimes()
-		a.startRecoveryGC()
-		a.startExternalSessionGC()
-		return
+	} else {
+		// First launch: create a default Global tab.
+		tab := a.createTabEntry("global", globalTabWorkspaceRoot(), "")
+		a.trackSession(tab)
+		tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
+		tab.TopicTitle = "Global"
+		a.mu.Lock()
+		a.tabs[tab.ID] = tab
+		a.tabOrder = append(a.tabOrder, tab.ID)
+		a.activeTabID = tab.ID
+		a.mu.Unlock()
+		a.startTabControllerBuild(tab)
 	}
 
-	// First launch: create a default Global tab.
-	tab := a.createTabEntry("global", globalTabWorkspaceRoot(), "")
-	a.trackSession(tab)
-	tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
-	tab.TopicTitle = "Global"
-	a.mu.Lock()
-	a.tabs[tab.ID] = tab
-	a.tabOrder = append(a.tabOrder, tab.ID)
-	a.activeTabID = tab.ID
-	a.mu.Unlock()
-	a.startTabControllerBuild(tab)
+	// Background Room residency is independent from the restored UI tabs.
+	// Reconcile it exactly once after either tab branch has established the
+	// Desktop's basic Session state.
+	a.restoreCollaborationRuntimes()
 	a.startRecoveryGC()
 	a.startExternalSessionGC()
 }

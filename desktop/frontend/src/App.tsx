@@ -1129,6 +1129,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     reorderTabs,
     openTopicSession,
     openLinkedSession,
+    createBlankSession,
     activateTopic,
     activateLinkedSession,
     syncActiveTab,
@@ -3154,6 +3155,17 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     enqueueNavigation({ kind: "blank", scope, workspaceRoot: scope === "project" ? workspaceRoot : "" }),
   [enqueueNavigation]);
 
+  const createProjectSession = useCallback(async (scope: string, workspaceRoot: string): Promise<void> => {
+    if (scope !== "project") return openBlankSession(scope, "");
+    try {
+      await createBlankSession("project", workspaceRoot, `blank-session-${crypto.randomUUID()}`, singleSurfaceLayout);
+      await refreshTabMetas();
+    } catch (err: any) {
+      showToast(err?.message || String(err), "error");
+      throw err;
+    }
+  }, [createBlankSession, openBlankSession, refreshTabMetas, showToast, singleSurfaceLayout]);
+
   const handleNewTab = useCallback(async () => {
     closeTransientOverlays();
     setSidebarImDetailConnectionId("");
@@ -4217,11 +4229,12 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                   activeWorkspaceRoot={activeTab?.workspaceRoot}
                   activeTopicId={activeTab?.topicId}
                   activeSessionPath={activeTab?.sessionPath}
+                  activeContentVisible={!widgetActive}
                   imTopicSources={imTopicSources}
                   onOpenTopic={handleOpenTopic}
                   onOpenCrewSession={handleOpenCrewSession}
                   onOpenProjectHistory={openProjectHistory}
-                  onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
+                  onCreateTopic={createProjectSession}
                   onTopicsChanged={refreshProjectsAndTabs}
                   onRenameTopic={renameTopic}
                   onRenameSession={renameSidebarSession}
@@ -4516,11 +4529,12 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
               activeWorkspaceRoot={activeTab?.workspaceRoot}
               activeTopicId={activeTab?.topicId}
               activeSessionPath={activeTab?.sessionPath}
+              activeContentVisible={!widgetActive}
               imTopicSources={imTopicSources}
               onOpenTopic={handleOpenTopic}
               onOpenCrewSession={handleOpenCrewSession}
               onOpenProjectHistory={openProjectHistory}
-              onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
+              onCreateTopic={createProjectSession}
               onTopicsChanged={refreshProjectsAndTabs}
               onRenameTopic={renameTopic}
               onRenameSession={renameSidebarSession}

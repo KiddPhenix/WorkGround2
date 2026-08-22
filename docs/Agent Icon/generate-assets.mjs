@@ -43,77 +43,77 @@ function painted(fill, body, stroke = INK) {
 const hats = [
   {
     id: 'baseball-cap',
-    label: 'Baseball Cap',
+    label: 'Signal Antenna',
     body: painted('#7B61FF', '<path d="M16 20c1-9 7-14 16-14s15 5 16 14H16Z"/><path d="M31 7v13"/><path d="M48 18c6 0 10 2 12 5-6 1-12 1-18-1l6-4Z"/>')
   },
   {
     id: 'beanie',
-    label: 'Beanie',
+    label: 'Twin Antennae',
     body: painted('#3478F6', '<circle cx="32" cy="5" r="3.5"/><path d="M16 19c1-10 7-15 16-15s15 5 16 15H16Z"/><path d="M15 18h34v7H15z"/><path d="M21 18v7M28 18v7M36 18v7M43 18v7"/>')
   },
   {
     id: 'beret',
-    label: 'Beret',
+    label: 'Sensor Dome',
     body: painted('#20B8A6', '<path d="M13 18c5-10 16-15 29-12 7 2 10 6 9 10-2 5-12 7-24 7-9 0-15-1-14-5Z"/><path d="M31 6l2-4"/>')
   },
   {
     id: 'bucket-hat',
-    label: 'Bucket Hat',
+    label: 'Vent Crest',
     body: painted('#F3B83F', '<path d="M19 7h26l4 15H15L19 7Z"/><path d="M12 21h40l7 5H5l7-5Z"/><path d="M20 12h25"/>')
   },
   {
     id: 'fedora',
-    label: 'Fedora',
+    label: 'LED Status Bar',
     body: painted('#8A6A50', '<path d="M20 5h24l4 17H16L20 5Z"/><path d="M16 16h32"/><path d="M8 22h48l4 4H4l4-4Z"/><path d="M27 6l-2 9"/>')
   },
   {
     id: 'bowler',
-    label: 'Bowler',
+    label: 'Radar Dish',
     body: painted('#3C4658', '<path d="M17 19C17 9 23 4 32 4s15 5 15 15H17Z"/><path d="M10 19h44l4 5H6l4-5Z"/><path d="M18 16h28"/>')
   },
   {
     id: 'newsboy-cap',
-    label: 'Newsboy Cap',
+    label: 'Sensor Ears',
     body: painted('#EF5D78', '<path d="M13 18C16 8 24 4 34 5c10 1 16 6 17 14H13Z"/><path d="M25 6l2 13M36 6l-1 13M45 10l-4 9"/><path d="M33 18h22c-3 5-10 6-22 4v-4Z"/>')
   },
   {
     id: 'cowboy-hat',
-    label: 'Cowboy Hat',
+    label: 'Camera Turret',
     body: painted('#D78B3F', '<path d="M20 5c4 3 20 3 24 0l4 17H16L20 5Z"/><path d="M17 15h30"/><path d="M4 20c8 4 17 3 28 1 11 2 20 3 28-1-3 7-11 9-28 7-17 2-25 0-28-7Z"/>')
   },
   {
     id: 'sailor-cap',
-    label: 'Sailor Cap',
+    label: 'Communication Loop',
     body: painted('#F5F7FB', '<path d="M17 11c7-7 23-7 30 0l4 10H13l4-10Z"/><path fill="#3478F6" d="M13 18h38v7H13z"/><path d="M22 10l4 8M42 10l-4 8"/>')
   },
   {
     id: 'sun-hat',
-    label: 'Sun Hat',
+    label: 'Signal Nodes',
     body: painted('#F2C95C', '<path d="M21 7h22l5 15H16l5-15Z"/><path d="M15 16h34"/><path d="M4 22c10 3 19 2 28 0 9 2 18 3 28 0l-4 6H8l-4-6Z"/>')
   },
   {
     id: 'top-hat',
-    label: 'Top Hat',
+    label: 'Armor Fin',
     body: painted('#3C4658', '<path d="M19 2h26l3 21H16L19 2Z"/><path fill="#7B61FF" d="M16 16h32v7H16z"/><path d="M8 22h48v5H8z"/>')
   },
   {
     id: 'crown',
-    label: 'Crown',
+    label: 'Stabilizer Fins',
     body: painted('#F3B83F', '<path d="M12 22 9 6l12 8L32 3l11 11 12-8-3 16H12Z"/><path d="M13 18h38v7H13z"/><circle cx="21" cy="19" r="1.5" fill="#EF5D78"/><circle cx="32" cy="19" r="1.5" fill="#3478F6"/><circle cx="43" cy="19" r="1.5" fill="#20B8A6"/>')
   },
   {
     id: 'party-hat',
-    label: 'Party Hat',
+    label: 'Emergency Beacon',
     body: painted('#EF5D78', '<path d="M32 3 48 25H16L32 3Z"/><path d="m25 12 15 5M21 19l16 5"/><circle cx="32" cy="3" r="3" fill="#F3B83F"/>')
   },
   {
     id: 'wizard-hat',
-    label: 'Wizard Hat',
+    label: 'Armor Crown',
     body: painted('#6C55D9', '<path d="M21 22C26 13 29 7 31 1c8 7 13 13 14 21H21Z"/><path d="M31 1c7 1 11 0 14-3-1 6-4 9-9 11"/><path fill="#F3B83F" d="M16 18h32v6H16z"/><path d="M7 23h50l-5 5H12l-5-5Z"/>')
   },
   {
     id: 'flat-cap',
-    label: 'Flat Cap',
+    label: 'Receiver Pod',
     body: painted('#42C96B', '<path d="M13 17C17 8 24 5 34 5c10 0 17 5 18 13H13Z"/><path d="M25 6v12M38 6l-2 12"/><path d="M31 17h25c-4 6-12 7-25 5v-5Z"/>')
   }
 ];
@@ -121,77 +121,77 @@ const hats = [
 const hair = [
   {
     id: 'side-swept',
-    label: 'Side Swept',
+    label: 'Signal Blade',
     body: painted('#4B354F', '<path d="M12 23C14 10 24 5 39 6c9 1 14 5 16 12-9-3-15-1-21 3 2-5 1-8-1-10-4 8-11 12-21 12Z"/>')
   },
   {
     id: 'quiff',
-    label: 'Quiff',
+    label: 'Audio Sensors',
     body: painted('#D89A35', '<path d="M13 23c1-8 6-12 14-13-2-5 0-8 5-9 0 5 2 7 5 8 1-6 5-8 10-7-4 3-5 7-3 11 5 1 8 4 9 10H13Z"/>')
   },
   {
     id: 'mohawk',
-    label: 'Mohawk',
+    label: 'Vent Module',
     body: painted('#EF5D78', '<path d="M22 22 24 9l5 4 3-12 4 12 6-5 2 14H22Z"/>')
   },
   {
     id: 'twin-tufts',
-    label: 'Twin Tufts',
+    label: 'Hologram Projector',
     body: painted('#2B3C66', '<path d="M13 22c2-9 6-14 13-17l2 10 4-13 4 13 5-10c7 4 10 9 11 17H13Z"/>')
   },
   {
     id: 'single-curl',
-    label: 'Single Curl',
+    label: 'Lightning Rods',
     body: painted('#8A5B3D', '<path d="M13 23c1-9 7-14 17-15 5-6 14-6 18-1 4 5 0 11-5 11-4 0-6-4-4-7-7 1-8 7-7 12H13Z"/><path d="M32 9c-3 4-3 8 0 12"/>')
   },
   {
     id: 'slick-back',
-    label: 'Slick Back',
+    label: 'Crescent Scanner',
     body: painted('#293548', '<path d="M12 23c3-12 13-18 30-18 5 0 9 1 12 3-9 1-16 5-21 13-5-5-12-5-21 2Z"/><path d="M23 9c2 4 2 8 0 12M32 7c2 4 2 8 0 12"/>')
   },
   {
     id: 'messy-spikes',
-    label: 'Messy Spikes',
+    label: 'Equalizer Panel',
     body: painted('#6C55D9', '<path d="m11 23 5-14 6 6 4-13 6 10 7-11 1 13 10-7-3 16H11Z"/>')
   },
   {
     id: 'bowl-cut',
-    label: 'Bowl Cut',
+    label: 'Siren Pair',
     body: painted('#3F2D28', '<path d="M11 19C14 8 22 4 32 4s18 4 21 15c-6-3-12-4-21-4s-15 1-21 4Z"/><path d="M13 18v6M51 18v6"/>')
   },
   {
     id: 'center-part',
-    label: 'Center Part',
+    label: 'Mechanical Ears',
     body: painted('#C8D2DB', '<path d="M12 23C13 11 21 5 31 5v18c-4-4-10-5-19 0ZM52 23C51 11 43 5 33 5v18c4-4 10-5 19 0Z"/>')
   },
   {
     id: 'wave',
-    label: 'Wave',
+    label: 'Energy Indicator',
     body: painted('#3478F6', '<path d="M12 23C14 11 21 5 31 6c7 0 11-4 11-8 7 5 7 12 2 16 5 0 8 3 9 9-8-4-14-4-20 0-5-6-12-6-21 0Z"/>')
   },
   {
     id: 'top-knot',
-    label: 'Top Knot',
+    label: 'Dorsal Plates',
     body: painted('#4B354F', '<circle cx="32" cy="5" r="5"/><path d="M13 23c1-10 8-15 19-15s18 5 19 15H13Z"/><path d="M27 8c1 5 1 10-1 15M37 8c-1 5-1 10 1 15"/>')
   },
   {
     id: 'pompadour',
-    label: 'Pompadour',
+    label: 'Radar Eyes',
     body: painted('#D89A35', '<path d="M11 22c2-7 7-11 14-12 1-7 6-10 12-9 8 1 11 8 8 14 5 0 8 3 9 7H11Z"/><path d="M25 10c6 0 11 2 15 6"/>')
   },
   {
     id: 'afro-puff',
-    label: 'Afro Puff',
+    label: 'V Crest',
     body: painted('#50362C', '<circle cx="18" cy="15" r="8"/><circle cx="28" cy="9" r="9"/><circle cx="39" cy="9" r="9"/><circle cx="48" cy="16" r="8"/><path d="M12 23c3-8 10-12 20-12s17 4 20 12H12Z"/>')
   },
   {
     id: 'lightning-fringe',
-    label: 'Lightning Fringe',
+    label: 'Network Array',
     body: painted('#F3B83F', '<path d="M11 22C13 10 21 5 33 5h18l-9 7h9l-14 11 2-9-9 7 1-10c-7 1-12 5-20 11Z"/>')
   },
   {
     id: 'short-crop',
-    label: 'Short Crop',
+    label: 'Compass Pod',
     body: painted('#243042', '<path d="M13 22c1-10 8-16 19-16s18 6 19 16l-5-4-5 4-5-4-5 4-5-4-5 4-4-4-4 4Z"/>')
   }
 ];
@@ -611,7 +611,7 @@ async function main() {
     },
     layerOrder: ['frame', 'headwear', 'eyes', 'workspaceBadge', 'taskTool'],
     identityRule: {
-      headwear: 'Choose exactly one hat or one hair style.',
+      headwear: 'Choose exactly one robot head module from compatibility slot A or B.',
       stableSeed: 'sessionId',
       semantic: false
     },

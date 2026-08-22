@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -247,6 +248,59 @@ func TestEnsureBlankTabCreatesOneBlankPerProject(t *testing.T) {
 	}
 	if tabs := app.ListTabs(); len(tabs) != 1 {
 		t.Fatalf("ListTabs length = %d, want 1: %+v", len(tabs), tabs)
+	}
+}
+
+func TestCreateBlankSessionAlwaysCreatesNewOrdinaryProjectSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	app := NewApp()
+
+	existing, err := app.EnsureBlankTab("project", projectRoot)
+	if err != nil {
+		t.Fatalf("EnsureBlankTab: %v", err)
+	}
+	firstInput := CreateBlankSessionInput{Scope: "project", WorkspaceRoot: projectRoot, RequestID: "blank-request-1"}
+	first, err := app.CreateBlankSession(firstInput)
+	if err != nil {
+		t.Fatalf("CreateBlankSession first: %v", err)
+	}
+	retried, err := app.CreateBlankSession(firstInput)
+	if err != nil || retried.ID != first.ID {
+		t.Fatalf("CreateBlankSession same request = %+v, %v; want tab %q", retried, err, first.ID)
+	}
+	stored := loadTabsFile()
+	if len(stored.Tabs) != 1 || stored.Tabs[0].ID != first.ID || stored.Tabs[0].CreateRequestID != firstInput.RequestID {
+		t.Fatalf("persisted blank request identity = %+v, want tab %q request %q", stored, first.ID, firstInput.RequestID)
+	}
+	otherRoot := t.TempDir()
+	if _, err := app.CreateBlankSession(CreateBlankSessionInput{Scope: "project", WorkspaceRoot: otherRoot, RequestID: firstInput.RequestID}); err == nil || !strings.Contains(err.Error(), "another blank-session target") {
+		t.Fatalf("same requestId with another target error = %v, want explicit intent collision", err)
+	}
+	second, err := app.CreateBlankSession(CreateBlankSessionInput{Scope: "project", WorkspaceRoot: projectRoot, RequestID: "blank-request-2"})
+	if err != nil {
+		t.Fatalf("CreateBlankSession second: %v", err)
+	}
+	if first.ID == existing.ID || second.ID == existing.ID || second.ID == first.ID {
+		t.Fatalf("CreateBlankSession reused a prior blank: existing=%q first=%q second=%q", existing.ID, first.ID, second.ID)
+	}
+	for _, meta := range []TabMeta{first, second} {
+		if meta.Scope != "project" || normalizeProjectRoot(meta.WorkspaceRoot) != normalizeProjectRoot(projectRoot) || meta.SessionPath == "" {
+			t.Fatalf("created session target = %+v, want new project session in %q", meta, projectRoot)
+		}
+		if meta.SessionKind != "" && meta.SessionKind != string(agent.SessionKindNormal) {
+			t.Fatalf("created session kind = %q, want ordinary", meta.SessionKind)
+		}
+		if meta.WorkID != "" || meta.WorkRequestID != "" {
+			t.Fatalf("created session unexpectedly classified as Work: %+v", meta)
+		}
+	}
+	reused, err := app.EnsureBlankTab("project", projectRoot)
+	if err != nil {
+		t.Fatalf("EnsureBlankTab after creation: %v", err)
+	}
+	if reused.ID != first.ID && reused.ID != second.ID && reused.ID != existing.ID {
+		t.Fatalf("EnsureBlankTab stopped reusing blanks: got %q", reused.ID)
 	}
 }
 

@@ -118,6 +118,7 @@ type WorkspaceTab struct {
 	sessionKind       agent.SessionKind // "normal", "work", or "collaboration"
 	workID            string            // bound Work ID (only when sessionKind == "work")
 	workRequestID     string            // idempotency key that created the Work Session
+	createRequestID   string            // idempotency key that created an ordinary blank session
 }
 
 const (
@@ -1395,6 +1396,14 @@ type TabMeta struct {
 	WorkRequestID       string                   `json:"workRequestId,omitempty"`
 }
 
+// CreateBlankSessionInput is the public intent for creating an ordinary blank
+// session. RequestID makes retries safe across renderer retries and restarts.
+type CreateBlankSessionInput struct {
+	Scope         string `json:"scope"`
+	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
+	RequestID     string `json:"requestId"`
+}
+
 func enrichTabMeta(meta TabMeta) TabMeta {
 	if meta.Active {
 		meta.GitBranch = workspaceGitBranch(meta.WorkspaceRoot)
@@ -1937,6 +1946,27 @@ func (a *App) EnsureBlankSurface(scope, workspaceRoot string) (TabMeta, error) {
 	return a.keepOnlyVisibleTab(meta.ID)
 }
 
+// CreateBlankSession creates and activates a new ordinary blank session for
+// the target scope. Unlike EnsureBlankTab it never reuses an already-open
+// blank tab. The project tree and desktop workspace icons share this entrance
+// so both interactions have identical creation and single-surface behavior.
+func (a *App) CreateBlankSession(input CreateBlankSessionInput) (TabMeta, error) {
+	requestID := strings.TrimSpace(input.RequestID)
+	if requestID == "" {
+		return TabMeta{}, errors.New("requestId is required")
+	}
+	if !a.singleSurfaceLayoutEnabled() {
+		return a.createBlankTab(input.Scope, input.WorkspaceRoot, false, requestID)
+	}
+	a.singleSurfaceMu.Lock()
+	defer a.singleSurfaceMu.Unlock()
+	meta, err := a.createBlankTab(input.Scope, input.WorkspaceRoot, false, requestID)
+	if err != nil {
+		return TabMeta{}, err
+	}
+	return a.keepOnlyVisibleTab(meta.ID)
+}
+
 func tabMatchesTopicTarget(tab *WorkspaceTab, scope, workspaceRoot, topicID string) bool {
 	if tab == nil || tab.Scope != scope || tab.TopicID != topicID {
 		return false
@@ -1957,6 +1987,10 @@ func tabInWorkspace(tab *WorkspaceTab, workspaceRoot string) bool {
 // creates one if none exists. Reusing a blank tab keeps repeated "new session"
 // clicks from piling up empty conversations.
 func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
+	return a.createBlankTab(scope, workspaceRoot, true, "")
+}
+
+func (a *App) createBlankTab(scope, workspaceRoot string, reuseOpen bool, requestID string) (TabMeta, error) {
 	scope = strings.TrimSpace(scope)
 	if scope != "project" {
 		scope = "global"
@@ -1991,18 +2025,37 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 	defaultModel, defaultToolApprovalMode := desktopNewSessionDefaults()
 
 	a.mu.Lock()
-	for _, id := range a.orderedTabIDsLocked() {
-		tab := a.tabs[id]
-		if a.blankTabMatchesTargetLocked(tab, scope, workspaceRoot) {
-			if err := resetReusableBlankTabTitle(tab, scope, workspaceRoot); err != nil {
+	if requestID != "" {
+		for _, id := range a.orderedTabIDsLocked() {
+			tab := a.tabs[id]
+			if tab == nil || tab.createRequestID != requestID {
+				continue
+			}
+			if tab.Scope != scope || (scope == "project" && normalizeProjectRoot(tab.WorkspaceRoot) != normalizeProjectRoot(workspaceRoot)) {
 				a.mu.Unlock()
-				return TabMeta{}, err
+				return TabMeta{}, errors.New("requestId was already used for another blank-session target")
 			}
 			a.activeTabID = tab.ID
 			meta := a.tabMeta(tab, true)
 			a.saveTabsLocked()
 			a.mu.Unlock()
 			return enrichTabMeta(meta), nil
+		}
+	}
+	if reuseOpen {
+		for _, id := range a.orderedTabIDsLocked() {
+			tab := a.tabs[id]
+			if a.blankTabMatchesTargetLocked(tab, scope, workspaceRoot) {
+				if err := resetReusableBlankTabTitle(tab, scope, workspaceRoot); err != nil {
+					a.mu.Unlock()
+					return TabMeta{}, err
+				}
+				a.activeTabID = tab.ID
+				meta := a.tabMeta(tab, true)
+				a.saveTabsLocked()
+				a.mu.Unlock()
+				return enrichTabMeta(meta), nil
+			}
 		}
 	}
 
@@ -2044,6 +2097,7 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 			toolApprovalMode: inheritedToolApprovalMode,
 			disabledMCP:      inheritedDisabledMCP,
 			mcpOrder:         inheritedMCPOrder,
+			createRequestID:  requestID,
 		}
 		created.sink = &tabEventSink{tabID: tabID, app: a}
 		a.tabs[tabID] = created
@@ -2089,6 +2143,7 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 		toolApprovalMode: inheritedToolApprovalMode,
 		disabledMCP:      inheritedDisabledMCP,
 		mcpOrder:         inheritedMCPOrder,
+		createRequestID:  requestID,
 	}
 	created.sink = &tabEventSink{tabID: tabID, app: a}
 	a.tabs[tabID] = created
@@ -4304,6 +4359,7 @@ type desktopTabEntry struct {
 	Goal               string  `json:"goal,omitempty"`
 	ToolApprovalMode   string  `json:"toolApprovalMode,omitempty"`
 	PendingRemoteInput string  `json:"pendingRemoteInput,omitempty"`
+	CreateRequestID    string  `json:"createRequestId,omitempty"`
 }
 
 type desktopTabsFile struct {
@@ -4374,6 +4430,7 @@ func (a *App) saveTabsCollectLocked() (string, []desktopTabEntry, string, uint64
 				Goal:               persistedTabGoal(tab),
 				ToolApprovalMode:   persistedToolApprovalMode(currentTabToolApprovalMode(tab)),
 				PendingRemoteInput: tab.pendingRemoteInput,
+				CreateRequestID:    tab.createRequestID,
 			})
 		}
 	}
@@ -6437,6 +6494,7 @@ func tailActivityText(text string, limit int) string {
 
 func (a *App) emitProjectTreeChanged() {
 	projectSessionCache.invalidate()
+	a.scheduleCollaborationRuntimeReconcile()
 	if a.projectTreeChangedHook != nil {
 		a.projectTreeChangedHook()
 		return
@@ -6471,6 +6529,7 @@ func (a *App) emitRuntimeEvent(name string, payload ...interface{}) {
 
 // DeleteTopic removes a topic and its title metadata.
 func (a *App) DeleteTopic(topicID string) error {
+	roomSessionPaths := a.collaborationSessionPathsForTopic(topicID)
 	f := loadProjectsFile()
 	found := false
 	for _, p := range f.Projects {
@@ -6524,6 +6583,7 @@ func (a *App) DeleteTopic(topicID string) error {
 	if err := removeTopicFromProjectsFile(topicID); err != nil {
 		return err
 	}
+	a.closeCollaborationRuntimesForSessionPaths(roomSessionPaths)
 	a.emitProjectTreeChanged()
 	return nil
 }
@@ -6584,6 +6644,10 @@ func (a *App) TrashTopic(topicID string) error {
 	if err != nil {
 		return err
 	}
+	roomSessionPaths := make([]string, 0, len(targets))
+	for _, target := range targets {
+		roomSessionPaths = append(roomSessionPaths, target.sessionPath)
+	}
 	removed, fallback := a.removeTopicRuntimeBindings(topicID)
 	if err := a.prepareRemovedSessionRuntimes(removed); err != nil {
 		a.closeRemovedSessionRuntimes(removed)
@@ -6622,6 +6686,10 @@ func (a *App) TrashTopic(topicID string) error {
 	if err := a.DeleteTopic(topicID); err != nil {
 		return err
 	}
+	// DeleteTopic cannot rediscover Room metadata after the session artifacts
+	// have already moved to trash, so converge the off-tab runtime map using
+	// the validated paths captured above.
+	a.closeCollaborationRuntimesForSessionPaths(roomSessionPaths)
 	if fallback.needs {
 		fallback.topicID = ""
 		if err := a.openFallbackRuntime(fallback); err != nil {
@@ -6943,6 +7011,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			result.orphans = orphanWorkSessionsForDir(dir)
 			projectSessionCache.put(dir, infos, titles, cacheToken)
 			projectSessionCache.putOrphans(dir, result.orphans, cacheToken)
+			a.scheduleCollaborationRuntimeReconcile()
 			result.infos = infos
 			result.titles = titles
 			result.ok = true

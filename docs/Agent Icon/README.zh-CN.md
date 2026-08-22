@@ -34,7 +34,7 @@ Agent Icon 用于 WorkGround2 会话列表，让用户**一眼区分**每个会�
 
 | 层级 | 名称 | 内容 | 视觉位置 | 语义 |
 |---|---|---|---|---|
-| 1 | 随机身份层 | 帽子 / 头发 / 外壳颜色 | 机器人外壳与顶部 | 无业务语义，仅用于区分会话 |
+| 1 | 随机身份层 | 两组机器人头部模块 / 外壳颜色 | 机器人外壳与顶部 | 无业务语义，仅用于区分会话 |
 | 2 | 任务层 | 大方形工具图形 | 右下 | 当前任务类别 |
 | 3 | Workspace 层 | 小圆徽标 | 左下 | 所属 Workspace |
 | 4 | 状态层 | LED 点阵眼睛 | 脸部（最高优先级） | 会话运行状态 |
@@ -89,7 +89,7 @@ Agent Icon 用于 WorkGround2 会话列表，让用户**一眼区分**每个会�
 - **位置**：工具固定右下，Workspace 徽标固定左下，不随身份变化移动。
 - **优先级**：眼睛优先级最高，位于脸部；其他层不得遮挡眼睛。
 - **无眼镜**：眼镜会与状态眼睛混淆，一律不绘制。
-- **配件**：帽子、头发等配件不得遮挡脸部，配件之间不得互相重叠。
+- **配件**：只使用与机器人同材质的天线、传感器、散热鳍、信号灯等原生头部模块；不得遮挡脸部或互相重叠。
 - **风格**：扁平风格、纯色、粗轮廓，保证 24–32px 小尺寸下仍然可读。
 - **稳定映射**：任务类型到工具图形必须是一对一的枚举映射；同一 Workspace 在所有会话中始终使用同一徽标，不依赖当前排序或打开顺序。
 
@@ -158,4 +158,4 @@ AgentIcon = 身份(seed) + 任务工具(任务类型) + Workspace徽标(空间) 
 - [实际组合预览](assets/previews/combinations.png)
 - [32px 可读性检查](assets/previews/small-size-check-2x.png)
 
-资源包含 15 个帽子、15 个发型、9 个外壳边框色、24 个常见任务工具，以及 5 种状态共 30 帧 LED 动画。帽子/发型、外壳、眼睛和工具徽章的原始母图位于 [imagegen-source](imagegen-source/)，由 ImageGen 按功能设计图重画；[generate-assets.mjs](generate-assets.mjs) 调用 [apply-imagegen-assets.mjs](apply-imagegen-assets.mjs) 完成透明抠图、64×64 对齐、外壳配色、工具切片和眼睛 sprite 生成，可重复执行。生产运行时只加载这些 PNG，不加载 SVG。
+资源包含两组各 15 个机器人原生头部模块、9 个外壳边框色、24 个常见任务工具，以及 5 种状态共 30 帧 LED 动画。为兼容已有稳定 seed，资源目录仍保留 `hats/`、`hair/` 两个历史槽位名，但内容已全部替换为机器人模块。母图位于 [imagegen-source](imagegen-source/)，由 ImageGen 重画；[generate-assets.mjs](generate-assets.mjs) 调用 [apply-imagegen-assets.mjs](apply-imagegen-assets.mjs) 完成透明抠图、64×64 对齐、外壳配色、工具切片和眼睛 sprite 生成，可重复执行。生产运行时只加载这些 PNG，不加载 SVG。

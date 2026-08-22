@@ -23,6 +23,7 @@ interface ProjectTreeProps {
   activeWorkspaceRoot?: string;
   activeTopicId?: string;
   activeSessionPath?: string;
+  activeContentVisible?: boolean;
   imTopicSources?: Record<string, ProjectTreeImTopicSource>;
   variant?: "classic" | "workbench" | "creation";
   onOpenTopic: (scope: string, workspaceRoot: string, topicId: string, sessionPath?: string, runtimeHint?: ProjectTopicRuntimeHint) => Promise<void> | void;
@@ -841,6 +842,7 @@ export function ProjectTree({
   activeWorkspaceRoot,
   activeTopicId,
   activeSessionPath,
+  activeContentVisible = true,
   imTopicSources = {},
   variant = "classic",
   onOpenTopic,
@@ -1054,6 +1056,7 @@ export function ProjectTree({
   }, [commitReadActivity, tree]);
 
   useEffect(() => {
+    if (!activeContentVisible) return;
     const markActive = (nodes: ProjectNode[]) => {
       for (const node of nodes) {
         if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) {
@@ -1064,7 +1067,7 @@ export function ProjectTree({
       }
     };
     markActive(tree);
-  }, [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, markNodeRead, markRemoteUnread, tree]);
+  }, [activeContentVisible, activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, markNodeRead, markRemoteUnread, tree]);
 
   useEffect(() => {
     try {
