@@ -18,6 +18,10 @@ assert.match(settingsSource, /SETTINGS_TABS[^\n]+"widget"/, "Settings navigation
 assert.match(settingsSource, /tab === "widget"[\s\S]+<WidgetSection/, "Widget tab renders its settings section");
 assert.match(settingsSource, /SetDesktopWidgetEnabled\(enabled\)/, "enable switch persists through the backend");
 assert.match(settingsSource, /SetDesktopWidgetAlwaysOnTop\(on\)/, "always-on-top switch persists through the backend");
+assert.match(settingsSource, /SetDesktopWidgetShowDelegation\(show\)/, "delegation visibility persists through the backend");
+assert.match(settingsSource, /SetDesktopWidgetShowExternalTools\(show\)/, "external AI tool visibility persists through the backend");
+assert.match(settingsSource, /widgetShowDelegation=\{s\.widgetShowDelegation\}/, "the widget tab passes the delegation switch from the settings snapshot");
+assert.match(settingsSource, /widgetShowExternalTools=\{s\.widgetShowExternalTools\}/, "the widget tab passes the external tools switch from the settings snapshot");
 assert.doesNotMatch(settingsSource, /SetDesktopWidgetStyle\(|stylePager|styleIcons|SetDesktopWidgetSkin\(|settings-widget-skin-grid/, "Settings exposes no pager style picker and no pager-only skin picker");
 assert.match(settingsSource, /SetDesktopHoverStatusDelayMs\(/, "icon hover delay stays configurable without a style picker");
 assert.match(appSource, /DesktopStartupSettings\(\)[\s\S]+setWidgetEnabled\(s\.widgetEnabled\)/, "startup reads widget enabled state");
@@ -36,10 +40,16 @@ assert.match(widgetModeSource, /DesktopStartupSettings\(\)[\s\S]+resolveWidgetSk
 assert.match(widgetModeSource, /EventsOn\("widget:skin"/, "widget skin changes propagate without restart");
 assert.match(typesSource, /widgetAlwaysOnTop: boolean/, "frontend settings contract includes always-on-top state");
 assert.match(typesSource, /widgetSkin: string/, "frontend settings contract includes skin state");
+assert.match(typesSource, /widgetShowDelegation: boolean/, "frontend settings contract includes the delegation switch");
+assert.match(typesSource, /widgetShowExternalTools: boolean/, "frontend settings contract includes the external tools switch");
 assert.match(bridgeSource, /DesktopStartupSettings\(\)[\s\S]+widgetEnabled/, "browser mock preserves widget enabled startup state");
 assert.match(bridgeSource, /SetDesktopWidgetSkin\(skin: string\)/, "bridge exposes SetDesktopWidgetSkin API");
+assert.match(bridgeSource, /SetDesktopWidgetShowDelegation\(show: boolean\)/, "bridge exposes SetDesktopWidgetShowDelegation");
+assert.match(bridgeSource, /SetDesktopWidgetShowExternalTools\(show: boolean\)/, "bridge exposes SetDesktopWidgetShowExternalTools");
 assert.match(bridgeSource, /widgetSkin: "classic"/, "browser mock defaults widgetSkin to classic");
 assert.match(bridgeSource, /widgetStyle: "icons"/, "browser mock defaults widget style to icons");
+assert.match(bridgeSource, /widgetShowDelegation: false/, "browser mock defaults delegation visibility to hidden");
+assert.match(bridgeSource, /widgetShowExternalTools: false/, "browser mock defaults external tools visibility to hidden");
 
 // The desktop widget is icons-only: App renders only DesktopIconMode, and the
 // icon mode owns its exit-to-main and settings entries through App callbacks.
@@ -59,11 +69,19 @@ const modelsSource = read("../../wailsjs/go/models.ts");
 const settingsViewClass = modelsSource.match(/export class DesktopStartupSettingsView \{[\s\S]*?\n\s*\}[\s\S]*?\n\s*}/)?.[0] ?? "";
 assert.match(settingsViewClass, /widgetAlwaysOnTop: boolean;/, "the generated models.ts binding declares widgetAlwaysOnTop as boolean");
 assert.match(settingsViewClass, /this\.widgetAlwaysOnTop = source\["widgetAlwaysOnTop"\];/, "the generated constructor projects widgetAlwaysOnTop from the Go JSON key");
+assert.match(modelsSource, /widgetShowDelegation: boolean;/, "generated models.ts declares widgetShowDelegation");
+assert.match(modelsSource, /this\.widgetShowDelegation = source\["widgetShowDelegation"\];/, "generated constructor projects widgetShowDelegation");
+assert.match(modelsSource, /widgetShowExternalTools: boolean;/, "generated models.ts declares widgetShowExternalTools");
+assert.match(modelsSource, /this\.widgetShowExternalTools = source\["widgetShowExternalTools"\];/, "generated constructor projects widgetShowExternalTools");
 
 for (const locale of ["en", "zh", "zh-TW"]) {
   const source = read(`../locales/${locale}.ts`);
   assert.ok(source.includes('"settings.tab.widget"'), `${locale} includes the Widget tab label`);
   assert.ok(source.includes('"settings.widget.alwaysOnTopLabel"'), `${locale} includes the always-on-top label`);
+  assert.ok(source.includes('"settings.widget.showDelegationLabel"'), `${locale} includes the delegation label`);
+  assert.ok(source.includes('"settings.widget.showDelegationHint"'), `${locale} includes the delegation hint`);
+  assert.ok(source.includes('"settings.widget.showExternalToolsLabel"'), `${locale} includes the external tools label`);
+  assert.ok(source.includes('"settings.widget.showExternalToolsHint"'), `${locale} includes the external tools hint`);
 }
 
 // Widget skin registry contract.

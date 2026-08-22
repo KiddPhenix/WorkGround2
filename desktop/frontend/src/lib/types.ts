@@ -1511,6 +1511,8 @@ export interface SettingsView {
   widgetAlwaysOnTop: boolean; // keep the widget window always-on-top
   widgetSkin: string; // widget visual skin: classic|bp|instant|pet|recorder
   widgetStyle?: string; // icons-only; legacy pager/empty values normalize to icons
+  widgetShowDelegation: boolean; // show the 委托 icon (default false)
+  widgetShowExternalTools: boolean; // show the external AI tool (DSH) icon (default false)
   hoverStatusDelayMs?: number;
   ownerDecisionEnabled: boolean; // master kill switch for the 主人决策 feature (default off)
   memoryCompilerEnabled: boolean; // Memory v5 execution compiler

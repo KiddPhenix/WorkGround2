@@ -294,7 +294,7 @@ export function SettingsPanel({
                     />
                   </SettingsPageShell>
                 )}
-                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} hoverStatusDelayMs={s.hoverStatusDelayMs ?? 1200} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
+                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} widgetShowDelegation={s.widgetShowDelegation} widgetShowExternalTools={s.widgetShowExternalTools} hoverStatusDelayMs={s.hoverStatusDelayMs ?? 1200} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
                 {tab === "global" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GlobalSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
                 {tab === "about" && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}>
@@ -6561,12 +6561,16 @@ function AboutSection() {
 export function WidgetSection({
   widgetEnabled,
   widgetAlwaysOnTop,
+  widgetShowDelegation,
+  widgetShowExternalTools,
 	hoverStatusDelayMs,
   settingsBusy,
   applySettings,
 }: {
   widgetEnabled: boolean;
   widgetAlwaysOnTop: boolean;
+  widgetShowDelegation: boolean;
+  widgetShowExternalTools: boolean;
 	hoverStatusDelayMs: number;
   settingsBusy: boolean;
   applySettings: (fn: () => Promise<void>) => Promise<void>;
@@ -6597,6 +6601,28 @@ export function WidgetSection({
           value={widgetAlwaysOnTop}
           disabled={settingsBusy}
           onChange={(on) => void applySettings(() => app.SetDesktopWidgetAlwaysOnTop(on))}
+        />
+      </SettingsField>
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("settings.widget.showDelegationLabel")}
+        hint={t("settings.widget.showDelegationHint")}
+      >
+        <ToggleSegment
+          value={widgetShowDelegation}
+          disabled={settingsBusy}
+          onChange={(show) => void applySettings(() => app.SetDesktopWidgetShowDelegation(show))}
+        />
+      </SettingsField>
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("settings.widget.showExternalToolsLabel")}
+        hint={t("settings.widget.showExternalToolsHint")}
+      >
+        <ToggleSegment
+          value={widgetShowExternalTools}
+          disabled={settingsBusy}
+          onChange={(show) => void applySettings(() => app.SetDesktopWidgetShowExternalTools(show))}
         />
       </SettingsField>
     </SettingsSection>

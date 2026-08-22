@@ -772,6 +772,8 @@ export interface AppBindings extends WailsWorkBindings {
   SetDesktopMetrics(enabled: boolean): Promise<void>;
   SetDesktopWidgetEnabled(enabled: boolean): Promise<void>;
   SetDesktopWidgetAlwaysOnTop(on: boolean): Promise<void>;
+  SetDesktopWidgetShowDelegation(show: boolean): Promise<void>;
+  SetDesktopWidgetShowExternalTools(show: boolean): Promise<void>;
   SetDesktopWidgetSkin(skin: string): Promise<void>;
   SetDesktopWidgetStyle(style: string): Promise<void>;
   SetDesktopHoverStatusDelayMs(delay: number): Promise<void>;
@@ -2013,6 +2015,8 @@ function makeMockApp(): AppBindings {
     widgetAlwaysOnTop: true,
     widgetSkin: "classic",
 		widgetStyle: "icons",
+    widgetShowDelegation: false,
+    widgetShowExternalTools: false,
 		hoverStatusDelayMs: 1200,
     ownerDecisionEnabled: false, // master kill switch for the 主人决策 feature (default off)
     memoryCompilerEnabled: true,
@@ -4803,6 +4807,12 @@ function makeMockApp(): AppBindings {
         },
         async SetDesktopWidgetAlwaysOnTop(on: boolean) {
           settings.widgetAlwaysOnTop = on;
+        },
+        async SetDesktopWidgetShowDelegation(show: boolean) {
+          settings.widgetShowDelegation = show;
+        },
+        async SetDesktopWidgetShowExternalTools(show: boolean) {
+          settings.widgetShowExternalTools = show;
         },
         async SetDesktopWidgetSkin(skin: string) {
           settings.widgetSkin = skin;
