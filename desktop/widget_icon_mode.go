@@ -961,7 +961,7 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	unreadState := a.UnreadState()
 	projectTree := a.ListProjectTree()
 	spaces := desktopIconWorkspaces(projectTree, desktopIconActiveWorkspace(sources), a.iconWidgetState.WorkspaceSlots)
-	style, hover := a.desktopIconPreferences()
+	style, hover, showDelegation, showExternalTools := a.desktopIconPreferences()
 	roomPresentations := a.desktopRoomNoticePresentations()
 	roomRefs := a.desktopIconRoomRefs(projectTree)
 	roomPins, roomPinsErr := a.GetDesktopRoomPins()
@@ -979,6 +979,7 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 		snapshot = buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomPresentations, roomRefs, subagentCounts, sessionPresentations, pinnedRooms, delegations, roomDescriptors)
 		appendExternalRunIcons(&snapshot, external, a.iconWidgetState.Positions, a.iconWidgetState.DismissedExternalRuns)
 	}
+	filterDesktopIconVisibility(&snapshot, showDelegation, showExternalTools)
 	snapshot.Style = style
 	if recoveryErr != nil {
 		snapshot.Error = firstNonEmpty(snapshot.Error, recoveryErr.Error())
@@ -1066,6 +1067,29 @@ func appendExternalRunIcons(snapshot *DesktopIconSnapshot, external ExternalRunS
 		}
 		return snapshot.Items[i].ID < snapshot.Items[j].ID
 	})
+	snapshot.Revision = desktopIconSnapshotRevision(*snapshot)
+}
+
+// filterDesktopIconVisibility removes the 委托 and external AI tool (DSH) icons
+// from the projection when the matching widget settings are off. It only hides
+// the icon entries: running delegations and external tasks keep running and their
+// state stays intact. Both switches are independent, and the snapshot revision
+// is recomputed so the frontend sees the change on the next poll.
+func filterDesktopIconVisibility(snapshot *DesktopIconSnapshot, showDelegation, showExternalTools bool) {
+	if snapshot == nil || (showDelegation && showExternalTools) {
+		return
+	}
+	items := snapshot.Items[:0]
+	for _, item := range snapshot.Items {
+		if !showDelegation && item.ID == "fixed:delegate" {
+			continue
+		}
+		if !showExternalTools && (item.ID == "fixed:dsh" || item.Kind == "external") {
+			continue
+		}
+		items = append(items, item)
+	}
+	snapshot.Items = items
 	snapshot.Revision = desktopIconSnapshotRevision(*snapshot)
 }
 
@@ -1603,12 +1627,12 @@ func (a *App) recoverDesktopIconActionsLocked() error {
 	return recoveryErr
 }
 
-func (a *App) desktopIconPreferences() (string, int) {
+func (a *App) desktopIconPreferences() (style string, hover int, showDelegation, showExternalTools bool) {
 	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
-		return "icons", 1200
+		return "icons", 1200, false, false
 	}
-	return cfg.DesktopWidgetStyle(), cfg.DesktopHoverStatusDelayMs()
+	return cfg.DesktopWidgetStyle(), cfg.DesktopHoverStatusDelayMs(), cfg.DesktopWidgetShowDelegation(), cfg.DesktopWidgetShowExternalTools()
 }
 
 // DesktopIconSearch searches the durable session index plus the complete
@@ -2296,6 +2320,7 @@ func desktopIconNoticeForKept(kept desktopIconKept, summaries map[string]desktop
 		Body:          body,
 		CreatedAt:     kept.CompletedAt,
 		TabID:         kept.SourceID,
+		Options:       []WidgetOption{},
 		SummaryStatus: status,
 	}
 }
@@ -2305,7 +2330,7 @@ func desktopNoticeForMessage(message WidgetMessage, kind string, priority int, a
 		ID: message.ID, Revision: message.Revision, Kind: kind, Priority: priority,
 		Title: message.StateLabel, Body: message.Message, CreatedAt: at, TabID: message.TabID,
 		InteractionID: message.InteractionID, QuestionID: message.QuestionID,
-		Options: append([]WidgetOption(nil), message.Options...), Retryable: message.Kind == "error",
+		Options: append([]WidgetOption{}, message.Options...), Retryable: message.Kind == "error",
 	}
 }
 

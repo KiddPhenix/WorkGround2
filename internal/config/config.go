@@ -110,6 +110,8 @@ type DesktopConfig struct {
 	WidgetSkin              string                         `toml:"widget_skin"`                // widget visual skin: classic|bp|instant|pet|recorder; empty/unknown → classic
 	WidgetStyle             string                         `toml:"widget_style"`               // icons-only; legacy pager/empty values normalize to icons
 	HoverStatusDelayMs      *int                           `toml:"hover_status_delay_ms"`      // icon widget read-only preview delay; nil defaults to 1200
+	WidgetShowDelegation    *bool                          `toml:"widget_show_delegation"`     // show the 委托 icon; nil defaults to hidden
+	WidgetShowExternalTools *bool                          `toml:"widget_show_external_tools"` // show the external AI tool (DSH) icon; nil defaults to hidden
 	SessionBackground       DesktopSessionBackgroundConfig `toml:"session_background"`         // desktop Session background image pool and rotation
 }
 
@@ -629,6 +631,26 @@ func (c *Config) DesktopHoverStatusDelayMs() int {
 		return 1200
 	}
 	return max(0, min(*c.Desktop.HoverStatusDelayMs, 10000))
+}
+
+// DesktopWidgetShowDelegation reports whether the 委托 icon is shown in the
+// icon widget. Missing and new-install configurations default to false, so the
+// icon stays hidden until the user opts in.
+func (c *Config) DesktopWidgetShowDelegation() bool {
+	if c == nil || c.Desktop.WidgetShowDelegation == nil {
+		return false
+	}
+	return *c.Desktop.WidgetShowDelegation
+}
+
+// DesktopWidgetShowExternalTools reports whether the external AI tool (DSH)
+// icon is shown in the icon widget. Missing and new-install configurations
+// default to false, so the icon stays hidden until the user opts in.
+func (c *Config) DesktopWidgetShowExternalTools() bool {
+	if c == nil || c.Desktop.WidgetShowExternalTools == nil {
+		return false
+	}
+	return *c.Desktop.WidgetShowExternalTools
 }
 
 // LSPConfig governs the optional Language Server Protocol tools (lsp_definition,

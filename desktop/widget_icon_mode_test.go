@@ -47,6 +47,54 @@ func TestExternalRunIconsExposeOnlyDeclaredCapabilities(t *testing.T) {
 	}
 }
 
+func TestFilterDesktopIconVisibility(t *testing.T) {
+	base := []DesktopIconItem{
+		{ID: "fixed:new", Kind: "fixed", SourceID: "new", Title: "新建"},
+		{ID: "fixed:delegate", Kind: "fixed", SourceID: "delegate", Title: "委托"},
+		{ID: "fixed:dsh", Kind: "fixed", SourceID: "dsh", Title: "DSH"},
+		{ID: "external:run-1", Kind: "external", SourceID: "run-1", Title: "DSH 任务"},
+		{ID: "task:task-1", Kind: "task", SourceID: "task-1", Title: "普通任务"},
+	}
+	newSnapshot := func() DesktopIconSnapshot {
+		return DesktopIconSnapshot{
+			Items:       append([]DesktopIconItem(nil), base...),
+			Delegations: []DesktopIconDelegation{{ID: "delegation-1", Kind: "task"}},
+		}
+	}
+	has := func(s DesktopIconSnapshot, id string) bool { return findDesktopIconItem(s.Items, id) != nil }
+
+	cases := []struct {
+		name               string
+		showDelegation     bool
+		showExternalTools  bool
+		wantDelegateHidden bool
+		wantExternalHidden bool
+	}{
+		{"default both hidden", false, false, true, true},
+		{"delegation only", true, false, false, true},
+		{"external only", false, true, true, false},
+		{"both shown", true, true, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSnapshot()
+			filterDesktopIconVisibility(&s, tc.showDelegation, tc.showExternalTools)
+			if got := !has(s, "fixed:delegate"); got != tc.wantDelegateHidden {
+				t.Fatalf("delegate hidden = %v, want %v", got, tc.wantDelegateHidden)
+			}
+			if got := !has(s, "fixed:dsh") && !has(s, "external:run-1"); got != tc.wantExternalHidden {
+				t.Fatalf("external icons hidden = %v, want %v", got, tc.wantExternalHidden)
+			}
+			if !has(s, "fixed:new") || !has(s, "task:task-1") {
+				t.Fatal("unrelated icons must always survive")
+			}
+			if len(s.Delegations) != 1 {
+				t.Fatal("hiding the delegate icon must not drop delegation state")
+			}
+		})
+	}
+}
+
 func TestExternalRunDismissalWatermarkAllowsNewerRevision(t *testing.T) {
 	now := time.Now()
 	projection := runhub.RunProjection{ID: "done", Source: runhub.SourceDSH, State: runhub.StateSucceeded, Revision: 4, CreatedAt: now, UpdatedAt: now}
@@ -77,6 +125,9 @@ func TestExternalRunIconRemovePersistsAndReplays(t *testing.T) {
 	_, _ = service.hub.Report(runhub.RunEvent{EventID: "remove-running", RunID: run.ID, Source: runhub.SourceDSH, Type: runhub.EventRunning})
 	_, terminal := service.hub.Report(runhub.RunEvent{EventID: "remove-succeeded", RunID: run.ID, Source: runhub.SourceDSH, Type: runhub.EventSucceeded})
 	app := &App{runHub: service, iconWidgetStateLoaded: true, iconWidgetState: newDesktopIconState()}
+	if err := app.SetDesktopWidgetShowExternalTools(true); err != nil {
+		t.Fatalf("enable external tool icons: %v", err)
+	}
 	itemID := "external:" + string(run.ID)
 	app.iconWidgetState.Positions[itemID] = DesktopIconPosition{Row: "bottom", Zone: "running", Order: 7}
 	snapshot := app.GetDesktopIconSnapshot()
@@ -685,6 +736,25 @@ func TestBuildDesktopIconSnapshotSeparatesRuntimeFromUnread(t *testing.T) {
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
 	if delegate == nil || delegate.UnreadCount != 0 || delegate.ActivityCount != 0 {
 		t.Fatalf("delegate = %#v", delegate)
+	}
+}
+
+func TestDesktopIconNoticesEncodeEmptyOptionsAsArray(t *testing.T) {
+	notices := []DesktopIconNotice{
+		desktopNoticeForMessage(WidgetMessage{}, "needs_input", 1, 0),
+		desktopIconNoticeForKept(desktopIconKept{ItemID: "task:1", SourceID: "tab-1", Summary: "done"}, nil),
+	}
+	for _, notice := range notices {
+		if notice.Options == nil {
+			t.Fatalf("%s options = nil, want an empty array", notice.Kind)
+		}
+		encoded, err := json.Marshal(notice)
+		if err != nil {
+			t.Fatalf("marshal %s notice: %v", notice.Kind, err)
+		}
+		if strings.Contains(string(encoded), `"options":null`) {
+			t.Fatalf("%s notice encoded null options: %s", notice.Kind, encoded)
+		}
 	}
 }
 

@@ -1813,6 +1813,48 @@ func TestSetDesktopWidgetAlwaysOnTop(t *testing.T) {
 	}
 }
 
+func TestSetDesktopWidgetShowDelegationAndExternalTools(t *testing.T) {
+	cfg := Default()
+	if cfg.DesktopWidgetShowDelegation() {
+		t.Fatal("default DesktopWidgetShowDelegation should be false")
+	}
+	if cfg.DesktopWidgetShowExternalTools() {
+		t.Fatal("default DesktopWidgetShowExternalTools should be false")
+	}
+	if err := cfg.SetDesktopWidgetShowDelegation(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetDesktopWidgetShowExternalTools(true); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.DesktopWidgetShowDelegation() {
+		t.Fatal("DesktopWidgetShowDelegation should be true after set")
+	}
+	if !cfg.DesktopWidgetShowExternalTools() {
+		t.Fatal("DesktopWidgetShowExternalTools should be true after set")
+	}
+	rendered := RenderTOMLForScope(cfg, RenderScopeUser)
+	for _, key := range []string{"widget_show_delegation = true", "widget_show_external_tools = true"} {
+		if !strings.Contains(rendered, key) {
+			t.Fatalf("rendered user config missing %s:\n%s", key, rendered)
+		}
+	}
+	var got Config
+	if _, err := toml.Decode(rendered, &got); err != nil {
+		t.Fatalf("rendered TOML does not parse: %v\n---\n%s", err, rendered)
+	}
+	if !got.DesktopWidgetShowDelegation() || !got.DesktopWidgetShowExternalTools() {
+		t.Fatal("show toggles after round trip should be true")
+	}
+	// The two switches are independent: turning one off leaves the other on.
+	if err := got.SetDesktopWidgetShowDelegation(false); err != nil {
+		t.Fatal(err)
+	}
+	if got.DesktopWidgetShowDelegation() || !got.DesktopWidgetShowExternalTools() {
+		t.Fatal("turning delegation off must not affect the external tools switch")
+	}
+}
+
 func TestDesktopWidgetDefaultsNilConfig(t *testing.T) {
 	var cfg *Config
 	if !cfg.DesktopWidgetEnabled() {
@@ -1823,6 +1865,12 @@ func TestDesktopWidgetDefaultsNilConfig(t *testing.T) {
 	}
 	if skin := cfg.DesktopWidgetSkin(); skin != "classic" {
 		t.Fatalf("nil config DesktopWidgetSkin should default to classic, got %q", skin)
+	}
+	if cfg.DesktopWidgetShowDelegation() {
+		t.Fatal("nil config DesktopWidgetShowDelegation should default to false")
+	}
+	if cfg.DesktopWidgetShowExternalTools() {
+		t.Fatal("nil config DesktopWidgetShowExternalTools should default to false")
 	}
 }
 

@@ -231,6 +231,8 @@ type SettingsView struct {
 	WidgetAlwaysOnTop       bool                      `json:"widgetAlwaysOnTop"`
 	WidgetSkin              string                    `json:"widgetSkin"`
 	WidgetStyle             string                    `json:"widgetStyle"`
+	WidgetShowDelegation    bool                      `json:"widgetShowDelegation"`
+	WidgetShowExternalTools bool                      `json:"widgetShowExternalTools"`
 	HoverStatusDelayMs      int                       `json:"hoverStatusDelayMs"`
 	OwnerDecisionEnabled    bool                      `json:"ownerDecisionEnabled"` // master kill switch for the 主人决策 feature (default off)
 	MemoryCompiler          bool                      `json:"memoryCompilerEnabled"`
@@ -628,6 +630,8 @@ func (a *App) Settings() SettingsView {
 			WidgetAlwaysOnTop:       true,
 			WidgetSkin:              "classic",
 			WidgetStyle:             "icons",
+			WidgetShowDelegation:    false,
+			WidgetShowExternalTools: false,
 			HoverStatusDelayMs:      1200,
 			OwnerDecisionEnabled:    ownerDecisionFeatureEnabled,
 			MemoryCompiler:          true,
@@ -699,6 +703,8 @@ func (a *App) Settings() SettingsView {
 		WidgetAlwaysOnTop:       cfg.DesktopWidgetAlwaysOnTop(),
 		WidgetSkin:              cfg.DesktopWidgetSkin(),
 		WidgetStyle:             cfg.DesktopWidgetStyle(),
+		WidgetShowDelegation:    cfg.DesktopWidgetShowDelegation(),
+		WidgetShowExternalTools: cfg.DesktopWidgetShowExternalTools(),
 		HoverStatusDelayMs:      cfg.DesktopHoverStatusDelayMs(),
 		OwnerDecisionEnabled:    ownerDecisionFeatureEnabled,
 		MemoryCompiler:          cfg.MemoryCompilerEnabled(),
@@ -2515,6 +2521,20 @@ func (a *App) SetDesktopHoverStatusDelayMs(delay int) error {
 		runtime.EventsEmit(a.ctx, "widget:hover-delay", delay)
 	}
 	return nil
+}
+
+// SetDesktopWidgetShowDelegation persists whether the 委托 icon is shown in the
+// icon widget. It is presentation-only: running delegations keep running and
+// their state stays intact; only the desktop icon entry is hidden.
+func (a *App) SetDesktopWidgetShowDelegation(show bool) error {
+	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetShowDelegation(show) })
+}
+
+// SetDesktopWidgetShowExternalTools persists whether the external AI tool (DSH)
+// icon is shown in the icon widget. It is presentation-only: running external
+// tasks keep running; only the desktop icon entry is hidden.
+func (a *App) SetDesktopWidgetShowExternalTools(show bool) error {
+	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetShowExternalTools(show) })
 }
 
 // MigrateDesktopPreferences imports old browser-local desktop preferences into

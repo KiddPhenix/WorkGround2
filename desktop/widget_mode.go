@@ -308,7 +308,7 @@ func (a *App) RefreshWidgetWindowRegion() error {
 	if a.ctx == nil {
 		return nil
 	}
-	style, _ := a.desktopIconPreferences()
+	style, _, _, _ := a.desktopIconPreferences()
 	if style == "icons" {
 		return nil
 	}
@@ -535,7 +535,7 @@ func (a *App) applyEnterWidgetMode() error {
 	if err := saveMainWindowState(mainState); err != nil {
 		return fmt.Errorf("save main window: %w", err)
 	}
-	style, _ := a.desktopIconPreferences()
+	style, _, _, _ := a.desktopIconPreferences()
 	state, ok := loadWidgetWindowState()
 	if style == "icons" {
 		// Always rebuild the icon canvas from the monitor that owns the main
