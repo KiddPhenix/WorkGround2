@@ -286,25 +286,6 @@ assert.match(component, /isQuickStartJobItem\(current\.item\)\) \{ setDraggingID
 assert.match(component, /setPreviewID\(""\); setRenamingID\(""\); setRenameDraft\(""\); if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \}/, "right-clicking an optimistic job closes the hover preview and opens its popup instead of the backend context menu");
 assert.match(component, /<QuickStartJobBody job=\{activeQuickJob\}[\s\S]{0,260}onRetry=\{\(requestId\) => \{ quickJobs\.retry\(requestId\); \}\}[\s\S]{0,120}onEdit=\{editQuickStartJob\}[\s\S]{0,120}onDismiss=\{\(requestId\) => \{ if \(quickJobs\.dismiss\(requestId\)\) \{ setActiveID\(""\); setPreviewID\(""\); \} \}\}[\s\S]{0,80}onOpenMain=\{openMainWindow\}[\s\S]{0,160}onOpenTask=\{activeQuickJob\?\.phase === "accepted" && activeQuickJob\.tabId \? \(\) => void openQuickStartTask\(activeQuickJob\) : undefined\}/, "the optimistic popup exposes retry/edit/dismiss wired to the runner, an open-main action for running jobs, and open-task for accepted jobs");
 assert.match(component, /const editQuickStartJob = \(job: QuickStartJob\) => \{[\s\S]{0,80}setQuickStartEditJob\(job\);[\s\S]{0,80}setQuickWorkspace\(job\.intent\.workspace \|\| ""\);[\s\S]{0,80}setActiveID\("fixed:new"\);[\s\S]{0,20}\};/, "editing a failed job passes the frozen intent through state/props (never localStorage) and tracks the source requestId");
-// --- open-window create: create a NORMAL Session through the shared backend
-// deliver, then exit the widget focusing the returned tab; never the optimistic
-// quick-start ledger, so the new Session lands in Session List directly ---
-assert.match(component, /const openWindowCreate = async \(input: WidgetConversationInput\) => \{[\s\S]{0,220}startWidgetConversationWithRetry\(app\.StartWidgetConversation, input\)/, "open-window create reuses the shared backend deliver instead of the optimistic job ledger");
-assert.match(component, /result\.status !== "accepted" && result\.status !== "already_applied"[\s\S]{0,80}result\.error \|\| t\("widget\.openWindowCreateFailed"\)/, "open-window create only succeeds on accepted/already_applied and surfaces backend errors explicitly");
-assert.match(component, /await onOpenRoom\(result\.tabId\)/, "open-window create exits the widget focusing the exact returned tab");
-assert.match(quickStartSource, /onClick=\{\(\) => void openWindow\(\)\}/, "the open-window create button is wired to the guarded openWindow action");
-assert.match(quickStartSource, /disabled=\{!draft\.trim\(\) \|\| !preferences \|\| openWindowBusy\}/, "the open-window button follows the same empty-input rule and stays disabled while in flight");
-assert.match(quickStartSource, /openWindowBusy \? t\("widget\.openWindowCreating"\) : t\("widget\.openWindowCreate"\)/, "the open-window button exposes localized busy and idle labels");
-assert.match(quickStartSource, /if \(!prompt \|\| !preferences \|\| openWindowRef\.current \|\| openWindowBusy\) return;/, "the open-window action guards against empty input and double invocation");
-assert.match(quickStartSource, /openWindowRef\.current = true;/, "the open-window action sets its in-flight guard before awaiting the backend");
-assert.match(quickStartSource, /quickStartJobRequestId\("icon-window-new"\)/, "a fresh intent mints a new open-window requestId");
-assert.match(quickStartSource, /openWindowIntentRef\.current\.key !== key[\s\S]{0,120}requestId: quickStartJobRequestId\("icon-window-new"\)/, "the open-window requestId regenerates when the intent changes");
-assert.match(quickStartSource, /requestId: openWindowIntentRef\.current\.requestId/, "the open-window requestId is reused across retries of the same intent");
-for (const locale of ["en", "zh", "zh-TW"]) {
-	const loc = readFileSync(resolve(import.meta.dirname, `../locales/${locale}.ts`), "utf8");
-	assert.ok(loc.includes('"widget.openWindowCreate"'), `${locale} includes the open-window create label`);
-	assert.ok(loc.includes('"widget.openWindowCreateFailed"'), `${locale} includes the open-window create failure label`);
-}
 const jobsSource = readFileSync(resolve(import.meta.dirname, "../components/widget/widgetQuickStartJobs.ts"), "utf8");
 assert.match(jobsSource, /useEffect\(\(\) => \{[\s\S]{0,80}runner\.resume\(\);[\s\S]{0,8}\}, \[runner\]\);/, "mounting resumes nonterminal jobs through the runner");
 assert.match(jobsSource, /if \(running\.has\(requestId\)\) return;/, "the in-flight registry guards one dispatch per requestId");
