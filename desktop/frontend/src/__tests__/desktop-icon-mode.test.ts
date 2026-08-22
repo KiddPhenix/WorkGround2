@@ -745,6 +745,10 @@ assert.match(component, /placeIconPopup\(rect, viewport\.width, viewport\.height
 assert.match(backend, /Status:\s*\"pending\", Action:\s*\"continue\"/, "task continuation persists a pending receipt before delivery");
 assert.match(backend, /advanceDesktopIconTaskContinue[\s\S]+tryDesktopIconReply/, "task continuation uses the acknowledged and recoverable user-turn pipeline");
 assert.match(css, /\.desktop-icon-popup__actions button:not\(:disabled\):hover/, "action buttons keep an accessible hover state");
+assert.match(css, /\.desktop-icon-popup__routine-actions button:not\(:disabled\):hover/, "routine action buttons expose hover feedback while enabled");
+assert.match(css, /\.desktop-icon-popup__workspace-foot button:not\(:disabled\):hover/, "routine footer buttons expose hover feedback while enabled");
+assert.match(css, /\.desktop-icon-popup__routine-actions button\.subtle:not\(:disabled\):hover[^}]*background:/, "routine icon buttons gain a visible hover surface instead of filtering a transparent background");
+assert.match(css, /\.desktop-icon-popup__routine-actions button\.danger:not\(:disabled\):hover[^}]*background:/, "routine delete keeps a distinct destructive hover state");
 assert.match(css, /button:focus-visible[\s\S]*outline: 2px solid #70dfe8/, "action buttons keep a visible focus ring");
 assert.match(css, /button:disabled\s*\{\s*opacity: \.55/, "disabled buttons stay visibly disabled");
 
