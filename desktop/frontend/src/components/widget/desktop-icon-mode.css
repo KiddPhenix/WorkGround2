@@ -327,6 +327,14 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__routine-actions { display: flex; flex: 0 0 auto; gap: 5px; }
 .desktop-icon-popup__routine-actions button { min-height: 28px; padding: 3px 9px; font-size: 11px; }
 .desktop-icon-popup__routine-actions button.subtle { display: grid; place-items: center; width: 28px; padding: 0; }
+.desktop-icon-popup__routine-actions button:not(:disabled):hover,
+.desktop-icon-popup__routine-rename button:not(:disabled):hover,
+.desktop-icon-popup__routine-error button:not(:disabled):hover,
+.desktop-icon-popup__workspace-foot button:not(:disabled):hover { filter: brightness(1.18); }
+.desktop-icon-popup__routine-actions button.subtle:not(:disabled):hover,
+.desktop-icon-popup__routine-rename button.subtle:not(:disabled):hover,
+.desktop-icon-popup__workspace-foot button.subtle:not(:disabled):hover { border-color: rgb(255 255 255 / 28%); color: #fff; background: rgb(255 255 255 / 9%); filter: none; }
+.desktop-icon-popup__routine-actions button.danger:not(:disabled):hover { border-color: #d76474; background: #84394a; filter: none; }
 .desktop-icon-popup__routine-actions svg { width: 13px; height: 13px; }
 .desktop-icon-popup__routine-rename { display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto auto; gap: 5px; }
 .desktop-icon-popup__routine-rename input { min-width: 0; min-height: 30px; padding: 4px 8px; }
