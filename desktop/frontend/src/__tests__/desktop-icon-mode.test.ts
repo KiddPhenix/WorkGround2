@@ -810,6 +810,12 @@ assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__workspaces\)[
 assert.match(css, /\.desktop-icon-popup__workspace-list[^}]*max-height:\s*360px[^}]*overflow-y:\s*auto/, "workspace and Room rows scroll inside the stable five-row budget after async loading");
 assert.match(css, /\.desktop-icon-popup__workspace-name[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/, "long workspace names truncate instead of overflowing a narrow window");
 assert.match(css, /\.desktop-icon-popup__workspace-actions[^}]*flex-wrap:\s*wrap/, "row actions wrap on narrow windows");
+assert.match(css, /\.desktop-icon-popup__workspace-head button:not\(:disabled\):hover/, "workspace add exposes hover feedback while enabled");
+assert.match(css, /\.desktop-icon-popup__workspace-actions button\.subtle:not\(:disabled\):hover[^}]*background:/, "workspace row actions gain a visible hover surface");
+assert.match(css, /\.desktop-icon-popup__workspace-actions button\.desktop-icon-popup__workspace-delete:not\(:disabled\):hover[^}]*background:/, "workspace delete keeps a distinct destructive hover surface");
+assert.match(css, /\.desktop-icon-popup__workspace-count button:not\(:disabled\):hover/, "workspace count choices expose hover feedback while enabled");
+assert.match(css, /\.desktop-icon-popup__workspace-pin:not\(:disabled\):hover/, "workspace pin exposes hover feedback while enabled");
+assert.match(css, /\.desktop-icon-popup__workspace-pin\s*\{[^}]*margin-right:\s*6px;/, "workspace pin stays clear of the popup scrollbar");
 assert.match(css, /\.desktop-icon-popup__workspace-pin\[aria-pressed="true"\]/, "the pinned state has a distinct pressed style");
 assert.match(css, /\.desktop-icon-popup__workspace-count button\[aria-pressed="true"\]/, "the selected desktop workspace count has a distinct pressed style");
 assert.match(component, /Array\.from\(\{ length: WORKSPACE_PIN_LIMIT \}/, "the workspace footer always renders the fixed slot count");
