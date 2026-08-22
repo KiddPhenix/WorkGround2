@@ -42031,12 +42031,14 @@ body > .mermaid-diagram--fullscreen {
    ================================================================ */
 
 .app--workbench {
+  color-scheme: dark;
   --bg: #0d0e12;
   --bg-soft: #12141a;
   --bg-elev: #171920;
   --bg-elev-2: #1d2028;
   --surface: #171920;
   --surface-2: #20232c;
+  --surface-3: #12141a;
   --panel: #171920;
   --chat-bg: #0d0e12;
   --sidebar-bg: #171920;
@@ -42049,6 +42051,8 @@ body > .mermaid-diagram--fullscreen {
   --fg-dim: #b7b6bf;
   --fg-faint: #7d7d88;
   --ok: #69a88a;
+  --button-bg: color-mix(in srgb, var(--bg-elev-2) 62%, var(--bg-soft));
+  --button-bg-hover: color-mix(in srgb, var(--bg-elev-2) 82%, var(--bg-soft));
   /* Work V2 uses its own semantic token names. Alias them to the active app
      palette so Work, Session and Room change theme as one surface. */
   --wg2-bg-secondary: var(--bg-soft);
@@ -42814,6 +42818,7 @@ body > .mermaid-diagram--fullscreen {
    above intentionally own geometry, so the light override must live beside
    them instead of relying on earlier root tokens that theme styles can shadow. */
 :root[data-theme="light"] .app--workbench {
+  color-scheme: light;
   --bg: #f7f8fb;
   --bg-soft: #eef2f7;
   --bg-elev: #ffffff;

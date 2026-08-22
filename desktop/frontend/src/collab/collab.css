@@ -377,6 +377,20 @@
 .collab-agent-scan { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; margin-top: -2px; }
 .collab-agent-scan select, .collab-agent-scan input { width: 100%; color: var(--collab-text); font-size: 12px; }
 .collab-agent-scan select { cursor: pointer; }
+.collab-surface select {
+  appearance: none;
+  padding-right: 28px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--collab-muted) 50%),
+    linear-gradient(135deg, var(--collab-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 9px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px, 4px 4px;
+}
+.collab-surface select:disabled { cursor: not-allowed; opacity: .55; }
+.collab-composer select { padding-right: 24px; }
 .collab-agent-peer-policy { display: grid; padding-top: 9px; border-top: 1px solid var(--collab-border-soft); }
 .collab-agent-peer-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 34px; }
 .collab-agent-peer-summary { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }

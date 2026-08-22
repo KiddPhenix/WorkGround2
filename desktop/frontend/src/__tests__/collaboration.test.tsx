@@ -809,6 +809,7 @@ async function main() {
     ok(new RegExp(`\\.${selector}\\s*\\{[^}]*grid-row:\\s*${row}(?:;|\\s)`).test(layoutCSS), `${selector} stays in grid row ${row} when the optional status banner is absent`);
   }
   ok(/\.collab-surface\s*\{[^}]*position:\s*relative/.test(layoutCSS), "collaboration session is embedded in the normal session surface");
+  ok(/\.collab-surface select\s*\{[^}]*appearance:\s*none/.test(layoutCSS), "collaboration selects do not leak native macOS appearance");
   ok(/\.collab-modal\s*\{[^}]*position:\s*fixed/.test(layoutCSS), "Host and Join form uses a popup layer");
   ok(appSource.includes('activeTab?.sessionKind === "collaboration"') && appSource.includes('ensureBlankTab("project", workspaceRoot)') && !appSource.includes("ensureBlankTab(target.scope, target.workspaceRoot)"), "Room starts from an explicitly selected project Workspace Session instead of the implicit default");
   ok(appSource.includes("selectCollaborationWorkspace") && appSource.includes("collabResolveGen.current") && appSource.includes("app.ListWorkspaces()") && appSource.includes("if (!workspaceRoot)"), "the connection dialog resolves the chosen Workspace with a generation guard and never creates a Session for an empty selection");
