@@ -319,7 +319,7 @@ export interface DesktopIconItem {
   workspaceIcon?: string;
   sessionRef?: DesktopIconTaskRef;
   conversationSequence?: number;
-	actions?: Array<"launch" | "cancel" | "open" | "retry" | "resume" | "approve" | "send">;
+	actions?: Array<"launch" | "cancel" | "open" | "retry" | "resume" | "approve" | "send" | "remove">;
 	sourceRevision?: number;
 }
 export interface DesktopIconDelegation {

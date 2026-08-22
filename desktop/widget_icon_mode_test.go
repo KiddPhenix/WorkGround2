@@ -18,6 +18,7 @@ import (
 	"workground2/internal/control"
 	"workground2/internal/provider"
 	"workground2/internal/runhub"
+	"workground2/internal/runhub/dsh"
 	"workground2/internal/unread"
 )
 
@@ -30,7 +31,7 @@ func TestExternalRunIconsExposeOnlyDeclaredCapabilities(t *testing.T) {
 			{ID: "active", Source: runhub.SourceDSH, State: runhub.StateRunning, Activity: runhub.ActivityTool, ActivityLabel: "执行测试", Workspace: `D:\Work\one`, Capabilities: runhub.Capabilities{Cancel: true, Open: true}, CreatedAt: now, UpdatedAt: now},
 			{ID: "done", Source: runhub.SourceDSH, State: runhub.StateSucceeded, Workspace: `D:\Work\two`, Capabilities: runhub.Capabilities{Cancel: true}, Summary: "完成", CreatedAt: now, UpdatedAt: now},
 		},
-	}, map[string]DesktopIconPosition{})
+	}, map[string]DesktopIconPosition{}, nil)
 
 	launcher := findDesktopIconItem(snapshot.Items, "fixed:dsh")
 	if launcher == nil || !reflect.DeepEqual(launcher.Actions, []string{"launch"}) {
@@ -41,8 +42,65 @@ func TestExternalRunIconsExposeOnlyDeclaredCapabilities(t *testing.T) {
 		t.Fatalf("active external projection = %+v", active)
 	}
 	done := findDesktopIconItem(snapshot.Items, "external:done")
-	if done == nil || len(done.Actions) != 0 || done.Runtime != nil {
+	if done == nil || !reflect.DeepEqual(done.Actions, []string{"remove"}) || done.Runtime != nil {
 		t.Fatalf("terminal external projection = %+v", done)
+	}
+}
+
+func TestExternalRunDismissalWatermarkAllowsNewerRevision(t *testing.T) {
+	now := time.Now()
+	projection := runhub.RunProjection{ID: "done", Source: runhub.SourceDSH, State: runhub.StateSucceeded, Revision: 4, CreatedAt: now, UpdatedAt: now}
+	dismissed := map[string]uint64{"done": 4}
+	same := DesktopIconSnapshot{Items: []DesktopIconItem{}}
+	appendExternalRunIcons(&same, ExternalRunSnapshot{Runs: []runhub.RunProjection{projection}}, nil, dismissed)
+	if findDesktopIconItem(same.Items, "external:done") != nil {
+		t.Fatal("dismissed external revision was projected again")
+	}
+	projection.Revision = 5
+	newer := DesktopIconSnapshot{Items: []DesktopIconItem{}}
+	appendExternalRunIcons(&newer, ExternalRunSnapshot{Runs: []runhub.RunProjection{projection}}, nil, dismissed)
+	if item := findDesktopIconItem(newer.Items, "external:done"); item == nil || !reflect.DeepEqual(item.Actions, []string{"remove"}) {
+		t.Fatalf("newer external revision = %+v, want removable projection", item)
+	}
+}
+
+func TestExternalRunIconRemovePersistsAndReplays(t *testing.T) {
+	t.Setenv("WorkGround2_STATE_HOME", t.TempDir())
+	service, err := newDesktopRunHub(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.resolveProfile = func(string) (ExternalRunProfileView, dsh.Config, dsh.RunnerConfig) {
+		return ExternalRunProfileView{ID: desktopRunHubProfileID, Ready: true, Version: "0.1.0-rc.8"}, dsh.Config{}, dsh.RunnerConfig{}
+	}
+	_, run := service.hub.Launch(runhub.LaunchIntent{RequestID: "remove-terminal", Source: runhub.SourceDSH, Workspace: t.TempDir(), Capabilities: runhub.Capabilities{Cancel: true}})
+	_, _ = service.hub.Report(runhub.RunEvent{EventID: "remove-running", RunID: run.ID, Source: runhub.SourceDSH, Type: runhub.EventRunning})
+	_, terminal := service.hub.Report(runhub.RunEvent{EventID: "remove-succeeded", RunID: run.ID, Source: runhub.SourceDSH, Type: runhub.EventSucceeded})
+	app := &App{runHub: service, iconWidgetStateLoaded: true, iconWidgetState: newDesktopIconState()}
+	itemID := "external:" + string(run.ID)
+	app.iconWidgetState.Positions[itemID] = DesktopIconPosition{Row: "bottom", Zone: "running", Order: 7}
+	snapshot := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(snapshot.Items, itemID)
+	if item == nil || item.SourceRevision != terminal.Revision || !reflect.DeepEqual(item.Actions, []string{"remove"}) {
+		t.Fatalf("terminal external item = %+v", item)
+	}
+	input := DesktopIconActionInput{ItemID: item.ID, Revision: item.Revision, RequestID: "remove-request", Action: "remove"}
+	result := app.ApplyDesktopIconAction(input)
+	if result.Status != "accepted" || findDesktopIconItem(result.Snapshot.Items, item.ID) != nil {
+		t.Fatalf("remove result = %+v", result)
+	}
+	if app.iconWidgetState.DismissedExternalRuns[string(run.ID)] != terminal.Revision {
+		t.Fatalf("dismissed external runs = %+v", app.iconWidgetState.DismissedExternalRuns)
+	}
+	if _, exists := app.iconWidgetState.Positions[item.ID]; exists {
+		t.Fatal("removed external icon kept its custom position")
+	}
+	if duplicate := app.ApplyDesktopIconAction(input); duplicate.Status != "already_applied" {
+		t.Fatalf("duplicate remove = %+v", duplicate)
+	}
+	restarted := &App{runHub: service}
+	if got := findDesktopIconItem(restarted.GetDesktopIconSnapshot().Items, item.ID); got != nil {
+		t.Fatalf("restarted Desktop projected removed external icon: %+v", got)
 	}
 }
 
@@ -50,11 +108,11 @@ func TestExternalRunRevisionChangesWithinSameActivity(t *testing.T) {
 	now := time.Now()
 	projection := runhub.RunProjection{ID: "active", Source: runhub.SourceDSH, State: runhub.StateRunning, Activity: runhub.ActivityTool, ActivityLabel: "第一步", Revision: 2, CreatedAt: now, UpdatedAt: now}
 	first := DesktopIconSnapshot{Items: []DesktopIconItem{}}
-	appendExternalRunIcons(&first, ExternalRunSnapshot{Runs: []runhub.RunProjection{projection}}, nil)
+	appendExternalRunIcons(&first, ExternalRunSnapshot{Runs: []runhub.RunProjection{projection}}, nil, nil)
 	projection.ActivityLabel = "第二步"
 	projection.Revision++
 	second := DesktopIconSnapshot{Items: []DesktopIconItem{}}
-	appendExternalRunIcons(&second, ExternalRunSnapshot{Runs: []runhub.RunProjection{projection}}, nil)
+	appendExternalRunIcons(&second, ExternalRunSnapshot{Runs: []runhub.RunProjection{projection}}, nil, nil)
 	if first.Revision == second.Revision {
 		t.Fatal("same-phase external event did not advance desktop snapshot revision")
 	}

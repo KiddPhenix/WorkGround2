@@ -199,8 +199,10 @@ const css = readFileSync(resolve(import.meta.dirname, "../components/widget/desk
 const backend = readFileSync(resolve(import.meta.dirname, "../../../widget_icon_mode.go"), "utf8");
 assert.match(component, /readExternalRunLaunch\(localStorage\)[\s\S]+prepareExternalRunLaunch\(localStorage, choice\.root, prompt,[\s\S]+LaunchDSHRun\(\{ requestId: packet\.requestId, workspace: packet\.workspace, prompt: packet\.prompt \}\)/, "DSH quick start reloads and replays the complete persisted launch packet");
 assert.match(component, /item\.actions\?\.includes\("cancel"\)[\s\S]+取消 DSH 任务/, "external-run controls render cancel only from the capability-derived action list");
+assert.match(component, /item\.kind === "external"[\s\S]+item\.actions\?\.includes\("remove"\)[\s\S]+run\(item, "remove"\)[\s\S]+移除/, "external-run context menu renders remove only from the backend action list");
 assert.doesNotMatch(component.slice(component.indexOf("function ExternalRunBody"), component.indexOf("function previewText")), />打开<|>重试<|>恢复<|>批准<|>发送</, "DSH rc.8 external-run popup does not manufacture unsupported controls");
 assert.match(backend, /run\.Capabilities\.Cancel && !run\.State\.IsTerminal\(\)[\s\S]+item\.Actions = append\(item\.Actions, "cancel"\)/, "backend freezes the rc.8 capability surface into external icon actions");
+assert.match(backend, /run\.State\.IsTerminal\(\)[\s\S]+item\.Actions = append\(item\.Actions, "remove"\)/, "backend freezes remove onto terminal external icons only");
 const zhSource = readFileSync(resolve(import.meta.dirname, "../locales/zh.ts"), "utf8");
 assert.match(zhSource, /"dailyRoutine\.make": "固化流程"/, "task menu uses the compact 固化流程 label");
 assert.doesNotMatch(component, /desktop-icon-exit/, "icon mode CSS carries no legacy exit-button class");

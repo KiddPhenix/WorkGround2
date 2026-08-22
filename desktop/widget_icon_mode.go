@@ -408,8 +408,12 @@ type desktopIconPersistedState struct {
 	// DismissedConversations stores the last explicitly removed conversation
 	// sequence by durable conversation key. Snapshot projection suppresses only
 	// that version; later messages safely make the icon visible again.
-	DismissedConversations map[string]uint64    `json:"dismissedConversations,omitempty"`
-	Applied                []desktopIconReceipt `json:"applied,omitempty"`
+	DismissedConversations map[string]uint64 `json:"dismissedConversations,omitempty"`
+	// DismissedExternalRuns stores the last explicitly removed source revision
+	// by Run ID. Refresh and restart suppress that revision, while a later
+	// authoritative update can project the run again.
+	DismissedExternalRuns map[string]uint64    `json:"dismissedExternalRuns,omitempty"`
+	Applied               []desktopIconReceipt `json:"applied,omitempty"`
 	// WorkspaceSlots is the user-selected number of project shortcuts shown on
 	// the desktop. Zero is a valid explicit value; legacy files default to four
 	// by being unmarshaled into newDesktopIconState's initialized value.
@@ -426,6 +430,7 @@ func newDesktopIconState() desktopIconPersistedState {
 		Kept:                   map[string]desktopIconKept{},
 		AppearanceSeeds:        map[string]string{},
 		DismissedConversations: map[string]uint64{},
+		DismissedExternalRuns:  map[string]uint64{},
 		WorkspaceSlots:         desktopWorkspacePinLimit,
 		CompletionSummaries:    map[string]desktopIconCompletionSummary{},
 	}
@@ -508,6 +513,9 @@ func (a *App) loadDesktopIconStateLocked() {
 	}
 	if a.iconWidgetState.DismissedConversations == nil {
 		a.iconWidgetState.DismissedConversations = map[string]uint64{}
+	}
+	if a.iconWidgetState.DismissedExternalRuns == nil {
+		a.iconWidgetState.DismissedExternalRuns = map[string]uint64{}
 	}
 	if a.iconWidgetState.CompletionSummaries == nil {
 		a.iconWidgetState.CompletionSummaries = map[string]desktopIconCompletionSummary{}
@@ -963,13 +971,13 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	sessionPresentations := desktopIconSessionPresentations(sources, projectTree)
 	snapshot := buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomPresentations, roomRefs, subagentCounts, sessionPresentations, pinnedRooms, delegations, roomDescriptors)
 	external := a.GetExternalRunSnapshot()
-	appendExternalRunIcons(&snapshot, external, a.iconWidgetState.Positions)
+	appendExternalRunIcons(&snapshot, external, a.iconWidgetState.Positions, a.iconWidgetState.DismissedExternalRuns)
 	if a.pinNewDesktopIconTaskOrdersLocked(snapshot) {
 		// The snapshot just pinned brand-new task icons, so rebuild once: the
 		// current response must already reflect the pinned (stable) orders,
 		// otherwise the very first render would still use the ephemeral ones.
 		snapshot = buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomPresentations, roomRefs, subagentCounts, sessionPresentations, pinnedRooms, delegations, roomDescriptors)
-		appendExternalRunIcons(&snapshot, external, a.iconWidgetState.Positions)
+		appendExternalRunIcons(&snapshot, external, a.iconWidgetState.Positions, a.iconWidgetState.DismissedExternalRuns)
 	}
 	snapshot.Style = style
 	if recoveryErr != nil {
@@ -998,7 +1006,7 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	return snapshot
 }
 
-func appendExternalRunIcons(snapshot *DesktopIconSnapshot, external ExternalRunSnapshot, positions map[string]DesktopIconPosition) {
+func appendExternalRunIcons(snapshot *DesktopIconSnapshot, external ExternalRunSnapshot, positions map[string]DesktopIconPosition, dismissed map[string]uint64) {
 	runningOrder, fixedOrder := 0, 0
 	for _, item := range snapshot.Items {
 		if item.Position.Zone == "running" {
@@ -1028,6 +1036,9 @@ func appendExternalRunIcons(snapshot *DesktopIconSnapshot, external ExternalRunS
 
 	terminal := 0
 	for _, projection := range external.Runs {
+		if revision, ok := dismissed[string(projection.ID)]; ok && revision >= projection.Revision {
+			continue
+		}
 		if projection.State.IsTerminal() {
 			if terminal >= 3 {
 				continue
@@ -1082,6 +1093,9 @@ func externalRunIcon(run runhub.RunProjection, order int) DesktopIconItem {
 	}
 	if run.Capabilities.Cancel && !run.State.IsTerminal() {
 		item.Actions = append(item.Actions, "cancel")
+	}
+	if run.State.IsTerminal() {
+		item.Actions = append(item.Actions, "remove")
 	}
 	if !run.State.IsTerminal() {
 		item.Runtime = &DesktopIconRuntime{
@@ -2497,6 +2511,7 @@ func cloneDesktopIconState(state desktopIconPersistedState) desktopIconPersisted
 		Kept:                   make(map[string]desktopIconKept, len(state.Kept)),
 		AppearanceSeeds:        make(map[string]string, len(state.AppearanceSeeds)),
 		DismissedConversations: make(map[string]uint64, len(state.DismissedConversations)),
+		DismissedExternalRuns:  make(map[string]uint64, len(state.DismissedExternalRuns)),
 		Applied:                append([]desktopIconReceipt(nil), state.Applied...),
 		WorkspaceSlots:         state.WorkspaceSlots,
 		CompletionSummaries:    make(map[string]desktopIconCompletionSummary, len(state.CompletionSummaries)),
@@ -2512,6 +2527,9 @@ func cloneDesktopIconState(state desktopIconPersistedState) desktopIconPersisted
 	}
 	for key, sequence := range state.DismissedConversations {
 		clone.DismissedConversations[key] = sequence
+	}
+	for id, revision := range state.DismissedExternalRuns {
+		clone.DismissedExternalRuns[id] = revision
 	}
 	for key, summary := range state.CompletionSummaries {
 		clone.CompletionSummaries[key] = summary
@@ -2903,6 +2921,32 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 		if err := a.saveDesktopIconStateLocked(); err != nil {
 			a.markDesktopIconReceiptPending(input.RequestID)
 			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish personal icon removal: %w", err))
+		}
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+	}
+	if input.Action == "remove" && item.Kind == "external" {
+		if !slices.Contains(item.Actions, "remove") {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("external run does not expose remove"))
+		}
+		runID := strings.TrimSpace(item.SourceID)
+		if runID == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("external run is required"))
+		}
+		before := cloneDesktopIconState(a.iconWidgetState)
+		if a.iconWidgetState.DismissedExternalRuns == nil {
+			a.iconWidgetState.DismissedExternalRuns = map[string]uint64{}
+		}
+		a.iconWidgetState.DismissedExternalRuns[runID] = max(a.iconWidgetState.DismissedExternalRuns[runID], item.SourceRevision)
+		delete(a.iconWidgetState.Positions, item.ID)
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{
+			RequestID: input.RequestID, Intent: intent, Status: "applied", Action: "remove", ItemID: item.ID, AppliedAt: time.Now().UnixMilli(),
+		})
+		if len(a.iconWidgetState.Applied) > desktopIconActionLimit {
+			a.iconWidgetState.Applied = a.iconWidgetState.Applied[len(a.iconWidgetState.Applied)-desktopIconActionLimit:]
+		}
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetState = before
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("save external icon removal: %w", err))
 		}
 		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
 	}
