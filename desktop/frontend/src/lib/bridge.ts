@@ -1876,7 +1876,8 @@ function makeMockApp(): AppBindings {
       { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
     officialProviders: [
-      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"], visionModels: ["deepseek-v4-flash-vision-exp"], visionModelsConfigured: true, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "openai", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.openai.com/v1", modelsUrl: "", models: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "o3-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], visionModels: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], visionModelsConfigured: true, default: "gpt-4o", apiKeyEnv: "OPENAI_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_050_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
     permissions: { mode: "ask", allow: ["ls", "read_file"], ask: [], deny: ["Bash(rm:*)"], browser: { allowPasswordInput: true, allowFileUpload: true } },
     browserLaunch: { incognito: false },
@@ -2043,9 +2044,10 @@ function makeMockApp(): AppBindings {
       name: "Codex CLI",
       description: "Runs Codex CLI in exec mode and sends the model request on stdin.",
       command: "codex",
-      args: ["exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5.5"],
-      protocol: "text",
-      model: "default",
+      args: ["exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5.6-sol"],
+      protocol: "jsonl",
+      model: "gpt-5.6-sol",
+      models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6"],
       capabilities: ["web_search"],
       timeoutSeconds: 120,
       installed: true,
@@ -4608,7 +4610,8 @@ function makeMockApp(): AppBindings {
     },
     async AddOfficialProviderAccess(kind: string, key: string, _name: string) {
       const templates: Record<string, ProviderView> = {
-        deepseek: { name: "deepseek", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: !!key.trim(), balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+        deepseek: { name: "deepseek", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"], visionModels: ["deepseek-v4-flash-vision-exp"], visionModelsConfigured: true, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: !!key.trim(), balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+        openai: { name: "openai", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.openai.com/v1", modelsUrl: "", models: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "o3-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], visionModels: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], visionModelsConfigured: true, default: "gpt-4o", apiKeyEnv: "OPENAI_API_KEY", keySet: !!key.trim(), balanceUrl: "", contextWindow: 1_050_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
       };
       const next = templates[kind];
       if (!next) throw new Error(`unknown official provider template ${kind}`);

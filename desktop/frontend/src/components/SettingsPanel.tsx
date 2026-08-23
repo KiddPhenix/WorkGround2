@@ -5041,14 +5041,15 @@ function ProviderEditor({
   const applyLocalCLIOption = (option: LocalCLIOptionView) => {
     if (!option.installed) return;
     const model = option.model.trim() || "default";
+    const optionModels = option.models?.length ? option.models : [model];
     const optionArgs = option.args ?? [];
     if (!initial && !name.trim()) setName(localCLIProviderName(option.id));
     setCommand(option.command);
     setArgsDraft(formatProviderArgs(optionArgs));
     setCliProtocol(option.protocol || "text");
     setCliTimeout(option.timeoutSeconds > 0 ? String(option.timeoutSeconds) : "");
-    setModels(model);
-    setModelCandidates([model]);
+    setModels(optionModels.join(", "));
+    setModelCandidates(optionModels);
     setVisionModels("");
     setVisionModelsConfigured(true);
     setCapabilities(option.capabilities ?? []);

@@ -1210,6 +1210,7 @@ export interface LocalCLIOptionView {
   args: string[];
   protocol: string;
   model: string;
+  models?: string[]; // selectable model IDs; absent = single model
   capabilities: string[];
   timeoutSeconds: number;
   installed: boolean;

@@ -1471,7 +1471,8 @@ func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEn
 			Name:          "deepseek",
 			Kind:          "openai",
 			BaseURL:       "https://api.deepseek.com",
-			Models:        []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+			Models:        []string{"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"},
+			VisionModels:  []string{"deepseek-v4-flash-vision-exp"},
 			Default:       "deepseek-v4-flash",
 			APIKeyEnv:     "DEEPSEEK_API_KEY",
 			BalanceURL:    "https://api.deepseek.com/user/balance",
@@ -1483,10 +1484,11 @@ func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEn
 			Name:          "openai",
 			Kind:          "openai",
 			BaseURL:       "https://api.openai.com/v1",
-			Models:        []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "o3-mini"},
+			Models:        []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "o3-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
+			VisionModels:  []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
 			Default:       "gpt-4o",
 			APIKeyEnv:     "OPENAI_API_KEY",
-			ContextWindow: 128_000,
+			ContextWindow: 1_050_000,
 		}}, "OPENAI_API_KEY", nil
 	case "anthropic", "anthropic-official":
 		return []config.ProviderEntry{{

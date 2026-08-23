@@ -146,6 +146,9 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	args := stringSlice(cfg.Extra["args"])
 	protocol := stringValue(cfg.Extra["protocol"])
 	args, protocol = NormalizeInvocation(command, args, protocol)
+	if isCodexCommand(command) {
+		args = syncCodexModelArg(args, model)
+	}
 	return &client{
 		name:     name,
 		model:    model,
@@ -491,6 +494,29 @@ func isCodexExecArgs(args []string) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(args[0]), "exec")
+}
+
+// syncCodexModelArg rewrites --model so a Codex exec launch always uses the
+// selected model rather than a stale preset default. Only Codex exec
+// invocations are touched; other CLIs keep their args verbatim.
+func syncCodexModelArg(args []string, model string) []string {
+	model = strings.TrimSpace(model)
+	if model == "" || !isCodexExecArgs(args) {
+		return args
+	}
+	out := append([]string(nil), args...)
+	replaced := false
+	for i := 0; i+1 < len(out); i++ {
+		if strings.EqualFold(strings.TrimSpace(out[i]), "--model") {
+			out[i+1] = model
+			replaced = true
+			i++
+		}
+	}
+	if !replaced {
+		out = append(out, "--model", model)
+	}
+	return out
 }
 
 func hasArg(args []string, needle string) bool {
