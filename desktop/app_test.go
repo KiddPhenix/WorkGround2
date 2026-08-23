@@ -2017,6 +2017,7 @@ func TestModelsForTabOnlyListsProviderAccessWhenConfigured(t *testing.T) {
 	for _, want := range []string{
 		"deepseek/deepseek-v4-flash",
 		"deepseek/deepseek-v4-pro",
+		"deepseek/deepseek-v4-flash-vision-exp",
 		"mimo-pro/mimo-v2.5-pro",
 		"mimo-pro/mimo-v2.5",
 	} {
@@ -2032,8 +2033,8 @@ func TestModelsForTabOnlyListsProviderAccessWhenConfigured(t *testing.T) {
 			t.Fatalf("Models() refs = %+v, should not include hidden provider %s", models, hidden)
 		}
 	}
-	if len(models) != 4 {
-		t.Fatalf("Models() len = %d, want 4: %+v", len(models), models)
+	if len(models) != 5 {
+		t.Fatalf("Models() len = %d, want 5: %+v", len(models), models)
 	}
 }
 
