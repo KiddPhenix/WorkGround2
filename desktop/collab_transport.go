@@ -25,8 +25,9 @@ const (
 	collaborationHeartbeatInterval = 95 * time.Second
 	collaborationMemberStaleAfter  = 4 * collaborationHeartbeatInterval
 	// A stream can end briefly without invalidating its connection session.
-	// Give the active peer several in-place stream retries before considering a
-	// different configured route; a route switch performs a remote Join.
+	// Give the active peer several in-place stream retries before replacing it.
+	// Replacement prefers another route, but must redial the active route when
+	// it is the only one: a socket broken by sleep/wake cannot recover in place.
 	collaborationRouteFailoverAttempts = 3
 )
 
@@ -849,6 +850,9 @@ func (c *desktopCollaboration) connectionLoop(ctx context.Context, conn *collabo
 func (c *desktopCollaboration) startRouteFailover(failed *collaborationConnection) bool {
 	routes := collaborationAlternativeRoutes(failed)
 	if len(routes) == 0 {
+		routes = collaborationActiveRoutes(failed)
+	}
+	if len(routes) == 0 {
 		return false
 	}
 	failed.failoverMu.Lock()
@@ -860,6 +864,27 @@ func (c *desktopCollaboration) startRouteFailover(failed *collaborationConnectio
 	failed.failoverMu.Unlock()
 	go c.failoverConnection(failed, routes)
 	return true
+}
+
+func collaborationActiveRoutes(conn *collaborationConnection) []CollaborationRouteInput {
+	if conn == nil {
+		return nil
+	}
+	routes := make([]CollaborationRouteInput, 0, len(conn.routes))
+	seen := map[string]struct{}{}
+	for _, state := range conn.routes {
+		if !state.Active {
+			continue
+		}
+		route := state.CollaborationRouteInput
+		key := collaborationRouteIdentity(route)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		routes = append(routes, route)
+	}
+	return routes
 }
 
 func collaborationAlternativeRoutes(failed *collaborationConnection) []CollaborationRouteInput {

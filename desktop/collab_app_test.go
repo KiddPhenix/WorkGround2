@@ -2824,6 +2824,56 @@ func TestCollaborationStreamFailoverJoinsDifferentRouteOnce(t *testing.T) {
 	c.close()
 }
 
+func TestCollaborationStreamFailureRedialsOnlyActiveRoute(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	peer := &scriptedStreamPeer{
+		streamErrors: []error{
+			&collaborationTransportError{message: "write Relay frame: broken pipe 1", retryable: true},
+			&collaborationTransportError{message: "write Relay frame: broken pipe 2", retryable: true},
+			&collaborationTransportError{message: "write Relay frame: broken pipe 3", retryable: true},
+		},
+		streamCalled: make(chan int, 8),
+	}
+	conn := testConnection(peer, "client", "session-a")
+	conn.routes = []CollaborationRouteState{{
+		CollaborationRouteInput: CollaborationRouteInput{ID: "relay", Kind: "relay", RelayID: "public", URL: "wss://relay.example.test", TunnelID: "tunnel-a"},
+		Status:                  "connected",
+		Active:                  true,
+	}}
+	c.conn = conn
+	c.state = CollaborationState{Status: "connected", Mode: "client", Room: conn.room, MemberID: conn.memberID, AgentID: conn.agentID, SessionID: conn.sessionID, Snapshot: conn.initialSnapshot}
+	c.streamRetryDelay = func(int, uint64) time.Duration { return time.Millisecond }
+	joined := make(chan JoinCollaborationRoomInput, 1)
+	var joins atomic.Int32
+	c.openJoin = func(_ context.Context, input JoinCollaborationRoomInput, _ collab.MemberDescriptor, resume string) (*collaborationConnection, error) {
+		joins.Add(1)
+		if resume != conn.connectionSession {
+			t.Fatalf("resume session = %q, want %q", resume, conn.connectionSession)
+		}
+		joined <- input
+		replacement := testConnection(&fakeCollaborationPeer{}, "client", input.SessionID)
+		replacement.routes = []CollaborationRouteState{{CollaborationRouteInput: input.Routes[0], Status: "connected", Active: true}}
+		return replacement, nil
+	}
+	c.opMu.Lock()
+	c.ensureConnectionLoop(conn)
+	c.opMu.Unlock()
+	var input JoinCollaborationRoomInput
+	select {
+	case input = <-joined:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for active Relay redial")
+	}
+	if len(input.Routes) != 1 || input.Routes[0].URL != "wss://relay.example.test" {
+		t.Fatalf("redial routes = %+v, want active Relay", input.Routes)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if joins.Load() != 1 {
+		t.Fatalf("active Relay redial joined %d times, want once", joins.Load())
+	}
+	c.close()
+}
+
 func TestCollaborationAutomaticUpdatePreservesManualOutboxFailures(t *testing.T) {
 	_, c, _ := newTestDesktopCollaboration(t)
 	peer := &fakeCollaborationPeer{}
