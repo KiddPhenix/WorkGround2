@@ -1225,7 +1225,12 @@ func collaborationEventsAffectFiles(events []collab.RoomEvent) bool {
 		return true
 	}
 	for _, value := range events {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value.Type)), "file.") {
+		eventType := strings.ToLower(strings.TrimSpace(value.Type))
+		// File offers obviously change auto-receive eligibility. Member presence
+		// changes matter too: a transfer stuck in waiting_sender because the file
+		// owner was offline must re-evaluate the moment the owner comes online
+		// (member.online / member.joined / member.rejoined) or leaves.
+		if strings.HasPrefix(eventType, "file.") || strings.HasPrefix(eventType, "member") {
 			return true
 		}
 	}

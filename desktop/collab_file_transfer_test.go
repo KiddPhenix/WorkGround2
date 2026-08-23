@@ -510,6 +510,82 @@ func TestAutoReceiveRetriesWaitingSender(t *testing.T) {
 	}
 }
 
+func TestAutoReceiveResumesWhenOwnerComesOnline(t *testing.T) {
+	offer, peer := testFileOffer("late-owner", "late.bin", "other", []byte("late-data"), 4)
+	c := testAutoReceiveRuntime(t.TempDir(), "", offer, peer)
+	c.state.Snapshot.Room.ID = "room"
+	c.state.Snapshot.LatestSequence = 0
+	c.state.Snapshot.Members = []collab.Member{{ID: "other", Name: "Other", Status: collab.MemberOffline, Agent: collab.AgentDescriptor{ID: "other-agent", Name: "Agent", Status: collab.AgentOffline}}}
+
+	safe, err := sanitizeRoomAttachmentName(offer.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest, rel, err := roomAttachmentDestination(c.ownerWorkspaceRoot, c.roomInstance, offer.ID, safe, offer.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transfer := transferForTestOffer(offer, c.state.Room, dest, rel)
+	transfer.Status, transfer.Transferred, transfer.Retryable, transfer.AutoBlocked = "waiting_sender", 0, true, false
+	for index := range transfer.Completed {
+		transfer.Completed[index] = false
+	}
+	c.transfers[offer.ID] = transfer
+	c.rebuildFileOffersLocked(c.state.Snapshot)
+
+	// The file owner comes online. This is a member presence event, not a
+	// file.* event, so it must still re-evaluate pending automatic transfers.
+	member := collab.Member{ID: "other", Name: "Other", Status: collab.MemberOnline, Agent: collab.AgentDescriptor{ID: "other-agent", Name: "Agent", Status: collab.AgentIdle}}
+	payload, err := json.Marshal(member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.markConnected(c.conn, nil, []collab.RoomEvent{{Type: "member.online", Room: "room", Sequence: 1, Payload: payload}})
+
+	waitForTransferStatus(t, c, offer.ID, "completed")
+}
+
+func TestAutoReceiveMemberPresenceRespectsPause(t *testing.T) {
+	offer, peer := testFileOffer("paused-late", "paused.bin", "other", []byte("paused"), 4)
+	c := testAutoReceiveRuntime(t.TempDir(), "", offer, peer)
+	c.state.Snapshot.Room.ID = "room"
+	c.state.Snapshot.LatestSequence = 0
+
+	safe, err := sanitizeRoomAttachmentName(offer.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest, rel, err := roomAttachmentDestination(c.ownerWorkspaceRoot, c.roomInstance, offer.ID, safe, offer.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transfer := transferForTestOffer(offer, c.state.Room, dest, rel)
+	transfer.Status, transfer.Transferred, transfer.PausedByUser, transfer.Retryable = "paused", 0, true, true
+	for index := range transfer.Completed {
+		transfer.Completed[index] = false
+	}
+	c.transfers[offer.ID] = transfer
+	c.rebuildFileOffersLocked(c.state.Snapshot)
+
+	member := collab.Member{ID: "other", Name: "Other", Status: collab.MemberOnline, Agent: collab.AgentDescriptor{ID: "other-agent", Name: "Agent", Status: collab.AgentIdle}}
+	payload, err := json.Marshal(member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.markConnected(c.conn, nil, []collab.RoomEvent{{Type: "member.online", Room: "room", Sequence: 1, Payload: payload}})
+
+	time.Sleep(20 * time.Millisecond)
+	peer.mu.Lock()
+	calls := peer.manifestCalls
+	peer.mu.Unlock()
+	c.mu.RLock()
+	status := c.transfers[offer.ID].Status
+	c.mu.RUnlock()
+	if calls != 0 || status != "paused" {
+		t.Fatalf("paused transfer resumed by member presence: calls=%d status=%q", calls, status)
+	}
+}
+
 func TestAutoReceiveRespectsUserPause(t *testing.T) {
 	offer, peer := testFileOffer("paused", "paused.bin", "other", []byte("paused"), 4)
 	c := testAutoReceiveRuntime(t.TempDir(), "", offer, peer)
