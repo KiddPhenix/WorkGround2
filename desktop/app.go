@@ -153,14 +153,19 @@ type App struct {
 	// snapshot and the later SaveTo call silently overwrite the earlier change.
 	configWriteMu sync.Mutex
 
-	forceQuit           atomic.Bool
-	backgroundMaximised atomic.Bool
-	trayReady           bool
-	tray                *desktopTray
+	forceQuit                  atomic.Bool
+	backgroundMaximised        atomic.Bool
+	nativeWindowActionInFlight atomic.Bool
+	trayReady                  bool
+	tray                       *desktopTray
 
 	// widgetModeEnter overrides the shared widget entry transition used by
 	// startup and close handling (test-only seam; nil uses EnterWidgetMode).
 	widgetModeEnter func() error
+
+	// windowMinimise overrides the native minimize fallback used when a
+	// platform window action races disabling widget mode (test-only seam).
+	windowMinimise func()
 
 	// widgetTaskbarToggle overrides the native taskbar-button switch used by
 	// widget-mode transitions (test-only seam; nil uses the platform impl,
@@ -560,7 +565,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	if a.forceQuit.Swap(false) || consumeSystemQuitRequested() {
 		return false
 	}
-	if a.closeToWidget() {
+	if a.dismissToWidget() {
 		return true
 	}
 	cfg, _, err := a.loadDesktopUserConfigForEdit()
@@ -580,19 +585,19 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	return false
 }
 
-// closeToWidget switches the window into widget mode instead of closing, when
-// the widget feature is enabled. It reuses EnterWidgetMode so the transition
-// shares one idempotent code path with the UI and repeated closes are harmless.
-// Returns true when the close was absorbed by the widget. A disabled widget
-// quietly keeps the configured close policy; transition failures are logged
-// before that same fallback so the app never gets stuck.
-func (a *App) closeToWidget() bool {
-	entered, err := a.enterWidgetIfEnabled()
-	if err != nil {
-		slog.Error("desktop: enter widget mode on close failed, falling back to default close behavior", "err", err)
+// dismissToWidget gives native close controls the same semantics as the
+// Windows frameless Dismiss button: remove the active retained icon, then keep
+// the application alive in widget mode.
+func (a *App) dismissToWidget() bool {
+	enabled, _, err := a.desktopWidgetPreferences()
+	if err != nil || !enabled {
 		return false
 	}
-	return entered
+	if err := a.dismissMainWindowToWidget(); err != nil {
+		slog.Error("desktop: dismiss active icon on close failed, falling back to default close behavior", "err", err)
+		return false
+	}
+	return true
 }
 
 func (a *App) enterWidgetIfEnabled() (bool, error) {
@@ -887,6 +892,7 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	restoreNativeWindowControls()
 	a.stopDecisionRuntime()
 	if a.runHub != nil {
 		a.runHub.close()
@@ -961,6 +967,12 @@ func (a *App) domReady(_ context.Context) {
 
 	if ok && state.Maximised {
 		runtime.WindowMaximise(a.ctx)
+	}
+
+	if widgetEnabled, _, prefErr := a.desktopWidgetPreferences(); prefErr != nil {
+		slog.Error("desktop: read widget settings for native window controls failed", "err", prefErr)
+	} else if controlErr := configureNativeWindowControls(a, widgetEnabled); controlErr != nil {
+		slog.Error("desktop: configure native window controls failed", "err", controlErr)
 	}
 
 	// Enter widget mode before the first WindowShow so the app opens directly

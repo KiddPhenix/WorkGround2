@@ -5393,10 +5393,24 @@ export default function App() {
     });
   }, []);
 
-  // Ctrl+M / Cmd+M toggles widget mode bidirectionally.
+  // Native macOS traffic-light actions run outside React. Surface a failed
+  // widget transition through the same toast path as the Windows controls.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.runtime) return;
+    return window.runtime.EventsOn("window:action-error", (payload: unknown) => {
+      reportWidgetError(payload);
+    });
+  }, [reportWidgetError]);
+
+  // macOS Cmd+M belongs to the native Window menu, whose AppKit bridge routes
+  // it through the same guarded action as the yellow traffic-light button.
+  // Keep the frontend shortcut on Windows/Linux only so one keypress cannot
+  // trigger both the menu callback and the React coordinator.
+  const nativeMacWidgetShortcut = typeof document !== "undefined"
+    && document.documentElement.getAttribute("data-platform") === "darwin";
   useGlobalShortcut("widgetMode.toggle", () => {
     void widgetCoordinator.toggle().catch(reportWidgetError);
-  }, [reportWidgetError, widgetCoordinator], widgetEnabled || widgetMode);
+  }, [reportWidgetError, widgetCoordinator], (widgetEnabled || widgetMode) && !nativeMacWidgetShortcut);
 
   // Widget mode: init from backend, then subscribe to authoritative widget:mode events.
   useEffect(() => {
