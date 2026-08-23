@@ -225,8 +225,26 @@ func (a *App) applyWidgetSessionName(tabID, name string) error {
 	if name == "" {
 		return errors.New("会话名称为空")
 	}
+	tabID = strings.TrimSpace(tabID)
 	a.mu.RLock()
-	tab := a.tabs[strings.TrimSpace(tabID)]
+	tab := a.tabs[tabID]
+	if tab == nil {
+		a.mu.RUnlock()
+		return errors.New("新会话不存在")
+	}
+	unindexed := strings.TrimSpace(tab.TopicID) == "" && strings.TrimSpace(tab.currentSessionPath()) != ""
+	a.mu.RUnlock()
+	if unindexed {
+		// A workspace can retain a transient blank after its last Topic is
+		// removed. Normal composer sends index that blank on the first user
+		// turn; widget QuickStart names the Session before submitting, so it
+		// must perform the same transition here instead of retrying an
+		// incomplete TabID forever.
+		a.ensureTabTopicIndexedForUserTurn(tab)
+	}
+
+	a.mu.RLock()
+	tab = a.tabs[tabID]
 	if tab == nil {
 		a.mu.RUnlock()
 		return errors.New("新会话不存在")

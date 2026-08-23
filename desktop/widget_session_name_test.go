@@ -5,7 +5,10 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+
+	"workground2/internal/agent"
 )
 
 type fakeWidgetSessionNameGenerator struct {
@@ -121,5 +124,48 @@ func TestApplyWidgetSessionNameConvergesTopicSessionAndRuntime(t *testing.T) {
 	}
 	if got := loadSessionTitles(filepath.Dir(nextPath))[filepath.Base(nextPath)]; got != "命名会话" {
 		t.Fatalf("rotated session title = %q, want 命名会话", got)
+	}
+}
+
+func TestApplyWidgetSessionNameIndexesTransientBlank(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	if err := addProject(root, ""); err != nil {
+		t.Fatal(err)
+	}
+	path, err := createEmptySessionFile(desktopSessionDir(root), "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab := &WorkspaceTab{
+		ID: "transient-blank", Scope: "project", WorkspaceRoot: root,
+		SessionPath: path,
+	}
+	app := NewApp()
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+
+	if err := app.applyWidgetSessionName(tab.ID, "小组件任务"); err != nil {
+		t.Fatalf("applyWidgetSessionName: %v", err)
+	}
+	if strings.TrimSpace(tab.TopicID) == "" {
+		t.Fatal("widget naming did not index the transient blank")
+	}
+	projects := loadProjectsFile()
+	if len(projects.Projects) != 1 || !containsDesktopString(projects.Projects[0].Topics, tab.TopicID) {
+		t.Fatalf("indexed topic %q missing from project: %#v", tab.TopicID, projects)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta(%q): ok=%v err=%v", path, ok, err)
+	}
+	if meta.TopicID != tab.TopicID || meta.TopicTitle != "小组件任务" {
+		t.Fatalf("session metadata = %+v, want topic %q title 小组件任务", meta, tab.TopicID)
+	}
+	if err := app.applyWidgetSessionName(tab.ID, "小组件任务"); err != nil {
+		t.Fatalf("idempotent retry: %v", err)
+	}
+	if got := len(loadProjectsFile().Projects[0].Topics); got != 1 {
+		t.Fatalf("idempotent retry indexed %d topics, want 1", got)
 	}
 }
