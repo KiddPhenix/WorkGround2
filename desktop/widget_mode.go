@@ -344,9 +344,9 @@ func (a *App) applyWidgetGeometry(state WidgetWindowState, alwaysOnTop bool) err
 	if err := setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y); err != nil {
 		return err
 	}
-	return a.applyWidgetRegion(func() error {
+	return errors.Join(setDesktopIconNativeMode(false), a.applyWidgetRegion(func() error {
 		return setWidgetWindowRegion(state.Width, state.Height)
-	})
+	}))
 }
 
 func (a *App) applyDesktopIconGeometry(state WidgetWindowState, alwaysOnTop bool) error {
@@ -357,6 +357,9 @@ func (a *App) applyDesktopIconGeometry(state WidgetWindowState, alwaysOnTop bool
 	runtime.WindowSetMinSize(a.ctx, desktopIconMinWidth, desktopIconMinHeight)
 	runtime.WindowSetAlwaysOnTop(a.ctx, alwaysOnTop)
 	if err := setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y); err != nil {
+		return err
+	}
+	if err := setDesktopIconNativeMode(true); err != nil {
 		return err
 	}
 	// Keep the full transparent surface available until React reports the first
@@ -481,7 +484,7 @@ func (a *App) restoreMainGeometry(state DesktopWindowState, ok bool) error {
 		return a.widgetWindowOps.restoreMain(state, ok)
 	}
 	runtime.WindowSetAlwaysOnTop(a.ctx, false)
-	regionErr := a.applyWidgetRegion(clearWidgetWindowRegion)
+	regionErr := errors.Join(setDesktopIconNativeMode(false), a.applyWidgetRegion(clearWidgetWindowRegion))
 	runtime.WindowSetMinSize(a.ctx, 760, 480)
 	if !ok {
 		runtime.WindowSetSize(a.ctx, 1280, 800)

@@ -551,6 +551,10 @@ func clearWidgetWindowRegion() error {
 	return redrawWidgetWindow(hwnd)
 }
 
+// Windows already gets its transparent appearance and input shape from the
+// Wails translucency flags plus HRGN clipping, so it needs no extra mode hook.
+func setDesktopIconNativeMode(bool) error { return nil }
+
 // widgetTaskbarOps are the raw window operations a taskbar style switch needs.
 // The production wiring talks to user32; tests inject fakes so no real Explorer
 // or taskbar is touched.

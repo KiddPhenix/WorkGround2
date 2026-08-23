@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type CSSProperties, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { ShellExpandProvider, useShellExpand } from "./lib/shellExpand";
 import gsap from "gsap";
@@ -169,6 +169,7 @@ import {
   normalizeThemePreference,
   normalizeThemeStyleForTheme,
   readLegacyThemePreference,
+  syncNativeIconWidgetBackground,
   type Theme,
 } from "./lib/theme";
 import { applyTextSize, DEFAULT_TEXT_SIZE, getTextSize, nextTextSize } from "./lib/textSize";
@@ -5415,6 +5416,12 @@ export default function App() {
       unsubscribe?.();
     };
   }, [reportWidgetError, widgetCoordinator]);
+
+  // Run before React paints the new mode so a macOS theme update cannot expose
+  // the native opaque background behind the otherwise transparent icon canvas.
+  useLayoutEffect(() => {
+    syncNativeIconWidgetBackground(widgetMode);
+  }, [widgetMode]);
 
   return (
 	<>

@@ -1,12 +1,17 @@
+:root[data-icon-widget="active"],
 :root:has(.desktop-icon-mode) {
-  background: transparent;
+  background: transparent !important;
+  background-color: transparent !important;
   color-scheme: dark;
 }
 
+:root[data-icon-widget="active"] body,
+:root[data-icon-widget="active"] body #root,
 body:has(.desktop-icon-mode),
 body:has(.desktop-icon-mode) #root {
   overflow: clip;
   background: transparent !important;
+  background-color: transparent !important;
 }
 
 /* Icons-only mode keeps MainApp mounted (React state stays alive) but fully

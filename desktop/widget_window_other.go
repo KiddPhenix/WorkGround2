@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package main
 
@@ -29,6 +29,8 @@ func setWidgetWindowRegion(width, height int) error { return nil }
 func clearWidgetWindowRegion() error { return nil }
 
 func setDesktopIconHitRegions([]DesktopIconRect) error { return nil }
+
+func setDesktopIconNativeMode(bool) error { return nil }
 
 func nativeDefaultDesktopIconWindowState(context.Context) (WidgetWindowState, bool) {
 	return WidgetWindowState{}, false

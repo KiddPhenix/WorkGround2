@@ -54,6 +54,19 @@ ok(
   themeSource.includes("if (autoThemeMediaQuery || typeof window"),
   "reapplying auto does not register duplicate listeners",
 );
+ok(
+  themeSource.includes("nativeIconWidgetTransparent") &&
+    themeSource.includes('getAttribute("data-platform") === "darwin"') &&
+    themeSource.includes("Wails 2.12 serialises alpha as `a || 255`") &&
+    !themeSource.includes("WindowSetBackgroundColour(0, 0, 0, 0)"),
+  "macOS icon widget leaves transparent native background ownership to AppKit",
+);
+ok(
+  themeSource.includes('setAttribute("data-icon-widget", "active")') &&
+    themeSource.includes('node.style.setProperty("background", "transparent", "important")') &&
+    themeSource.includes('node.style.removeProperty("background")'),
+  "icon widget forces and restores an explicit transparent document canvas",
+);
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

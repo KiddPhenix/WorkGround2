@@ -48,6 +48,7 @@ const AUTO_THEME_MEDIA_QUERY = "(prefers-color-scheme: light)";
 let currentTheme: Theme = DEFAULT_THEME;
 let currentThemeStyle: ThemeStyle = DEFAULT_THEME_STYLE;
 let autoThemeMediaQuery: MediaQueryList | null = null;
+let nativeIconWidgetTransparent = false;
 
 export function normalizeThemePreference(value: unknown): Theme {
   if (typeof value === "object" && value !== null) {
@@ -206,9 +207,41 @@ export function initTheme(): void {
   applyTheme(theme, getThemeStyle(theme), { persist: false });
 }
 
+// macOS keeps one WKWebView-backed NSWindow for both the normal app and the
+// desktop icon widget. The native layer clears that window on entry; this
+// frontend guard prevents theme initialization or an auto-theme change from
+// painting an opaque colour back into the transparent icon canvas.
+export function syncNativeIconWidgetBackground(active: boolean): void {
+  nativeIconWidgetTransparent = active;
+  if (typeof document !== "undefined") {
+    const canvasNodes = [document.documentElement, document.body, document.getElementById("root")]
+      .filter((node): node is HTMLElement => node instanceof HTMLElement);
+    if (active) {
+      document.documentElement.setAttribute("data-icon-widget", "active");
+      for (const node of canvasNodes) {
+        node.style.setProperty("background", "transparent", "important");
+        node.style.setProperty("background-color", "transparent", "important");
+      }
+    } else {
+      document.documentElement.removeAttribute("data-icon-widget");
+      for (const node of canvasNodes) {
+        node.style.removeProperty("background");
+        node.style.removeProperty("background-color");
+      }
+    }
+  }
+  syncNativeWindowBackground(currentTheme);
+}
+
 function syncNativeWindowBackground(theme: Theme): void {
   const runtime = typeof window !== "undefined" ? window.runtime : undefined;
   if (!runtime?.WindowSetBackgroundColour) return;
+  if (nativeIconWidgetTransparent && document.documentElement.getAttribute("data-platform") === "darwin") {
+    // Wails 2.12 serialises alpha as `a || 255`, so a requested zero becomes
+    // fully opaque and repaints the clear AppKit window black. The Darwin
+    // native widget helper owns the transparent window background instead.
+    return;
+  }
   const resolved = getResolvedTheme(theme);
   if (resolved === "light") {
     // Light shell: matches graphite --bg (#f4f3ef).
