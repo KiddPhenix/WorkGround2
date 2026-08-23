@@ -32,6 +32,10 @@ func setDesktopIconHitRegions([]DesktopIconRect) error { return nil }
 
 func setDesktopIconNativeMode(bool) error { return nil }
 
+func configureNativeWindowControls(*App, bool) error { return nil }
+
+func restoreNativeWindowControls() {}
+
 func nativeDefaultDesktopIconWindowState(context.Context) (WidgetWindowState, bool) {
 	return WidgetWindowState{}, false
 }

@@ -9,16 +9,57 @@ package main
 int workGround2SetDesktopIconMode(int active);
 int workGround2SetDesktopIconHitRegions(const int32_t *rects, int count);
 int workGround2CurrentWorkArea(int *width, int *height);
+int workGround2ConfigureNativeWindowControls(int enabled);
+void workGround2RestoreNativeWindowControls(void);
 */
 import "C"
 
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+var darwinNativeWindowControlApp atomic.Pointer[App]
+
+//export workGround2HandleNativeWindowAction
+func workGround2HandleNativeWindowAction(action C.int) {
+	app := darwinNativeWindowControlApp.Load()
+	if app == nil {
+		return
+	}
+	app.requestNativeWindowAction(nativeWindowAction(action))
+}
+
+func configureNativeWindowControls(app *App, enabled bool) error {
+	if enabled {
+		darwinNativeWindowControlApp.Store(app)
+	}
+	value := C.int(0)
+	if enabled {
+		value = 1
+	}
+	if C.workGround2ConfigureNativeWindowControls(value) == 0 {
+		if enabled {
+			darwinNativeWindowControlApp.Store(nil)
+		}
+		return fmt.Errorf("configure macOS native window controls: native window unavailable")
+	}
+	if !enabled {
+		darwinNativeWindowControlApp.Store(nil)
+	}
+	return nil
+}
+
+func restoreNativeWindowControls() {
+	if darwinNativeWindowControlApp.Swap(nil) == nil {
+		return
+	}
+	C.workGround2RestoreNativeWindowControls()
+}
 
 func setDesktopWindowBounds(ctx context.Context, width, height, x, y int) error {
 	runtime.WindowSetSize(ctx, width, height)

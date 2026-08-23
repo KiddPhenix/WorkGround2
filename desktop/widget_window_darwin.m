@@ -4,6 +4,8 @@
 #import <WebKit/WebKit.h>
 #import <stdint.h>
 
+extern void workGround2HandleNativeWindowAction(int action);
+
 static NSWindow *workGround2WidgetWindow;
 static NSColor *workGround2SavedBackground;
 static NSArray<NSValue *> *workGround2HitRegions;
@@ -14,9 +16,27 @@ static BOOL workGround2SavedOpaque;
 static BOOL workGround2SavedShadow;
 static BOOL workGround2SavedIgnoresMouse;
 static BOOL workGround2SavedButtonHidden[3];
+static NSWindowStyleMask workGround2SavedStyleMask;
 static NSWindowTitleVisibility workGround2SavedTitleVisibility;
 static BOOL workGround2SavedTitlebarTransparent;
 static NSColor *workGround2SavedWebViewUnderPageBackground;
+static NSWindow *workGround2ControlWindow;
+static id workGround2WindowControlBridge;
+static id workGround2SavedMiniTarget;
+static id workGround2SavedCloseTarget;
+static SEL workGround2SavedMiniAction;
+static SEL workGround2SavedCloseAction;
+static NSString *workGround2SavedMiniToolTip;
+static NSString *workGround2SavedCloseToolTip;
+static NSString *workGround2SavedMiniAccessibilityLabel;
+static NSString *workGround2SavedCloseAccessibilityLabel;
+static NSString *workGround2SavedMiniAccessibilityHelp;
+static NSString *workGround2SavedCloseAccessibilityHelp;
+static NSMenuItem *workGround2MinimiseMenuItem;
+static id workGround2SavedMenuTarget;
+static SEL workGround2SavedMenuAction;
+static NSString *workGround2SavedMenuTitle;
+static BOOL workGround2NativeControlsInstalled;
 
 static WKWebView *workGround2FindWebView(NSView *view) {
     Class webViewClass = NSClassFromString(@"WKWebView");
@@ -121,6 +141,173 @@ static NSWindow *workGround2FindWindow(void) {
     return window;
 }
 
+static NSMenuItem *workGround2FindMinimiseMenuItem(NSMenu *menu) {
+    for (NSMenuItem *item in [menu itemArray]) {
+        if ([item action] == @selector(performMiniaturize:)) {
+            return item;
+        }
+        NSMenu *submenu = [item submenu];
+        if (submenu != nil) {
+            NSMenuItem *match = workGround2FindMinimiseMenuItem(submenu);
+            if (match != nil) {
+                return match;
+            }
+        }
+    }
+    return nil;
+}
+
+@interface WorkGround2NativeWindowControlBridge : NSObject
+- (void)minimiseToWidget:(id)sender;
+- (void)dismissToWidget:(id)sender;
+@end
+
+@implementation WorkGround2NativeWindowControlBridge
+- (void)minimiseToWidget:(id)sender {
+    (void)sender;
+    workGround2HandleNativeWindowAction(1);
+}
+
+- (void)dismissToWidget:(id)sender {
+    (void)sender;
+    workGround2HandleNativeWindowAction(2);
+}
+@end
+
+static void workGround2InstallMinimiseMenuItem(void) {
+    if (!workGround2NativeControlsInstalled || workGround2MinimiseMenuItem != nil || workGround2WindowControlBridge == nil) {
+        return;
+    }
+    NSMenuItem *menuItem = workGround2FindMinimiseMenuItem([NSApp mainMenu]);
+    if (menuItem == nil) {
+        return;
+    }
+    workGround2MinimiseMenuItem = [menuItem retain];
+    workGround2SavedMenuTarget = [[menuItem target] retain];
+    workGround2SavedMenuAction = [menuItem action];
+    workGround2SavedMenuTitle = [[menuItem title] retain];
+    [menuItem setTarget:workGround2WindowControlBridge];
+    [menuItem setAction:@selector(minimiseToWidget:)];
+    [menuItem setTitle:@"收起到小组件"];
+}
+
+static void workGround2RestoreNativeWindowControlsOnMain(void) {
+    if (!workGround2NativeControlsInstalled) {
+        return;
+    }
+    NSButton *mini = [workGround2ControlWindow standardWindowButton:NSWindowMiniaturizeButton];
+    NSButton *close = [workGround2ControlWindow standardWindowButton:NSWindowCloseButton];
+    [mini setTarget:workGround2SavedMiniTarget];
+    [mini setAction:workGround2SavedMiniAction];
+    [mini setToolTip:workGround2SavedMiniToolTip];
+    [mini setAccessibilityLabel:workGround2SavedMiniAccessibilityLabel];
+    [mini setAccessibilityHelp:workGround2SavedMiniAccessibilityHelp];
+    [close setTarget:workGround2SavedCloseTarget];
+    [close setAction:workGround2SavedCloseAction];
+    [close setToolTip:workGround2SavedCloseToolTip];
+    [close setAccessibilityLabel:workGround2SavedCloseAccessibilityLabel];
+    [close setAccessibilityHelp:workGround2SavedCloseAccessibilityHelp];
+    if (workGround2MinimiseMenuItem != nil) {
+        [workGround2MinimiseMenuItem setTarget:workGround2SavedMenuTarget];
+        [workGround2MinimiseMenuItem setAction:workGround2SavedMenuAction];
+        [workGround2MinimiseMenuItem setTitle:workGround2SavedMenuTitle];
+    }
+
+    [workGround2SavedMiniTarget release];
+    [workGround2SavedCloseTarget release];
+    [workGround2SavedMiniToolTip release];
+    [workGround2SavedCloseToolTip release];
+    [workGround2SavedMiniAccessibilityLabel release];
+    [workGround2SavedCloseAccessibilityLabel release];
+    [workGround2SavedMiniAccessibilityHelp release];
+    [workGround2SavedCloseAccessibilityHelp release];
+    [workGround2MinimiseMenuItem release];
+    [workGround2SavedMenuTarget release];
+    [workGround2SavedMenuTitle release];
+    [workGround2WindowControlBridge release];
+    [workGround2ControlWindow release];
+    workGround2SavedMiniTarget = nil;
+    workGround2SavedCloseTarget = nil;
+    workGround2SavedMiniToolTip = nil;
+    workGround2SavedCloseToolTip = nil;
+    workGround2SavedMiniAccessibilityLabel = nil;
+    workGround2SavedCloseAccessibilityLabel = nil;
+    workGround2SavedMiniAccessibilityHelp = nil;
+    workGround2SavedCloseAccessibilityHelp = nil;
+    workGround2MinimiseMenuItem = nil;
+    workGround2SavedMenuTarget = nil;
+    workGround2SavedMenuTitle = nil;
+    workGround2WindowControlBridge = nil;
+    workGround2ControlWindow = nil;
+    workGround2SavedMiniAction = NULL;
+    workGround2SavedCloseAction = NULL;
+    workGround2SavedMenuAction = NULL;
+    workGround2NativeControlsInstalled = NO;
+}
+
+int workGround2ConfigureNativeWindowControls(int enabled) {
+    __block int result = 1;
+    workGround2OnMainSync(^{
+        if (enabled == 0) {
+            workGround2RestoreNativeWindowControlsOnMain();
+            return;
+        }
+        NSWindow *window = workGround2FindWindow();
+        if (window == nil) {
+            result = 0;
+            return;
+        }
+        if (workGround2NativeControlsInstalled && workGround2ControlWindow == window) {
+            workGround2InstallMinimiseMenuItem();
+            return;
+        }
+        workGround2RestoreNativeWindowControlsOnMain();
+        NSButton *mini = [window standardWindowButton:NSWindowMiniaturizeButton];
+        NSButton *close = [window standardWindowButton:NSWindowCloseButton];
+        if (mini == nil || close == nil) {
+            result = 0;
+            return;
+        }
+
+        workGround2ControlWindow = [window retain];
+        workGround2WindowControlBridge = [WorkGround2NativeWindowControlBridge new];
+        workGround2SavedMiniTarget = [[mini target] retain];
+        workGround2SavedCloseTarget = [[close target] retain];
+        workGround2SavedMiniAction = [mini action];
+        workGround2SavedCloseAction = [close action];
+        workGround2SavedMiniToolTip = [[mini toolTip] retain];
+        workGround2SavedCloseToolTip = [[close toolTip] retain];
+        workGround2SavedMiniAccessibilityLabel = [[mini accessibilityLabel] retain];
+        workGround2SavedCloseAccessibilityLabel = [[close accessibilityLabel] retain];
+        workGround2SavedMiniAccessibilityHelp = [[mini accessibilityHelp] retain];
+        workGround2SavedCloseAccessibilityHelp = [[close accessibilityHelp] retain];
+
+        [mini setTarget:workGround2WindowControlBridge];
+        [mini setAction:@selector(minimiseToWidget:)];
+        [mini setToolTip:@"收起到小组件"];
+        [mini setAccessibilityLabel:@"收起到小组件"];
+        [mini setAccessibilityHelp:@"保留当前任务图标并切换到桌面小组件"];
+        [close setTarget:workGround2WindowControlBridge];
+        [close setAction:@selector(dismissToWidget:)];
+        [close setToolTip:@"Dismiss 当前任务并收起"];
+        [close setAccessibilityLabel:@"Dismiss 当前任务"];
+        [close setAccessibilityHelp:@"移除当前任务图标并切换到桌面小组件"];
+
+        workGround2NativeControlsInstalled = YES;
+        workGround2InstallMinimiseMenuItem();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            workGround2InstallMinimiseMenuItem();
+        });
+    });
+    return result;
+}
+
+void workGround2RestoreNativeWindowControls(void) {
+    workGround2OnMainSync(^{
+        workGround2RestoreNativeWindowControlsOnMain();
+    });
+}
+
 static void workGround2UpdateMouseGate(void) {
     NSWindow *window = workGround2WidgetWindow;
     if (!workGround2IconMode || window == nil || ![window isVisible] || [workGround2HitRegions count] == 0) {
@@ -136,6 +323,9 @@ static void workGround2UpdateMouseGate(void) {
     // existing mouse-gate timer cheaply repairs only an observed overwrite.
     if ([window isOpaque]) {
         [window setOpaque:NO];
+    }
+    if ([window styleMask] != NSWindowStyleMaskBorderless) {
+        [window setStyleMask:NSWindowStyleMaskBorderless];
     }
     if (!workGround2ColorIsTransparent([window backgroundColor])) {
         [window setBackgroundColor:[NSColor clearColor]];
@@ -221,6 +411,7 @@ int workGround2SetDesktopIconMode(int active) {
             workGround2SavedOpaque = [window isOpaque];
             workGround2SavedShadow = [window hasShadow];
             workGround2SavedIgnoresMouse = [window ignoresMouseEvents];
+            workGround2SavedStyleMask = [window styleMask];
             workGround2SavedTitleVisibility = [window titleVisibility];
             workGround2SavedTitlebarTransparent = [window titlebarAppearsTransparent];
             NSWindowButton buttons[3] = { NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton };
@@ -231,6 +422,10 @@ int workGround2SetDesktopIconMode(int active) {
             }
 
             workGround2IconMode = YES;
+            // A transparent titled NSWindow still paints a one-pixel rounded
+            // theme-frame edge. Borderless removes that final native chrome;
+            // the original mask is restored when leaving widget mode.
+            [window setStyleMask:NSWindowStyleMaskBorderless];
             [window setOpaque:NO];
             [window setBackgroundColor:[NSColor clearColor]];
             [window setHasShadow:NO];
@@ -250,6 +445,7 @@ int workGround2SetDesktopIconMode(int active) {
         workGround2StopMouseGate();
         if (window != nil) {
             workGround2RestoreWebViewUnderPageBackground(window);
+            [window setStyleMask:workGround2SavedStyleMask];
             [window setIgnoresMouseEvents:workGround2SavedIgnoresMouse];
             [window setOpaque:workGround2SavedOpaque];
             [window setBackgroundColor:workGround2SavedBackground ?: [NSColor windowBackgroundColor]];

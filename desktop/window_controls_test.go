@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"workground2/internal/config"
 )
 
 func newDismissWindowTestApp(t *testing.T, kept map[string]desktopIconKept) *App {
@@ -28,6 +31,87 @@ func newDismissWindowTestApp(t *testing.T, kept map[string]desktopIconKept) *App
 		},
 	}
 	return app
+}
+
+func TestNativeMinimiseEntersWidgetWithoutDismissingActiveIcon(t *testing.T) {
+	app := newDismissWindowTestApp(t, map[string]desktopIconKept{
+		"task:tab-active": {
+			ItemID: "task:tab-active", SourceID: "tab-active", SessionID: "session-active", Title: "active",
+		},
+	})
+	entered := 0
+	app.widgetModeEnter = func() error { entered++; return nil }
+
+	if err := app.performNativeWindowAction(nativeWindowActionMinimise); err != nil {
+		t.Fatalf("performNativeWindowAction(minimise): %v", err)
+	}
+	if entered != 1 {
+		t.Fatalf("widget entry calls = %d, want 1", entered)
+	}
+	if _, ok := app.iconWidgetState.Kept["task:tab-active"]; !ok {
+		t.Fatal("minimise-to-widget removed the active icon")
+	}
+}
+
+func TestNativeMinimiseFallsBackWhenWidgetDisabled(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	if err := userCfg.SetDesktopWidgetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	minimised := 0
+	app.windowMinimise = func() { minimised++ }
+	app.widgetModeEnter = func() error {
+		t.Fatal("disabled widget must not enter widget mode")
+		return nil
+	}
+
+	if err := app.performNativeWindowAction(nativeWindowActionMinimise); err != nil {
+		t.Fatalf("performNativeWindowAction(minimise): %v", err)
+	}
+	if minimised != 1 {
+		t.Fatalf("native minimise calls = %d, want 1", minimised)
+	}
+}
+
+func TestNativeWindowActionCollapsesDuplicateClicks(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	app.widgetModeEnter = func() error {
+		close(started)
+		<-release
+		close(finished)
+		return nil
+	}
+
+	app.requestNativeWindowAction(nativeWindowActionMinimise)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first native window action did not start")
+	}
+	app.requestNativeWindowAction(nativeWindowActionDismiss)
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("native window action did not finish")
+	}
+	deadline := time.After(time.Second)
+	for app.nativeWindowActionInFlight.Load() {
+		select {
+		case <-time.After(5 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("native window action guard did not clear")
+		}
+	}
 }
 
 func TestDismissMainWindowRemovesMatchingSessionIconThenEntersWidget(t *testing.T) {
@@ -55,6 +139,26 @@ func TestDismissMainWindowRemovesMatchingSessionIconThenEntersWidget(t *testing.
 	}
 	if entered != 1 {
 		t.Fatalf("widget entry calls = %d, want 1", entered)
+	}
+}
+
+func TestBeforeCloseDismissesMatchingIconThenEntersWidget(t *testing.T) {
+	app := newDismissWindowTestApp(t, map[string]desktopIconKept{
+		"task:tab-active": {
+			ItemID: "task:tab-active", SourceID: "tab-active", SessionID: "session-active", Title: "active",
+		},
+	})
+	entered := 0
+	app.widgetModeEnter = func() error { entered++; return nil }
+
+	if prevent := app.beforeClose(context.Background()); !prevent {
+		t.Fatal("native close with widget enabled should be absorbed")
+	}
+	if entered != 1 {
+		t.Fatalf("widget entry calls = %d, want 1", entered)
+	}
+	if _, ok := app.iconWidgetState.Kept["task:tab-active"]; ok {
+		t.Fatal("native close did not dismiss the active icon")
 	}
 }
 

@@ -27,6 +27,61 @@ func TestDarwinNativeWidgetClearsAndRestoresWebViewUnderPageBackground(t *testin
 	}
 }
 
+func TestDarwinNativeWidgetRemovesAndRestoresWindowFrame(t *testing.T) {
+	source, err := os.ReadFile("widget_window_darwin.m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, contract := range []string{
+		`workGround2SavedStyleMask = [window styleMask]`,
+		`[window setStyleMask:NSWindowStyleMaskBorderless]`,
+		`[window setStyleMask:workGround2SavedStyleMask]`,
+		`[window setHasShadow:NO]`,
+	} {
+		if !strings.Contains(text, contract) {
+			t.Fatalf("Darwin native widget source missing borderless-window contract %q", contract)
+		}
+	}
+}
+
+func TestDarwinNativeTrafficLightsRouteWidgetActionsAndRestore(t *testing.T) {
+	source, err := os.ReadFile("widget_window_darwin.m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, contract := range []string{
+		`standardWindowButton:NSWindowMiniaturizeButton`,
+		`standardWindowButton:NSWindowCloseButton`,
+		`[mini setAction:@selector(minimiseToWidget:)]`,
+		`[close setAction:@selector(dismissToWidget:)]`,
+		`workGround2HandleNativeWindowAction(1)`,
+		`workGround2HandleNativeWindowAction(2)`,
+		`[menuItem setAction:@selector(minimiseToWidget:)]`,
+		`[mini setAction:workGround2SavedMiniAction]`,
+		`[close setAction:workGround2SavedCloseAction]`,
+		`[workGround2MinimiseMenuItem setAction:workGround2SavedMenuAction]`,
+		`setAccessibilityHelp:@"保留当前任务图标并切换到桌面小组件"`,
+		`setAccessibilityHelp:@"移除当前任务图标并切换到桌面小组件"`,
+	} {
+		if !strings.Contains(text, contract) {
+			t.Fatalf("Darwin native window controls missing contract %q", contract)
+		}
+	}
+	start := strings.Index(text, "int workGround2ConfigureNativeWindowControls")
+	if start < 0 {
+		t.Fatal("Darwin native window control install section not found")
+	}
+	endOffset := strings.Index(text[start:], "void workGround2RestoreNativeWindowControls")
+	if endOffset < 0 {
+		t.Fatal("Darwin native window control restore section not found")
+	}
+	if strings.Contains(text[start:start+endOffset], "NSWindowZoomButton") {
+		t.Fatal("Darwin bridge must not override the native green zoom button")
+	}
+}
+
 func TestDefaultDarwinDesktopIconWindowStateIsBoundedAndAnchored(t *testing.T) {
 	state := defaultDarwinDesktopIconWindowState(1512, 950)
 	if state.Width != desktopIconWidth || state.Height != desktopIconHeight {

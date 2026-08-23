@@ -2409,6 +2409,12 @@ func (a *App) SetDesktopWidgetEnabled(enabled bool) error {
 	if err := a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetEnabled(enabled) }); err != nil {
 		return err
 	}
+	if err := configureNativeWindowControls(a, enabled); err != nil {
+		slog.Error("desktop: update native window controls after widget setting changed", "enabled", enabled, "err", err)
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "window:action-error", fmt.Sprintf("更新原生窗口按钮失败：%v", err))
+		}
+	}
 	// Emit event so the frontend can hide/show the widget button without restart.
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "widget:enabled", enabled)
