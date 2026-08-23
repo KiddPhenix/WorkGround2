@@ -72,8 +72,9 @@ var builtinModelCapabilities = map[string][]ModelCapability{
 	"gemini-2.0-flash": {CapVision},
 
 	// ── DeepSeek ────────────────────────────────────────────
-	"deepseek-chat":     {},
-	"deepseek-reasoner": {CapReasoning},
+	"deepseek-chat":                {},
+	"deepseek-reasoner":            {CapReasoning},
+	"deepseek-v4-flash-vision-exp": {CapVision, CapReasoning},
 
 	// ── MiMo ────────────────────────────────────────────────
 	"mimo-v2.5":    {CapVision},
