@@ -1015,10 +1015,10 @@ func TestWidgetDelegationsAggregatesDeduplicatesAndSorts(t *testing.T) {
 	backgroundPath := filepath.Join(dir, "background.jsonl")
 	cliPath := filepath.Join(dir, "cli.jsonl")
 	writeRunningDelegationMeta(t, dir, "sa_20260102_030405_000000000_aabbccddeeff", "parent", "较早委托", time.Unix(10, 0))
-	writeRunningDelegationMeta(t, dir, "sa_20260102_030405_000000000_112233445566", "parent", "较新委托", time.Unix(20, 0))
+	writeRunningDelegationMeta(t, dir, "sa_20260102_030405_000000000_112233445566", "parent", "<response-language>\nFinal answer language preference: use Simplified Chinese.\n</response-language>\n\n较新委托", time.Unix(20, 0))
 	parent := widgetSource{meta: TabMeta{ID: "parent-tab", SessionID: "parent-session", Scope: "global", TopicID: "parent-topic", TopicTitle: "父 Session", SessionPath: parentPath, RunningWork: true}, sessionDir: dir, branchID: "parent"}
 	background := widgetSource{meta: TabMeta{ID: "background-tab", SessionID: "background-session", Scope: "global", TopicID: "background-topic", TopicTitle: "后台 Session", SessionPath: backgroundPath, RunningWork: true, BackgroundOnly: true, TurnStartedAt: time.Unix(30, 0).UnixMilli()}, sessionDir: dir, branchID: "background", requestText: "后台普通任务"}
-	cli := widgetSource{meta: TabMeta{ID: "cli-tab", SessionID: "cli-session", SessionSource: "cli", Scope: "global", TopicID: "cli-topic", TopicTitle: "CLI Session", SessionPath: cliPath, RunningWork: true, TurnStartedAt: time.Unix(40, 0).UnixMilli()}, sessionDir: dir, branchID: "cli", requestText: "外部 CLI 委托"}
+	cli := widgetSource{meta: TabMeta{ID: "cli-tab", SessionID: "cli-session", SessionSource: "cli", Scope: "global", TopicID: "cli-topic", TopicTitle: "CLI Session", SessionPath: cliPath, RunningWork: true, TurnStartedAt: time.Unix(40, 0).UnixMilli()}, sessionDir: dir, branchID: "cli", requestText: "<response-language>\nFinal answer language preference: use Simplified Chinese.\n</response-language>\n\n外部 CLI 委托"}
 	app := &App{}
 	items, counts, err := app.widgetDelegations([]widgetSource{parent, parent, background, cli})
 	if err != nil {
@@ -1032,6 +1032,9 @@ func TestWidgetDelegationsAggregatesDeduplicatesAndSorts(t *testing.T) {
 	}
 	if items[1].Content != "较新委托" || items[2].Content != "较早委托" {
 		t.Fatalf("delegation sort = %+v", items)
+	}
+	if items[0].Content != "外部 CLI 委托" {
+		t.Fatalf("CLI delegation content = %q, want transient instructions removed", items[0].Content)
 	}
 	if items[0].SessionRef == nil || items[0].SessionRef.SessionPath != cliPath || items[1].SessionRef == nil || items[1].SessionRef.SessionPath != parentPath || items[2].SessionRef == nil || items[2].SessionRef.SessionPath != parentPath {
 		t.Fatalf("delegation targets = %+v", items)

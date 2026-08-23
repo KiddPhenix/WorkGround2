@@ -841,7 +841,7 @@ func (a *App) widgetDelegations(sources []widgetSource) ([]DesktopIconDelegation
 			key := newWidgetSubagentKey(dir, run.ParentSession)
 			counts[key]++
 			parent, found := parents[key]
-			content := conciseWidgetText(strings.TrimSpace(run.Description), 120)
+			content := conciseWidgetText(agent.UserPreviewText(run.Description), 120)
 			if content == "" {
 				label := firstNonEmpty(strings.TrimSpace(run.Name), strings.TrimSpace(run.Kind), "委托任务")
 				content = conciseWidgetText(label+" · "+run.Ref, 120)
@@ -884,7 +884,7 @@ func (a *App) widgetDelegations(sources []widgetSource) ([]DesktopIconDelegation
 		item := DesktopIconDelegation{
 			ID:            "cli:" + widgetRevision(firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID)), strings.TrimSpace(meta.SessionPath)),
 			Kind:          "cli",
-			Content:       conciseWidgetText(firstNonEmpty(strings.TrimSpace(source.requestText), strings.TrimSpace(meta.ActivityText), strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "CLI 委托"), 120),
+			Content:       conciseWidgetText(firstNonEmpty(agent.UserPreviewText(source.requestText), agent.UserPreviewText(meta.ActivityText), strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "CLI 委托"), 120),
 			Status:        "running",
 			SessionTitle:  firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "所属 Session"),
 			WorkspaceName: firstNonEmpty(strings.TrimSpace(meta.WorkspaceName), "WorkGround2"),
