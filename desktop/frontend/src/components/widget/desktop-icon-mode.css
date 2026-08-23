@@ -290,6 +290,12 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__actions--quick > button:not(.subtle):not(:disabled):hover { filter: none; transform: translateY(-1px); background: linear-gradient(180deg, #8363dd, #6c4fc3); }
 .desktop-icon-popup__actions--quick > button:not(.subtle):disabled { border-color: rgb(255 255 255 / 8%); color: #686d79; background: rgb(255 255 255 / 4%); box-shadow: none; }
 .desktop-icon-popup__actions--quick > button.subtle { border-color: rgb(255 255 255 / 11%); color: #c7cad3; background: rgb(255 255 255 / 3%); }
+/* The open-window action is an icon-only control: it stays clickable regardless
+   of the draft or settings load, and only disables while its own create/exit is
+   in flight. */
+.desktop-icon-popup__open-window { display: inline-flex; align-items: center; justify-content: center; width: 30px; padding: 0; }
+.desktop-icon-popup__open-window svg { width: 14px; height: 14px; }
+.desktop-icon-popup__open-window:disabled svg { animation: desktop-icon-running-spin .9s linear infinite; }
 .desktop-icon-popup__actions--quick > button.subtle:hover { border-color: rgb(255 255 255 / 22%); color: #fff; background: rgb(255 255 255 / 7%); filter: none; }
 .desktop-icon-popup__submit-hint { align-self: center; margin-left: auto; color: #7f8491; font-family: var(--font-mono, "Cascadia Code", Consolas, monospace); font-size: 9px; font-weight: 500; white-space: nowrap; }
 .desktop-icon-popup__settings-error { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: #ffacb7; font-size: 11px; }

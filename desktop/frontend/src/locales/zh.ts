@@ -2364,7 +2364,6 @@ export const zh: Record<DictKey, string> = {
   "widget.handleInWindow": "在窗口中处理",
   "widget.openWindowCreate": "打开窗口来新建",
   "widget.openWindowCreating": "打开中…",
-  "widget.openWindowCreateFailed": "打开窗口新建会话失败，可重试",
   "widget.openFullContext": "打开完整上下文",
   "widget.later": "稍后",
   "widget.next": "下一条",

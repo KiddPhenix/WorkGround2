@@ -2449,7 +2449,6 @@ export const zhTW: Record<DictKey, string> = {
   "widget.handleInWindow": "在視窗中處理",
   "widget.openWindowCreate": "開啟視窗來新增",
   "widget.openWindowCreating": "開啟中…",
-  "widget.openWindowCreateFailed": "開啟視窗建立新會話失敗，可以重試",
   "widget.openFullContext": "開啟完整上下文",
   "widget.later": "稍後",
   "widget.next": "下一條",

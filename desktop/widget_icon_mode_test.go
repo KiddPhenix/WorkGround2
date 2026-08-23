@@ -827,15 +827,16 @@ func TestBuildDesktopIconSnapshotResolvedAskUnreadIsNotAnswerable(t *testing.T) 
 	}
 }
 
-func TestBuildDesktopIconSnapshotAggregatesDelegatedActivity(t *testing.T) {
-	sources := []widgetSource{{meta: TabMeta{ID: "delegated", RunningWork: true, BackgroundOnly: true}}}
+func TestBuildDesktopIconSnapshotBackgroundOnlyKeepsTaskIconWithoutDelegation(t *testing.T) {
+	sources := []widgetSource{{meta: TabMeta{ID: "background-only", RunningWork: true, BackgroundOnly: true}}}
 	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, nil, nil)
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
-	if delegate == nil || delegate.ActivityCount != 1 || delegate.UnreadCount != 0 || delegate.Status != "running" {
-		t.Fatalf("delegate = %#v", delegate)
+	if delegate == nil || delegate.ActivityCount != 0 || delegate.Status != "idle" {
+		t.Fatalf("delegate = %#v, want idle without delegation", delegate)
 	}
-	if findDesktopIconItem(snapshot.Items, "task:delegated") != nil {
-		t.Fatal("delegated task received an independent running icon")
+	task := findDesktopIconItem(snapshot.Items, "task:background-only")
+	if task == nil || task.Status != "running" {
+		t.Fatalf("background-only task = %#v, want its own running task icon", task)
 	}
 }
 
@@ -878,7 +879,7 @@ func TestBuildDesktopIconSnapshotCountsRealRunningSubagents(t *testing.T) {
 	}
 }
 
-func TestBuildDesktopIconSnapshotRealSubagentsDoNotDoubleCountBackgroundCompat(t *testing.T) {
+func TestBuildDesktopIconSnapshotRealSubagentsCountAlongsideBackgroundTaskIcon(t *testing.T) {
 	sources := []widgetSource{{
 		meta:       TabMeta{ID: "background-1", RunningWork: true, BackgroundOnly: true},
 		sessionDir: "dir-b",
@@ -888,7 +889,10 @@ func TestBuildDesktopIconSnapshotRealSubagentsDoNotDoubleCountBackgroundCompat(t
 	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, counts, nil)
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
 	if delegate == nil || delegate.ActivityCount != 2 || delegate.Status != "running" {
-		t.Fatalf("delegate = %#v, want activity 2 (not 3) running", delegate)
+		t.Fatalf("delegate = %#v, want activity 2 (real sub-agents only) running", delegate)
+	}
+	if task := findDesktopIconItem(snapshot.Items, "task:background-1"); task == nil || task.Status != "running" {
+		t.Fatalf("background-only task = %#v, want its own running task icon beside the delegation count", task)
 	}
 }
 
@@ -1013,29 +1017,32 @@ func TestWidgetDelegationsAggregatesDeduplicatesAndSorts(t *testing.T) {
 	writeRunningDelegationMeta(t, dir, "sa_20260102_030405_000000000_aabbccddeeff", "parent", "较早委托", time.Unix(10, 0))
 	writeRunningDelegationMeta(t, dir, "sa_20260102_030405_000000000_112233445566", "parent", "较新委托", time.Unix(20, 0))
 	parent := widgetSource{meta: TabMeta{ID: "parent-tab", SessionID: "parent-session", Scope: "global", TopicID: "parent-topic", TopicTitle: "父 Session", SessionPath: parentPath, RunningWork: true}, sessionDir: dir, branchID: "parent"}
-	background := widgetSource{meta: TabMeta{ID: "background-tab", SessionID: "background-session", Scope: "global", TopicID: "background-topic", TopicTitle: "后台 Session", SessionPath: backgroundPath, RunningWork: true, BackgroundOnly: true, TurnStartedAt: time.Unix(30, 0).UnixMilli()}, sessionDir: dir, branchID: "background", requestText: "后台兼容委托"}
+	background := widgetSource{meta: TabMeta{ID: "background-tab", SessionID: "background-session", Scope: "global", TopicID: "background-topic", TopicTitle: "后台 Session", SessionPath: backgroundPath, RunningWork: true, BackgroundOnly: true, TurnStartedAt: time.Unix(30, 0).UnixMilli()}, sessionDir: dir, branchID: "background", requestText: "后台普通任务"}
 	cli := widgetSource{meta: TabMeta{ID: "cli-tab", SessionID: "cli-session", SessionSource: "cli", Scope: "global", TopicID: "cli-topic", TopicTitle: "CLI Session", SessionPath: cliPath, RunningWork: true, TurnStartedAt: time.Unix(40, 0).UnixMilli()}, sessionDir: dir, branchID: "cli", requestText: "外部 CLI 委托"}
 	app := &App{}
 	items, counts, err := app.widgetDelegations([]widgetSource{parent, parent, background, cli})
 	if err != nil {
 		t.Fatalf("widgetDelegations: %v", err)
 	}
-	if len(items) != 4 || counts[newWidgetSubagentKey(dir, "parent")] != 2 {
+	if len(items) != 3 || counts[newWidgetSubagentKey(dir, "parent")] != 2 {
 		t.Fatalf("items=%+v counts=%v", items, counts)
 	}
-	if items[0].Kind != "cli" || items[1].Kind != "background" || items[2].Content != "较新委托" || items[3].Content != "较早委托" {
+	if items[0].Kind != "cli" || items[1].Kind != "subagent" || items[2].Kind != "subagent" {
+		t.Fatalf("delegation kinds = %+v, want cli + two real sub-agents and no background item", items)
+	}
+	if items[1].Content != "较新委托" || items[2].Content != "较早委托" {
 		t.Fatalf("delegation sort = %+v", items)
 	}
-	if items[0].SessionRef == nil || items[0].SessionRef.SessionPath != cliPath || items[2].SessionRef == nil || items[2].SessionRef.SessionPath != parentPath || items[1].SessionRef == nil || items[1].SessionRef.SessionPath != backgroundPath {
+	if items[0].SessionRef == nil || items[0].SessionRef.SessionPath != cliPath || items[1].SessionRef == nil || items[1].SessionRef.SessionPath != parentPath || items[2].SessionRef == nil || items[2].SessionRef.SessionPath != parentPath {
 		t.Fatalf("delegation targets = %+v", items)
 	}
 	snapshot := buildDesktopIconSnapshot([]widgetSource{parent, parent, background, cli}, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil, counts, items)
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
-	if delegate == nil || delegate.ActivityCount != 4 || len(snapshot.Delegations) != 4 {
+	if delegate == nil || delegate.ActivityCount != 3 || len(snapshot.Delegations) != 3 {
 		t.Fatalf("delegate=%+v projection=%+v", delegate, snapshot.Delegations)
 	}
-	if findDesktopIconItem(snapshot.Items, "task:background-tab") != nil {
-		t.Fatal("BackgroundOnly delegation leaked into ordinary task icons")
+	if task := findDesktopIconItem(snapshot.Items, "task:background-tab"); task == nil || task.Status != "running" {
+		t.Fatal("BackgroundOnly session lost its own running task icon")
 	}
 	if findDesktopIconItem(snapshot.Items, "task:cli-tab") != nil {
 		t.Fatal("CLI delegation leaked into ordinary task icons")
@@ -1104,8 +1111,11 @@ func TestBuildDesktopIconSnapshotFiltersRetainedDelegations(t *testing.T) {
 	}, CompletionSummaries: map[string]desktopIconCompletionSummary{}}
 	source := widgetSource{meta: TabMeta{ID: "background-tab", SessionID: "background-session", SessionPath: backgroundPath, BackgroundOnly: true}}
 	snapshot := buildDesktopIconSnapshot([]widgetSource{source}, UnreadState{}, nil, state, 0, nil, nil, nil, nil)
-	if findDesktopIconItem(snapshot.Items, "task:subagent-old") != nil || findDesktopIconItem(snapshot.Items, "task:background-old") != nil {
-		t.Fatalf("retained delegations leaked into ordinary icons: %+v", snapshot.Items)
+	if findDesktopIconItem(snapshot.Items, "task:subagent-old") != nil {
+		t.Fatalf("retained subagent delegation leaked into ordinary icons: %+v", snapshot.Items)
+	}
+	if findDesktopIconItem(snapshot.Items, "task:background-old") == nil {
+		t.Fatal("retained BackgroundOnly session was filtered as a delegation instead of staying as a task icon")
 	}
 	if findDesktopIconItem(snapshot.Items, "task:normal") == nil {
 		t.Fatal("ordinary retained session was filtered with delegations")
@@ -2158,8 +2168,8 @@ func TestDesktopIconPendingBackgroundDelegationRetryUsesReceipt(t *testing.T) {
 	app.widgetMode = true
 	source := widgetSource{meta: TabMeta{ID: tab.ID, SessionID: "background-session", SessionPath: sp, RunningWork: true, BackgroundOnly: true}}
 	snapshot := buildDesktopIconSnapshot([]widgetSource{source}, UnreadState{}, nil, app.iconWidgetState, 0, nil, nil, nil, nil)
-	if findDesktopIconItem(snapshot.Items, "task:"+tab.ID) != nil {
-		t.Fatal("opened background delegation reappeared as ordinary session icon")
+	if task := findDesktopIconItem(snapshot.Items, "task:"+tab.ID); task == nil || task.Status != "running" {
+		t.Fatal("BackgroundOnly session lost its own running task icon after delegation receipt recovery")
 	}
 }
 
@@ -2177,6 +2187,33 @@ func TestRecoverPendingDelegationFailureStaysPending(t *testing.T) {
 	}
 	if app.iconWidgetState.Applied[0].Status != "pending" {
 		t.Fatalf("failed recovery lost retry intent: %+v", app.iconWidgetState.Applied[0])
+	}
+}
+
+func TestOpenWidgetWorkspaceRejectsUnknownTargetWithoutSideEffects(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.widgetMode = true
+	app.ctx = context.Background()
+	app.widgetWindowOps = &widgetWindowOps{
+		read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 590, Height: 176}, false },
+		restoreMain: func(DesktopWindowState, bool) error { return nil },
+		applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+	}
+	app.widgetTaskbarToggle = func(bool) error { return nil }
+
+	// An unknown/expired project target fails explicitly without creating a
+	// session or exiting the widget, so the same click stays a safe retry. The
+	// resolveWidgetWorkspace routing and CreateBlankSession idempotency behind
+	// the success path are covered by their own focused tests.
+	if _, err := app.OpenWidgetWorkspace("project:/no/such/root", "open-ws-invalid"); err == nil {
+		t.Fatal("OpenWidgetWorkspace(invalid project) unexpectedly succeeded")
+	}
+	if !app.widgetMode {
+		t.Fatal("failed workspace open exited widget mode")
+	}
+	if len(app.tabs) != 0 {
+		t.Fatalf("failed workspace open created tabs: %+v", app.tabs)
 	}
 }
 

@@ -1918,11 +1918,11 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 	}
 	delegatedRunning := 0
 	countedParents := map[widgetSubagentKey]bool{}
-	countedBackground := map[string]bool{}
+	countedCLI := map[string]bool{}
 	hiddenKeptIDs := map[string]bool{}
 	hiddenKeptPaths := map[string]bool{}
 	for _, source := range sources {
-		if !source.meta.BackgroundOnly && !strings.EqualFold(strings.TrimSpace(source.meta.SessionSource), "cli") && !widgetSourceIsSubagent(source) {
+		if !strings.EqualFold(strings.TrimSpace(source.meta.SessionSource), "cli") && !widgetSourceIsSubagent(source) {
 			continue
 		}
 		for _, id := range []string{source.meta.ID, source.meta.SessionID, source.meta.WorkID} {
@@ -1974,18 +1974,16 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 		} else if knownRunning > 0 {
 			countedParents[parentKey] = true
 		}
-		if strings.EqualFold(strings.TrimSpace(meta.SessionSource), "cli") || meta.BackgroundOnly {
-			// The legacy compatibility path counts the background tab itself
-			// as delegated work. CLI sessions use the same projection because
-			// they are intentionally hidden as independent task icons. When the
-			// same source owns real running sub-agents, those are authoritative
-			// and count instead, so a source is never double counted by both
-			// signals — even when its own turn has already ended.
+		if strings.EqualFold(strings.TrimSpace(meta.SessionSource), "cli") {
+			// CLI/external dispatch is intentionally hidden as an independent
+			// task icon and projects onto the delegation entry: its own running
+			// turn counts unless it already owns real running sub-agents, which
+			// are the authoritative (non-double-counted) signal.
 			delegatedRunning += realRunning
-			backgroundKey := firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID))
-			if knownRunning == 0 && meta.RunningWork && !countedBackground[backgroundKey] {
+			cliKey := firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID))
+			if knownRunning == 0 && meta.RunningWork && !countedCLI[cliKey] {
 				delegatedRunning++
-				countedBackground[backgroundKey] = true
+				countedCLI[cliKey] = true
 			}
 			continue
 		}
@@ -3090,6 +3088,38 @@ func (a *App) createDesktopIconWorkspaceSessionLocked(receipt *desktopIconReceip
 		return fmt.Errorf("record workspace session: %w", err)
 	}
 	return nil
+}
+
+// OpenWidgetWorkspace opens a new ordinary blank Session in the QuickStart-
+// selected workspace and exits icon mode focusing it. It reuses the same
+// idempotent CreateBlankSession primitive and the same workspace routing as
+// StartWidgetConversation ("auto" resolves to the current/recent workspace),
+// so the workspace-icon open flow is not duplicated. requestId makes a lost
+// response or failed window switch a safe idempotent retry.
+func (a *App) OpenWidgetWorkspace(workspace, requestID string) (TabMeta, error) {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		workspace = widgetWorkspaceAuto
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return TabMeta{}, errors.New("requestId is required")
+	}
+	route, err := resolveWidgetWorkspace(workspace, "", a.widgetWorkspaceCandidates())
+	if err != nil {
+		return TabMeta{}, err
+	}
+	a.iconWidgetMu.Lock()
+	defer a.iconWidgetMu.Unlock()
+	a.loadDesktopIconStateLocked()
+	meta, err := a.CreateBlankSession(CreateBlankSessionInput{Scope: route.Scope, WorkspaceRoot: route.Root, RequestID: requestID})
+	if err != nil {
+		return TabMeta{}, fmt.Errorf("create workspace session: %w", err)
+	}
+	if err := a.exitDesktopIconModeLocked(meta.ID); err != nil {
+		return TabMeta{}, err
+	}
+	return meta, nil
 }
 
 func (a *App) applyDesktopIconActionLocked(item DesktopIconItem, notice *DesktopIconNotice, input DesktopIconActionInput) error {

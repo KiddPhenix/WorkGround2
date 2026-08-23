@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { AtSign, Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, MessageCircle, Pencil, Pin, PinOff, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
-import { app, type DailyRoutine, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconDelegation, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type ExternalRunSnapshot, type WidgetConversationInput, type WidgetWorkspaceOption } from "../../lib/bridge";
+import { app, type DailyRoutine, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconDelegation, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type ExternalRunSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import { asArray } from "../../lib/array";
 import { AgentIcon } from "../agent-icon/AgentIcon";
 import { buildAgentIconViewModel, isAgentIconItem } from "../../lib/agentIcon/viewModel";
@@ -19,7 +19,6 @@ import { desktopIconDragOrder, previewDesktopIconMove } from "./desktopIconDrag"
 import { IdleHoverTracer } from "./idleHoverTrace";
 import { QUICK_DRAFT_KEY, cleanupConsumedDraft, clearConsumedDraftMarker, createQuickStartOpenTaskGate, decideConsumedDraft, isQuickStartJobItem, mergeQuickStartItems, quickStartJobItem, quickStartJobPromptLabel, quickStartJobRequestId, quickStartJobRequestIDFromItem, quickStartJobStateLabel, quickStartJobWorkspaceLabel, recordConsumedDraftMarker, useWidgetQuickStartJobs, type QuickStartConsumedDraftDecision, type QuickStartJob, type QuickStartJobIntent, type WidgetQuickStartJobsApi } from "./widgetQuickStartJobs";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
-import { startWidgetConversationWithRetry } from "./startWidgetConversation";
 import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTitle, WORKSPACE_PIN_LIMIT, workspacePinsFull, type WorkspaceRow } from "./workspaceManager";
 import { applyRoomIcons, applyRoomPins, normalizeRoomIcons, normalizeRoomPins, pinnedRoomRows, ROOM_PIN_LIMIT, roomPinsFull, roomRows, type RoomRow } from "./roomsManager";
 import { readRoomIconCount, visibleDesktopIcons, writeRoomIconCount } from "./roomIconCount";
@@ -454,7 +453,7 @@ function QuickStartJobBody({ job, onRetry, onEdit, onDismiss, onOpenMain, onOpen
 	</>;
 }
 
-function QuickStart({ workspaces, initialWorkspace = "", editJob = null, initialDraft = "", submitJob, openWindowCreate, onClose }: { workspaces: WidgetWorkspaceOption[]; initialWorkspace?: string; editJob?: QuickStartJob | null; initialDraft?: string; submitJob: WidgetQuickStartJobsApi["submit"]; openWindowCreate: (input: WidgetConversationInput) => Promise<void>; onClose: () => void }) {
+function QuickStart({ workspaces, initialWorkspace = "", editJob = null, initialDraft = "", submitJob, openWindowCreate, onClose }: { workspaces: WidgetWorkspaceOption[]; initialWorkspace?: string; editJob?: QuickStartJob | null; initialDraft?: string; submitJob: WidgetQuickStartJobsApi["submit"]; openWindowCreate: (workspace: string, requestId: string) => Promise<void>; onClose: () => void }) {
 	const t = useT();
   const choices = workspaces.length ? workspaces : [{ scope: "auto", name: "自动" } as WidgetWorkspaceOption];
 	const keys = useMemo(() => choices.map(widgetWorkspaceKey), [workspaces]);
@@ -678,15 +677,18 @@ function QuickStart({ workspaces, initialWorkspace = "", editJob = null, initial
 		setDraft("");
 		onClose();
   };
-  // openWindow creates a NORMAL Session through the shared backend deliver and
-	// then exits the widget focusing the returned tab — it never enqueues an
-	// optimistic quick-start job, so the Session appears in Session List directly.
-	// The requestId is stable for the exact same intent and regenerates when any
-	// of prompt/workspace/model/approval changes, so a retry is idempotent.
+  // openWindow creates a NORMAL blank Session in the selected workspace through
+	// the shared backend workspace-open path (the same semantics as double-
+	// clicking a Workspace icon) and then exits the widget focusing the returned
+	// tab. It never enqueues an optimistic quick-start job and never carries the
+	// QuickStart draft/model/approval (those belong to "send"), so the new
+	// Session lands in Session List directly. The requestId is stable for the
+	// exact same workspace and regenerates when the workspace changes, so a
+	// retry after a lost response or failed window switch replays the same
+	// backend receipt instead of duplicating the Session.
   const openWindow = async () => {
-    const prompt = draft.trim();
-		if (!prompt || !preferences || sentRef.current || openWindowRef.current || openWindowBusy) return;
-		const key = `${prompt}\n${workspace}\n${selectedModel}\n${selectedApproval}`;
+		if (sentRef.current || openWindowRef.current || openWindowBusy) return;
+		const key = workspace;
 		if (!openWindowIntentRef.current || openWindowIntentRef.current.key !== key) {
 			openWindowIntentRef.current = { requestId: quickStartJobRequestId("icon-window-new"), key };
 		}
@@ -694,14 +696,7 @@ function QuickStart({ workspaces, initialWorkspace = "", editJob = null, initial
 		setOpenWindowBusy(true);
 		setError("");
 		try {
-			await openWindowCreate({
-				prompt,
-				requestId: openWindowIntentRef.current.requestId,
-				workspace: workspace || undefined,
-				model: selectedModel || undefined,
-				approvalMode: selectedApproval || undefined,
-			});
-			setDraft("");
+			await openWindowCreate(workspace, openWindowIntentRef.current.requestId);
 			onClose();
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
@@ -766,7 +761,7 @@ function QuickStart({ workspaces, initialWorkspace = "", editJob = null, initial
 		</div>
 		{preferencesError && <div role="alert" className="desktop-icon-popup__settings-error"><span>读取新会话设置失败：{preferencesError}</span><button type="button" className="subtle" onClick={loadPreferences}>重试</button></div>}
     {error && <p role="alert" className="desktop-icon-popup__error">{error}</p>}
-		<div className="desktop-icon-popup__actions desktop-icon-popup__actions--quick"><button disabled={!draft.trim() || !preferences || openWindowBusy} onClick={send}>{!preferences ? "读取设置…" : "发送"}</button><button disabled={!draft.trim() || !preferences || openWindowBusy} onClick={() => void openWindow()}>{openWindowBusy ? t("widget.openWindowCreating") : t("widget.openWindowCreate")}</button><button className="subtle" onClick={onClose}>取消</button>{preferences && <small className="desktop-icon-popup__submit-hint">{preferences.submitKey === "ctrl_enter" ? "Ctrl+Enter 发送" : "Enter 发送"}</small>}</div>
+		<div className="desktop-icon-popup__actions desktop-icon-popup__actions--quick"><button disabled={!draft.trim() || !preferences || openWindowBusy} onClick={send}>{!preferences ? "读取设置…" : "发送"}</button><button type="button" className="subtle desktop-icon-popup__open-window" disabled={openWindowBusy} aria-label={openWindowBusy ? t("widget.openWindowCreating") : t("widget.openWindowCreate")} title={openWindowBusy ? t("widget.openWindowCreating") : t("widget.openWindowCreate")} onClick={() => void openWindow()}>{openWindowBusy ? <Loader2 aria-hidden="true" /> : <ExternalLink aria-hidden="true" />}</button><button className="subtle" onClick={onClose}>取消</button>{preferences && <small className="desktop-icon-popup__submit-hint">{preferences.submitKey === "ctrl_enter" ? "Ctrl+Enter 发送" : "Enter 发送"}</small>}</div>
   </div>;
 }
 
@@ -1379,19 +1374,15 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		}
 		return result;
 	};
-	// openWindowCreate reuses the SAME backend deliver as QuickStart but waits
-	// synchronously and then exits the widget focusing the returned tab. It
-	// never touches the optimistic quick-start ledger, so the created Session is
-	// a normal Session List entry (EnsureBlankTab + model/approval + submit).
-	// A non-accepted result or a failed window switch rejects so the modal keeps
-	// the error visible and the same button stays a safe retry.
-	const openWindowCreate = async (input: WidgetConversationInput) => {
-		const result = await startWidgetConversationWithRetry(app.StartWidgetConversation, input);
-		if (result.status !== "accepted" && result.status !== "already_applied") {
-			throw new Error(result.error || t("widget.openWindowCreateFailed"));
-		}
-		if (!result.tabId) throw new Error(t("widget.openWindowCreateFailed"));
-		await onOpenRoom(result.tabId);
+	// openWindowCreate reuses the SAME backend workspace-open path as double-
+	// clicking a Workspace icon: it resolves the selected workspace, creates a
+	// normal blank Session, and exits the widget focusing that Session. It never
+	// touches the optimistic quick-start ledger and never carries the draft,
+	// model, or approval posture, so the new Session lands in Session List
+	// directly. A failed create/exit rejects so the modal keeps the error
+	// visible and the same button stays a safe idempotent retry.
+	const openWindowCreate = async (workspace: string, requestId: string) => {
+		await app.OpenWidgetWorkspace(workspace, requestId);
 	};
 	const optimisticItems = useMemo(
 		() => Object.values(quickJobs.jobs).sort((a, b) => b.createdAt - a.createdAt).map(quickStartJobItem),

@@ -2363,7 +2363,6 @@ export const en = {
   "widget.handleInWindow": "Open in window",
   "widget.openWindowCreate": "Open window to create",
   "widget.openWindowCreating": "Opening…",
-  "widget.openWindowCreateFailed": "Could not open a new session in the window. You can retry.",
   "widget.openFullContext": "View full context",
   "widget.later": "Later",
   "widget.next": "Next",

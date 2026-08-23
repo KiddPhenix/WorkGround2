@@ -801,9 +801,11 @@ func (a *App) widgetSubagentCounts(sources []widgetSource) (map[widgetSubagentKe
 }
 
 // widgetDelegations builds the typed running-delegation projection consumed by
-// icon mode. Each session directory is scanned once, persisted sub-agents win
-// over linked BackgroundOnly/CLI signals for the same parent, and every target
-// carries the exact session identity needed for navigation.
+// icon mode. Each session directory is scanned once, real running sub-agents
+// and explicit CLI/external dispatch are the only delegation sources, and every
+// target carries the exact session identity needed for navigation. Ordinary
+// BackgroundOnly sessions are deliberately excluded: they stay as their own
+// running task icon instead of being projected as delegated work.
 func (a *App) widgetDelegations(sources []widgetSource) ([]DesktopIconDelegation, map[widgetSubagentKey]int, error) {
 	dirs := map[string]bool{}
 	parents := map[widgetSubagentKey]widgetSource{}
@@ -868,21 +870,21 @@ func (a *App) widgetDelegations(sources []widgetSource) ([]DesktopIconDelegation
 
 	for _, source := range sources {
 		meta := source.meta
+		// Delegation only aggregates real running sub-agents (scanned above)
+		// and explicit CLI/external dispatch. An ordinary Session that entered
+		// BackgroundOnly solely because of a background Job is NOT a delegation:
+		// it keeps its own running task icon and never counts here.
 		isCLI := strings.EqualFold(strings.TrimSpace(meta.SessionSource), "cli")
-		if (!meta.BackgroundOnly && !isCLI) || !meta.RunningWork {
+		if !isCLI || !meta.RunningWork {
 			continue
 		}
 		if counts[newWidgetSubagentKey(source.sessionDir, source.branchID)] > 0 {
 			continue
 		}
-		kind, fallback := "background", "后台委托"
-		if isCLI {
-			kind, fallback = "cli", "CLI 委托"
-		}
 		item := DesktopIconDelegation{
-			ID:            kind + ":" + widgetRevision(firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID)), strings.TrimSpace(meta.SessionPath)),
-			Kind:          kind,
-			Content:       conciseWidgetText(firstNonEmpty(strings.TrimSpace(source.requestText), strings.TrimSpace(meta.ActivityText), strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), fallback), 120),
+			ID:            "cli:" + widgetRevision(firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID)), strings.TrimSpace(meta.SessionPath)),
+			Kind:          "cli",
+			Content:       conciseWidgetText(firstNonEmpty(strings.TrimSpace(source.requestText), strings.TrimSpace(meta.ActivityText), strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "CLI 委托"), 120),
 			Status:        "running",
 			SessionTitle:  firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "所属 Session"),
 			WorkspaceName: firstNonEmpty(strings.TrimSpace(meta.WorkspaceName), "WorkGround2"),

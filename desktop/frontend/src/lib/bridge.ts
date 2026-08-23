@@ -428,6 +428,7 @@ export interface AppBindings extends WailsWorkBindings {
 	GetWidgetSnapshot(): Promise<WidgetSnapshot>;
 	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
+	OpenWidgetWorkspace(workspace: string, requestId: string): Promise<TabMeta>;
 	ListWidgetWorkspaces(): Promise<WidgetWorkspaceOption[]>;
 	GetDesktopIconSnapshot(): Promise<DesktopIconSnapshot>;
 	GetExternalRunSnapshot(): Promise<ExternalRunSnapshot>;
@@ -2691,6 +2692,17 @@ function makeMockApp(): AppBindings {
 				routeReason,
 				snapshot: mockWidgetSnapshot(),
 			};
+		},
+		async OpenWidgetWorkspace(workspace: string, requestId: string) {
+			let scope = "global";
+			let workspaceRoot = "";
+			if (workspace.startsWith("project:")) {
+				scope = "project";
+				workspaceRoot = workspace.slice("project:".length);
+			}
+			widgetRevision += 1;
+			widgetMode = false;
+			return this.CreateBlankSession({ scope, workspaceRoot, requestId });
 		},
 		async ListWidgetWorkspaces() {
 			return [
