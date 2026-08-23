@@ -38,10 +38,19 @@ func TestDarwinNativeWidgetRemovesAndRestoresWindowFrame(t *testing.T) {
 		`[window setStyleMask:NSWindowStyleMaskBorderless]`,
 		`[window setStyleMask:workGround2SavedStyleMask]`,
 		`[window setHasShadow:NO]`,
+		`workGround2ApplyNativeButtonOverrides(window)`,
 	} {
 		if !strings.Contains(text, contract) {
 			t.Fatalf("Darwin native widget source missing borderless-window contract %q", contract)
 		}
+	}
+	restoreMask := strings.Index(text, `[window setStyleMask:workGround2SavedStyleMask]`)
+	if restoreMask < 0 {
+		t.Fatal("Darwin native widget style-mask restore not found")
+	}
+	reapply := strings.Index(text[restoreMask:], `workGround2ApplyNativeButtonOverrides(window)`)
+	if reapply < 0 {
+		t.Fatal("Darwin traffic-light actions must be rebound after restoring the titled style mask")
 	}
 }
 

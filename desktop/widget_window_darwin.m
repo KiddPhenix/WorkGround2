@@ -174,6 +174,24 @@ static NSMenuItem *workGround2FindMinimiseMenuItem(NSMenu *menu) {
 }
 @end
 
+static void workGround2ApplyNativeButtonOverrides(NSWindow *window) {
+    if (window == nil || workGround2WindowControlBridge == nil) {
+        return;
+    }
+    NSButton *mini = [window standardWindowButton:NSWindowMiniaturizeButton];
+    NSButton *close = [window standardWindowButton:NSWindowCloseButton];
+    [mini setTarget:workGround2WindowControlBridge];
+    [mini setAction:@selector(minimiseToWidget:)];
+    [mini setToolTip:@"收起到小组件"];
+    [mini setAccessibilityLabel:@"收起到小组件"];
+    [mini setAccessibilityHelp:@"保留当前任务图标并切换到桌面小组件"];
+    [close setTarget:workGround2WindowControlBridge];
+    [close setAction:@selector(dismissToWidget:)];
+    [close setToolTip:@"Dismiss 当前任务并收起"];
+    [close setAccessibilityLabel:@"Dismiss 当前任务"];
+    [close setAccessibilityHelp:@"移除当前任务图标并切换到桌面小组件"];
+}
+
 static void workGround2InstallMinimiseMenuItem(void) {
     if (!workGround2NativeControlsInstalled || workGround2MinimiseMenuItem != nil || workGround2WindowControlBridge == nil) {
         return;
@@ -258,6 +276,7 @@ int workGround2ConfigureNativeWindowControls(int enabled) {
             return;
         }
         if (workGround2NativeControlsInstalled && workGround2ControlWindow == window) {
+            workGround2ApplyNativeButtonOverrides(window);
             workGround2InstallMinimiseMenuItem();
             return;
         }
@@ -282,16 +301,7 @@ int workGround2ConfigureNativeWindowControls(int enabled) {
         workGround2SavedMiniAccessibilityHelp = [[mini accessibilityHelp] retain];
         workGround2SavedCloseAccessibilityHelp = [[close accessibilityHelp] retain];
 
-        [mini setTarget:workGround2WindowControlBridge];
-        [mini setAction:@selector(minimiseToWidget:)];
-        [mini setToolTip:@"收起到小组件"];
-        [mini setAccessibilityLabel:@"收起到小组件"];
-        [mini setAccessibilityHelp:@"保留当前任务图标并切换到桌面小组件"];
-        [close setTarget:workGround2WindowControlBridge];
-        [close setAction:@selector(dismissToWidget:)];
-        [close setToolTip:@"Dismiss 当前任务并收起"];
-        [close setAccessibilityLabel:@"Dismiss 当前任务"];
-        [close setAccessibilityHelp:@"移除当前任务图标并切换到桌面小组件"];
+        workGround2ApplyNativeButtonOverrides(window);
 
         workGround2NativeControlsInstalled = YES;
         workGround2InstallMinimiseMenuItem();
@@ -455,6 +465,11 @@ int workGround2SetDesktopIconMode(int active) {
             NSWindowButton buttons[3] = { NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton };
             for (int i = 0; i < 3; i++) {
                 [[window standardWindowButton:buttons[i]] setHidden:workGround2SavedButtonHidden[i]];
+            }
+            // Restoring a titled style mask recreates AppKit's traffic-light
+            // button instances. Reapply the widget actions to the new buttons.
+            if (workGround2NativeControlsInstalled && workGround2ControlWindow == window) {
+                workGround2ApplyNativeButtonOverrides(window);
             }
         }
         [workGround2SavedBackground release];
