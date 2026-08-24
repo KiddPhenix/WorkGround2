@@ -1689,6 +1689,7 @@ func migrateSessionSidecars(oldPath, newPath, newID string) error {
 	}
 	for _, pair := range [][2]string{
 		{store.SessionGoalState(oldPath), store.SessionGoalState(newPath)},
+		{store.SessionPendingAsk(oldPath), store.SessionPendingAsk(newPath)},
 		{store.SessionEventLog(oldPath), store.SessionEventLog(newPath)},
 		{store.SessionEventIndex(oldPath), store.SessionEventIndex(newPath)},
 		{store.SessionConflictLog(oldPath), store.SessionConflictLog(newPath)},
