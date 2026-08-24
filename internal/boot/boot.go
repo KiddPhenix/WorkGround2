@@ -538,7 +538,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		enabledBuiltins = tokenEconomyBuiltins(enabledBuiltins)
 	}
 	readPathResolver := builtin.NewPathResolver()
-	addBuiltins(reg, enabledBuiltins, cfg.WriteRootsForRoot(root), bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, cfg.ForbidReadRootsForRoot(root), readPathResolver, opts.FileOverlay, opts.TerminalRunner)
+	addBuiltins(reg, enabledBuiltins, cfg.WriteRootsForRoot(root), bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, cfg.ForbidReadRootsForRoot(root), readPathResolver, opts.FileOverlay, opts.TerminalRunner, config.EffectiveVision(entry))
 
 	// DSH Bundles run out-of-process, but remain session-owned: each Controller
 	// gets one Cordis Agent per enabled Bundle and closes it with the session.
@@ -1988,26 +1988,36 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 // the listed directories.
 // When workDir is non-empty, tools resolve relative paths against it instead of
 // the process cwd, enabling concurrent multi-project sessions.
-func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sandbox.Spec, bashTimeout time.Duration, searchSpec builtin.SearchSpec, stderr io.Writer, workDir string, proxySpec netclient.ProxySpec, forbidReadRoots []string, readPathResolver *builtin.PathResolver, overlay builtin.FileOverlay, terminal builtin.TerminalRunner) {
+func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sandbox.Spec, bashTimeout time.Duration, searchSpec builtin.SearchSpec, stderr io.Writer, workDir string, proxySpec netclient.ProxySpec, forbidReadRoots []string, readPathResolver *builtin.PathResolver, overlay builtin.FileOverlay, terminal builtin.TerminalRunner, vision bool) {
+	// view_image reads images back into the model as pixels, so it is exposed
+	// only when the current direct model can see them (never to text-only or
+	// vision-delegate-only main models). The filter runs at boot, keeping the
+	// exposed tool set fixed for the session's lifetime.
+	addTool := func(t tool.Tool) {
+		if !vision && t.Name() == builtin.ViewImageName {
+			return
+		}
+		reg.Add(t)
+	}
 	// If a workspace directory is set, use workspace-bound tools that resolve
 	// paths relative to that directory. Otherwise fall back to the process-cwd
 	// compile-time builtins.
 	if workDir != "" {
 		ws := builtin.Workspace{Dir: workDir, WriteRoots: writeRoots, ForbidReadRoots: forbidReadRoots, Bash: bashSpec, BashTimeout: bashTimeout, Search: searchSpec, ProxySpec: proxySpec, ReadPaths: readPathResolver, FileOverlay: overlay, Terminal: terminal}
 		for _, t := range ws.Tools(enabled...) {
-			reg.Add(t)
+			addTool(t)
 		}
 		return
 	}
 
 	if len(enabled) == 0 {
 		for _, t := range tool.Builtins() {
-			reg.Add(t)
+			addTool(t)
 		}
 	} else {
 		for _, name := range enabled {
 			if t, ok := tool.LookupBuiltin(name); ok {
-				reg.Add(t)
+				addTool(t)
 			} else if !browserRuntimeTools[strings.TrimSpace(name)] {
 				fmt.Fprintf(stderr, "warning: unknown built-in tool %q\n", name)
 			}
