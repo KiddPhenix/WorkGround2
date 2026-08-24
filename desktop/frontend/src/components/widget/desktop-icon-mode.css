@@ -246,8 +246,12 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__continue-actions button { min-height: 32px; padding: 5px 12px; }
 .desktop-icon-popup__continue-actions small { margin-left: auto; color: #8f93a0; font-size: 10px; }
 .desktop-icon-popup__answers { display: grid; gap: 7px; }
-.desktop-icon-popup__answers > button { display: grid; width: 100%; text-align: left; }
-.desktop-icon-popup__answers small { color: #ccc4e4; }
+.desktop-icon-popup__answers > button { position: relative; display: grid; width: 100%; padding: 10px 40px 10px 12px; border-color: #555b69; color: #e8eaf0; background: #272a34; box-shadow: inset 0 1px rgb(255 255 255 / 5%); text-align: left; transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, transform 120ms ease; }
+.desktop-icon-popup__answers > button:not(:disabled):hover { border-color: #8f7abd; background: #343142; transform: translateY(-1px); }
+.desktop-icon-popup__answers > button[aria-pressed="true"] { border-color: #d8ccff; color: #fff; background: linear-gradient(180deg, #7657d3, #6242bc); box-shadow: 0 0 0 2px rgb(184 164 255 / 34%), 0 6px 16px rgb(68 40 148 / 32%), inset 0 1px rgb(255 255 255 / 18%); }
+.desktop-icon-popup__answers > button[aria-pressed="true"]::after { content: "✓"; position: absolute; top: 50%; right: 12px; display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid rgb(255 255 255 / 62%); border-radius: 50%; color: #5637ac; background: #fff; font-size: 13px; font-weight: 900; line-height: 1; transform: translateY(-50%); }
+.desktop-icon-popup__answers small { color: #aeb3c1; }
+.desktop-icon-popup__answers > button[aria-pressed="true"] small { color: #e6ddff; }
 /* Blocked-session chip: an explicit, persistent "待回答"/"待确认" label next
    to the eyebrow so a closed reminder stays clearly readable. */
 .desktop-icon-popup__block { display: inline-block; margin-left: 7px; padding: 1px 7px; border-radius: 9px; color: #ffe0a6; background: rgb(180 134 32 / 28%); border: 1px solid rgb(255 199 121 / 45%); font-size: 10px; font-weight: 700; letter-spacing: .06em; vertical-align: 1px; }

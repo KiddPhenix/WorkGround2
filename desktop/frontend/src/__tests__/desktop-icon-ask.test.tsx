@@ -3,6 +3,7 @@
 // navigation (header/progress/back/next/submit), single/multi option handling,
 // custom answers, and the one-shot batch answer payload.
 import { JSDOM } from "jsdom";
+import { readFileSync } from "node:fs";
 import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -119,6 +120,7 @@ console.log("\ndesktop icon ask flow");
   ok(nextDisabled === true, "next stays disabled until the question is answered");
 
   click(byText("Rust"), "select Rust");
+  ok(byText("Rust")?.closest("button")?.getAttribute("aria-pressed") === "true", "selected option exposes pressed state");
   const next = document.querySelector(".desktop-icon-popup__ask-next") as HTMLButtonElement | null;
   ok(next?.disabled === false, "next enables after a single-select pick");
   click(next, "next to question 2");
@@ -184,6 +186,15 @@ console.log("\ndesktop icon ask flow");
 
   await act(async () => root.unmount());
   dom.window.close();
+}
+
+// Selected answers must be visibly distinct from the neutral unselected cards,
+// with more than color alone carrying the state.
+{
+  const css = readFileSync(new URL("../components/widget/desktop-icon-mode.css", import.meta.url), "utf8");
+  ok(/\.desktop-icon-popup__answers > button\s*\{[^}]*background:\s*#272a34/.test(css), "unselected answers use a neutral dark surface");
+  ok(/button\[aria-pressed="true"\]\s*\{[^}]*border-color:\s*#d8ccff[^}]*background:\s*linear-gradient/.test(css), "selected answers use a bright border and highlighted surface");
+  ok(/button\[aria-pressed="true"\]::after\s*\{[^}]*content:\s*"✓"/.test(css), "selected answers include a checkmark indicator");
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
