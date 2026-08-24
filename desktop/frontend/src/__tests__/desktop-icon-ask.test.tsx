@@ -193,7 +193,9 @@ console.log("\ndesktop icon ask flow");
 {
   const css = readFileSync(new URL("../components/widget/desktop-icon-mode.css", import.meta.url), "utf8");
   ok(/\.desktop-icon-popup__answers > button\s*\{[^}]*background:\s*#272a34/.test(css), "unselected answers use a neutral dark surface");
+  ok(/button\[aria-pressed="false"\]:not\(:disabled\):hover\s*\{[^}]*border-color:\s*#b39ef3[^}]*box-shadow:/.test(css), "unselected answers show a clear hover highlight");
   ok(/button\[aria-pressed="true"\]\s*\{[^}]*border-color:\s*#d8ccff[^}]*background:\s*linear-gradient/.test(css), "selected answers use a bright border and highlighted surface");
+  ok(/button\[aria-pressed="true"\]:not\(:disabled\):hover\s*\{[^}]*border-color:\s*#f0eaff[^}]*background:\s*linear-gradient/.test(css), "selected hover keeps and strengthens the selected state");
   ok(/button\[aria-pressed="true"\]::after\s*\{[^}]*content:\s*"✓"/.test(css), "selected answers include a checkmark indicator");
 }
 
