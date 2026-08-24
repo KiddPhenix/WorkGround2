@@ -968,6 +968,11 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	roomIcons, roomIconsErr := a.GetDesktopRoomIcons()
 	roomDescriptors := desktopIconRoomDescriptors(projectTree, roomIcons)
 	pinnedRooms := desktopIconPinnedRoomsFromDescriptors(roomDescriptors, roomPins)
+	// Resident runtimes are the strongest liveness signal: a Room still
+	// consuming its stream offscreen must keep its unread visible even when the
+	// project-tree scan is cold or the tab is not mounted. Tree descriptors
+	// stay authoritative when both exist.
+	roomDescriptors = a.mergeResidentRoomDescriptors(roomDescriptors)
 	sessionPresentations := desktopIconSessionPresentations(sources, projectTree)
 	snapshot := buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomPresentations, roomRefs, subagentCounts, sessionPresentations, pinnedRooms, delegations, roomDescriptors)
 	external := a.GetExternalRunSnapshot()
@@ -1411,6 +1416,84 @@ func desktopIconRoomDescriptors(tree []ProjectNode, icons map[string]string) map
 	}
 	walk(tree)
 	return byTopic
+}
+
+// mergeResidentRoomDescriptors folds active collaboration runtimes into the
+// widget Room projection when the project tree does not yet carry their
+// session identity. A resident runtime is the strongest liveness signal: it is
+// consuming the Room's stream in the background even while the Room tab is not
+// mounted and the project-tree scan is cold or incomplete. Without this, a
+// Room that received a remote message offscreen stays invisible on the desktop
+// until the user opens it (which mounts the tab and backfills the tree node).
+//
+// The merge is deliberately conservative:
+//   - Only runtimes that still hold a Room identity participate; leave/close
+//     clears Room and Snapshot, so left rooms cannot be resurrected here.
+//   - Runtimes whose session identity already appears in the tree descriptors
+//     are skipped, so the project-tree descriptor stays authoritative.
+func (a *App) mergeResidentRoomDescriptors(roomDescriptors map[string]desktopIconRoomDescriptor) map[string]desktopIconRoomDescriptor {
+	if a == nil {
+		return roomDescriptors
+	}
+	a.collaborationMu.Lock()
+	runtimes := make([]*desktopCollaboration, 0, len(a.collaborations))
+	for _, runtime := range a.collaborations {
+		runtimes = append(runtimes, runtime)
+	}
+	a.collaborationMu.Unlock()
+	if len(runtimes) == 0 {
+		return roomDescriptors
+	}
+	treeKeys := map[string]struct{}{}
+	for _, room := range roomDescriptors {
+		for _, key := range desktopIconRoomSessionKeys(room.SessionID, room.Ref) {
+			treeKeys[key] = struct{}{}
+		}
+	}
+	out := roomDescriptors
+	if out == nil {
+		out = map[string]desktopIconRoomDescriptor{}
+	}
+	for _, runtime := range runtimes {
+		runtime.mu.RLock()
+		sessionID := firstNonEmpty(strings.TrimSpace(runtime.ownerSessionID), strings.TrimSpace(runtime.state.SessionID))
+		sessionPath := strings.TrimSpace(runtime.ownerSessionPath)
+		room := strings.TrimSpace(runtime.state.Room)
+		if room == "" {
+			room = strings.TrimSpace(runtime.state.Snapshot.Room.ID)
+		}
+		roomName := strings.TrimSpace(runtime.state.Snapshot.Room.Name)
+		runtime.mu.RUnlock()
+		if sessionID == "" || room == "" {
+			continue
+		}
+		if roomSessionKeysPresent(treeKeys, sessionID, sessionPath) {
+			continue
+		}
+		ref, meta := desktopIconRoomRef(sessionPath)
+		title := firstNonEmpty(roomName, strings.TrimSpace(meta.CustomTitle), strings.TrimSpace(meta.TopicTitle), sessionID)
+		// The descriptor map is keyed by TopicID for project-tree dedupe;
+		// resident entries use a synthetic key so a missing sidecar can never
+		// collide with another resident or tree entry.
+		out["resident:"+sessionID] = desktopIconRoomDescriptor{
+			TopicID:   strings.TrimSpace(meta.TopicID),
+			Title:     title,
+			SessionID: sessionID,
+			Ref:       ref,
+		}
+	}
+	return out
+}
+
+// roomSessionKeysPresent reports whether any canonical session-key alias of a
+// resident runtime already exists in the given key index.
+func roomSessionKeysPresent(index map[string]struct{}, sessionID, sessionPath string) bool {
+	for _, key := range desktopIconRoomSessionKeys(sessionID, &DesktopIconTaskRef{SessionPath: sessionPath}) {
+		if _, ok := index[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func desktopIconPinnedRoomsFromDescriptors(byTopic map[string]desktopIconRoomDescriptor, topicIDs []string) []desktopIconRoomDescriptor {
