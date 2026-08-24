@@ -1149,6 +1149,20 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   const [tabOrderIds, setTabOrderIds] = useState<string[]>([]);
   const [tabRevealSignal, setTabRevealSignal] = useState(0);
   const [transcriptRevealSignal, setTranscriptRevealSignal] = useState(0);
+  const [roomRevealSignal, setRoomRevealSignal] = useState(0);
+  // Returning from widget mode reveals the main window again: the current
+  // Session or Room kept its old scroll position while hidden, so emit one
+  // observable reveal intent per `true -> false` transition. Initial startup
+  // sits at `false` and must never trigger a reveal.
+  const wasWidgetActiveRef = useRef(widgetActive);
+  useLayoutEffect(() => {
+    const was = wasWidgetActiveRef.current;
+    wasWidgetActiveRef.current = widgetActive;
+    if (was && !widgetActive) {
+      setTranscriptRevealSignal((value) => value + 1);
+      setRoomRevealSignal((value) => value + 1);
+    }
+  }, [widgetActive]);
   const [linkedWorkReturn, setLinkedWorkReturn] = useState<LinkedWorkReturn | null>(null);
   const [linkedWorkReturning, setLinkedWorkReturning] = useState(false);
   const linkedWorkReturningRef = useRef(false);
@@ -4276,6 +4290,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                 modelLabel={state.meta?.label ?? t("status.connecting")}
                 onSwitchModel={switchModel}
                 onConnectRequest={() => { void openCollaborationDialog(activeTab.sessionId); }}
+                revealSignal={roomRevealSignal}
                 windowActions={sessionWindowActions}
               />
             ) : showWorkSurface && activeTab?.workId && !workUnavailable ? (
@@ -4931,6 +4946,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                 modelLabel={state.meta?.label ?? t("status.connecting")}
                 onSwitchModel={switchModel}
                 onConnectRequest={() => { void openCollaborationDialog(activeTab.sessionId); }}
+                revealSignal={roomRevealSignal}
               />
             ) : (
               <Transcript
