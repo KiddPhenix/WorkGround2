@@ -226,6 +226,7 @@ func (c *desktopCollaboration) loadPersisted() {
 			ReferenceIDs: append([]string(nil), value.ReferenceIDs...), ContextRefs: append([]string(nil), value.ContextRefs...), QueuedAt: queuedAt,
 			PublishIndex: value.PublishIndex,
 			Automatic:    value.Automatic,
+			ReadOnly:     value.ReadOnly,
 			Updates:      make(chan collaborationRunUpdate, 32),
 		})
 	}
@@ -595,7 +596,7 @@ func (c *desktopCollaboration) persistedRunsLocked() []collaborationPersistedRun
 			RunID: run.RunID, CommandID: run.CommandID, SessionID: run.SessionID,
 			AgentRequestID: run.AgentRequestID, Instruction: run.Instruction,
 			ReferenceIDs: append([]string(nil), run.ReferenceIDs...), ContextRefs: append([]string(nil), run.ContextRefs...), QueuedAt: run.QueuedAt, PublishIndex: run.PublishIndex,
-			Automatic: run.Automatic,
+			Automatic: run.Automatic, ReadOnly: run.ReadOnly,
 		})
 	}
 	return result
@@ -612,7 +613,7 @@ func (c *desktopCollaboration) persistedQueueLocked() []collaborationPersistedRu
 			RunID: run.RunID, CommandID: run.CommandID, SessionID: run.SessionID,
 			AgentRequestID: run.AgentRequestID, Instruction: run.Instruction,
 			ReferenceIDs: append([]string(nil), run.ReferenceIDs...), ContextRefs: append([]string(nil), run.ContextRefs...), QueuedAt: run.QueuedAt, PublishIndex: run.PublishIndex,
-			Automatic: run.Automatic,
+			Automatic: run.Automatic, ReadOnly: run.ReadOnly,
 		})
 	}
 	return result

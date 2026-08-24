@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1214,6 +1215,97 @@ func TestAutomaticCollaborationAgentUsesScopedAutoApproval(t *testing.T) {
 	select {
 	case got := <-prepared:
 		t.Fatalf("manual Agent unexpectedly changed approval mode for %q", got)
+	default:
+	}
+}
+
+func TestReadOnlyCollaborationAgentEnforcesTextOnlyBoundary(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	peer := &fakeCollaborationPeer{}
+	conn := testConnection(peer, "client", "session-a")
+	peer.snapshot = conn.initialSnapshot
+	c.conn = conn
+	c.state = CollaborationState{Status: "connected", Room: conn.room, MemberID: conn.memberID, AgentID: conn.agentID, SessionID: conn.sessionID, Snapshot: conn.initialSnapshot}
+
+	prepared := make(chan string, 1)
+	restored := make(chan string, 1)
+	submitted := make(chan string, 2)
+	c.prepareAgentReadOnly = func(sessionID string) (bool, error) {
+		prepared <- sessionID
+		return false, nil
+	}
+	c.restoreAgentReadOnly = func(sessionID string, previous bool) {
+		restored <- sessionID + ":" + strconv.FormatBool(previous)
+	}
+	c.submitAgent = func(_, instruction, input string) error {
+		submitted <- instruction + "\x00" + input
+		return nil
+	}
+
+	// A read-only automatic run (question-only mode) must flip the executor
+	// read-only gate before launch and restore it when the run completes.
+	_, err := c.startAgent(context.Background(), StartCollaborationAgentInput{RequestID: "readonly-run", SessionID: "session-a", Instruction: "回答一下", Automatic: true, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("start read-only Agent: %v", err)
+	}
+	if got := <-prepared; got != "session-a" {
+		t.Fatalf("prepared read-only session = %q", got)
+	}
+	full := <-submitted
+	if !strings.HasPrefix(full, "回答一下\x00") {
+		t.Fatalf("submitted read-only input = %q", full)
+	}
+	if !strings.Contains(full, collaborationReadOnlyAnswerMarker) {
+		t.Error("read-only run input must carry the text-only answer directive")
+	}
+	c.mu.RLock()
+	readOnlyRun := c.runs["session-a"]
+	c.mu.RUnlock()
+	c.observeAgentEvent("session-a", event.Event{Kind: event.TurnDone})
+	select {
+	case got := <-restored:
+		if got != "session-a:false" {
+			t.Fatalf("restored read-only gate = %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("read-only executor gate was not restored after the run")
+	}
+	// Completion publishing also calls restoration; it must remain a no-op and
+	// must not overwrite a later runtime policy change.
+	c.restoreAgentReadOnlyForRun(readOnlyRun)
+	select {
+	case got := <-restored:
+		t.Fatalf("read-only gate restored more than once: %q", got)
+	default:
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.RLock()
+		active := c.runs["session-a"] != nil
+		c.mu.RUnlock()
+		if !active {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// A non-read-only automatic run must not touch the read-only gate.
+	_, err = c.startAgent(context.Background(), StartCollaborationAgentInput{RequestID: "full-run", SessionID: "session-a", Instruction: "改一下", Automatic: true})
+	if err != nil {
+		t.Fatalf("start full-capability Agent: %v", err)
+	}
+	select {
+	case got := <-prepared:
+		t.Fatalf("full-capability run unexpectedly enabled read-only gate for %q", got)
+	default:
+	}
+	if got := <-submitted; !strings.HasPrefix(got, "改一下\x00") || strings.Contains(got, collaborationReadOnlyAnswerMarker) {
+		t.Fatalf("full-capability run input = %q", got)
+	}
+	select {
+	case got := <-restored:
+		t.Fatalf("full-capability run unexpectedly restored read-only gate for %q", got)
 	default:
 	}
 }

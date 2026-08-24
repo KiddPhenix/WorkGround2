@@ -108,6 +108,13 @@ type Goals interface {
 	SetAutoPlan(mode string)
 }
 
+// ExecutionPolicy exposes scoped runtime restrictions independently from the
+// user-visible planning workflow.
+type ExecutionPolicy interface {
+	RuntimeReadOnly() bool
+	SetRuntimeReadOnly(v bool)
+}
+
 // SessionHistory covers checkpoint/rewind, branch/fork, and the log-restructuring
 // operations (compact, summarize).
 type SessionHistory interface {
@@ -227,6 +234,7 @@ type SessionAPI interface {
 	TurnControl
 	Approvals
 	Goals
+	ExecutionPolicy
 	SessionHistory
 	MemoryControl
 	PinnedMemoryControl
@@ -245,6 +253,7 @@ var (
 	_ TurnControl         = (*Controller)(nil)
 	_ Approvals           = (*Controller)(nil)
 	_ Goals               = (*Controller)(nil)
+	_ ExecutionPolicy     = (*Controller)(nil)
 	_ SessionHistory      = (*Controller)(nil)
 	_ MemoryControl       = (*Controller)(nil)
 	_ PinnedMemoryControl = (*Controller)(nil)

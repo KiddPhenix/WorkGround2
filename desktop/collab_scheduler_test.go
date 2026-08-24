@@ -89,6 +89,8 @@ func newSchedulerTestRuntime(t *testing.T, snapshot collab.Snapshot) *desktopCol
 	c.submitAgent = func(_, _, _ string) error { return nil }
 	c.prepareAutoAgent = func(string) (string, error) { return "ask", nil }
 	c.restoreAutoAgent = func(string, string) {}
+	c.prepareAgentReadOnly = func(string) (bool, error) { return false, nil }
+	c.restoreAgentReadOnly = func(string, bool) {}
 	c.scheduler = newCollaborationScheduler()
 	c.conn = &collaborationConnection{
 		mode: "host", room: snapshot.Room.ID,
@@ -107,7 +109,7 @@ func TestSchedulerMentionTriggersAgent(t *testing.T) {
 		chatItem("chat-1", "member-b", "hello @Alice Agent please help", []string{"member-a"}, []string{"agent-a"}),
 	)
 	s := newCollaborationScheduler()
-	input := s.nextMention(snap, "member-a", "agent-a", "session-a", nil)
+	input := s.nextMention(snap, "member-a", "agent-a", "session-a", defaultCollaborationAgentConfig(), nil)
 	if input == nil {
 		t.Fatal("expected mention to trigger agent start")
 	}
@@ -121,7 +123,7 @@ func TestSchedulerMentionSkipsWhenAlreadyHandled(t *testing.T) {
 		chatItem("chat-1", "member-b", "@Alice Agent go", []string{"member-a"}, []string{"agent-a"}),
 	)
 	s := newCollaborationScheduler()
-	input := s.nextMention(snap, "member-a", "agent-a", "session-a", map[string]bool{"chat-1": true})
+	input := s.nextMention(snap, "member-a", "agent-a", "session-a", defaultCollaborationAgentConfig(), map[string]bool{"chat-1": true})
 	if input != nil {
 		t.Fatal("expected mention to be skipped when already handled")
 	}
@@ -134,7 +136,7 @@ func TestSchedulerMentionSkipsWhenAlreadyStarted(t *testing.T) {
 		agentRunItem("cmd-1", "member-a", requestID),
 	)
 	s := newCollaborationScheduler()
-	input := s.nextMention(snap, "member-a", "agent-a", "session-a", nil)
+	input := s.nextMention(snap, "member-a", "agent-a", "session-a", defaultCollaborationAgentConfig(), nil)
 	if input != nil {
 		t.Fatal("expected mention to be skipped when agent command already exists")
 	}
@@ -537,6 +539,175 @@ func TestSchedulerMentionsAlwaysFireOnSignal(t *testing.T) {
 	}
 	if !strings.HasPrefix(captured[0].RequestID, mentionPrefix) {
 		t.Errorf("expected mention prefix, got %q", captured[0].RequestID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Question-only mode: @mentions must not execute operation instructions
+// ---------------------------------------------------------------------------
+
+func TestSchedulerQuestionOnlyMentionOperationDoesNotFire(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent 帮我写文件 main.go 并运行测试", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "message"
+	c.state.AgentConfig.AutoRespondQuestions = true
+	c.state.AgentConfig.AutoRespondRequests = false
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 0 {
+		t.Fatalf("question-only mode: @operation instruction must not trigger Agent, got %d starts: %+v", len(captured), captured)
+	}
+}
+
+func TestSchedulerQuestionOnlyMentionQuestionFiresReadOnly(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent 这个报错怎么排查？", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "message"
+	c.state.AgentConfig.AutoRespondQuestions = true
+	c.state.AgentConfig.AutoRespondRequests = false
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 1 {
+		t.Fatalf("question-only mode: @question must trigger Agent, got %d starts", len(captured))
+	}
+	if !strings.HasPrefix(captured[0].RequestID, mentionPrefix) {
+		t.Errorf("expected mention prefix, got %q", captured[0].RequestID)
+	}
+	if !captured[0].ReadOnly {
+		t.Error("question-only @question run must be read-only at runtime")
+	}
+
+	// Replay the same snapshot after the command is handled: no duplicate start.
+	c.state.Snapshot.Timeline = append(c.state.Snapshot.Timeline,
+		agentRunItem("cmd-question", "member-a", captured[0].RequestID))
+	captured = nil
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 0 {
+		t.Fatalf("replayed question-only mention must not fire twice, got %d", len(captured))
+	}
+}
+
+func TestSchedulerQuestionOnlyMentionWithOperationQuestionFiresReadOnly(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent 能帮我写文件吗？", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "message"
+	c.state.AgentConfig.AutoRespondQuestions = true
+	c.state.AgentConfig.AutoRespondRequests = false
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 1 {
+		t.Fatalf("question-shaped mention must still trigger an answer, got %d starts", len(captured))
+	}
+	if !captured[0].ReadOnly {
+		t.Error("question-shaped mention with an operation request must NOT gain write capability")
+	}
+}
+
+func TestSchedulerQuestionOnlyPlainQuestionFiresReadOnly(t *testing.T) {
+	snap := collab.Snapshot{
+		Room: collab.Room{ID: "room-a"},
+		Members: []collab.Member{
+			{ID: "member-a", Name: "Alice", Status: collab.MemberOnline, Agent: collab.AgentDescriptor{ID: "agent-a", Status: collab.AgentIdle}},
+			{ID: "member-b", Name: "Bob", Status: collab.MemberOnline, Agent: collab.AgentDescriptor{}}, // no agent
+		},
+		Timeline: []collab.TimelineItem{
+			chatItem("chat-1", "member-b", "这个接口为什么超时？", nil, nil),
+		},
+	}
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "message"
+	c.state.AgentConfig.AutoRespondQuestions = true
+	c.state.AgentConfig.AutoRespondRequests = false
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 1 {
+		t.Fatalf("plain question must trigger Agent in question-only mode, got %d starts", len(captured))
+	}
+	if !strings.HasPrefix(captured[0].RequestID, autoQuestionPrefix) {
+		t.Errorf("expected question prefix, got %q", captured[0].RequestID)
+	}
+	if !captured[0].ReadOnly {
+		t.Error("question-only plain-question run must be read-only at runtime")
+	}
+}
+
+func TestSchedulerOperationsModeMentionKeepsFullCapability(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent 帮我写文件 main.go", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "message"
+	c.state.AgentConfig.AutoRespondQuestions = true
+	c.state.AgentConfig.AutoRespondRequests = true
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 1 {
+		t.Fatalf("operations mode: @operation instruction must still trigger Agent, got %d starts", len(captured))
+	}
+	if captured[0].ReadOnly {
+		t.Error("operations mode must keep full (non-read-only) Agent capability")
+	}
+}
+
+func TestSchedulerQuestionOnlyManualModeMentionsUnchanged(t *testing.T) {
+	// Both auto-response flags off: mentions keep their existing unconditional
+	// semantics (recognition off, mentions still fire).
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent 帮我写文件 main.go", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "off"
+	c.state.AgentConfig.AutoRespondQuestions = false
+	c.state.AgentConfig.AutoRespondRequests = false
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 1 {
+		t.Fatalf("manual mode mentions must keep firing, got %d starts", len(captured))
+	}
+	if captured[0].ReadOnly {
+		t.Error("manual mode mention must keep full capability")
 	}
 }
 

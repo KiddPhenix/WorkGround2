@@ -305,6 +305,10 @@ type StartCollaborationAgentInput struct {
 	ReferenceIDs   []string `json:"referenceIds,omitempty"`
 	AgentRequestID string   `json:"agentRequestId,omitempty"`
 	Automatic      bool     `json:"automatic,omitempty"`
+	// ReadOnly forces the run into a text-only boundary: the executor refuses
+	// write tools, commands, and other side-effecting calls at runtime. Set by
+	// the scheduler for question-only mode, never by the frontend.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 type CancelCollaborationQueuedTaskInput struct {
@@ -459,8 +463,12 @@ type desktopCollaboration struct {
 	stopAgent         func(string) error
 	prepareAutoAgent  func(string) (string, error)
 	restoreAutoAgent  func(string, string)
-	openHost          func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
-	openJoin          func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
+	// prepareAgentReadOnly / restoreAgentReadOnly flip the owning Session's
+	// scoped runtime tool gate around a text-only Room Agent run.
+	prepareAgentReadOnly func(string) (bool, error)
+	restoreAgentReadOnly func(string, bool)
+	openHost             func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
+	openJoin             func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
 
 	scheduler       *collaborationScheduler
 	schedulerCancel context.CancelFunc
@@ -537,26 +545,29 @@ type collaborationFilePeer interface {
 }
 
 type collaborationAgentRun struct {
-	Room           string
-	MemberID       string
-	AgentID        string
-	RunID          string
-	CommandID      string
-	SessionID      string
-	AgentRequestID string
-	Instruction    string
-	ReferenceIDs   []string
-	ContextRefs    []string
-	QueuedAt       string
-	StartedAt      time.Time
-	Text           strings.Builder
-	PublishIndex   int
-	Updates        chan collaborationRunUpdate
-	Automatic      bool
-	RestoreMode    string
-	PromptOpen     bool
-	Prompt         *CollaborationAgentPrompt
-	StopRequested  bool
+	Room             string
+	MemberID         string
+	AgentID          string
+	RunID            string
+	CommandID        string
+	SessionID        string
+	AgentRequestID   string
+	Instruction      string
+	ReferenceIDs     []string
+	ContextRefs      []string
+	QueuedAt         string
+	StartedAt        time.Time
+	Text             strings.Builder
+	PublishIndex     int
+	Updates          chan collaborationRunUpdate
+	Automatic        bool
+	RestoreMode      string
+	ReadOnly         bool
+	RestoreReadOnly  bool
+	ReadOnlyPrepared bool
+	PromptOpen       bool
+	Prompt           *CollaborationAgentPrompt
+	StopRequested    bool
 }
 
 type collaborationStartRecord struct {
@@ -628,6 +639,7 @@ type collaborationPersistedRun struct {
 	QueuedAt       string   `json:"queuedAt,omitempty"`
 	PublishIndex   int      `json:"publishIndex,omitempty"`
 	Automatic      bool     `json:"automatic,omitempty"`
+	ReadOnly       bool     `json:"readOnly,omitempty"`
 }
 
 func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
@@ -706,6 +718,8 @@ func newDesktopCollaborationForSession(app *App, sessionID, sessionPath, session
 	}
 	c.prepareAutoAgent = app.prepareCollaborationAutoAgent
 	c.restoreAutoAgent = app.restoreCollaborationAutoAgent
+	c.prepareAgentReadOnly = app.prepareCollaborationAgentReadOnly
+	c.restoreAgentReadOnly = app.restoreCollaborationAgentReadOnly
 	c.scheduler = newCollaborationScheduler()
 	root := strings.TrimSpace(config.MemoryUserDir())
 	if root != "" {
@@ -2507,6 +2521,7 @@ func (c *desktopCollaboration) startAgentLocked(ctx context.Context, input Start
 		AgentRequestID: strings.TrimSpace(input.AgentRequestID), Instruction: instruction,
 		ReferenceIDs: append([]string(nil), input.ReferenceIDs...), ContextRefs: append([]string(nil), state.AgentConfig.ContextRefs...), QueuedAt: queuedAt,
 		Automatic: input.Automatic,
+		ReadOnly:  input.ReadOnly,
 		Updates:   make(chan collaborationRunUpdate, 32),
 	}
 	if busy {
@@ -2736,6 +2751,9 @@ func (c *desktopCollaboration) launchAgent(ctx context.Context, run *collaborati
 		}
 		fullInput = prepared
 	}
+	if run.ReadOnly {
+		fullInput = collaborationReadOnlyAnswerInput(fullInput)
+	}
 	if _, err := c.publishRun(ctx, run, collab.RunRunning, "", ""); err != nil {
 		c.failAgentRun(ctx, run, err)
 		return err
@@ -2744,8 +2762,14 @@ func (c *desktopCollaboration) launchAgent(ctx context.Context, run *collaborati
 		c.failAgentRun(ctx, run, err)
 		return err
 	}
+	if err := c.prepareAgentReadOnlyForRun(run); err != nil {
+		c.restoreAgentApproval(run)
+		c.failAgentRun(ctx, run, err)
+		return err
+	}
 	if err := c.submitAgent(run.SessionID, run.Instruction, fullInput); err != nil {
 		c.restoreAgentApproval(run)
+		c.restoreAgentReadOnlyForRun(run)
 		c.failAgentRun(ctx, run, err)
 		return err
 	}
@@ -2864,6 +2888,27 @@ func (a *App) restoreCollaborationAutoAgent(sessionID, previous string) {
 		previous = normalizeToolApprovalMode(tab.toolApprovalMode)
 	}
 	ctrl.SetToolApprovalMode(previous)
+}
+
+// prepareCollaborationAgentReadOnly enables the owning Session's scoped
+// runtime tool gate without entering the user-visible plan workflow.
+func (a *App) prepareCollaborationAgentReadOnly(sessionID string) (bool, error) {
+	_, ctrl := a.sessionAndCtrl(sessionID)
+	if ctrl == nil {
+		return false, fmt.Errorf("collaboration Agent workspace is not ready")
+	}
+	previous := ctrl.RuntimeReadOnly()
+	ctrl.SetRuntimeReadOnly(true)
+	return previous, nil
+}
+
+// restoreCollaborationAgentReadOnly restores the scoped runtime tool gate.
+func (a *App) restoreCollaborationAgentReadOnly(sessionID string, previous bool) {
+	_, ctrl := a.sessionAndCtrl(sessionID)
+	if ctrl == nil {
+		return
+	}
+	ctrl.SetRuntimeReadOnly(previous)
 }
 
 func (c *desktopCollaboration) emitState() {

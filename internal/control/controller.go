@@ -221,6 +221,7 @@ type Controller struct {
 	canceling               bool
 	autosaveWG              sync.WaitGroup
 	planMode                bool
+	runtimeReadOnly         bool
 	sessionPath             string
 	recoveryDepthCapNotices map[string]bool
 	snapshotMu              sync.Mutex
@@ -1850,13 +1851,33 @@ func (c *Controller) ReplayPendingPrompts() {
 	}
 }
 
-// SetPlanMode flips the executor's read-only gate without touching the
-// cache-stable prompt prefix, and remembers the state so Compose can prepend the
-// plan-mode marker to outgoing turns.
+// SetPlanMode updates the user-visible planning flow. The executor remains
+// read-only while either plan mode or a scoped runtime policy requires it.
 func (c *Controller) SetPlanMode(v bool) {
 	c.mu.Lock()
 	c.planMode = v
+	c.setReadOnlyGate(v || c.runtimeReadOnly)
 	c.mu.Unlock()
+}
+
+// RuntimeReadOnly reports the scoped execution policy used by automatic
+// callers that need text-only answers without entering the plan workflow.
+func (c *Controller) RuntimeReadOnly() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.runtimeReadOnly
+}
+
+// SetRuntimeReadOnly changes only the executor tool gate. It deliberately does
+// not mutate planMode, prepend a plan marker, or request plan approval.
+func (c *Controller) SetRuntimeReadOnly(v bool) {
+	c.mu.Lock()
+	c.runtimeReadOnly = v
+	c.setReadOnlyGate(c.planMode || v)
+	c.mu.Unlock()
+}
+
+func (c *Controller) setReadOnlyGate(v bool) {
 	if c.executor != nil {
 		c.executor.SetPlanMode(v)
 	}
@@ -4273,11 +4294,8 @@ func (c *Controller) SetBypass(on bool) {
 func (c *Controller) SetMode(plan, autoApproveTools bool) {
 	c.mu.Lock()
 	c.planMode = plan
+	c.setReadOnlyGate(plan || c.runtimeReadOnly)
 	c.mu.Unlock()
-
-	if c.executor != nil {
-		c.executor.SetPlanMode(plan)
-	}
 	if autoApproveTools {
 		c.SetToolApprovalMode(ToolApprovalYolo)
 	} else {
