@@ -460,51 +460,59 @@ func TestDesktopIconRoomsJoinHistoricalStateToLiveTree(t *testing.T) {
 }
 
 func TestMergeResidentRoomDescriptorAttachesRuntimeSessionAlias(t *testing.T) {
-	sessionPath := filepath.Join(t.TempDir(), "room-session.jsonl")
+	const topicID = "topic_20260819-085203_6f18042083727b99"
+	recoveryPath := agent.NewSessionPath(t.TempDir(), "recovery")
+	mainPath := agent.NewSessionPath(t.TempDir(), "main")
+	for _, sp := range []string{recoveryPath, mainPath} {
+		if err := agent.SaveBranchMeta(sp, agent.BranchMeta{
+			ID: "session-" + filepath.Base(sp), TopicID: topicID,
+			CustomTitle: "游戏 Room", Scope: "global", SessionKind: agent.SessionKindCollaboration,
+		}); err != nil {
+			t.Fatalf("save branch meta %s: %v", sp, err)
+		}
+	}
 	tree := map[string]desktopIconRoomDescriptor{
-		"room-topic": {
-			TopicID: "room-topic", Title: "Pinned Room", SessionID: "tree-session", Icon: "discussion",
-			Ref: &DesktopIconTaskRef{Scope: "global", TopicID: "room-topic", SessionPath: sessionPath},
+		topicID: {
+			TopicID: topicID, Title: "游戏 Room", SessionID: "tree-session", Icon: "game",
+			Ref: &DesktopIconTaskRef{Scope: "global", TopicID: topicID, SessionPath: recoveryPath},
 		},
 	}
 	app := &App{collaborations: map[string]*desktopCollaboration{
-		"runtime-session": {
-			ownerSessionID:   "runtime-session",
-			ownerSessionPath: sessionPath,
+		"session_60": {
+			ownerSessionID: "session_60", ownerSessionPath: mainPath,
 			state: CollaborationState{
-				Room:      "room-id",
-				SessionID: "runtime-session",
-				Snapshot:  collab.Snapshot{Room: collab.Room{ID: "room-id", Name: "Pinned Room"}},
+				Room: "room-id", SessionID: "session_60",
+				Snapshot: collab.Snapshot{Room: collab.Room{ID: "room-id", Name: "游戏 Room"}},
 			},
 		},
 	}}
 
 	merged := app.mergeResidentRoomDescriptors(tree)
-	if _, resident := merged["resident:runtime-session"]; resident {
+	if _, resident := merged["resident:session_60"]; resident {
 		t.Fatalf("resident runtime produced a second descriptor: %+v", merged)
 	}
-	descriptor := merged["room-topic"]
-	if !slices.Contains(descriptor.SessionAliases, "runtime-session") {
+	descriptor := merged[topicID]
+	if !slices.Contains(descriptor.SessionAliases, "session_60") {
 		t.Fatalf("runtime SessionID was not attached as an alias: %+v", descriptor)
 	}
-	if descriptor.SessionID != "tree-session" || descriptor.Icon != "discussion" || descriptor.Ref == nil || descriptor.Ref.SessionPath != sessionPath {
+	if descriptor.SessionID != "tree-session" || descriptor.Icon != "game" || descriptor.Ref == nil || descriptor.Ref.SessionPath != recoveryPath {
 		t.Fatalf("durable tree identity was replaced: %+v", descriptor)
 	}
 
-	pinned := desktopIconPinnedRoomsFromDescriptors(merged, []string{"room-topic"})
+	pinned := desktopIconPinnedRoomsFromDescriptors(merged, []string{topicID})
 	at := time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC)
 	state := UnreadState{Available: true, Summary: unread.Summary{Revision: 3, Conversations: []unread.Conversation{{
-		Key: "room:room-topic", Source: unread.SourceRoom, SessionID: "runtime-session", Title: "Pinned Room",
+		Key: "room:" + topicID, Source: unread.SourceRoom, SessionID: "session_60", Title: "游戏 Room",
 		LatestSequence: 9, UnreadCount: 1,
 		Items: []unread.Item{{ID: "runtime-message", Sequence: 9, Kind: "chat", Priority: unread.PriorityNormal, OccurredAt: at}},
 	}}}}
 	snapshot := buildDesktopIconSnapshotWithPresentations(nil, state, nil, desktopIconPersistedState{}, 0, nil, nil, nil, nil, pinned, nil, merged)
 
-	room := findDesktopIconItem(snapshot.Items, "room:room-topic")
-	if room == nil || room.UnreadCount != 1 || len(room.Notifications) != 1 || room.Notifications[0].ID != "runtime-message" {
+	room := findDesktopIconItem(snapshot.Items, "room:"+topicID)
+	if room == nil || room.Icon != "game" || room.UnreadCount != 1 || len(room.Notifications) != 1 || room.Notifications[0].ID != "runtime-message" {
 		t.Fatalf("fixed Room did not carry unread state: %+v", room)
 	}
-	if findDesktopIconItem(snapshot.Items, "conversation:room:room-topic") != nil {
+	if findDesktopIconItem(snapshot.Items, "conversation:room:"+topicID) != nil {
 		t.Fatalf("runtime unread Room was projected twice: %+v", snapshot.Items)
 	}
 	rooms := 0
@@ -515,6 +523,39 @@ func TestMergeResidentRoomDescriptorAttachesRuntimeSessionAlias(t *testing.T) {
 	}
 	if rooms != 1 {
 		t.Fatalf("Room icons = %d, want exactly one: %+v", rooms, snapshot.Items)
+	}
+}
+
+func TestMergeResidentRoomDescriptorKeepsDifferentTopicIDsApart(t *testing.T) {
+	treePath := agent.NewSessionPath(t.TempDir(), "tree")
+	mainPath := agent.NewSessionPath(t.TempDir(), "main")
+	if err := agent.SaveBranchMeta(mainPath, agent.BranchMeta{
+		ID: "session-main", TopicID: "topic-b", CustomTitle: "同名 Room", Scope: "global", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatalf("save main branch meta: %v", err)
+	}
+	tree := map[string]desktopIconRoomDescriptor{
+		"topic-a": {
+			TopicID: "topic-a", Title: "同名 Room", SessionID: "tree-session", Icon: "game",
+			Ref: &DesktopIconTaskRef{Scope: "global", TopicID: "topic-a", SessionPath: treePath},
+		},
+	}
+	app := &App{collaborations: map[string]*desktopCollaboration{
+		"session-main": {
+			ownerSessionID: "session-main", ownerSessionPath: mainPath,
+			state: CollaborationState{
+				Room: "room-b", SessionID: "session-main",
+				Snapshot: collab.Snapshot{Room: collab.Room{ID: "room-b", Name: "同名 Room"}},
+			},
+		},
+	}}
+
+	merged := app.mergeResidentRoomDescriptors(tree)
+	if merged["topic-a"].SessionID != "tree-session" || slices.Contains(merged["topic-a"].SessionAliases, "session-main") {
+		t.Fatalf("different TopicID merged into the tree descriptor: %+v", merged["topic-a"])
+	}
+	if resident, ok := merged["resident:session-main"]; !ok || resident.TopicID != "topic-b" {
+		t.Fatalf("different TopicID did not stay a separate resident descriptor: %+v", merged)
 	}
 }
 

@@ -1482,6 +1482,21 @@ func (a *App) mergeResidentRoomDescriptors(roomDescriptors map[string]desktopIco
 		if sessionID == "" || room == "" {
 			continue
 		}
+		ref, meta := desktopIconRoomRef(sessionPath)
+		// A resident runtime and the project tree may share one stable TopicID
+		// while living on different session paths (the main session versus the
+		// recovery fork the tree selected). Prefer that durable TopicID so the
+		// runtime unread lands on the existing tree descriptor; SessionID/path
+		// stay the fallback when the sidecar is unreadable.
+		if topicID := strings.TrimSpace(meta.TopicID); topicID != "" {
+			if existing, ok := out[topicID]; ok {
+				if !slices.Contains(existing.SessionAliases, sessionID) {
+					existing.SessionAliases = append(existing.SessionAliases, sessionID)
+					out[topicID] = existing
+				}
+				continue
+			}
+		}
 		if topicID, ok := desktopIconRoomDescriptorForSession(descriptorByKey, sessionID, sessionPath); ok {
 			existing := out[topicID]
 			if !slices.Contains(existing.SessionAliases, sessionID) {
@@ -1490,7 +1505,6 @@ func (a *App) mergeResidentRoomDescriptors(roomDescriptors map[string]desktopIco
 			}
 			continue
 		}
-		ref, meta := desktopIconRoomRef(sessionPath)
 		title := firstNonEmpty(roomName, strings.TrimSpace(meta.CustomTitle), strings.TrimSpace(meta.TopicTitle), sessionID)
 		// The descriptor map is keyed by TopicID for project-tree dedupe;
 		// resident entries use a synthetic key so a missing sidecar can never
