@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -455,6 +456,65 @@ func TestDesktopIconRoomsJoinHistoricalStateToLiveTree(t *testing.T) {
 		if item := findDesktopIconItem(snapshot.Items, fmt.Sprintf("conversation:room:stale-%d", i)); item != nil {
 			t.Fatalf("stale Room %d was resurrected: %+v", i, item)
 		}
+	}
+}
+
+func TestMergeResidentRoomDescriptorAttachesRuntimeSessionAlias(t *testing.T) {
+	sessionPath := filepath.Join(t.TempDir(), "room-session.jsonl")
+	tree := map[string]desktopIconRoomDescriptor{
+		"room-topic": {
+			TopicID: "room-topic", Title: "Pinned Room", SessionID: "tree-session", Icon: "discussion",
+			Ref: &DesktopIconTaskRef{Scope: "global", TopicID: "room-topic", SessionPath: sessionPath},
+		},
+	}
+	app := &App{collaborations: map[string]*desktopCollaboration{
+		"runtime-session": {
+			ownerSessionID:   "runtime-session",
+			ownerSessionPath: sessionPath,
+			state: CollaborationState{
+				Room:      "room-id",
+				SessionID: "runtime-session",
+				Snapshot:  collab.Snapshot{Room: collab.Room{ID: "room-id", Name: "Pinned Room"}},
+			},
+		},
+	}}
+
+	merged := app.mergeResidentRoomDescriptors(tree)
+	if _, resident := merged["resident:runtime-session"]; resident {
+		t.Fatalf("resident runtime produced a second descriptor: %+v", merged)
+	}
+	descriptor := merged["room-topic"]
+	if !slices.Contains(descriptor.SessionAliases, "runtime-session") {
+		t.Fatalf("runtime SessionID was not attached as an alias: %+v", descriptor)
+	}
+	if descriptor.SessionID != "tree-session" || descriptor.Icon != "discussion" || descriptor.Ref == nil || descriptor.Ref.SessionPath != sessionPath {
+		t.Fatalf("durable tree identity was replaced: %+v", descriptor)
+	}
+
+	pinned := desktopIconPinnedRoomsFromDescriptors(merged, []string{"room-topic"})
+	at := time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC)
+	state := UnreadState{Available: true, Summary: unread.Summary{Revision: 3, Conversations: []unread.Conversation{{
+		Key: "room:room-topic", Source: unread.SourceRoom, SessionID: "runtime-session", Title: "Pinned Room",
+		LatestSequence: 9, UnreadCount: 1,
+		Items: []unread.Item{{ID: "runtime-message", Sequence: 9, Kind: "chat", Priority: unread.PriorityNormal, OccurredAt: at}},
+	}}}}
+	snapshot := buildDesktopIconSnapshotWithPresentations(nil, state, nil, desktopIconPersistedState{}, 0, nil, nil, nil, nil, pinned, nil, merged)
+
+	room := findDesktopIconItem(snapshot.Items, "room:room-topic")
+	if room == nil || room.UnreadCount != 1 || len(room.Notifications) != 1 || room.Notifications[0].ID != "runtime-message" {
+		t.Fatalf("fixed Room did not carry unread state: %+v", room)
+	}
+	if findDesktopIconItem(snapshot.Items, "conversation:room:room-topic") != nil {
+		t.Fatalf("runtime unread Room was projected twice: %+v", snapshot.Items)
+	}
+	rooms := 0
+	for _, item := range snapshot.Items {
+		if item.Kind == "room" {
+			rooms++
+		}
+	}
+	if rooms != 1 {
+		t.Fatalf("Room icons = %d, want exactly one: %+v", rooms, snapshot.Items)
 	}
 }
 

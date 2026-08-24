@@ -967,12 +967,15 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	roomPins, roomPinsErr := a.GetDesktopRoomPins()
 	roomIcons, roomIconsErr := a.GetDesktopRoomIcons()
 	roomDescriptors := desktopIconRoomDescriptors(projectTree, roomIcons)
-	pinnedRooms := desktopIconPinnedRoomsFromDescriptors(roomDescriptors, roomPins)
 	// Resident runtimes are the strongest liveness signal: a Room still
 	// consuming its stream offscreen must keep its unread visible even when the
 	// project-tree scan is cold or the tab is not mounted. Tree descriptors
 	// stay authoritative when both exist.
 	roomDescriptors = a.mergeResidentRoomDescriptors(roomDescriptors)
+	// Pinned Rooms must be derived after the resident merge so a runtime's live
+	// SessionID alias is present on the fixed entry and the unread merge
+	// resolves the same Room instead of emitting a second default bubble.
+	pinnedRooms := desktopIconPinnedRoomsFromDescriptors(roomDescriptors, roomPins)
 	sessionPresentations := desktopIconSessionPresentations(sources, projectTree)
 	snapshot := buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomPresentations, roomRefs, subagentCounts, sessionPresentations, pinnedRooms, delegations, roomDescriptors)
 	external := a.GetExternalRunSnapshot()
@@ -1382,6 +1385,11 @@ type desktopIconRoomDescriptor struct {
 	SessionID string
 	Icon      string
 	Ref       *DesktopIconTaskRef
+	// SessionAliases are additional live session identities that resolve to
+	// this same Room (the resident runtime SessionID when it differs from the
+	// durable tree SessionID). They only widen the identity lookup for pinned/
+	// unread merging; they never replace the display identity or dedupe by title.
+	SessionAliases []string
 }
 
 // desktopIconPinnedRooms joins the durable pin order onto authoritative Room
@@ -1429,8 +1437,10 @@ func desktopIconRoomDescriptors(tree []ProjectNode, icons map[string]string) map
 // The merge is deliberately conservative:
 //   - Only runtimes that still hold a Room identity participate; leave/close
 //     clears Room and Snapshot, so left rooms cannot be resurrected here.
-//   - Runtimes whose session identity already appears in the tree descriptors
-//     are skipped, so the project-tree descriptor stays authoritative.
+//   - Runtimes whose session identity already resolves to an existing tree
+//     descriptor attach their live SessionID as an identity alias on that
+//     descriptor instead of creating a second Room. The project-tree descriptor
+//     stays authoritative for title/icon/ref.
 func (a *App) mergeResidentRoomDescriptors(roomDescriptors map[string]desktopIconRoomDescriptor) map[string]desktopIconRoomDescriptor {
 	if a == nil {
 		return roomDescriptors
@@ -1444,15 +1454,20 @@ func (a *App) mergeResidentRoomDescriptors(roomDescriptors map[string]desktopIco
 	if len(runtimes) == 0 {
 		return roomDescriptors
 	}
-	treeKeys := map[string]struct{}{}
-	for _, room := range roomDescriptors {
-		for _, key := range desktopIconRoomSessionKeys(room.SessionID, room.Ref) {
-			treeKeys[key] = struct{}{}
-		}
-	}
 	out := roomDescriptors
 	if out == nil {
 		out = map[string]desktopIconRoomDescriptor{}
+	}
+	// Index every existing descriptor by all of its identity keys, so a
+	// resident runtime can find the descriptor it belongs to even when it only
+	// shares the session path and not the tree SessionID.
+	descriptorByKey := map[string]string{}
+	for topicID, room := range out {
+		for _, key := range desktopIconRoomDescriptorKeys(room) {
+			if _, exists := descriptorByKey[key]; !exists {
+				descriptorByKey[key] = topicID
+			}
+		}
 	}
 	for _, runtime := range runtimes {
 		runtime.mu.RLock()
@@ -1467,7 +1482,12 @@ func (a *App) mergeResidentRoomDescriptors(roomDescriptors map[string]desktopIco
 		if sessionID == "" || room == "" {
 			continue
 		}
-		if roomSessionKeysPresent(treeKeys, sessionID, sessionPath) {
+		if topicID, ok := desktopIconRoomDescriptorForSession(descriptorByKey, sessionID, sessionPath); ok {
+			existing := out[topicID]
+			if !slices.Contains(existing.SessionAliases, sessionID) {
+				existing.SessionAliases = append(existing.SessionAliases, sessionID)
+				out[topicID] = existing
+			}
 			continue
 		}
 		ref, meta := desktopIconRoomRef(sessionPath)
@@ -1485,15 +1505,17 @@ func (a *App) mergeResidentRoomDescriptors(roomDescriptors map[string]desktopIco
 	return out
 }
 
-// roomSessionKeysPresent reports whether any canonical session-key alias of a
-// resident runtime already exists in the given key index.
-func roomSessionKeysPresent(index map[string]struct{}, sessionID, sessionPath string) bool {
+// desktopIconRoomDescriptorForSession returns the descriptor map key that
+// already resolves a resident runtime's session identity, if any. The session
+// path key is what makes a tree descriptor and a live runtime the same Room
+// even when their SessionIDs differ.
+func desktopIconRoomDescriptorForSession(index map[string]string, sessionID, sessionPath string) (string, bool) {
 	for _, key := range desktopIconRoomSessionKeys(sessionID, &DesktopIconTaskRef{SessionPath: sessionPath}) {
-		if _, ok := index[key]; ok {
-			return true
+		if topicID, ok := index[key]; ok {
+			return topicID, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func desktopIconPinnedRoomsFromDescriptors(byTopic map[string]desktopIconRoomDescriptor, topicIDs []string) []desktopIconRoomDescriptor {
@@ -1541,6 +1563,18 @@ func desktopIconRoomSessionKeys(sessionID string, ref *DesktopIconTaskRef) []str
 		add("path:" + path)
 		add(sessionRuntimeKey(path))
 		add("path:" + sessionRuntimeKey(path))
+	}
+	return keys
+}
+
+// desktopIconRoomDescriptorKeys returns every identity key that resolves to a
+// Room descriptor: the durable SessionID, the session path, and any live
+// SessionID aliases attached by the resident-runtime merge. Consumers dedupe,
+// so overlapping aliases are harmless.
+func desktopIconRoomDescriptorKeys(room desktopIconRoomDescriptor) []string {
+	keys := desktopIconRoomSessionKeys(room.SessionID, room.Ref)
+	for _, alias := range room.SessionAliases {
+		keys = append(keys, desktopIconRoomSessionKeys(alias, nil)...)
 	}
 	return keys
 }
@@ -1984,7 +2018,7 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 	pinnedRoomBySession := map[string]int{}
 	roomBySession := map[string]desktopIconRoomDescriptor{}
 	addLiveRoom := func(room desktopIconRoomDescriptor) {
-		for _, key := range desktopIconRoomSessionKeys(room.SessionID, room.Ref) {
+		for _, key := range desktopIconRoomDescriptorKeys(room) {
 			if _, exists := roomBySession[key]; !exists {
 				roomBySession[key] = room
 			}
@@ -2034,7 +2068,7 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 		}
 		items = append(items, item)
 		index := len(items) - 1
-		for _, key := range desktopIconRoomSessionKeys(room.SessionID, room.Ref) {
+		for _, key := range desktopIconRoomDescriptorKeys(room) {
 			if _, exists := pinnedRoomBySession[key]; !exists {
 				pinnedRoomBySession[key] = index
 			}
