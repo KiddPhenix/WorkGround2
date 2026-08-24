@@ -17,6 +17,7 @@ import (
 	"workground2/internal/agent"
 	"workground2/internal/collab"
 	"workground2/internal/control"
+	"workground2/internal/event"
 	"workground2/internal/provider"
 	"workground2/internal/runhub"
 	"workground2/internal/runhub/dsh"
@@ -3309,5 +3310,49 @@ func TestDesktopIconRenameRetainedPendingReceiptRetriesSameRequest(t *testing.T)
 	}
 	if app.iconWidgetState.Applied[0].Status != "applied" {
 		t.Fatalf("retry did not settle the receipt: %+v", app.iconWidgetState.Applied[0])
+	}
+}
+
+func TestDesktopNoticeCarriesStructuredAskQuestions(t *testing.T) {
+	pending := control.PendingInteraction{Kind: control.PendingInteractionAsk, Ask: event.Ask{ID: "ask-1", Questions: []event.AskQuestion{
+		{ID: "q1", Header: "语言", Prompt: "选择语言", Options: []event.AskOption{{Label: "Go"}, {Label: "Rust"}, {Label: "TypeScript"}, {Label: "Python"}}},
+		{ID: "q2", Prompt: "需要哪些能力", Multi: true, Options: []event.AskOption{{Label: "搜索"}, {Label: "测试"}}},
+	}}}
+	message := messageForPending(widgetSource{meta: TabMeta{ID: "tab"}, pending: pending, has: true})
+	notice := desktopNoticeForMessage(message, "needs_input", 1, 42)
+	if notice.InteractionID != "ask-1" || len(notice.Questions) != 2 {
+		t.Fatalf("icon notice projection = %#v", notice)
+	}
+	if len(notice.Questions[0].Options) != 4 || !notice.Questions[1].Multi {
+		t.Fatalf("icon notice questions = %#v", notice.Questions)
+	}
+	if notice.Questions[0].Options[0].Value != "Go" {
+		t.Fatalf("icon option value = %#v", notice.Questions[0].Options[0])
+	}
+}
+
+func TestDesktopIconAnswerActionRoutesStructuredBatch(t *testing.T) {
+	pending := control.PendingInteraction{Kind: control.PendingInteractionAsk, Ask: event.Ask{ID: "ask-1", Questions: []event.AskQuestion{
+		{ID: "q1", Prompt: "选择语言", Options: []event.AskOption{{Label: "Go"}, {Label: "Rust"}}},
+		{ID: "q2", Prompt: "需要哪些能力", Multi: true, Options: []event.AskOption{{Label: "搜索"}, {Label: "测试"}}},
+	}}}
+	app := newAskTestApp(pending, true)
+	notice := DesktopIconNotice{
+		ID: "ask:tab:ask-1", Revision: "r", Kind: "needs_input", TabID: "tab", InteractionID: "ask-1",
+		Questions: widgetQuestions(pending.Ask.Questions),
+	}
+	err := app.applyDesktopIconActionLocked(DesktopIconItem{ID: "task:tab", Kind: "task"}, &notice, DesktopIconActionInput{
+		ItemID: "task:tab", NoticeID: notice.ID, Revision: "r", RequestID: "icon-req", Action: "answer",
+		Answers: []QuestionAnswer{
+			{QuestionID: "q1", Selected: []string{"Rust"}},
+			{QuestionID: "q2", Selected: []string{"测试"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("icon batch answer failed: %v", err)
+	}
+	ctrl := app.tabs["tab"].Ctrl.(*fakeAskCtrl)
+	if ctrl.answerID != "ask-1" || len(ctrl.answered) != 2 || ctrl.answered[1].QuestionID != "q2" {
+		t.Fatalf("icon batch did not reach the controller: %#v %#v", ctrl.answerID, ctrl.answered)
 	}
 }

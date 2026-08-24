@@ -942,3 +942,196 @@ func TestRetryLeaseTabsFiltersInvalidCandidates(t *testing.T) {
 		t.Fatalf("retry calls = %d, want 0 for filtered candidates", calls)
 	}
 }
+
+// fakeAskCtrl is a minimal control.SessionAPI test double for the widget ask
+// path: it only answers PendingInteraction and AnswerQuestion, which is all
+// applyWidgetActionCurrent reads on the answer branch.
+type fakeAskCtrl struct {
+	control.SessionAPI
+	pending  control.PendingInteraction
+	has      bool
+	answerID string
+	answered []event.AskAnswer
+}
+
+func (f *fakeAskCtrl) PendingInteraction() (control.PendingInteraction, bool) {
+	return f.pending, f.has
+}
+
+func (f *fakeAskCtrl) AnswerQuestion(id string, answers []event.AskAnswer) {
+	f.answerID = id
+	f.answered = append([]event.AskAnswer{}, answers...)
+}
+
+func newAskTestApp(pending control.PendingInteraction, has bool) *App {
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", Ctrl: &fakeAskCtrl{pending: pending, has: has}}}}
+	return app
+}
+
+func askFixture() control.PendingInteraction {
+	return control.PendingInteraction{Kind: control.PendingInteractionAsk, Ask: event.Ask{ID: "ask-1", Questions: []event.AskQuestion{
+		{ID: "q1", Header: "语言", Prompt: "选择语言", Options: []event.AskOption{{Label: "Go"}, {Label: "Rust"}, {Label: "TypeScript"}, {Label: "Python"}}},
+		{ID: "q2", Header: "范围", Prompt: "改动范围", Options: []event.AskOption{{Label: "全部"}, {Label: "最小"}}},
+		{ID: "q3", Header: "能力", Prompt: "需要哪些能力", Multi: true, Options: []event.AskOption{{Label: "搜索"}, {Label: "测试"}, {Label: "发布"}}},
+	}}}
+}
+
+func TestMessageForPendingAskProjectsStructuredQuestions(t *testing.T) {
+	pending := askFixture()
+	message := messageForPending(widgetSource{meta: TabMeta{ID: "tab"}, pending: pending, has: true})
+	if !message.RequiresWindow || message.Kind != "reply" || message.MessageCode != "multi_question" || message.MessageCount != 3 {
+		t.Fatalf("multi-question message metadata = %#v", message)
+	}
+	if len(message.Questions) != 3 {
+		t.Fatalf("structured questions = %d, want 3: %#v", len(message.Questions), message.Questions)
+	}
+	if message.Questions[0].ID != "q1" || message.Questions[0].Header != "语言" || message.Questions[0].Multi {
+		t.Fatalf("question q1 projection = %#v", message.Questions[0])
+	}
+	if len(message.Questions[0].Options) != 4 {
+		t.Fatalf("q1 must carry all 4 options, got %d", len(message.Questions[0].Options))
+	}
+	if message.Questions[0].Options[0].Value != "Go" {
+		t.Fatalf("option value must mirror the label: %#v", message.Questions[0].Options[0])
+	}
+	if !message.Questions[2].Multi || len(message.Questions[2].Options) != 3 {
+		t.Fatalf("multi question projection = %#v", message.Questions[2])
+	}
+	// The structured set must be revision-bearing: a changed option set bumps
+	// the revision even when the prompt text stays identical.
+	other := pending
+	other.Ask.Questions[0].Options[3].Label = "JavaScript"
+	changed := messageForPending(widgetSource{meta: TabMeta{ID: "tab"}, pending: other, has: true})
+	if changed.Revision == message.Revision {
+		t.Fatalf("changed options did not bump the revision: %q == %q", changed.Revision, message.Revision)
+	}
+}
+
+func TestMessageForPendingSingleQuestionKeepsLegacyInlineFields(t *testing.T) {
+	message := messageForPending(widgetSource{meta: TabMeta{ID: "tab"}, has: true, pending: control.PendingInteraction{
+		Kind: control.PendingInteractionAsk, Ask: event.Ask{ID: "ask-1", Questions: []event.AskQuestion{{
+			ID: "q", Prompt: "选择语言", Options: []event.AskOption{{Label: "中文"}, {Label: "英文"}, {Label: "日语"}},
+		}}},
+	}})
+	if message.RequiresWindow || message.Kind != "choice" {
+		t.Fatalf("single 3-option question must stay inline: %#v", message)
+	}
+	if message.QuestionID != "q" || len(message.Options) != 3 {
+		t.Fatalf("legacy inline fields = %#v", message)
+	}
+	if len(message.Questions) != 1 || message.Questions[0].ID != "q" || len(message.Questions[0].Options) != 3 {
+		t.Fatalf("structured projection missing: %#v", message.Questions)
+	}
+}
+
+func TestWidgetAnswersForPendingAcceptsFullBatch(t *testing.T) {
+	out, err := widgetAnswersForPending(askFixture().Ask, []QuestionAnswer{
+		{QuestionID: "q1", Selected: []string{"Rust"}},
+		{QuestionID: "q2", Selected: []string{"这是自定义回答"}},
+		{QuestionID: "q3", Selected: []string{"搜索", "发布"}},
+	})
+	if err != nil {
+		t.Fatalf("full batch rejected: %v", err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("out = %d answers, want 3", len(out))
+	}
+	if out[0].QuestionID != "q1" || len(out[0].Selected) != 1 || out[0].Selected[0] != "Rust" {
+		t.Fatalf("q1 answer = %#v", out[0])
+	}
+	if out[1].Selected[0] != "这是自定义回答" {
+		t.Fatalf("custom answer lost: %#v", out[1])
+	}
+	if len(out[2].Selected) != 2 || out[2].Selected[0] != "搜索" || out[2].Selected[1] != "发布" {
+		t.Fatalf("multi answer = %#v", out[2])
+	}
+}
+
+func TestWidgetAnswersForPendingRejectsPartialAndInvalid(t *testing.T) {
+	cases := []struct {
+		name    string
+		answers []QuestionAnswer
+	}{
+		{"missing question", []QuestionAnswer{{QuestionID: "q1", Selected: []string{"Go"}}, {QuestionID: "q3", Selected: []string{"搜索"}}}},
+		{"unknown question", []QuestionAnswer{{QuestionID: "q1", Selected: []string{"Go"}}, {QuestionID: "q2", Selected: []string{"最小"}}, {QuestionID: "q3", Selected: []string{"搜索"}}, {QuestionID: "ghost", Selected: []string{"x"}}}},
+		{"duplicate question", []QuestionAnswer{{QuestionID: "q1", Selected: []string{"Go"}}, {QuestionID: "q1", Selected: []string{"Rust"}}, {QuestionID: "q2", Selected: []string{"最小"}}, {QuestionID: "q3", Selected: []string{"搜索"}}}},
+		{"single with two values", []QuestionAnswer{{QuestionID: "q1", Selected: []string{"Go", "Rust"}}, {QuestionID: "q2", Selected: []string{"最小"}}, {QuestionID: "q3", Selected: []string{"搜索"}}}},
+		{"empty value", []QuestionAnswer{{QuestionID: "q1", Selected: []string{"Go"}}, {QuestionID: "q2", Selected: []string{"  "}}, {QuestionID: "q3", Selected: []string{"搜索"}}}},
+		{"multi duplicate value", []QuestionAnswer{{QuestionID: "q1", Selected: []string{"Go"}}, {QuestionID: "q2", Selected: []string{"最小"}}, {QuestionID: "q3", Selected: []string{"搜索", "搜索"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := widgetAnswersForPending(askFixture().Ask, tc.answers); err == nil {
+				t.Fatalf("%s: invalid batch accepted", tc.name)
+			}
+		})
+	}
+	if _, err := widgetAnswersForPending(askFixture().Ask, nil); err == nil {
+		t.Fatal("empty batch accepted")
+	}
+}
+
+func TestApplyWidgetActionCurrentAnswersFullBatchThroughController(t *testing.T) {
+	pending := askFixture()
+	app := newAskTestApp(pending, true)
+	message := messageForPending(widgetSource{meta: TabMeta{ID: "tab"}, pending: pending, has: true})
+	err := app.applyWidgetActionCurrent(message, WidgetActionInput{
+		ItemID: message.ID, Revision: message.Revision, RequestID: "req-1", Action: "answer",
+		Answers: []QuestionAnswer{
+			{QuestionID: "q1", Selected: []string{"Python"}},
+			{QuestionID: "q2", Selected: []string{"全部"}},
+			{QuestionID: "q3", Selected: []string{"测试", "发布"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("batch answer failed: %v", err)
+	}
+	ctrl := app.tabs["tab"].Ctrl.(*fakeAskCtrl)
+	if ctrl.answerID != "ask-1" || len(ctrl.answered) != 3 {
+		t.Fatalf("controller received %q with %d answers", ctrl.answerID, len(ctrl.answered))
+	}
+	if ctrl.answered[2].QuestionID != "q3" || len(ctrl.answered[2].Selected) != 2 {
+		t.Fatalf("controller answers = %#v", ctrl.answered)
+	}
+}
+
+func TestApplyWidgetActionCurrentStaleAskFailsExplicitly(t *testing.T) {
+	// The notice says ask-1 but the controller now blocks on ask-2: the stale
+	// interaction must fail visibly so the frontend can refresh and retry.
+	app := newAskTestApp(control.PendingInteraction{Kind: control.PendingInteractionAsk, Ask: event.Ask{ID: "ask-2", Questions: []event.AskQuestion{{ID: "x", Prompt: "新问题", Options: []event.AskOption{{Label: "a"}}}}}}, true)
+	message := WidgetMessage{ID: "ask:tab:ask-1", Revision: "r", TabID: "tab", InteractionID: "ask-1"}
+	err := app.applyWidgetActionCurrent(message, WidgetActionInput{
+		ItemID: message.ID, Revision: message.Revision, RequestID: "req-1", Action: "answer",
+		Answers: []QuestionAnswer{{QuestionID: "q1", Selected: []string{"Go"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "pending question changed") {
+		t.Fatalf("stale interaction error = %v", err)
+	}
+
+	// The same ask id with a different question set: the batch is re-validated
+	// against the current questions, so answers for the old set are rejected
+	// instead of silently landing on the wrong questions.
+	changed := askFixture()
+	changed.Ask.Questions = []event.AskQuestion{{ID: "new", Prompt: "重发的题目", Options: []event.AskOption{{Label: "是"}, {Label: "否"}}}}
+	app2 := newAskTestApp(changed, true)
+	message2 := WidgetMessage{ID: "ask:tab:ask-1", Revision: "r", TabID: "tab", InteractionID: "ask-1"}
+	err = app2.applyWidgetActionCurrent(message2, WidgetActionInput{
+		ItemID: message2.ID, Revision: message2.Revision, RequestID: "req-1", Action: "answer",
+		Answers: []QuestionAnswer{{QuestionID: "q1", Selected: []string{"Go"}}, {QuestionID: "q2", Selected: []string{"最小"}}, {QuestionID: "q3", Selected: []string{"搜索"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "answer required for question") {
+		t.Fatalf("changed-questions error = %v", err)
+	}
+}
+
+func TestApplyWidgetActionCurrentNoPendingFailsExplicitly(t *testing.T) {
+	app := newAskTestApp(control.PendingInteraction{}, false)
+	message := WidgetMessage{ID: "ask:tab:ask-1", Revision: "r", TabID: "tab", InteractionID: "ask-1"}
+	err := app.applyWidgetActionCurrent(message, WidgetActionInput{
+		ItemID: message.ID, Revision: message.Revision, RequestID: "req-1", Action: "answer",
+		Answers: []QuestionAnswer{{QuestionID: "q1", Selected: []string{"Go"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "pending question changed") {
+		t.Fatalf("no-pending error = %v", err)
+	}
+}

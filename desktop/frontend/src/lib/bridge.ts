@@ -185,6 +185,18 @@ export interface WidgetOption {
   code?: "allow" | "deny";
 }
 
+// WidgetQuestion is one structured `ask` question projected from the backend
+// (mirrors WireAskQuestion). The icon popup renders every standard ask — 1-4
+// questions, 2-4 options, single/multi, custom answers — from these typed
+// fields instead of parsing prompt text.
+export interface WidgetQuestion {
+  id: string;
+  header?: string;
+  prompt: string;
+  options: WidgetOption[];
+  multi?: boolean;
+}
+
 export interface WidgetMessage {
   id: string;
   revision: string;
@@ -200,6 +212,7 @@ export interface WidgetMessage {
   messageCount?: number;
   interactionId?: string;
   questionId?: string;
+  questions?: WidgetQuestion[];
   options: WidgetOption[];
   requiresWindow?: boolean;
 }
@@ -246,6 +259,7 @@ export interface WidgetActionInput {
   requestId: string;
 	action: "answer" | "approve" | "deny" | "next" | "retry" | "open" | "later";
   values: string[];
+  answers?: QuestionAnswer[];
 }
 
 export interface WidgetActionResult {
@@ -292,7 +306,7 @@ export type DesktopIconStatus = "idle" | "unread" | "thinking" | "running" | "ne
 export interface DesktopIconNotice {
   id: string; revision: string; kind: "message" | "needs_input" | "needs_confirm" | "completed" | "failed";
   priority: number; title: string; body: string; createdAt: number; tabId?: string; conversation?: string;
-  readSequence?: number; interactionId?: string; questionId?: string; options: WidgetOption[]; retryable?: boolean;
+  readSequence?: number; interactionId?: string; questionId?: string; questions?: WidgetQuestion[]; options: WidgetOption[]; retryable?: boolean;
   attention?: "mention_member" | "mention_agent" | "mention_both";
   summaryStatus?: "ready" | "failed";
 }
@@ -329,7 +343,7 @@ export interface DesktopIconDelegation {
 export interface DesktopIconSnapshot { items: DesktopIconItem[]; delegations: DesktopIconDelegation[]; delegationError?: string; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
 export interface DesktopIconSearchItem { id: string; kind: "session" | "room" | "person" | "task" | "workspace"; title: string; subtitle?: string; sourceId: string; lastActivityAt?: number; }
 export interface DesktopIconSearchResult { items: DesktopIconSearchItem[]; error?: string; }
-export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
+export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; answers?: QuestionAnswer[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
 export interface DesktopIconActionResult { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; error?: string; snapshot: DesktopIconSnapshot; }
 export interface ExternalRunCapabilities { cancel: boolean; open: boolean; retry: boolean; resume: boolean; approve: boolean; send: boolean; }
 export interface ExternalRunProjection {

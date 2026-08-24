@@ -123,6 +123,8 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon--pending .desktop-icon__art--agent::after { inset: 3px; border: 0; border-radius: 50%; box-shadow: 0 0 10px rgb(116 80 223 / 36%); }
 .desktop-icon__letter { font-size: 22px; font-weight: 720; color: #cfc1ff; }
 .desktop-icon__label { display: block; overflow: hidden; margin-top: 3px; font-size: 11px; line-height: 14px; text-align: center; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 3px #000, 0 0 2px #000; }
+.desktop-icon__block-state { display: block; margin: 1px auto 0; width: max-content; max-width: 60px; padding: 0 5px; border: 1px solid rgb(255 206 137 / 52%); border-radius: 7px; color: #ffe0a6; background: rgb(73 43 25 / 86%); font-size: 9px; font-weight: 750; line-height: 12px; letter-spacing: .04em; text-shadow: 0 1px 2px #000; }
+.desktop-icon__block-state--needs_input { border-color: rgb(255 139 151 / 58%); color: #ffd3d8; background: rgb(89 31 42 / 88%); }
 .desktop-icon-wrap:has(.desktop-icon--thinking), .desktop-icon-wrap:has(.desktop-icon--running), .desktop-icon--thinking, .desktop-icon--running { width: 80px; flex-basis: 80px; }
 .desktop-icon__motion { position: absolute; z-index: 0; inset: -4px; border-radius: 18px; pointer-events: none; }
 .desktop-icon__motion--thinking { border: 1px solid rgb(181 142 255 / 58%); box-shadow: 0 0 0 2px rgb(160 116 255 / 8%), 0 0 16px rgb(128 82 232 / 30%); animation: desktop-icon-thinking-breathe 2.4s ease-in-out infinite; }
@@ -150,6 +152,11 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon--done .desktop-icon__status { background: #16865e; }
 .desktop-icon--failed .desktop-icon__status { background: #c73749; }
 .desktop-icon--needs_confirm .desktop-icon__status { background: #b48620; }
+.desktop-icon--needs_input .desktop-icon__status { background: #c73749; }
+/* A blocked session (waiting for the user to answer/confirm) stays visibly
+   discoverable: the status dot is amber/red with a slow breathe pulse even
+   when the popup was closed with "稍后处理". */
+.desktop-icon--needs_input .desktop-icon__status, .desktop-icon--needs_confirm .desktop-icon__status { animation: desktop-icon-pending-breathe 1.8s ease-in-out infinite; }
 /* A queued QuickStart job renders as a task icon with a subtle pulsing dot
    until its backend turn is running (accepted) or fails. */
 .desktop-icon__queued { position: absolute; right: 2px; bottom: 2px; width: 8px; height: 8px; border-radius: 50%; background: #70dfe8; border: 1.5px solid #171922; box-shadow: 0 0 6px rgb(112 223 232 / 70%); animation: desktop-icon-queued-pulse 1.6s ease-in-out infinite; }
@@ -241,6 +248,19 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__answers { display: grid; gap: 7px; }
 .desktop-icon-popup__answers > button { display: grid; width: 100%; text-align: left; }
 .desktop-icon-popup__answers small { color: #ccc4e4; }
+/* Blocked-session chip: an explicit, persistent "待回答"/"待确认" label next
+   to the eyebrow so a closed reminder stays clearly readable. */
+.desktop-icon-popup__block { display: inline-block; margin-left: 7px; padding: 1px 7px; border-radius: 9px; color: #ffe0a6; background: rgb(180 134 32 / 28%); border: 1px solid rgb(255 199 121 / 45%); font-size: 10px; font-weight: 700; letter-spacing: .06em; vertical-align: 1px; }
+.desktop-icon-popup__eyebrow:has(.desktop-icon-popup__block) { color: #ffc879; }
+.desktop-icon-popup__ask-head { display: flex; align-items: baseline; gap: 8px; margin: 2px 0 5px; }
+.desktop-icon-popup__ask-header { color: #ffd9a0; font-size: 12px; font-weight: 750; letter-spacing: .02em; }
+.desktop-icon-popup__ask-progress { margin-left: auto; color: #a9adba; font-size: 11px; font-weight: 650; }
+.desktop-icon-popup__ask-prompt { margin: 0 0 9px; color: #eef0f6; font-size: 13px; font-weight: 450; line-height: 1.45; }
+.desktop-icon-popup__ask-custom { display: block; margin-top: 8px; }
+.desktop-icon-popup__ask-custom input { font-size: 12px; }
+.desktop-icon-popup__ask-nav { display: flex; gap: 8px; margin-top: 9px; }
+.desktop-icon-popup__ask-nav > button { min-height: 32px; padding: 5px 14px; }
+.desktop-icon-popup__ask-nav .desktop-icon-popup__ask-next { margin-left: auto; }
 .desktop-icon-popup input, .desktop-icon-popup textarea { box-sizing: border-box; width: 100%; border: 1px solid #4e5261; border-radius: 8px; color: white; background: #101218; padding: 8px 10px; }
 .desktop-icon-popup textarea { min-height: 126px; resize: none; }
 .desktop-icon-popup__facts { display: flex; gap: 6px; flex-wrap: wrap; }

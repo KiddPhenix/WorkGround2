@@ -51,6 +51,7 @@ type DesktopIconNotice struct {
 	ReadSequence  uint64               `json:"readSequence,omitempty"`
 	InteractionID string               `json:"interactionId,omitempty"`
 	QuestionID    string               `json:"questionId,omitempty"`
+	Questions     []WidgetQuestion     `json:"questions,omitempty"`
 	Options       []WidgetOption       `json:"options"`
 	Retryable     bool                 `json:"retryable,omitempty"`
 	// SummaryStatus reports the news-style summary state for completion
@@ -323,6 +324,7 @@ type DesktopIconActionInput struct {
 	RequestID    string               `json:"requestId"`
 	Action       string               `json:"action"`
 	Values       []string             `json:"values,omitempty"`
+	Answers      []QuestionAnswer     `json:"answers,omitempty"`
 	Position     *DesktopIconPosition `json:"position,omitempty"`
 	Conversation string               `json:"conversation,omitempty"`
 	ReadSequence uint64               `json:"readSequence,omitempty"`
@@ -2458,7 +2460,7 @@ func desktopNoticeForMessage(message WidgetMessage, kind string, priority int, a
 	return DesktopIconNotice{
 		ID: message.ID, Revision: message.Revision, Kind: kind, Priority: priority,
 		Title: message.StateLabel, Body: message.Message, CreatedAt: at, TabID: message.TabID,
-		InteractionID: message.InteractionID, QuestionID: message.QuestionID,
+		InteractionID: message.InteractionID, QuestionID: message.QuestionID, Questions: append([]WidgetQuestion{}, message.Questions...),
 		Options: append([]WidgetOption{}, message.Options...), Retryable: message.Kind == "error",
 	}
 }
@@ -3325,7 +3327,7 @@ func (a *App) applyDesktopIconActionLocked(item DesktopIconItem, notice *Desktop
 			return errors.New("task notification is required")
 		}
 		message := WidgetMessage{ID: notice.ID, Revision: notice.Revision, TabID: notice.TabID, Message: notice.Body, InteractionID: notice.InteractionID, QuestionID: notice.QuestionID, Options: notice.Options}
-		return a.applyWidgetActionCurrent(message, WidgetActionInput{ItemID: notice.ID, Revision: notice.Revision, RequestID: input.RequestID, Action: input.Action, Values: input.Values})
+		return a.applyWidgetActionCurrent(message, WidgetActionInput{ItemID: notice.ID, Revision: notice.Revision, RequestID: input.RequestID, Action: input.Action, Values: input.Values, Answers: input.Answers})
 	case "remove":
 		if item.Kind != "task" || !item.Retained {
 			return errors.New("only retained task icons can be removed here")

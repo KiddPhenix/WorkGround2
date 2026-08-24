@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { AtSign, Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, MessageCircle, Pencil, Pin, PinOff, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
 import { app, type DailyRoutine, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconDelegation, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type ExternalRunSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
+import type { QuestionAnswer } from "../../lib/types";
 import { asArray } from "../../lib/array";
 import { AgentIcon } from "../agent-icon/AgentIcon";
 import { buildAgentIconViewModel, isAgentIconItem } from "../../lib/agentIcon/viewModel";
@@ -24,6 +25,8 @@ import { applyRoomIcons, applyRoomPins, normalizeRoomIcons, normalizeRoomPins, p
 import { readRoomIconCount, visibleDesktopIcons, writeRoomIconCount } from "./roomIconCount";
 import { clearExternalRunLaunch, prepareExternalRunLaunch, readExternalRunLaunch } from "./externalRunLaunchLedger";
 import { consumeRoomPopup, newRoomPopupState, readRoomNotificationMode, reconcileRoomPopups, roomAttentionLabel, writeRoomNotificationMode, type RoomNotificationMode } from "./roomNotifications";
+import { consumeBlockPopup, newBlockPopupState, reconcileBlockPopups } from "./blockPopups";
+import { AskFlow } from "./desktopIconAsk";
 import { isWorkspaceMatteIcon, projectIconKey, WORKSPACE_MATTE_ICON_OPTIONS, type ProjectIconKey, type WorkspaceMatteIconKey } from "../../lib/projectIcons";
 import { canRenameTaskIcon } from "./desktopIconRename";
 import { WorkspaceMatteIcon } from "./WorkspaceMatteIcon";
@@ -332,7 +335,7 @@ function RuntimeIndicator({ item }: { item: DesktopIconItem }) {
 	</span>;
 }
 
-function NoticeBody({ item, notice, busy, run, onClose }: { item: DesktopIconItem; notice: DesktopIconNotice; busy: boolean; run: (action: string, values?: string[]) => Promise<DesktopIconActionResult["status"]>; onClose: () => void }) {
+function NoticeBody({ item, notice, busy, run, onClose }: { item: DesktopIconItem; notice: DesktopIconNotice; busy: boolean; run: (action: string, values?: string[], answers?: QuestionAnswer[]) => Promise<DesktopIconActionResult["status"]>; onClose: () => void }) {
   const [answer, setAnswer] = useState("");
 	const [selected, setSelected] = useState("");
 	const [reply, setReply] = useState("");
@@ -344,6 +347,9 @@ function NoticeBody({ item, notice, busy, run, onClose }: { item: DesktopIconIte
   const needsAnswer = notice.kind === "needs_input";
   const completion = notice.kind === "completed" || notice.kind === "failed";
 	const attention = notice.kind === "message" ? notice.attention : undefined;
+	const blocking = needsAnswer || notice.kind === "needs_confirm";
+	const questions = notice.questions;
+	const askFlow = needsAnswer && (questions?.length ?? 0) > 0;
 	// The continuation input stays resident on completion notices. Sending
 	// guards busy/empty and a same-tick double submit (button + Ctrl+Enter).
 	// A retryable error freezes the exact submitted text: retry must reuse both
@@ -372,16 +378,17 @@ function NoticeBody({ item, notice, busy, run, onClose }: { item: DesktopIconIte
 		}
 	};
   return <div className="desktop-icon-popup__scroll" tabIndex={0} role="region" aria-label="任务通知详情">
-    <div className={`desktop-icon-popup__eyebrow${attention ? " desktop-icon-popup__eyebrow--mention" : ""}`}>{attention && <AtSign aria-hidden="true" />}{notice.title || roomAttentionLabel(attention)}</div>
+    <div className={`desktop-icon-popup__eyebrow${attention ? " desktop-icon-popup__eyebrow--mention" : ""}`}>{attention && <AtSign aria-hidden="true" />}{notice.title || roomAttentionLabel(attention)}{blocking && <span className="desktop-icon-popup__block">{needsAnswer ? "待回答" : "待确认"}</span>}</div>
     <strong>{item.title}</strong>
-    <p>{notice.body}</p>
-    {needsAnswer && <div className="desktop-icon-popup__answers">
+    {!askFlow && <p>{notice.body}</p>}
+    {askFlow && questions && <AskFlow questions={questions} busy={busy} onAnswer={(answers) => void run("answer", [], answers)} />}
+    {needsAnswer && !askFlow && <div className="desktop-icon-popup__answers">
 		{asArray(notice.options).map((option) => <button key={option.value} type="button" aria-pressed={selected === option.value} disabled={busy} onClick={() => { setSelected(option.value); setAnswer(""); }}><span>{option.label}</span>{option.description && <small>{option.description}</small>}</button>)}
       <label><span className="sr-only">自定义回答</span><input value={answer} disabled={busy} placeholder="自定义回答" onChange={(event) => setAnswer(event.target.value)} /></label>
     </div>}
 	{notice.kind === "message" && (item.kind === "room" || item.kind === "person") && <label className="desktop-icon-popup__reply"><span className="sr-only">快速回复</span><input value={reply} disabled={busy} placeholder="快速回复" onChange={(event) => setReply(event.target.value)} /></label>}
     <div className={`desktop-icon-popup__actions${completion ? " desktop-icon-popup__actions--completion" : ""}`}>
-		{needsAnswer && <button disabled={busy || !(answer.trim() || selected)} onClick={() => run("answer", [answer.trim() || selected])}>提交回答</button>}
+		{needsAnswer && !askFlow && <button disabled={busy || !(answer.trim() || selected)} onClick={() => run("answer", [answer.trim() || selected])}>提交回答</button>}
       {notice.kind === "needs_confirm" && <><button disabled={busy} onClick={() => run("approve")}>允许</button><button disabled={busy} onClick={() => run("deny")}>拒绝</button></>}
       {notice.kind === "failed" && notice.retryable && <button disabled={busy} onClick={() => run("retry")}>重试</button>}
       {completion && <><button type="button" className="desktop-icon-popup__ok" onClick={onClose}>OK</button><button type="button" className="desktop-icon-popup__detail" disabled={busy} onClick={() => run("open")}>Detail</button><button type="button" className="desktop-icon-popup__dismiss" disabled={busy} onClick={() => run("dismiss")}>Dismiss</button></>}
@@ -1321,6 +1328,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		catch { return "count"; }
 	});
 	const [roomPopupState, setRoomPopupState] = useState(newRoomPopupState);
+	const [blockPopupState, setBlockPopupState] = useState(newBlockPopupState);
 	const [snapshotLoaded, setSnapshotLoaded] = useState(false);
   const [topmost, setTopmost] = useState(false);
   const [topmostLoaded, setTopmostLoaded] = useState(false);
@@ -1503,8 +1511,36 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		if (!snapshotLoaded) return;
 		setRoomPopupState((current) => reconcileRoomPopups(current, snapshot.items, roomNotificationMode));
 	}, [roomNotificationMode, snapshot.items, snapshotLoaded]);
+	// Blocked sessions (needs_input / needs_confirm) auto-open the popup once
+	// per notice revision when nothing else occupies the interface. Declared
+	// before the Room popup effect so a pending block wins over a queued Room
+	// message; "稍后处理" (or any close) consumes the queue entry and the
+	// watermark prevents the same notice/revision from re-popping. The target
+	// is peeked before consuming so a capped-out (undisplayed) icon keeps its
+	// queued reminder instead of silently losing it.
 	useEffect(() => {
-		if (roomNotificationMode !== "popup" || roomPopupState.queue.length === 0) return;
+		if (!snapshotLoaded) return;
+		setBlockPopupState((current) => reconcileBlockPopups(current, snapshot.items));
+	}, [snapshot.items, snapshotLoaded]);
+	useEffect(() => {
+		if (blockPopupState.queue.length === 0) return;
+		if (activeID || previewID || menuID || renamingID || anchorMenuOpen || quickOpen || draggingID || busy || exiting) return;
+		const candidate = blockPopupState.queue[0];
+		if (!candidate || !displayItems.some((item) => item.id === candidate.itemId)) return;
+		const consumed = consumeBlockPopup(blockPopupState);
+		if (!consumed.candidate) return;
+		setBlockPopupState(consumed.state);
+		cancelTransientTimers();
+		setPopupAnchorID("");
+		setActiveNoticeID(consumed.candidate.noticeId);
+		setActiveID(consumed.candidate.itemId);
+	}, [activeID, anchorMenuOpen, blockPopupState, busy, cancelTransientTimers, displayItems, draggingID, exiting, menuID, previewID, quickOpen, renamingID, snapshotLoaded]);
+	useEffect(() => {
+		// A pending blocked session outranks queued Room popups: with both
+		// queues non-empty the block effect above opens first (this guard sees
+		// the old non-empty queue in the same commit and defers), and once the
+		// block is closed its queue is empty, so Room popups resume.
+		if (roomNotificationMode !== "popup" || roomPopupState.queue.length === 0 || blockPopupState.queue.length > 0) return;
 		if (activeID || previewID || menuID || renamingID || anchorMenuOpen || quickOpen || draggingID || busy || exiting) return;
 		const consumed = consumeRoomPopup(roomPopupState);
 		if (!consumed.candidate) return;
@@ -1514,7 +1550,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		setPopupAnchorID("");
 		setActiveNoticeID(consumed.candidate.noticeId);
 		setActiveID(consumed.candidate.itemId);
-	}, [activeID, anchorMenuOpen, busy, cancelTransientTimers, displayItems, draggingID, exiting, menuID, previewID, quickOpen, renamingID, roomNotificationMode, roomPopupState]);
+	}, [activeID, anchorMenuOpen, blockPopupState, busy, cancelTransientTimers, displayItems, draggingID, exiting, menuID, previewID, quickOpen, renamingID, roomNotificationMode, roomPopupState]);
 	useEffect(() => {
 		let alive = true;
 		void app.GetDesktopZoomFactor()
@@ -1608,12 +1644,12 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		return () => { alive = false; };
 	}, [layoutBounds, overlayKey, surface]);
 
-  const run = useCallback(async (item: DesktopIconItem, action: string, values: string[] = [], notice = item.notifications[0], position?: DesktopIconPosition) => {
+  const run = useCallback(async (item: DesktopIconItem, action: string, values: string[] = [], notice = item.notifications[0], position?: DesktopIconPosition, answers?: QuestionAnswer[]) => {
     setBusy(true); setError(""); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false);
-		const intent = JSON.stringify([item.id, notice?.id || "", action === "open_delegation" ? "" : item.revision, action, values, position || null]);
+		const intent = JSON.stringify([item.id, notice?.id || "", action === "open_delegation" ? "" : item.revision, action, values, position || null, answers || null]);
 		const stableID = actionRequests.current.get(intent) || requestID(`icon-${action}`);
 		actionRequests.current.set(intent, stableID);
-		const input: DesktopIconActionInput = { itemId: item.id, noticeId: notice?.id, revision: item.revision, requestId: stableID, action, values, position, conversation: notice?.conversation, readSequence: notice?.readSequence };
+		const input: DesktopIconActionInput = { itemId: item.id, noticeId: notice?.id, revision: item.revision, requestId: stableID, action, values, answers, position, conversation: notice?.conversation, readSequence: notice?.readSequence };
     try {
       const result = await app.ApplyDesktopIconAction(input);
       setSnapshot(result.snapshot);
@@ -1840,11 +1876,13 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
   const renderItem = (item: DesktopIconItem) => {
 		const agentVM = agentIconViewModels.get(item.id);
 		const agentIcon = Boolean(agentVM);
+		const blockLabel = item.status === "needs_input" ? "待回答" : item.status === "needs_confirm" ? "待确认" : "";
 		return <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}${draggingID === item.id ? " is-dragging" : ""}`}>
 		<RuntimeIndicator item={item} />
 		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}${item.unreadCount > 0 ? " desktop-icon--pending" : ""}`} aria-label={`${item.title}，${previewText(item)}`} title={isQuickStartJobItem(item) ? `${item.title}，${quickStartJobStateLabel(item)}` : undefined} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onPointerCancel={pointerCancel} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false); setPreviewID(""); setRenamingID(""); setRenameDraft(""); if (isQuickStartJobItem(item)) { setActiveID(item.id); setMenuID(""); } else { setMenuID(item.id); setActiveID(""); } }} onMouseEnter={() => enter(item)} onMouseLeave={() => { timers.current?.clearHover(); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { timers.current?.clearPreviewClose(); if (!activeID && !anchorMenuOpen && !quickOpen) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
       <span className={`desktop-icon__art${agentIcon ? " desktop-icon__art--agent" : ""}`}>{itemGlyph(item, agentVM)}{!agentIcon && (item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true">{item.status === "running" && <><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /></>}</span>}{isQuickStartJobItem(item) && item.status === "idle" && <span className="desktop-icon__queued" aria-hidden="true" />}</span>
       <span className="desktop-icon__label">{item.title}</span>
+		{blockLabel && <span className={`desktop-icon__block-state desktop-icon__block-state--${item.status}`}>{blockLabel}</span>}
       {item.unreadCount > 0 && <span className="desktop-icon__unread" aria-label={`${item.unreadCount} 条未读`}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</span>}
       {item.activityCount ? <span className="desktop-icon__activity" aria-label={`${item.activityCount} 个活动任务`}>{item.activityCount}</span> : null}
       {!agentIcon && statusGlyph(item) && <span className="desktop-icon__status">{statusGlyph(item)}</span>}
@@ -2066,7 +2104,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {active && active.sourceId === "dsh" && <DSHQuickStart workspaces={workspaces} onChanged={refresh} onClose={() => setActiveID("")} />}
       {active && active.kind === "workspace" && <DailyRoutinePanel key={active.sourceId} workspaceRoot={active.sourceId} onStartHere={() => { setQuickWorkspace(`project:${active.sourceId}`); setQuickStartEditJob(null); setPopupAnchorID(active.id); setActiveID("fixed:new"); }} onClose={() => setActiveID("")} />}
       {active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
-      {active && activeNotice && <NoticeBody item={active} notice={activeNotice} busy={busy} run={(action, values) => run(active, action, values, activeNotice)} onClose={() => { setActiveID(""); setActiveNoticeID(""); setPreviewID(""); }} />}
+      {active && activeNotice && <NoticeBody key={`${activeNotice.id}:${activeNotice.revision}`} item={active} notice={activeNotice} busy={busy} run={(action, values, answers) => run(active, action, values, activeNotice, undefined, answers)} onClose={() => { setActiveID(""); setActiveNoticeID(""); setPreviewID(""); }} />}
       {active && active.kind === "external" && !activeNotice && <ExternalRunBody item={active} busy={busy} run={(action) => void run(active, action)} />}
       {active && active.kind !== "external" && !activeNotice && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
       {active && active.kind !== "external" && active.kind !== "workspace" && !isQuickStartJobItem(active) && !activeNotice && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && active.sourceId !== "delegate" && active.sourceId !== "dsh" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button></div></>}
