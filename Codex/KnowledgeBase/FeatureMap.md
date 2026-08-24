@@ -10,6 +10,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| Session 待回答问题重启恢复 | `in_progress` | `developping/session-ask-restart-recovery+2026-08-24` | `Codex + WorkGround2` | `internal/control`、`internal/agent`、`desktop` 及相关测试 | 调整功能：当前 ask 仅存在 Controller 内存，应用重启会按中断回合清理未完成工具调用，导致问题消失。目标是持久化结构化问题并在重启后重新投影；回答后以幂等、可观察、可重试方式续接同一 Session，迟到或重复回答不得重复执行。 |
 | 小组件问答悬停态 | `done` | `developping/widget-ask-hover-state+2026-08-24` | `Codex` | `desktop/frontend/src/components/widget/desktop-icon-mode.css`、`desktop-icon-ask.test.tsx` | 未选项悬停现有紫色亮边、柔光与轻微抬升；已选项悬停使用独立高优先级规则，保持勾选和选中渐变并进一步提亮，不再被普通 hover 覆盖。问答专项 40/40、TypeScript 检查通过。 |
 | 小组件问答选中态可视化 | `done` | `developping/widget-ask-selected-state+2026-08-24` | `Codex` | `desktop/frontend/src/components/widget/desktop-icon-mode.css`、`desktop-icon-ask.test.tsx` | 问答选项已从统一紫色主按钮中分离：未选使用中性深色卡片，选中使用高亮渐变、亮边框、双层外圈与白底勾选标记；单选/多选统一由 `aria-pressed` 驱动，键盘焦点与悬停保持独立。问答专项 38/38、TypeScript 检查通过。 |
 | 小组件问答弹窗与阻塞提示 | `done` | `developping/widget-ask-popup+2026-08-24` | `Codex + WorkGround2` | `desktop/widget_mode.go`、`desktop/widget_icon_mode.go`、`desktop/frontend/src/components/widget/{DesktopIconMode.tsx,desktopIconAsk.tsx,blockPopups.ts}` 及相关测试/样式 | 桌面宠物弹窗现完整支持标准 ask 的 1–4 题、单选/多选、2–4 个选项与逐题自定义回答，并以 interaction/question ID 整批原子提交、严格校验迟到或变化的 pending；新阻塞主动弹出一次，“稍后处理”后同 revision 不重弹，图标持续显示“待回答/待确认”文字、动画状态点和角标。Go 定向回归、前端问答 34/34、阻塞提醒 17/17、TypeScript、Desktop build/vet 通过；Desktop 全量 551.9 秒后仅命中既有 Wails `invalid context` 基线。 |
