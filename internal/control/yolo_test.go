@@ -125,56 +125,43 @@ func TestRequestApprovalHonorsAutoApproveTools(t *testing.T) {
 	}
 }
 
-func TestMemoryApprovalIgnoresAutoApproveTools(t *testing.T) {
-	approvalRequests := make(chan event.Approval, 1)
+func TestMemoryApprovalHonorsAutoApproveTools(t *testing.T) {
+	var approvalRequested bool
 	c := New(Options{
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.ApprovalRequest {
-				approvalRequests <- e.Approval
+				approvalRequested = true
 			}
 		}),
 	})
 	c.SetAutoApproveTools(true)
 
-	done := make(chan bool, 1)
-	errs := make(chan error, 1)
-	go func() {
-		allow, _, err := c.requestApproval(context.Background(), "remember", "", nil)
-		if err != nil {
-			errs <- err
-			return
+	for _, toolName := range []string{memoryRememberTool, memoryForgetTool} {
+		done := make(chan bool, 1)
+		errs := make(chan error, 1)
+		go func(name string) {
+			allow, _, err := c.requestApproval(context.Background(), name, "", nil)
+			if err != nil {
+				errs <- err
+				return
+			}
+			done <- allow
+		}(toolName)
+
+		select {
+		case err := <-errs:
+			t.Fatalf("%s requestApproval: %v", toolName, err)
+		case allow := <-done:
+			if !allow {
+				t.Fatalf("%s should be auto-allowed under tool auto-approval", toolName)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s requestApproval blocked under tool auto-approval", toolName)
 		}
-		done <- allow
-	}()
-
-	var approval event.Approval
-	select {
-	case approval = <-approvalRequests:
-	case <-time.After(2 * time.Second):
-		t.Fatal("memory approval request was not emitted under tool auto-approval")
-	}
-	if approval.Tool != "remember" {
-		t.Fatalf("approval tool = %q, want remember", approval.Tool)
 	}
 
-	select {
-	case err := <-errs:
-		t.Fatalf("requestApproval: %v", err)
-	case allow := <-done:
-		t.Fatalf("memory approval must wait for manual approval, got allow=%v", allow)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	c.Approve(approval.ID, true, true, true)
-	select {
-	case err := <-errs:
-		t.Fatalf("requestApproval: %v", err)
-	case allow := <-done:
-		if !allow {
-			t.Fatal("manual approval should allow memory write")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("memory approval stayed blocked after Approve")
+	if approvalRequested {
+		t.Fatal("tool auto-approval must not emit an ApprovalRequest event for memory tools")
 	}
 }
 
@@ -524,7 +511,7 @@ func TestSetAutoApproveToolsDoesNotDrainPendingMCPReadOnlyTrust(t *testing.T) {
 	}
 }
 
-func TestSetAutoApproveToolsDoesNotDrainPendingMemoryApproval(t *testing.T) {
+func TestSetAutoApproveToolsDrainsPendingMemoryApproval(t *testing.T) {
 	approvalRequests := make(chan event.Approval, 1)
 	c := New(Options{
 		Sink: event.FuncSink(func(e event.Event) {
@@ -537,7 +524,7 @@ func TestSetAutoApproveToolsDoesNotDrainPendingMemoryApproval(t *testing.T) {
 	done := make(chan bool, 1)
 	errs := make(chan error, 1)
 	go func() {
-		allow, _, err := c.requestApproval(context.Background(), "forget", "", nil)
+		allow, _, err := c.requestApproval(context.Background(), memoryForgetTool, "", nil)
 		if err != nil {
 			errs <- err
 			return
@@ -545,9 +532,8 @@ func TestSetAutoApproveToolsDoesNotDrainPendingMemoryApproval(t *testing.T) {
 		done <- allow
 	}()
 
-	var approval event.Approval
 	select {
-	case approval = <-approvalRequests:
+	case <-approvalRequests:
 	case <-time.After(2 * time.Second):
 		t.Fatal("memory approval request was not emitted")
 	}
@@ -558,20 +544,11 @@ func TestSetAutoApproveToolsDoesNotDrainPendingMemoryApproval(t *testing.T) {
 	case err := <-errs:
 		t.Fatalf("requestApproval: %v", err)
 	case allow := <-done:
-		t.Fatalf("SetAutoApproveTools must not auto-answer pending memory approval; got allow=%v", allow)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	c.Approve(approval.ID, true, true, true)
-	select {
-	case err := <-errs:
-		t.Fatalf("requestApproval: %v", err)
-	case allow := <-done:
 		if !allow {
-			t.Fatal("manual approval should allow memory archive")
+			t.Fatal("pending memory approval should be auto-allowed when tool auto-approval turns on")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("memory approval stayed blocked after Approve")
+		t.Fatal("pending memory approval stayed blocked after tool auto-approval turned on")
 	}
 }
 

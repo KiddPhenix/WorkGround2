@@ -158,6 +158,31 @@ console.log("\nuse controller meta");
 }
 
 {
+  // Backend reports only pendingPrompt (interaction detail not yet replayed):
+  // the composer must show a waiting state, never "waiting for the model".
+  const pendingNoDetail = reducer(
+    { ...initialState, running: true, turnActive: true, runtimeMode: "foreground", turnStartAt: Date.now(), activityStage: "waiting_model", activityStageSeed: 1 },
+    { type: "backend_status", running: true, cancellable: true, pendingPrompt: true },
+  );
+  eq(pendingNoDetail.pendingPrompt, true, "backend_status preserves pendingPrompt");
+  eq(pendingNoDetail.runtimeMode, "waiting_user", "pendingPrompt marks runtimeMode waiting_user");
+  eq(pendingNoDetail.activityStage, "waiting_approval", "pendingPrompt without replayed approval/ask falls back to waiting_approval, not waiting_model");
+
+  const started = reducer(initialState, { type: "event", e: { kind: "turn_started" } });
+  const pendingWithApproval = reducer(started, {
+    type: "event",
+    e: { kind: "approval_request", approval: { id: "memory", tool: "remember", subject: "save memory" } },
+  });
+  const drainedByYolo = reducer(
+    pendingWithApproval,
+    { type: "backend_status", running: true, cancellable: true, pendingPrompt: false },
+  );
+  eq(drainedByYolo.approval, undefined, "backend reconciliation clears an approval drained by YOLO");
+  eq(drainedByYolo.pendingPrompt, false, "drained approval clears pendingPrompt");
+  eq(drainedByYolo.activityStage, "waiting_model", "drained approval resumes the running stage");
+}
+
+{
   const restoredContext = reducer(initialState, {
     type: "context",
     context: {

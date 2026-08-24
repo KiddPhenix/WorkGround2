@@ -929,6 +929,19 @@ export function activityLead(flavor: string): string {
   return flavor;
 }
 
+/**
+ * Build the composer status lead for a stage. Waiting stages surface their
+ * explicit localized label ("Awaiting approval" / "Awaiting answer") so a
+ * still-pending user interaction never masquerades as "waiting for the model";
+ * other stages keep the flavor-only copy.
+ */
+export function activityLeadForStage(stage: Stage, label: string, flavor: string): string {
+  if (stage === "waiting_approval" || stage === "waiting_answer") {
+    return `${label} · ${flavor}`;
+  }
+  return flavor;
+}
+
 /** Return all weighted entries for a stage+locale (for testing). */
 export function getPool(
   stage: Stage,

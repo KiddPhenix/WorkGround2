@@ -350,16 +350,14 @@ func normalizeToolApprovalMode(mode string) string {
 }
 
 func requiresFreshApprovalTool(tool string) bool {
-	switch tool {
-	case planApprovalTool, memoryRememberTool, memoryForgetTool:
-		return true
-	default:
-		return false
-	}
+	return tool == planApprovalTool
 }
 
 func approvalNotificationText(tool, subject string) string {
-	if requiresFreshApprovalTool(tool) {
+	// Plan approval and memory tools keep their subject out of external
+	// notifications: plan subjects are empty and memory subjects can embed
+	// private body text that must not leak into a desktop/phone ping.
+	if tool == planApprovalTool || tool == memoryRememberTool || tool == memoryForgetTool {
 		return "approval needed: " + tool
 	}
 	if subject == "" {

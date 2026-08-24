@@ -8,7 +8,7 @@ import { app, onFilesDropped } from "../lib/bridge";
 import { canUsePromptHistory, isComposerGuideKey, isComposerSubmitKey, isFnKeyEvent, normalizeComposerSubmitKey, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { useI18n } from "../lib/i18n";
-import { activityLead, stageDisplay, type Stage } from "../lib/activity";
+import { activityLeadForStage, stageDisplay, type Stage } from "../lib/activity";
 import { detectShortcutPlatform, matchesShortcut } from "../lib/keyboardShortcuts";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createRafResizeUpdater } from "../lib/resizeDrag";
@@ -2232,9 +2232,9 @@ export function Composer({
   const runActivity = (() => {
     if (running && turnStartAt && activityStage) {
       const elapsedMs = Math.max(0, now - turnStartAt);
-      const { flavor } = stageDisplay(activityStage, locale, activityStageSeed ?? 0);
+      const { label, flavor } = stageDisplay(activityStage, locale, activityStageSeed ?? 0);
       const tok = turnTokens && turnTokens > 0 ? ` · ↓ ${fmtTokens(turnTokens)} ${t("status.tokens")}` : "";
-      return `${activityLead(flavor)} ${fmtElapsed(elapsedMs)}${tok}`;
+      return `${activityLeadForStage(activityStage, label, flavor)} ${fmtElapsed(elapsedMs)}${tok}`;
     }
     if (retry) return t("status.retrying", { attempt: retry.attempt, max: retry.max });
     return null;
