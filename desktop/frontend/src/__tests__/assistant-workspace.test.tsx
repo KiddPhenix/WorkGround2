@@ -271,6 +271,16 @@ ok(
     assistantCssSource.includes("backdrop-filter: blur(16px) saturate(0.96);"),
   "management drawer uses a readable translucent material",
 );
+const assistantTopbarBlock = assistantCssSource.match(/\.assistant-workspace__topbar \{[\s\S]*?\n\}/)?.[0] ?? "";
+ok(
+  assistantTopbarBlock.includes("--wails-draggable: drag;") &&
+    assistantTopbarBlock.includes("user-select: none;"),
+  "assistant topbar is a native window drag region",
+);
+ok(
+  /\.assistant-workspace__topbar button,[\s\S]*?\.assistant-workspace__topbar select \{[^}]*--wails-draggable:\s*no-drag;/s.test(assistantCssSource),
+  "assistant topbar controls remain interactive inside the drag region",
+);
 const handoffZoneBlock = assistantCssSource.match(/\.assistant-handoff-zone \{[\s\S]*?\n\}/)?.[0] ?? "";
 ok(
   !handoffZoneBlock.includes("position: sticky") &&

@@ -19,7 +19,7 @@ assert.ok(finalGuardIndex > css.indexOf("padding: 0", css.indexOf("@media (max-w
 // bar / caption controls kept above it ---
 assert.match(
   css,
-  /\.settings-modal-backdrop\s*\{[^}]*padding:\s*var\(--settings-top-offset,\s*0px\)\s+0\s+0;[^}]*align-items:\s*stretch;[^}]*justify-content:\s*stretch;[^}]*background:\s*var\(--bg\);/s,
+  /\.settings-modal-backdrop\s*\{[^}]*--wails-draggable:\s*drag;[^}]*padding:\s*var\(--settings-top-offset,\s*0px\)\s+0\s+0;[^}]*align-items:\s*stretch;[^}]*justify-content:\s*stretch;[^}]*background:\s*var\(--bg\);/s,
   "the settings backdrop stretches edge-to-edge (no card margin) and paints an opaque app background that hides the session below",
 );
 
@@ -35,9 +35,12 @@ assert.match(
 );
 assert.match(
   css,
-  /\.settings-modal\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*border:\s*0;[^}]*border-radius:\s*0;[^}]*box-shadow:\s*none;/s,
+  /\.settings-modal\s*\{[^}]*--wails-draggable:\s*no-drag;[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*border:\s*0;[^}]*border-radius:\s*0;[^}]*box-shadow:\s*none;/s,
   "the settings panel fills the whole content area with no floating-card radius, border, or shadow",
 );
+
+assert.match(css, /\.settings-modal-backdrop\s*\{[^}]*--wails-draggable:\s*drag;/s, "the reserved settings top strip drags the native window");
+assert.match(css, /\.settings-modal\s*\{[^}]*--wails-draggable:\s*no-drag;/s, "settings content opts out so controls keep receiving input");
 
 // --- per-mode top inset: window bar / caption controls stay visible ---
 assert.match(css, /\.app--darwin \.settings-modal-backdrop\s*\{[^}]*--settings-top-offset:\s*44px;/, "darwin keeps the 44px native window bar above settings");

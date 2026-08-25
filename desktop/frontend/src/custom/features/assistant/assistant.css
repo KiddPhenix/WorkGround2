@@ -104,6 +104,7 @@
 }
 
 .assistant-workspace__topbar {
+  --wails-draggable: drag;
   z-index: 2;
   display: flex;
   align-items: center;
@@ -111,6 +112,12 @@
   min-height: 82px;
   padding: 24px 92px 8px;
   background: var(--assistant-bg);
+  user-select: none;
+}
+
+.assistant-workspace__topbar button,
+.assistant-workspace__topbar select {
+  --wails-draggable: no-drag;
 }
 
 .assistant-picker-wrap,
