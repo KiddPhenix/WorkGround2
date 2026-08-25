@@ -167,5 +167,10 @@ export function timelineEntries(snapshot: AssistantSnapshot, day: Date, copy: As
     .filter((item): item is { routine: AssistantRoutine; at: Date } => item.at !== null)
     .sort((a, b) => a.at.getTime() - b.at.getTime())[0];
   if (next) entries.push({ id: `next-${next.routine.id}`, at: next.at, kind: "next", title: `${copy.next}，${next.routine.title}`, detail: scheduleLabel(next.routine, copy), routine: next.routine });
-  return entries.sort((a, b) => a.at.getTime() - b.at.getTime());
+  const kindOrder: Record<AssistantTimelineEntry["kind"], number> = { run: 0, memory: 1, next: 2 };
+  return entries.sort((a, b) =>
+    b.at.getTime() - a.at.getTime()
+    || kindOrder[a.kind] - kindOrder[b.kind]
+    || a.id.localeCompare(b.id),
+  );
 }

@@ -63,6 +63,15 @@ const entries = timelineEntries(snapshot, day, copy);
 ok(entries.some((entry) => entry.kind === "run"), "timeline projects factual run state");
 ok(entries.some((entry) => entry.kind === "memory"), "timeline projects explicit memory");
 ok(entries.some((entry) => entry.kind === "next"), "timeline projects the next routine");
+ok(entries.every((entry, index) => index === 0 || entries[index - 1].at.getTime() >= entry.at.getTime()), "timeline orders every entry newest first");
+ok(entries.map((entry) => entry.kind).join(",") === "next,memory,run", "timeline keeps future, recent, and older entries in descending order");
+const tiedEntries = timelineEntries({
+  ...snapshot,
+  routines: [],
+  memory: { revision: 1, items: [] },
+  runs: [{ ...snapshot.runs[0], id: "run-b" }, { ...snapshot.runs[0], id: "run-a" }],
+}, day, copy);
+ok(tiedEntries.map((entry) => entry.id).join(",") === "run-a,run-b", "timeline uses stable ids when timestamps and kinds match");
 
 ok(responsibilityStatusLabel("blocked", "zh") === "被阻塞" && responsibilityStatusLabel("blocked", "en") === "Blocked", "responsibility status localizes");
 ok(responsibilityStatusLabel("done", "zh") === "已完成", "done responsibility status is localized");
