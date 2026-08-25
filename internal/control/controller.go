@@ -1783,16 +1783,21 @@ func (c *Controller) newInteractiveGate() *permission.Gate {
 }
 
 func (c *Controller) buildInteractiveGate(policy permission.Policy, mode string) *permission.Gate {
+	for _, tool := range []string{memoryRememberTool, memoryForgetTool} {
+		// Ordinary interactive sessions keep memory writes behind an explicit
+		// approval. A scoped caller such as Assistant may deliberately provide a
+		// concrete Allow rule; preserve that stronger, turn-frozen intent instead
+		// of re-adding an Ask rule that would win by precedence.
+		if !policyExplicitlyAllows(policy, tool) {
+			policy.Ask = append(policy.Ask, permission.Rule{Tool: tool})
+		}
+	}
 	switch mode {
 	case ToolApprovalAuto, ToolApprovalYolo:
 		policy.Mode = permission.Allow
 	default:
 		policy.Mode = permission.Ask
 	}
-	policy.Ask = append(policy.Ask,
-		permission.Rule{Tool: memoryRememberTool},
-		permission.Rule{Tool: memoryForgetTool},
-	)
 	gate := permission.NewGate(policy, gateApprover{c})
 	gate.OnRemember = func(rule string) {
 		if c.onRemember != nil {
@@ -1800,6 +1805,13 @@ func (c *Controller) buildInteractiveGate(policy permission.Policy, mode string)
 		}
 	}
 	return gate
+}
+
+func policyExplicitlyAllows(policy permission.Policy, tool string) bool {
+	// Deny as the probe fallback distinguishes a matching Allow rule from a
+	// broad writer fallback. Existing Ask/Deny rules retain their precedence.
+	policy.Mode = permission.Deny
+	return policy.DecideSubject(tool, false, "") == permission.Allow
 }
 
 // refreshInteractiveGateLocked refreshes the stable executor gate while c.mu
