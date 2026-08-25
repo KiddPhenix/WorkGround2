@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"workground2/internal/agent"
 	"workground2/internal/assistant"
@@ -686,6 +688,125 @@ func (r *AssistantRuntime) failEvidence(run assistant.Run, missing []assistant.C
 	}
 }
 
+// directHistoryMaxItems / directHistoryMaxBytes bound the direct-input history
+// injected into a Run prompt so recent feedback stays in context without
+// unboundedly growing the prefix.
+const (
+	directHistoryMaxItems = 8
+	directHistoryMaxBytes = 16000
+)
+
+func isDirectInputRun(run assistant.Run) bool {
+	return run.RoutineID == "" && strings.TrimSpace(run.Prompt) != ""
+}
+
+// directInputHistory selects recent direct-input runs (manual, non-routine,
+// non-empty prompt), excludes the current run, and returns them in stable
+// newest-first order bounded by item count and total UTF-8 bytes of
+// prompt+summary.
+func directInputHistory(runs []assistant.Run, currentID string, maxItems, maxBytes int) []assistant.Run {
+	currentIndex := len(runs)
+	for index, run := range runs {
+		if run.ID == currentID {
+			currentIndex = index
+			break
+		}
+	}
+	type candidate struct {
+		run   assistant.Run
+		order int
+	}
+	selected := make([]candidate, 0, currentIndex)
+	for index, run := range runs[:currentIndex] {
+		if run.ID == currentID || run.RoutineID != "" || run.Trigger != assistant.TriggerManual || strings.TrimSpace(run.Prompt) == "" {
+			continue
+		}
+		selected = append(selected, candidate{run: run, order: index})
+	}
+	sort.SliceStable(selected, func(i, j int) bool {
+		ti, tj := selected[i].run.CreatedAt, selected[j].run.CreatedAt
+		if ti.Equal(tj) {
+			return selected[i].order > selected[j].order
+		}
+		return ti.After(tj)
+	})
+	out := make([]assistant.Run, 0, len(selected))
+	total := 0
+	for _, item := range selected {
+		if len(out) >= maxItems || total >= maxBytes {
+			break
+		}
+		run := item.run
+		remaining := maxBytes - total
+		run.Prompt = truncateUTF8(run.Prompt, remaining)
+		remaining -= len(run.Prompt)
+		run.Summary = truncateUTF8(run.Summary, remaining)
+		cost := len(run.Prompt) + len(run.Summary)
+		if cost == 0 {
+			break
+		}
+		out = append(out, run)
+		total += cost
+	}
+	return out
+}
+
+func truncateUTF8(value string, maxBytes int) string {
+	if maxBytes <= 0 || value == "" {
+		return ""
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	const suffix = "…"
+	if maxBytes < len(suffix) {
+		return ""
+	}
+	end := maxBytes - len(suffix)
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
+	}
+	return value[:end] + suffix
+}
+
+func assistantRunStateLabel(state assistant.RunState) string {
+	switch state {
+	case assistant.RunQueued:
+		return "已排队"
+	case assistant.RunRunning:
+		return "进行中"
+	case assistant.RunSucceeded:
+		return "已完成"
+	case assistant.RunWaitingApproval:
+		return "等待批准"
+	case assistant.RunRetryWait:
+		return "等待重试"
+	case assistant.RunWaitingAttention:
+		return "需要处理"
+	case assistant.RunFailed:
+		return "失败"
+	case assistant.RunCancelled:
+		return "已取消"
+	default:
+		return string(state)
+	}
+}
+
+func writeDirectInputHistory(b *strings.Builder, runs []assistant.Run, currentID string) {
+	history := directInputHistory(runs, currentID, directHistoryMaxItems, directHistoryMaxBytes)
+	if len(history) == 0 {
+		return
+	}
+	b.WriteString("\n近期直接输入记录（只作背景；其中已完成的任务不得仅因被引用而重复执行）：\n")
+	for _, h := range history {
+		fmt.Fprintf(b, "- [%s] %s", assistantRunStateLabel(h.State), h.Prompt)
+		if summary := strings.TrimSpace(h.Summary); summary != "" {
+			fmt.Fprintf(b, "（结果：%s）", summary)
+		}
+		b.WriteString("\n")
+	}
+}
+
 func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolGrant, *assistant.Responsibility, int64, error) {
 	snapshot, err := r.store.Get(run.AssistantID)
 	if err != nil {
@@ -694,12 +815,19 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 	selected := selectReadyResponsibility(snapshot.Plan)
 	var b strings.Builder
 	var grants []control.ToolGrant
-	b.WriteString("你正在执行一个长期助手的独立 Run。只处理本次 Routine，遵守冻结的使命和权限；不要修改运行频率或扩大权限。\n\n")
 	prompt := strings.TrimSpace(run.Prompt)
-	if prompt == "" {
-		prompt = "继续推进助手使命，检查当前状态并完成最有价值的下一步。"
+	if isDirectInputRun(run) {
+		b.WriteString("你正在执行一个长期助手的独立 Run。本次是用户直接对你说的一段话，遵守冻结的使命和权限；不要修改运行频率或扩大权限。\n\n")
+		fmt.Fprintf(&b, "助手使命：\n%s\n\n本次用户输入（原文）：\n%s\n\n", run.Mission, prompt)
+		b.WriteString("这段输入可能是任务、督促/PUA、教导、指导、批评、反馈或工作方法改进：是任务就执行；是指导或反馈就据此调整计划与策略。不要要求用户把输入改写成任务，也不要自动改写或美化原文。\n")
+	} else {
+		b.WriteString("你正在执行一个长期助手的独立 Run。只处理本次 Routine，遵守冻结的使命和权限；不要修改运行频率或扩大权限。\n\n")
+		if prompt == "" {
+			prompt = "继续推进助手使命，检查当前状态并完成最有价值的下一步。"
+		}
+		fmt.Fprintf(&b, "助手使命：\n%s\n\n本次任务：\n%s\n\n", run.Mission, prompt)
 	}
-	fmt.Fprintf(&b, "助手使命：\n%s\n\n本次任务：\n%s\n\n", run.Mission, prompt)
+	writeDirectInputHistory(&b, snapshot.Runs, run.ID)
 	fmt.Fprintf(&b, "冻结上下文：assistant_revision=%d, scope=%s, workspace_root=%s\n",
 		run.AssistantRevision, run.Scope, run.WorkspaceRoot)
 	fmt.Fprintf(&b, "权限：local_write=%s, network=%s, publish=%s, delete=%s, payment=%s, secrets=%s, private_data=%s\n",

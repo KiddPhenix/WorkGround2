@@ -24,6 +24,7 @@ import type {
   AssistantRun,
   AssistantRunNowInput,
   AssistantSnapshot,
+  AssistantSubmitInputInput,
   AssistantUpdateInput,
 } from "../custom/features/assistant/assistant.types";
 import type {
@@ -530,6 +531,7 @@ export interface AppBindings extends WailsWorkBindings {
   AssistantPutRoutine(input: AssistantRoutineInput): Promise<AssistantRoutine>;
   AssistantApplyMemory(input: AssistantMemoryInput): Promise<AssistantMemory>;
   AssistantRunNow(input: AssistantRunNowInput): Promise<AssistantRun>;
+  AssistantSubmitInput(input: AssistantSubmitInputInput): Promise<AssistantRun>;
   AssistantResolveAttention(input: AssistantResolveAttentionInput): Promise<AssistantAttentionItem>;
   AssistantResume(input: AssistantResumeInput): Promise<AssistantRun>;
   AssistantCancel(input: AssistantCancelInput): Promise<AssistantRun>;
@@ -5146,6 +5148,45 @@ function makeMockApp(): AppBindings {
         run.finished_at = new Date().toISOString();
         run.updated_at = run.finished_at;
         run.summary = "已完成手动检查：当前分支测试通过，没有发现新的阻塞风险。";
+        run.revision += 1;
+        touchAssistantSnapshot(snapshot);
+      }, 900);
+      return cloneAssistant(run);
+    },
+    async AssistantSubmitInput(input: AssistantSubmitInputInput) {
+      const snapshot = findAssistantSnapshot(input.assistantId);
+      const prompt = input.input.trim();
+      if (!prompt) throw new Error("assistant: direct input must not be empty");
+      if (new TextEncoder().encode(prompt).length > 64 * 1024) throw new Error("assistant: direct input exceeds 65536 bytes");
+      const existing = snapshot.runs.find((item) => item.request_id === input.requestId);
+      if (existing) {
+        if (existing.prompt !== prompt) throw new Error("assistant: request id replay has different direct input");
+        return cloneAssistant(existing);
+      }
+      const now = new Date().toISOString();
+      const run: AssistantRun = {
+        id: `run-${Date.now()}`,
+        assistant_id: snapshot.assistant.id,
+        prompt,
+        request_id: input.requestId,
+        trigger: "manual",
+        state: "queued",
+        attempt: 0,
+        max_attempts: input.maxAttempts ?? 3,
+        scheduled_for: now,
+        revision: 1,
+        created_at: now,
+        updated_at: now,
+      };
+      snapshot.runs.unshift(run);
+      touchAssistantSnapshot(snapshot);
+      window.setTimeout(() => {
+        run.state = "succeeded";
+        run.attempt = 1;
+        run.started_at = now;
+        run.finished_at = new Date().toISOString();
+        run.updated_at = run.finished_at;
+        run.summary = "已记录这条输入并在后台继续。";
         run.revision += 1;
         touchAssistantSnapshot(snapshot);
       }, 900);

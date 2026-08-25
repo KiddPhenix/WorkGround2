@@ -7,6 +7,9 @@ export interface AssistantTimelineEntry {
   kind: "run" | "memory" | "next";
   title: string;
   detail?: string;
+  // prompt carries the original direct input text for a direct-input run; it is
+  // rendered as plain text (not Markdown) with preserved line breaks.
+  prompt?: string;
   run?: AssistantRun;
   memory?: AssistantMemoryItem;
   routine?: AssistantRoutine;
@@ -147,12 +150,14 @@ export function timelineEntries(snapshot: AssistantSnapshot, day: Date, locale: 
   for (const run of snapshot.runs) {
     const at = validDate(run.started_at) ?? validDate(run.scheduled_for) ?? validDate(run.created_at);
     if (!at || !sameDay(at)) continue;
+    const prompt = !run.routine_id && run.prompt?.trim() ? run.prompt : undefined;
     entries.push({
       id: run.id,
       at,
       kind: "run",
       title: runTitleLabel(run.state, locale),
       detail: run.summary,
+      prompt,
       run,
     });
   }

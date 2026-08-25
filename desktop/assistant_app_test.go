@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"workground2/internal/assistant"
@@ -49,6 +50,50 @@ func TestAssistantAPICreateAndRunNowAreIdempotent(t *testing.T) {
 	}
 	if run1.ID != run2.ID || run1.Revision != run2.Revision {
 		t.Fatalf("run replay drifted: first=%+v second=%+v", run1, run2)
+	}
+}
+
+func TestAssistantSubmitInputRecordsDirectPromptAndIsIdempotent(t *testing.T) {
+	service, store := newAssistantTestRuntime(t, &assistantHostStub{})
+	app := &App{assistant: service}
+	created, err := app.AssistantCreate(AssistantCreateRequest{
+		RequestID: "submit-create", Assistant: assistant.Assistant{Name: "Helper", Mission: "Stay healthy"},
+	})
+	if err != nil {
+		t.Fatalf("AssistantCreate: %v", err)
+	}
+
+	req := AssistantSubmitInputRequest{
+		AssistantID: created.Assistant.ID, RequestID: "submit-1", Input: "  以后不要静默吞错  ",
+	}
+	first, err := app.AssistantSubmitInput(req)
+	if err != nil {
+		t.Fatalf("AssistantSubmitInput: %v", err)
+	}
+	if first.RoutineID != "" || first.Prompt != "以后不要静默吞错" || first.Trigger != assistant.TriggerManual {
+		t.Fatalf("direct input run = %+v, want frozen trimmed prompt", first)
+	}
+
+	replay, err := app.AssistantSubmitInput(req)
+	if err != nil || replay.ID != first.ID || replay.Revision != first.Revision {
+		t.Fatalf("idempotent replay drifted: %+v err=%v", replay, err)
+	}
+
+	if _, err := app.AssistantSubmitInput(AssistantSubmitInputRequest{
+		AssistantID: created.Assistant.ID, RequestID: "submit-empty", Input: "   \n ",
+	}); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("empty input error = %v, want explicit rejection", err)
+	}
+
+	snapshot, err := store.Get(created.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Routines) != 0 {
+		t.Fatalf("direct input created routines: %+v", snapshot.Routines)
+	}
+	if len(snapshot.Runs) != 1 || snapshot.Runs[0].Prompt != "以后不要静默吞错" {
+		t.Fatalf("direct input not persisted as a single frozen run: %+v", snapshot.Runs)
 	}
 }
 

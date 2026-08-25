@@ -754,6 +754,104 @@ func TestAssistantPromptForInjectsResponsibilityGraph(t *testing.T) {
 	}
 }
 
+func TestAssistantPromptForDirectInputUsesUserInputSemantics(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	now := time.Now()
+	snapshot, err := store.Create(assistant.CreateInput{
+		RequestID: "create-direct-semantics",
+		Assistant: assistant.Assistant{
+			ID: "helper-direct-semantics", Name: "Helper", Mission: "Keep the project healthy",
+			Scope: assistant.ScopeGlobal, Lifecycle: assistant.LifecycleActive, Policy: assistant.DefaultPolicy(),
+		},
+		Routines: []assistant.Routine{{
+			ID: "routine-direct-semantics", Title: "Scan", Prompt: "Inspect changes", Enabled: true,
+			CatchUp: assistant.CatchUpCoalesceLatest, Schedule: assistant.Schedule{Kind: assistant.ScheduleManual},
+		}},
+		Now: now,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.Trigger(assistant.TriggerInput{
+		AssistantID: snapshot.Assistant.ID, RequestID: "direct-prior", Prompt: "以后不要静默吞错",
+		Trigger: assistant.TriggerManual, Now: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Trigger(assistant.TriggerInput{
+		AssistantID: snapshot.Assistant.ID, RequestID: "direct-current", Prompt: "这是一个批评：不要改我的原文",
+		Trigger: assistant.TriggerManual, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, _, _, _, err := service.promptFor(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "本次用户输入（原文）") {
+		t.Fatalf("direct input lost its original-input semantics: %q", prompt)
+	}
+	if strings.Contains(prompt, "本次任务") {
+		t.Fatalf("direct input was framed as a routine task: %q", prompt)
+	}
+	if !strings.Contains(prompt, "这是一个批评：不要改我的原文") {
+		t.Fatalf("direct input original text not preserved: %q", prompt)
+	}
+	if !strings.Contains(prompt, "不要要求用户把输入改写成任务") {
+		t.Fatalf("direct input rewrite-forbidding guidance missing: %q", prompt)
+	}
+	if !strings.Contains(prompt, "以后不要静默吞错") {
+		t.Fatalf("recent direct-input history not injected: %q", prompt)
+	}
+	if strings.Contains(prompt, "Inspect changes") {
+		t.Fatalf("routine prompt leaked into a direct-input run: %q", prompt)
+	}
+}
+
+func TestDirectInputHistoryExcludesCurrentOrdersAndBounds(t *testing.T) {
+	base := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	mk := func(id, prompt string, startedAt time.Time, state assistant.RunState, summary string) assistant.Run {
+		return assistant.Run{
+			ID: id, RoutineID: "", Trigger: assistant.TriggerManual, Prompt: prompt,
+			State: state, StartedAt: startedAt, Summary: summary, CreatedAt: startedAt,
+		}
+	}
+	runs := []assistant.Run{
+		mk("run-1", "第一个输入", base, assistant.RunSucceeded, "完成了"),
+		mk("run-routine", "routine prompt", base.Add(time.Minute), assistant.RunSucceeded, ""), // ignored: routine id
+		mk("run-2", "第二个输入", base.Add(3*time.Minute), assistant.RunFailed, "失败"),               // same timestamp as current: queue order wins
+		mk("run-current", "当前输入", base.Add(3*time.Minute), assistant.RunQueued, ""),
+		mk("run-future", "稍后才提交的输入", base.Add(4*time.Minute), assistant.RunQueued, ""),
+	}
+	runs[1].RoutineID = "routine-1"
+	runs[1].Trigger = assistant.TriggerManual // keep manual but routine id makes it non-direct
+
+	got := directInputHistory(runs, "run-current", 2, 1000)
+	if len(got) != 2 || got[0].ID != "run-2" || got[1].ID != "run-1" {
+		t.Fatalf("history = %+v, want newest-first excluding current and routine runs", got)
+	}
+	if got[0].Prompt != "第二个输入" || got[1].Summary != "完成了" {
+		t.Fatalf("history lost original text or summary: %+v", got)
+	}
+
+	// Byte bound: an oversized newest item is UTF-8 safely truncated in the
+	// injected copy; the durable Run remains unchanged.
+	huge := strings.Repeat("长", 200)
+	runs = []assistant.Run{
+		mk("run-small", "小输入", base, assistant.RunSucceeded, "ok"),
+		mk("run-huge", huge, base.Add(time.Minute), assistant.RunSucceeded, ""),
+	}
+	got = directInputHistory(runs, "", 8, 100)
+	if len(got) != 1 || got[0].ID != "run-huge" || len(got[0].Prompt)+len(got[0].Summary) > 100 || !strings.HasSuffix(got[0].Prompt, "…") {
+		t.Fatalf("byte-bounded history = %+v, want a safely truncated newest item", got)
+	}
+	if runs[1].Prompt != huge {
+		t.Fatalf("history selection mutated durable input: got %d bytes want %d", len(runs[1].Prompt), len(huge))
+	}
+}
+
 func TestAssistantCompleteRunAppliesProgressAndStripsSummary(t *testing.T) {
 	host := &assistantHostStub{}
 	service, store := newAssistantTestRuntime(t, host)

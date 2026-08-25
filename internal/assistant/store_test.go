@@ -122,6 +122,76 @@ func TestStoreOccurrenceIsUniqueAndCoalescesLatest(t *testing.T) {
 	}
 }
 
+func TestStoreTriggerDirectPromptIdempotentConflictAndLimits(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+
+	first, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "direct-1", Prompt: "  以后不要静默吞错  ",
+		Trigger: TriggerManual, MaxAttempts: 3, Now: testEpoch,
+	})
+	if err != nil {
+		t.Fatalf("Trigger direct: %v", err)
+	}
+	if first.RoutineID != "" || first.Prompt != "以后不要静默吞错" {
+		t.Fatalf("direct run froze wrong context: routine=%q prompt=%q", first.RoutineID, first.Prompt)
+	}
+
+	replay, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "direct-1", Prompt: "以后不要静默吞错",
+		Trigger: TriggerManual, MaxAttempts: 3, Now: testEpoch.Add(time.Minute),
+	})
+	if err != nil || replay.ID != first.ID || replay.Revision != first.Revision {
+		t.Fatalf("direct replay drifted: %+v err=%v want run %s", replay, err, first.ID)
+	}
+
+	if _, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "direct-1", Prompt: "改成别的原文",
+		Trigger: TriggerManual, MaxAttempts: 3, Now: testEpoch.Add(2 * time.Minute),
+	}); !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("same request id with different prompt error = %v, want ErrIdempotency", err)
+	}
+
+	if _, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RoutineID: "routine-a", Prompt: "任务",
+		RequestID: "direct-both", Trigger: TriggerManual, Now: testEpoch,
+	}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("routine + direct prompt error = %v, want explicit rejection", err)
+	}
+
+	// An empty direct prompt is indistinguishable from the continue-mission
+	// intent at the Store boundary; the Desktop API rejects empty input before
+	// reaching Trigger. Verify that a blank prompt therefore stays a valid
+	// continue-mission run rather than a rejected direct prompt.
+	if _, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "direct-blank", Prompt: "   \n  ",
+		Trigger: TriggerManual, Now: testEpoch,
+	}); err != nil {
+		t.Fatalf("blank direct prompt error = %v, want continue-mission run", err)
+	}
+
+	tooLong := strings.Repeat("长", maxDirectPromptBytes+1)
+	if _, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "direct-long", Prompt: tooLong,
+		Trigger: TriggerManual, Now: testEpoch,
+	}); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized direct prompt error = %v, want byte limit rejection", err)
+	}
+
+	// Continue-mission intent (no routine, no prompt) stays valid and distinct.
+	continued, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "continue-1", Trigger: TriggerManual, Now: testEpoch,
+	})
+	if err != nil || continued.RoutineID != "" || continued.Prompt != "" {
+		t.Fatalf("continue-mission run = %+v err=%v", continued, err)
+	}
+
+	snapshot, _ := store.Get("helper-a")
+	if len(snapshot.Routines) != 1 {
+		t.Fatalf("direct prompt created/overwrote routines: %+v", snapshot.Routines)
+	}
+}
+
 func TestStoreClaimIsSingleFlightUnderHundredConcurrentWorkers(t *testing.T) {
 	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
 	mustCreate(t, store, "helper-a")

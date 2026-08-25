@@ -77,6 +77,9 @@ export interface AssistantRun {
   id: string;
   assistant_id: string;
   routine_id?: string;
+  // prompt carries the frozen original user input for a direct-input run
+  // ("对助手说") and the frozen routine prompt for a routine run.
+  prompt?: string;
   scope?: AssistantScope;
   workspace_root?: string;
   request_id: string;
@@ -230,6 +233,13 @@ export interface AssistantRunNowInput {
   assistantId: string;
   routineId?: string;
   requestId: string;
+  maxAttempts?: number;
+}
+
+export interface AssistantSubmitInputInput {
+  assistantId: string;
+  requestId: string;
+  input: string;
   maxAttempts?: number;
 }
 

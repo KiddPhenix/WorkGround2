@@ -33,6 +33,7 @@ import {
   assistantResolveAttention,
   assistantResume,
   assistantRunNow,
+  assistantSubmitInput,
   assistantUpdate,
 } from "./assistant.bridge";
 import { assistantCopy } from "./assistant.copy";
@@ -214,26 +215,9 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
     if (!data.snapshot || !prompt || busy) return;
     setBusy("handoff");
     const intentKey = assistantIntentKey("handoff", data.snapshot.assistant.id, prompt);
-    const runRequestKey = `${intentKey}:run`;
     try {
-      const existing = data.snapshot.routines.find((routine) => routine.id === `adhoc-${data.snapshot!.assistant.id}`);
-      const now = new Date().toISOString();
-      const routine: AssistantRoutine = existing ? { ...existing, title: "临时交办", prompt, enabled: true, updated_at: now } : {
-        id: `adhoc-${data.snapshot.assistant.id}`,
-        assistant_id: data.snapshot.assistant.id,
-        title: "临时交办",
-        prompt,
-        schedule: { kind: "manual", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" },
-        enabled: true,
-        catch_up: "coalesce_latest",
-        revision: 0,
-        created_at: now,
-        updated_at: now,
-      };
-      const routineKey = assistantMutationKey("routine", data.snapshot.assistant.id, routine.id, { title: routine.title, prompt: routine.prompt, schedule: routine.schedule, enabled: routine.enabled, catch_up: routine.catch_up });
-      const saved = await runAssistantCASMutation(routineKey, existing?.revision ?? 0, ({ requestId, expectedRevision }) => assistantPutRoutine({ requestId, expectedRevision, routine }));
-      await assistantRunNow({ assistantId: data.snapshot.assistant.id, routineId: saved.id, requestId: pendingAssistantRequest(runRequestKey), maxAttempts: 3 });
-      completeAssistantRequest(runRequestKey);
+      await assistantSubmitInput({ assistantId: data.snapshot.assistant.id, requestId: pendingAssistantRequest(intentKey), input: prompt, maxAttempts: 3 });
+      completeAssistantRequest(intentKey);
       setHandoff("");
       setHandoffNotice(true);
       await data.refresh();
@@ -344,6 +328,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
         </form>
         <div className="assistant-handoff__meta">
           <span className="assistant-handoff__hint">{submitKey === "ctrl_enter" ? "Ctrl+Enter" : "Enter"} {copy.sendShortcut}</span>
+          <span className="assistant-handoff__record">{copy.inputRecorded}</span>
           {handoffNotice && (
             <span className="assistant-handoff__status" role="status">
               <Check size={13} aria-hidden="true" />
@@ -385,7 +370,10 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
                   );
                 })()}
                 {entry.kind === "run" ? (
-                  entry.run?.summary ? <div className="assistant-event__summary"><Markdown text={entry.run.summary} /></div> : null
+                  <>
+                    {entry.prompt ? <div className="assistant-event__prompt"><span>{copy.youSaid}</span><p>{entry.prompt}</p></div> : null}
+                    {entry.run?.summary ? <div className="assistant-event__summary"><Markdown text={entry.run.summary} /></div> : null}
+                  </>
                 ) : (
                   entry.detail && entry.detail !== entry.title ? <p>{entry.detail}</p> : null
                 )}
@@ -728,7 +716,9 @@ function RunHistory({ snapshot, busy, act, onRun, onAttention, onOpenSession }: 
   return <div className="assistant-history">{[...snapshot.runs].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((run) => {
     const action = runHistoryAction(run.state);
     const sessionTarget = assistantRunSessionTarget(run, snapshot.assistant);
-    return <article key={run.id} className="assistant-history-item"><div><strong>{runStateLabel(run.state, locale)}</strong><time>{formatTimelineTime(new Date(run.started_at || run.created_at), locale)}</time></div><p>{run.summary || run.error?.message || snapshot.routines.find((item) => item.id === run.routine_id)?.title}</p>{run.state === "retry_wait" && <span className="assistant-history-item__hint">{copy.waitingRetry}</span>}<div>{sessionTarget && onOpenSession && <button className="assistant-text-action" type="button" onClick={() => onOpenSession(...sessionTarget)}><ExternalLink size={13} />{copy.openSession}</button>}{action === "rerun" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void onRun(run.routine_id)}><RefreshCw size={13} />{copy.rerun}</button>}{action === "cancel" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void cancel(run.id)}><X size={13} />{copy.stopRun}</button>}{action === "attention" && <button className="assistant-text-action" type="button" onClick={onAttention}><AlertCircle size={13} />{copy.handleAttention}</button>}</div></article>;
+    const directInput = !run.routine_id ? run.prompt?.trim() : "";
+    const result = run.summary || run.error?.message || snapshot.routines.find((item) => item.id === run.routine_id)?.title;
+    return <article key={run.id} className="assistant-history-item"><div><strong>{runStateLabel(run.state, locale)}</strong><time>{formatTimelineTime(new Date(run.started_at || run.created_at), locale)}</time></div>{directInput && <div className="assistant-history-item__prompt"><span>{copy.youSaid}</span><p>{directInput}</p></div>}{result && <div className="assistant-history-item__result"><Markdown text={result} /></div>}{run.state === "retry_wait" && <span className="assistant-history-item__hint">{copy.waitingRetry}</span>}<div>{sessionTarget && onOpenSession && <button className="assistant-text-action" type="button" onClick={() => onOpenSession(...sessionTarget)}><ExternalLink size={13} />{copy.openSession}</button>}{action === "rerun" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void onRun(run.routine_id)}><RefreshCw size={13} />{copy.rerun}</button>}{action === "cancel" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void cancel(run.id)}><X size={13} />{copy.stopRun}</button>}{action === "attention" && <button className="assistant-text-action" type="button" onClick={onAttention}><AlertCircle size={13} />{copy.handleAttention}</button>}</div></article>;
   })}</div>;
 }
 

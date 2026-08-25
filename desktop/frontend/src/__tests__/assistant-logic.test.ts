@@ -72,6 +72,7 @@ ok(entries.map((entry) => entry.kind).join(",") === "next,memory,run", "timeline
 const runEntry = entries.find((entry) => entry.kind === "run")!;
 ok(runEntry.title === "本次运行已完成", "run timeline title is a short state label, not summary prose");
 ok(runEntry.detail === "测试通过。发布说明待补。" && runEntry.title !== runEntry.detail, "run summary is preserved as detail, not promoted to the title");
+ok(runEntry.prompt === undefined, "routine run entry never exposes its routine prompt as direct input");
 ok(runTitleLabel("succeeded", "zh") === "本次运行已完成", "zh run title reads as a completed run");
 ok(runTitleLabel("succeeded", "en") === "Run completed", "en run title localizes");
 ok(runTitleLabel("failed", "zh") === "本次运行失败", "failed run title carries its state");
@@ -82,6 +83,11 @@ const tiedEntries = timelineEntries({
   runs: [{ ...snapshot.runs[0], id: "run-b" }, { ...snapshot.runs[0], id: "run-a" }],
 }, day, "zh", copy);
 ok(tiedEntries.map((entry) => entry.id).join(",") === "run-a,run-b", "timeline uses stable ids when timestamps and kinds match");
+
+const directRun: AssistantRun = { id: "run-direct", assistant_id: "assistant-1", request_id: "req-direct", trigger: "manual", state: "succeeded", attempt: 1, max_attempts: 3, prompt: "第一行\n第二行批评", summary: "已记录", revision: 1, created_at: day.toISOString(), updated_at: day.toISOString(), started_at: day.toISOString() };
+const directEntry = timelineEntries({ ...snapshot, routines: [], memory: { revision: 1, items: [] }, runs: [directRun] }, day, "zh", copy).find((entry) => entry.id === "run-direct")!;
+ok(directEntry.prompt === "第一行\n第二行批评", "direct-input run exposes its full original prompt");
+ok(directEntry.detail === "已记录" && directEntry.prompt !== directEntry.detail, "direct-input run keeps its result summary independent from the prompt");
 
 ok(responsibilityStatusLabel("blocked", "zh") === "被阻塞" && responsibilityStatusLabel("blocked", "en") === "Blocked", "responsibility status localizes");
 ok(responsibilityStatusLabel("done", "zh") === "已完成", "done responsibility status is localized");

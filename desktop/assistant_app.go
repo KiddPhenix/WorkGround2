@@ -43,6 +43,16 @@ type AssistantRunNowRequest struct {
 	MaxAttempts int    `json:"maxAttempts,omitempty"`
 }
 
+// AssistantSubmitInputRequest records a direct user message to the assistant
+// ("对助手说") as a manual, non-routine Run. The normalized original text is
+// stored without being rewritten into a task.
+type AssistantSubmitInputRequest struct {
+	AssistantID string `json:"assistantId"`
+	RequestID   string `json:"requestId"`
+	Input       string `json:"input"`
+	MaxAttempts int    `json:"maxAttempts,omitempty"`
+}
+
 type AssistantResolveAttentionRequest struct {
 	AssistantID      string                   `json:"assistantId"`
 	AttentionID      string                   `json:"attentionId"`
@@ -197,6 +207,26 @@ func (a *App) AssistantRunNow(req AssistantRunNowRequest) (assistant.Run, error)
 	}
 	run, err := service.store.Trigger(assistant.TriggerInput{
 		AssistantID: req.AssistantID, RoutineID: req.RoutineID, RequestID: req.RequestID,
+		Trigger: assistant.TriggerManual, MaxAttempts: req.MaxAttempts, Now: time.Now(),
+	})
+	if err != nil {
+		return assistant.Run{}, err
+	}
+	service.Wake()
+	return run, nil
+}
+
+func (a *App) AssistantSubmitInput(req AssistantSubmitInputRequest) (assistant.Run, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.Run{}, err
+	}
+	input := strings.TrimSpace(req.Input)
+	if input == "" {
+		return assistant.Run{}, errors.New("assistant: direct input must not be empty")
+	}
+	run, err := service.store.Trigger(assistant.TriggerInput{
+		AssistantID: req.AssistantID, Prompt: input, RequestID: req.RequestID,
 		Trigger: assistant.TriggerManual, MaxAttempts: req.MaxAttempts, Now: time.Now(),
 	})
 	if err != nil {

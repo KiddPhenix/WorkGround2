@@ -337,6 +337,20 @@
 
 /* Run summary — restrained Markdown prose, sized independently from the
    oversized timeline headings and kept from overflowing the narrow column. */
+.assistant-event__prompt {
+  max-width: 760px;
+  margin-top: 12px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #b6b1a9;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.assistant-event__prompt > span,
+.assistant-history-item__prompt > span { display: block; margin-bottom: 4px; color: var(--assistant-orange); font-size: 10px; letter-spacing: 0.04em; }
+.assistant-event__prompt > p,
+.assistant-history-item__prompt > p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .assistant-event__summary {
   max-width: 760px;
   margin-top: 14px;
@@ -510,6 +524,7 @@ button.assistant-run-state:focus-visible {
   margin-top: 4px;
 }
 .assistant-handoff__hint { color: #6f6a64; font-size: 11px; }
+.assistant-handoff__record { color: #6f6a64; font-size: 11px; }
 .assistant-handoff__status {
   display: inline-flex;
   align-items: center;
@@ -645,6 +660,10 @@ button.assistant-run-state:focus-visible {
 .assistant-attention-item strong { color: #ded7cd; font-size: 13px; }
 .assistant-history-item time { color: #6f6c67; font-size: 11px; }
 .assistant-history-item__hint { display: block; margin-top: 8px; color: #9b7f5d; font-size: 11px; line-height: 1.5; }
+.assistant-history-item > .assistant-history-item__prompt { display: block; margin-top: 10px; padding-left: 10px; border-left: 2px solid #5a402d; color: #b6b1a9; font-size: 13px; line-height: 1.65; }
+.assistant-history-item > .assistant-history-item__result { display: block; margin-top: 10px; color: #aaa59e; font-size: 12px; line-height: 1.65; }
+.assistant-history-item__result .markdown-body > :first-child { margin-top: 0; }
+.assistant-history-item__result .markdown-body > :last-child { margin-bottom: 0; }
 .assistant-attention-item .assistant-attention-item__warning { margin-right: 0; padding: 8px 10px; border-left: 2px solid var(--assistant-orange); color: #caa578; background: #211b14; }
 .assistant-attention-item__answer { display: grid; gap: 7px; margin: 12px 0; color: #948f88; font-size: 11px; }
 .assistant-attention-item__answer textarea { width: 100%; resize: vertical; min-height: 68px; border: 1px solid #343638; border-radius: 6px; padding: 9px 10px; color: #ded7cd; background: #111315; font: inherit; line-height: 1.5; }

@@ -51,6 +51,8 @@ ok(host.querySelector(".assistant-workspace") !== null, "workspace mounts as a f
 ok(host.textContent?.includes("代码项目助手") ?? false, "workspace renders the selected assistant");
 ok(host.textContent?.includes("让它继续工作") ?? false, "primary repeat action is visible");
 ok(host.querySelector("#assistant-handoff-input") !== null, "quick handoff input is keyboard accessible");
+ok(host.querySelector("#assistant-handoff-input")?.getAttribute("placeholder") === "对助手说…", "handoff input prompts a message to the assistant");
+ok(host.textContent?.includes("输入会被记录") ?? false, "handoff dock states that the input will be recorded");
 ok(host.querySelectorAll(".assistant-event").length >= 2, "timeline renders run and memory events");
 
 // ── Handoff dock: a real top dock outside and before the scrolling timeline ──
@@ -162,11 +164,21 @@ await act(async () => {
   handoffForm?.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
   await new Promise((resolve) => setTimeout(resolve, 0));
 });
-ok(host.querySelector(".assistant-handoff__status")?.textContent?.includes("已经交给助手") ?? false, "successful send surfaces the queued status inside the dock");
+ok(host.querySelector(".assistant-handoff__status")?.textContent?.includes("已记录并排队") ?? false, "successful send surfaces the recorded-and-queued status inside the dock");
 ok(handoffInput!.value === "", "successful send clears the draft");
+const submittedSnapshot = await assistantGet("assistant-code-project");
+const submittedRun = submittedSnapshot.runs.find((run) => run.prompt === "排查构建失败" && !run.routine_id);
+ok(submittedRun !== undefined, "direct input is durably visible as a frozen non-routine Run after refresh");
+ok(!submittedSnapshot.routines.some((routine) => routine.id.startsWith("adhoc-")), "direct input does not create or overwrite an adhoc Routine");
+ok(host.querySelector(".assistant-event__prompt")?.textContent?.includes("排查构建失败") ?? false, "timeline keeps the submitted original text separate from the result");
 
 const manage = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;
 await act(async () => { manage?.click(); });
+const historyTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("运行记录")) as HTMLButtonElement | undefined;
+await act(async () => { historyTab?.click(); });
+ok(host.querySelector(".assistant-history-item__prompt")?.textContent?.includes("排查构建失败") ?? false, "run history keeps the full direct input traceable");
+const overviewTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("概览")) as HTMLButtonElement | undefined;
+await act(async () => { overviewTab?.click(); });
 const workspaceInput = [...host.querySelectorAll("input")].find((input) => input.value === "~/projects/WorkGround2");
 ok(workspaceInput !== undefined, "overview exposes the current workspace path");
 ok(!workspaceInput?.hasAttribute("readonly"), "workspace path is editable for future runs");

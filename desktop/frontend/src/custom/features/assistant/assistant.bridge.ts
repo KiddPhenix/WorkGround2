@@ -14,6 +14,7 @@ import type {
   AssistantRun,
   AssistantRunNowInput,
   AssistantSnapshot,
+  AssistantSubmitInputInput,
   AssistantUpdateInput,
 } from "./assistant.types";
 
@@ -53,6 +54,10 @@ export function assistantApplyMemory(input: AssistantMemoryInput): Promise<Assis
 
 export function assistantRunNow(input: AssistantRunNowInput): Promise<AssistantRun> {
   return app.AssistantRunNow(input) as Promise<AssistantRun>;
+}
+
+export function assistantSubmitInput(input: AssistantSubmitInputInput): Promise<AssistantRun> {
+  return app.AssistantSubmitInput(input) as Promise<AssistantRun>;
 }
 
 export function assistantResolveAttention(input: AssistantResolveAttentionInput): Promise<AssistantAttentionItem> {

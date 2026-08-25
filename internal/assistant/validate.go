@@ -28,6 +28,21 @@ func validateID(kind, id string) error {
 	return nil
 }
 
+// maxDirectPromptBytes bounds a single direct user input ("对助手说") by its
+// UTF-8 byte length. The normalized prompt is stored in the frozen Run, so the
+// limit keeps aggregates bounded without silently truncating user text.
+const maxDirectPromptBytes = 64 * 1024
+
+func validateDirectPrompt(prompt string) error {
+	if strings.TrimSpace(prompt) == "" {
+		return errors.New("assistant: direct prompt must not be empty")
+	}
+	if len(prompt) > maxDirectPromptBytes {
+		return fmt.Errorf("assistant: direct prompt exceeds %d bytes", maxDirectPromptBytes)
+	}
+	return nil
+}
+
 func validateRequestID(id string) error {
 	if id != strings.TrimSpace(id) {
 		return errors.New("assistant: request id must not have surrounding whitespace")

@@ -117,6 +117,7 @@ type Run struct {
     ID            string
     AssistantID   string
     RoutineID     string
+    Prompt        string // 冻结的 Routine prompt 或直接用户输入原文
     RequestID     string
     OccurrenceKey string
     Trigger       TriggerKind
@@ -145,6 +146,8 @@ queued -> running -> succeeded
 ```
 
 同一助手默认最多一个活动 Run。新的定时 occurrence 合并为一个待执行 Run；手动点击在相同 request ID 下幂等。
+
+直接用户输入（“对助手说”）不创建或覆盖 Routine，而是生成一条 `TriggerManual + RoutineID="" + Prompt=<原文>` 的 Run：Run 是输入、状态、Session 与结果的单一可信记录。原文可为任务、指导、批评/反馈或工作方法改进，一律按原文保存、不自动改写或美化；`RoutineID` 与直接原文同时提供会被拒绝，原文 trim 后不能为空且受 UTF-8 字节上限约束。指纹包含规范化原文，同 requestId + 同原文幂等返回同 Run，同 requestId + 不同原文显式冲突。
 
 ### 4.4 显式记忆
 
@@ -278,6 +281,8 @@ type Opportunity struct {
 - `live_web` 只由成功的实时网页/浏览器工具结果满足（browser open/navigate/state 或 web fetch/search 等）；只 dispatch 或失败结果不算。
 - 接受 TurnDone 为成功前，先校验必需能力证据；缺失证据通过 `Failure{code:"evidence_missing"}` 进入可重试、可观察的恢复状态，绝不记为成功 Run。网络 deny、工具不可用、模型跳过必需工具同理。
 - 责任图全部 done 且无 ready/active 时，提示开启新的 2–4 项责任周期；旧 done 项保留为历史，不重开、不修改。
+- 直接输入的 Run 使用“本次用户输入（原文）”语义：是任务就执行，是指导或反馈就据此调整计划/策略，不要求用户把输入改写成任务。
+- 每次 Run 注入近期直接输入 Run 的有界历史（稳定倒序、限制条数与 UTF-8 总字节），包含原文、状态与结果摘要，并排除当前及其后入队的 Run；历史里已完成的任务不得仅因被引用而重复执行。Routine prompt 不会当作用户直接输入。
 
 ## 7. Desktop UI
 
@@ -293,7 +298,7 @@ type Opportunity struct {
 - 日期使用大号衬线标题；时间轴由时间、橙色节点、细虚线和编辑式正文组成。
 - 关键结论使用大号衬线文字，正文使用较低对比度无衬线文字。
 - 计划节点显示可直接点击的“改成别的时间”。
-- 底部交办入口使用一条弱分割线和单行输入提示。
+- 顶部“对助手说”入口使用一条弱分割线和单行输入提示，明确显示“输入会被记录”。
 
 实现遵循现有主题 token、侧栏、图标库和窗口结构。参考图没有独立位图内容，因此无需生成新 raster 资产。
 
@@ -302,7 +307,7 @@ type Opportunity struct {
 新增一级 `AssistantWorkspace`：
 
 - 左侧项目树：展示项目绑定助手；全局助手进入全局分组。
-- 时间线首页：今日已做、学到的记忆、下一次计划和快速交办。
+- 时间线首页：今日已做、学到的记忆、下一次计划和“对助手说”快速入口。
 - 管理抽屉：概览、例行任务、记忆、运行记录、权限。
 - 创建/编辑向导：模板、使命、项目、Routine、频率、权限确认。
 - 待处理收件箱：审批、连续失败、缺少用户输入。
@@ -320,6 +325,7 @@ type Opportunity struct {
 - 编辑使命、Routine、频率和记忆。
 - 暂停、恢复、立即运行和取消 Run。
 - 查看运行历史并打开关联 Session。
+- 时间线与运行记录对直接输入显示完整原文（安全纯文本、保留换行），结果摘要仍独立按 Markdown 渲染。
 - 批准、拒绝和重试 AttentionItem。
 - 时间线自动刷新，迟到旧 revision 不覆盖新状态。
 - 窄屏下侧栏可折叠，管理抽屉变为全宽层。

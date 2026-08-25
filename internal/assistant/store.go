@@ -518,6 +518,15 @@ func (s *Store) trigger(in TriggerInput, occurrence bool) (Run, error) {
 	if in.MaxAttempts < 1 {
 		in.MaxAttempts = 3
 	}
+	in.Prompt = strings.TrimSpace(in.Prompt)
+	if in.RoutineID != "" && in.Prompt != "" {
+		return Run{}, errors.New("assistant: direct prompt cannot be combined with a routine")
+	}
+	if in.RoutineID == "" && in.Prompt != "" {
+		if err := validateDirectPrompt(in.Prompt); err != nil {
+			return Run{}, err
+		}
+	}
 	operation := "trigger"
 	if occurrence {
 		operation = "create_occurrence"
@@ -526,11 +535,11 @@ func (s *Store) trigger(in TriggerInput, occurrence bool) (Run, error) {
 		}
 	}
 	fingerprint, err := inputFingerprint(struct {
-		AssistantID, RoutineID string
-		Trigger                TriggerKind
-		ScheduledFor           time.Time
-		MaxAttempts            int
-	}{in.AssistantID, in.RoutineID, in.Trigger, in.ScheduledFor.UTC(), in.MaxAttempts})
+		AssistantID, RoutineID, Prompt string
+		Trigger                        TriggerKind
+		ScheduledFor                   time.Time
+		MaxAttempts                    int
+	}{in.AssistantID, in.RoutineID, in.Prompt, in.Trigger, in.ScheduledFor.UTC(), in.MaxAttempts})
 	if err != nil {
 		return Run{}, err
 	}
@@ -596,12 +605,16 @@ func (s *Store) trigger(in TriggerInput, occurrence bool) (Run, error) {
 			return result, nil
 		}
 	}
+	prompt := frozenRoutine.Prompt
+	if in.RoutineID == "" {
+		prompt = in.Prompt
+	}
 	run := Run{
 		ID: StableID("run", in.AssistantID+"/"+in.RequestID), AssistantID: in.AssistantID,
 		RoutineID: in.RoutineID, RequestID: in.RequestID, OccurrenceKey: occurrenceKey,
 		Trigger: in.Trigger, AssistantRevision: agg.Assistant.Revision,
 		Scope: agg.Assistant.Scope, WorkspaceRoot: agg.Assistant.WorkspaceRoot,
-		RoutineRevision: frozenRoutine.Revision, Prompt: frozenRoutine.Prompt,
+		RoutineRevision: frozenRoutine.Revision, Prompt: prompt,
 		Mission: agg.Assistant.Mission, Policy: agg.Assistant.Policy, State: RunQueued, MaxAttempts: in.MaxAttempts,
 		ScheduledFor: in.ScheduledFor.UTC(), Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}

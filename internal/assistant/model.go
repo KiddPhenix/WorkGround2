@@ -255,8 +255,12 @@ type RoutineInput struct {
 }
 
 type TriggerInput struct {
-	AssistantID  string
-	RoutineID    string
+	AssistantID string
+	RoutineID   string
+	// Prompt carries the original direct user input for a manual, non-routine
+	// run ("对助手说"). It must be empty for routine runs and for the
+	// "continue mission" intent, which passes neither routine nor prompt.
+	Prompt       string
 	RequestID    string
 	Trigger      TriggerKind
 	ScheduledFor time.Time
