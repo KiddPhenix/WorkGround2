@@ -7,20 +7,23 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/collab"
 	"workground2/internal/fileutil"
 	"workground2/internal/provider"
+	"workground2/internal/runhub"
 	"workground2/internal/unread"
 )
 
 const (
 	desktopIconActionLimit = 128
-	desktopIconMaxRooms    = 6
+	desktopIconMaxPeople   = 6
 	desktopIconMaxTasks    = 8
 	desktopIconMaxSpaces   = desktopWorkspacePinLimit
 	desktopIconWidth       = 1080
@@ -35,20 +38,22 @@ const (
 // source icon. Runtime progress is deliberately separate and never increments
 // UnreadCount.
 type DesktopIconNotice struct {
-	ID            string         `json:"id"`
-	Revision      string         `json:"revision"`
-	Kind          string         `json:"kind"`
-	Priority      int            `json:"priority"`
-	Title         string         `json:"title"`
-	Body          string         `json:"body"`
-	CreatedAt     int64          `json:"createdAt"`
-	TabID         string         `json:"tabId,omitempty"`
-	Conversation  string         `json:"conversation,omitempty"`
-	ReadSequence  uint64         `json:"readSequence,omitempty"`
-	InteractionID string         `json:"interactionId,omitempty"`
-	QuestionID    string         `json:"questionId,omitempty"`
-	Options       []WidgetOption `json:"options"`
-	Retryable     bool           `json:"retryable,omitempty"`
+	ID            string               `json:"id"`
+	Revision      string               `json:"revision"`
+	Kind          string               `json:"kind"`
+	Priority      int                  `json:"priority"`
+	Attention     unread.ItemAttention `json:"attention,omitempty"`
+	Title         string               `json:"title"`
+	Body          string               `json:"body"`
+	CreatedAt     int64                `json:"createdAt"`
+	TabID         string               `json:"tabId,omitempty"`
+	Conversation  string               `json:"conversation,omitempty"`
+	ReadSequence  uint64               `json:"readSequence,omitempty"`
+	InteractionID string               `json:"interactionId,omitempty"`
+	QuestionID    string               `json:"questionId,omitempty"`
+	Questions     []WidgetQuestion     `json:"questions,omitempty"`
+	Options       []WidgetOption       `json:"options"`
+	Retryable     bool                 `json:"retryable,omitempty"`
 	// SummaryStatus reports the news-style summary state for completion
 	// notices: empty while generating (mechanical body), "ready" once the
 	// LLM summary is cached, or "failed" after a visible generation error.
@@ -75,6 +80,13 @@ type DesktopIconRect struct {
 	Height int `json:"height"`
 }
 
+// DesktopIconHitRegionsInput binds one hit-region snapshot to the native
+// surface generation whose client coordinates it was measured against.
+type DesktopIconHitRegionsInput struct {
+	Rects      []DesktopIconRect `json:"rects"`
+	Generation int64             `json:"generation"`
+}
+
 func normalizeDesktopIconRects(rects []DesktopIconRect, width, height int) []DesktopIconRect {
 	out := make([]DesktopIconRect, 0, min(len(rects), 64))
 	for _, rect := range rects {
@@ -96,12 +108,19 @@ func normalizeDesktopIconRects(rects []DesktopIconRect, width, height int) []Des
 
 // SetDesktopIconHitRegions makes only visible controls participate in native
 // hit testing, so transparent gaps remain part of the real desktop.
-func (a *App) SetDesktopIconHitRegions(rects []DesktopIconRect) error {
+func (a *App) SetDesktopIconHitRegions(input DesktopIconHitRegionsInput) error {
 	if a.ctx == nil {
 		return errors.New("desktop window is not ready")
 	}
 	a.widgetMu.Lock()
 	if !a.widgetMode || a.widgetStyle != "icons" {
+		a.widgetMu.Unlock()
+		return nil
+	}
+	// A bottom-right anchored resize changes the client origin. Requests
+	// measured against an older surface must never reinstall the old HRGN after
+	// SetDesktopIconSurface cleared it.
+	if input.Generation != a.widgetSurfaceGen {
 		a.widgetMu.Unlock()
 		return nil
 	}
@@ -115,7 +134,83 @@ func (a *App) SetDesktopIconHitRegions(rects []DesktopIconRect) error {
 	// The frontend reports physical WebView pixels using devicePixelRatio. Native
 	// code owns the final client-bound clamp; applying WindowGetSize/GetDpiForWindow
 	// here would mix Wails logical units into that physical coordinate contract.
-	return setDesktopIconHitRegions(rects)
+	return setDesktopIconHitRegions(input.Rects)
+}
+
+// DesktopIconSurfaceInput is one monotonic request to resize the native icon
+// canvas. Width/Height are the content's logical bounds (icons plus any open
+// transient surface) and Envelope is the safety margin added on every side so
+// content never sits on the transparent edge. Generation is the frontend's
+// request token; it is echoed back unchanged so late responses can be dropped.
+type DesktopIconSurfaceInput struct {
+	Width      int   `json:"width"`
+	Height     int   `json:"height"`
+	Envelope   int   `json:"envelope"`
+	Generation int64 `json:"generation"`
+}
+
+// DesktopIconSurfaceResult reports the geometry that actually took effect.
+type DesktopIconSurfaceResult struct {
+	Width      int   `json:"width"`
+	Height     int   `json:"height"`
+	X          int   `json:"x"`
+	Y          int   `json:"y"`
+	Generation int64 `json:"generation"`
+}
+
+func growDesktopIconSurfaceInput(input DesktopIconSurfaceInput, current WidgetWindowState) DesktopIconSurfaceInput {
+	input.Width = max(input.Width, current.Width-input.Envelope*2)
+	input.Height = max(input.Height, current.Height-input.Envelope*2)
+	return input
+}
+
+// SetDesktopIconSurface applies a bounded icon-surface geometry request and
+// returns the geometry that actually took effect. It is idempotent: repeating
+// the same request reapplies the same clamped bounds with no drift, and every
+// request is anchored to the current monitor work area's bottom-right corner.
+func (a *App) SetDesktopIconSurface(input DesktopIconSurfaceInput) (DesktopIconSurfaceResult, error) {
+	if a.ctx == nil {
+		return DesktopIconSurfaceResult{}, errors.New("desktop window is not ready")
+	}
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	if !a.widgetMode || a.widgetStyle != "icons" {
+		return DesktopIconSurfaceResult{}, errors.New("desktop icon surface is not active")
+	}
+	if input.Generation < a.widgetSurfaceGen {
+		state := a.widgetSurfaceState
+		return DesktopIconSurfaceResult{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y, Generation: input.Generation}, nil
+	}
+	if input.Generation == a.widgetSurfaceGen && a.widgetSurfaceGen > 0 {
+		state := a.widgetSurfaceState
+		return DesktopIconSurfaceResult{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y, Generation: input.Generation}, nil
+	}
+	// The native state is the final authority for monotonic growth, including a
+	// frontend remount that does not know how far an earlier instance expanded.
+	// Preserve each current axis before adding this request's envelope.
+	input = growDesktopIconSurfaceInput(input, a.widgetSurfaceState)
+	a.widgetRegionMu.Lock()
+	defer a.widgetRegionMu.Unlock()
+	state, err := applyDesktopIconSurface(a.ctx, input)
+	if err != nil {
+		return DesktopIconSurfaceResult{}, err
+	}
+	// A Win32 HRGN uses coordinates relative to the old client origin. Resizing
+	// a bottom-right anchored window moves that origin, so clear the old region
+	// before React mounts the prepared content; the normal hit-region sync will
+	// install the new precise union immediately after commit.
+	if err := clearWidgetWindowRegion(); err != nil {
+		return DesktopIconSurfaceResult{}, err
+	}
+	a.widgetSurfaceGen = input.Generation
+	a.widgetSurfaceState = state
+	return DesktopIconSurfaceResult{
+		Width:      state.Width,
+		Height:     state.Height,
+		X:          state.X,
+		Y:          state.Y,
+		Generation: input.Generation,
+	}, nil
 }
 
 // DesktopIconTaskRef is the typed session identity every task icon snapshot
@@ -167,6 +262,10 @@ type DesktopIconItem struct {
 	// empty and the frontend falls back to sessionRef/sessionPath). It is
 	// display-only: opening an icon still routes through SessionRef.
 	SessionID string `json:"sessionId,omitempty"`
+	// AppearanceSeed overrides the stable session identity only for Agent Icon
+	// appearance selection. It is persisted by durable session path and changes
+	// only after an explicit "换个样子" action succeeds.
+	AppearanceSeed string `json:"appearanceSeed,omitempty"`
 	// WorkspaceIcon is the normalized project icon key of the task's workspace
 	// (global-scope tasks carry the global project icon). The frontend reuses
 	// it for the Agent Icon workspace badge; display-only, stable per session.
@@ -180,15 +279,42 @@ type DesktopIconItem struct {
 	Revision      string              `json:"revision"`
 	Retained      bool                `json:"retained,omitempty"`
 	SessionRef    *DesktopIconTaskRef `json:"sessionRef,omitempty"`
+	// Actions is the exact capability-derived surface for external runs and
+	// launch profiles. Local task actions continue to use their existing typed
+	// Controller path. An absent action must never be manufactured by the UI.
+	Actions []string `json:"actions,omitempty"`
+	// SourceRevision lets externally-owned projections participate in the icon
+	// snapshot revision even when consecutive events keep the same phase.
+	SourceRevision uint64 `json:"sourceRevision,omitempty"`
+	// ConversationSequence is the unread watermark represented by a Room or
+	// personal-conversation icon. It lets remove acknowledge and hide exactly
+	// the visible version; a later message has a larger sequence and therefore
+	// makes the icon reappear instead of being hidden forever.
+	ConversationSequence uint64 `json:"conversationSequence,omitempty"`
 }
 
 type DesktopIconSnapshot struct {
-	Items              []DesktopIconItem `json:"items"`
-	Revision           string            `json:"revision"`
-	HoverStatusDelayMs int               `json:"hoverStatusDelayMs"`
-	Style              string            `json:"style"`
-	UnreadRevision     uint64            `json:"unreadRevision"`
-	Error              string            `json:"error,omitempty"`
+	Items              []DesktopIconItem       `json:"items"`
+	Delegations        []DesktopIconDelegation `json:"delegations"`
+	DelegationError    string                  `json:"delegationError,omitempty"`
+	Revision           string                  `json:"revision"`
+	HoverStatusDelayMs int                     `json:"hoverStatusDelayMs"`
+	Style              string                  `json:"style"`
+	UnreadRevision     uint64                  `json:"unreadRevision"`
+	Error              string                  `json:"error,omitempty"`
+}
+
+// DesktopIconDelegation is one running delegation projected by the backend.
+// SessionRef is the exact session the fixed entry must open.
+type DesktopIconDelegation struct {
+	ID            string              `json:"id"`
+	Kind          string              `json:"kind"`
+	Content       string              `json:"content"`
+	Status        string              `json:"status"`
+	SessionTitle  string              `json:"sessionTitle"`
+	WorkspaceName string              `json:"workspaceName,omitempty"`
+	UpdatedAt     int64               `json:"updatedAt,omitempty"`
+	SessionRef    *DesktopIconTaskRef `json:"sessionRef,omitempty"`
 }
 
 type DesktopIconActionInput struct {
@@ -198,6 +324,7 @@ type DesktopIconActionInput struct {
 	RequestID    string               `json:"requestId"`
 	Action       string               `json:"action"`
 	Values       []string             `json:"values,omitempty"`
+	Answers      []QuestionAnswer     `json:"answers,omitempty"`
 	Position     *DesktopIconPosition `json:"position,omitempty"`
 	Conversation string               `json:"conversation,omitempty"`
 	ReadSequence uint64               `json:"readSequence,omitempty"`
@@ -234,6 +361,15 @@ type desktopIconReceipt struct {
 	ItemID        string `json:"itemId,omitempty"`
 	TabID         string `json:"tabId,omitempty"`
 	SessionPath   string `json:"sessionPath,omitempty"`
+	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
+	TargetScope   string `json:"targetScope,omitempty"`
+	TargetTopicID string `json:"targetTopicId,omitempty"`
+	TargetKind    string `json:"targetKind,omitempty"`
+	// Task session identity recorded at apply time so a continuation receipt
+	// can reopen the exact session after its tab was closed or pruned. These
+	// mirror DesktopIconTaskRef and stay empty for non-task receipts.
+	Scope         string `json:"scope,omitempty"`
+	TopicID       string `json:"topicId,omitempty"`
 	Conversation  string `json:"conversation,omitempty"`
 	ReadSequence  uint64 `json:"readSequence,omitempty"`
 	Text          string `json:"text,omitempty"`
@@ -268,7 +404,18 @@ type desktopIconKept struct {
 type desktopIconPersistedState struct {
 	Positions map[string]DesktopIconPosition `json:"positions,omitempty"`
 	Kept      map[string]desktopIconKept     `json:"kept,omitempty"`
-	Applied   []desktopIconReceipt           `json:"applied,omitempty"`
+	// AppearanceSeeds is keyed by durable session identity, so live and retained
+	// projections render the same explicitly randomized Agent Icon after restart.
+	AppearanceSeeds map[string]string `json:"appearanceSeeds,omitempty"`
+	// DismissedConversations stores the last explicitly removed conversation
+	// sequence by durable conversation key. Snapshot projection suppresses only
+	// that version; later messages safely make the icon visible again.
+	DismissedConversations map[string]uint64 `json:"dismissedConversations,omitempty"`
+	// DismissedExternalRuns stores the last explicitly removed source revision
+	// by Run ID. Refresh and restart suppress that revision, while a later
+	// authoritative update can project the run again.
+	DismissedExternalRuns map[string]uint64    `json:"dismissedExternalRuns,omitempty"`
+	Applied               []desktopIconReceipt `json:"applied,omitempty"`
 	// WorkspaceSlots is the user-selected number of project shortcuts shown on
 	// the desktop. Zero is a valid explicit value; legacy files default to four
 	// by being unmarshaled into newDesktopIconState's initialized value.
@@ -281,10 +428,13 @@ type desktopIconPersistedState struct {
 
 func newDesktopIconState() desktopIconPersistedState {
 	return desktopIconPersistedState{
-		Positions:           map[string]DesktopIconPosition{},
-		Kept:                map[string]desktopIconKept{},
-		WorkspaceSlots:      desktopWorkspacePinLimit,
-		CompletionSummaries: map[string]desktopIconCompletionSummary{},
+		Positions:              map[string]DesktopIconPosition{},
+		Kept:                   map[string]desktopIconKept{},
+		AppearanceSeeds:        map[string]string{},
+		DismissedConversations: map[string]uint64{},
+		DismissedExternalRuns:  map[string]uint64{},
+		WorkspaceSlots:         desktopWorkspacePinLimit,
+		CompletionSummaries:    map[string]desktopIconCompletionSummary{},
 	}
 }
 
@@ -359,6 +509,15 @@ func (a *App) loadDesktopIconStateLocked() {
 	}
 	if a.iconWidgetState.Kept == nil {
 		a.iconWidgetState.Kept = map[string]desktopIconKept{}
+	}
+	if a.iconWidgetState.AppearanceSeeds == nil {
+		a.iconWidgetState.AppearanceSeeds = map[string]string{}
+	}
+	if a.iconWidgetState.DismissedConversations == nil {
+		a.iconWidgetState.DismissedConversations = map[string]uint64{}
+	}
+	if a.iconWidgetState.DismissedExternalRuns == nil {
+		a.iconWidgetState.DismissedExternalRuns = map[string]uint64{}
 	}
 	if a.iconWidgetState.CompletionSummaries == nil {
 		a.iconWidgetState.CompletionSummaries = map[string]desktopIconCompletionSummary{}
@@ -568,6 +727,31 @@ func (a *App) removeActiveSessionDesktopIcon() (bool, error) {
 	return true, nil
 }
 
+// applyDesktopIconKeptRenameLocked projects a successful Session rename onto
+// every retained task icon whose durable session identity matches, so the
+// retained title stays consistent with the Session titles sidecar. The sidecar
+// remains the single source of truth; Kept.Title is only a recoverable
+// projection. Callers hold iconWidgetMu.
+func (a *App) applyDesktopIconKeptRenameLocked(sessionPath, title string) bool {
+	sessionPath = strings.TrimSpace(sessionPath)
+	title = strings.TrimSpace(title)
+	if sessionPath == "" || title == "" {
+		return false
+	}
+	key := sessionRuntimeKey(sessionPath)
+	changed := false
+	for id, kept := range a.iconWidgetState.Kept {
+		keptPath := strings.TrimSpace(kept.SessionPath)
+		if keptPath == "" || sessionRuntimeKey(keptPath) != key || kept.Title == title {
+			continue
+		}
+		kept.Title = title
+		a.iconWidgetState.Kept[id] = kept
+		changed = true
+	}
+	return changed
+}
+
 // resolveDesktopIconTaskTab maps a task icon back to a live tab through its
 // snapshot session ref. Every task icon — live or retained — carries the same
 // typed identity (scope/workspaceRoot/topicID/sessionPath) generated by the
@@ -590,6 +774,37 @@ func (a *App) resolveDesktopIconTaskTab(item DesktopIconItem) (string, error) {
 		return "", fmt.Errorf("open task session: %w", err)
 	}
 	return meta.ID, nil
+}
+
+func (a *App) resolveDesktopIconDelegation(item DesktopIconDelegation) (string, error) {
+	ref := item.SessionRef
+	if ref == nil || strings.TrimSpace(ref.SessionPath) == "" {
+		return "", errors.New("delegation session identity is unavailable; refresh and retry")
+	}
+	var meta TabMeta
+	var err error
+	if item.Kind == "background" || item.Kind == "cli" {
+		meta, err = a.OpenLinkedSession(ref.Scope, ref.WorkspaceRoot, ref.TopicID, ref.SessionPath)
+	} else {
+		meta, err = a.OpenTopicSession(ref.Scope, ref.WorkspaceRoot, ref.TopicID, ref.SessionPath)
+	}
+	if err != nil {
+		return "", fmt.Errorf("open delegation session: %w", err)
+	}
+	return meta.ID, nil
+}
+
+func (a *App) advanceDesktopIconDelegation(receipt *desktopIconReceipt) error {
+	ref := DesktopIconTaskRef{Scope: receipt.TargetScope, WorkspaceRoot: receipt.WorkspaceRoot, TopicID: receipt.TargetTopicID, SessionPath: receipt.SessionPath}
+	tabID, err := a.resolveDesktopIconDelegation(DesktopIconDelegation{Kind: receipt.TargetKind, SessionRef: &ref})
+	if err != nil {
+		return err
+	}
+	receipt.TabID = tabID
+	if receipt.TargetKind == "background" || receipt.TargetKind == "cli" {
+		return a.exitWidgetMode(tabID)
+	}
+	return a.exitDesktopIconModeLocked(tabID)
 }
 
 // resolveDesktopIconRoomTab maps a Room icon back to its live tab through the
@@ -744,26 +959,45 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	a.maybeGenerateCompletionSummariesLocked(a.completionSummaryRequestsLocked(sources))
 	// Subagent metadata scanning happens after widgetSources released a.mu,
 	// so file I/O never runs under the App's main lock.
-	subagentCounts, subagentErr := a.widgetSubagentCounts(sources)
+	delegations, subagentCounts, subagentErr := a.widgetDelegations(sources)
 	unreadState := a.UnreadState()
 	projectTree := a.ListProjectTree()
 	spaces := desktopIconWorkspaces(projectTree, desktopIconActiveWorkspace(sources), a.iconWidgetState.WorkspaceSlots)
-	style, hover := a.desktopIconPreferences()
-	roomSummaries := a.desktopRoomSummaries()
+	style, hover, showDelegation, showExternalTools := a.desktopIconPreferences()
+	roomPresentations := a.desktopRoomNoticePresentations()
 	roomRefs := a.desktopIconRoomRefs(projectTree)
-	snapshot := buildDesktopIconSnapshot(sources, unreadState, spaces, a.iconWidgetState, hover, roomSummaries, roomRefs, subagentCounts)
+	roomPins, roomPinsErr := a.GetDesktopRoomPins()
+	roomIcons, roomIconsErr := a.GetDesktopRoomIcons()
+	roomDescriptors := desktopIconRoomDescriptors(projectTree, roomIcons)
+	// Resident runtimes are the strongest liveness signal: a Room still
+	// consuming its stream offscreen must keep its unread visible even when the
+	// project-tree scan is cold or the tab is not mounted. Tree descriptors
+	// stay authoritative when both exist.
+	roomDescriptors = a.mergeResidentRoomDescriptors(roomDescriptors)
+	// Pinned Rooms must be derived after the resident merge so a runtime's live
+	// SessionID alias is present on the fixed entry and the unread merge
+	// resolves the same Room instead of emitting a second default bubble.
+	pinnedRooms := desktopIconPinnedRoomsFromDescriptors(roomDescriptors, roomPins)
+	sessionPresentations := desktopIconSessionPresentations(sources, projectTree)
+	snapshot := buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomPresentations, roomRefs, subagentCounts, sessionPresentations, pinnedRooms, delegations, roomDescriptors)
+	external := a.GetExternalRunSnapshot()
+	appendExternalRunIcons(&snapshot, external, a.iconWidgetState.Positions, a.iconWidgetState.DismissedExternalRuns)
 	if a.pinNewDesktopIconTaskOrdersLocked(snapshot) {
 		// The snapshot just pinned brand-new task icons, so rebuild once: the
 		// current response must already reflect the pinned (stable) orders,
 		// otherwise the very first render would still use the ephemeral ones.
-		snapshot = buildDesktopIconSnapshot(sources, unreadState, spaces, a.iconWidgetState, hover, roomSummaries, roomRefs, subagentCounts)
+		snapshot = buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomPresentations, roomRefs, subagentCounts, sessionPresentations, pinnedRooms, delegations, roomDescriptors)
+		appendExternalRunIcons(&snapshot, external, a.iconWidgetState.Positions, a.iconWidgetState.DismissedExternalRuns)
 	}
+	filterDesktopIconVisibility(&snapshot, showDelegation, showExternalTools)
 	snapshot.Style = style
 	if recoveryErr != nil {
 		snapshot.Error = firstNonEmpty(snapshot.Error, recoveryErr.Error())
 	}
 	if subagentErr != nil {
+		snapshot.DelegationError = subagentErr.Error()
 		snapshot.Error = firstNonEmpty(snapshot.Error, subagentErr.Error())
+		snapshot.Revision = widgetRevision(snapshot.Revision, snapshot.DelegationError)
 	}
 	if a.iconWidgetStateErr != nil {
 		snapshot.Error = firstNonEmpty(snapshot.Error, a.iconWidgetStateErr.Error())
@@ -771,57 +1005,210 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	if a.iconWidgetWindowErr != nil {
 		snapshot.Error = firstNonEmpty(snapshot.Error, a.iconWidgetWindowErr.Error())
 	}
+	if external.Error != "" {
+		snapshot.Error = firstNonEmpty(snapshot.Error, external.Error)
+	}
+	if roomPinsErr != nil {
+		snapshot.Error = firstNonEmpty(snapshot.Error, roomPinsErr.Error())
+	}
+	if roomIconsErr != nil {
+		snapshot.Error = firstNonEmpty(snapshot.Error, roomIconsErr.Error())
+	}
 	return snapshot
 }
 
-// pinNewDesktopIconTaskOrdersLocked durably pins the running-zone order of
-// every live task icon that has never been dragged. Without a persisted
-// position a task icon's order is re-derived from the (map-iteration) order of
-// widgetSources on every snapshot, so a running icon visibly jumps between
-// refreshes. New tasks are appended after the current running zone — never
-// inserted at the front — so existing icons (including running ones) never
-// move. Retained icons already carry a stable kept.Order and are skipped. It
-// is idempotent: already-pinned icons are skipped, and a failed save rolls
-// back so the next snapshot retries.
+func appendExternalRunIcons(snapshot *DesktopIconSnapshot, external ExternalRunSnapshot, positions map[string]DesktopIconPosition, dismissed map[string]uint64) {
+	runningOrder, fixedOrder := 0, 0
+	for _, item := range snapshot.Items {
+		if item.Position.Zone == "running" {
+			runningOrder = max(runningOrder, item.Position.Order+1)
+		}
+		if item.Position.Zone == "fixed" {
+			fixedOrder = max(fixedOrder, item.Position.Order+1)
+		}
+	}
+	profileStatus := "idle"
+	profileSubtitle := "DSH rc.8 未就绪"
+	profileActions := []string(nil)
+	if external.DSH.Ready {
+		profileSubtitle = firstNonEmpty(external.DSH.Version, "DSH rc.8") + " · 快速启动"
+		profileActions = []string{"launch"}
+	} else if external.DSH.Error != "" || len(external.DSH.Missing) > 0 {
+		profileStatus = "failed"
+		profileSubtitle = firstNonEmpty(external.DSH.Error, dshIssues(external.DSH.Missing))
+	}
+	launcher := DesktopIconItem{
+		ID: "fixed:dsh", Kind: "fixed", SourceID: "dsh", Title: "DSH", Icon: "terminal",
+		Subtitle: profileSubtitle, Status: profileStatus, Notifications: []DesktopIconNotice{}, Actions: profileActions,
+		Position: DesktopIconPosition{Row: "bottom", Zone: "fixed", Order: fixedOrder},
+	}
+	launcher.Revision = desktopIconItemRevision(launcher)
+	snapshot.Items = append(snapshot.Items, launcher)
+
+	terminal := 0
+	for _, projection := range external.Runs {
+		if revision, ok := dismissed[string(projection.ID)]; ok && revision >= projection.Revision {
+			continue
+		}
+		if projection.State.IsTerminal() {
+			if terminal >= 3 {
+				continue
+			}
+			terminal++
+		}
+		item := externalRunIcon(projection, runningOrder)
+		runningOrder++
+		if position, ok := positions[item.ID]; ok && validDesktopIconPosition(item, position) {
+			item.Position = position
+		}
+		item.Revision = desktopIconItemRevision(item)
+		snapshot.Items = append(snapshot.Items, item)
+	}
+	sort.SliceStable(snapshot.Items, func(i, j int) bool {
+		left, right := snapshot.Items[i].Position, snapshot.Items[j].Position
+		if left.Row != right.Row {
+			return left.Row < right.Row
+		}
+		if left.Zone != right.Zone {
+			return desktopIconZoneRank(left.Zone) < desktopIconZoneRank(right.Zone)
+		}
+		if left.Order != right.Order {
+			return left.Order < right.Order
+		}
+		return snapshot.Items[i].ID < snapshot.Items[j].ID
+	})
+	snapshot.Revision = desktopIconSnapshotRevision(*snapshot)
+}
+
+// filterDesktopIconVisibility removes the 委托 and external AI tool (DSH) icons
+// from the projection when the matching widget settings are off. It only hides
+// the icon entries: running delegations and external tasks keep running and their
+// state stays intact. Both switches are independent, and the snapshot revision
+// is recomputed so the frontend sees the change on the next poll.
+func filterDesktopIconVisibility(snapshot *DesktopIconSnapshot, showDelegation, showExternalTools bool) {
+	if snapshot == nil || (showDelegation && showExternalTools) {
+		return
+	}
+	items := snapshot.Items[:0]
+	for _, item := range snapshot.Items {
+		if !showDelegation && item.ID == "fixed:delegate" {
+			continue
+		}
+		if !showExternalTools && (item.ID == "fixed:dsh" || item.Kind == "external") {
+			continue
+		}
+		items = append(items, item)
+	}
+	snapshot.Items = items
+	snapshot.Revision = desktopIconSnapshotRevision(*snapshot)
+}
+
+func externalRunIcon(run runhub.RunProjection, order int) DesktopIconItem {
+	status := "idle"
+	switch run.State {
+	case runhub.StateStarting, runhub.StateRunning:
+		status = "running"
+		if run.Activity == runhub.ActivityThinking || run.Activity == runhub.ActivityResponding {
+			status = "thinking"
+		}
+	case runhub.StateWaitingUser:
+		status = "needs_input"
+	case runhub.StateSucceeded, runhub.StateCancelled:
+		status = "done"
+	case runhub.StateFailed, runhub.StateInterrupted, runhub.StateStale:
+		status = "failed"
+	}
+	item := DesktopIconItem{
+		ID: "external:" + string(run.ID), Kind: "external", SourceID: string(run.ID),
+		Title:    firstNonEmpty(strings.TrimSpace(run.Title), strings.ToUpper(string(run.Source))),
+		Subtitle: filepath.Base(run.Workspace), Icon: "terminal", Status: status,
+		Notifications: []DesktopIconNotice{}, Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: order},
+		SourceRevision: run.Revision,
+	}
+	if run.Capabilities.Cancel && !run.State.IsTerminal() {
+		item.Actions = append(item.Actions, "cancel")
+	}
+	if run.State.IsTerminal() {
+		item.Actions = append(item.Actions, "remove")
+	}
+	if !run.State.IsTerminal() {
+		item.Runtime = &DesktopIconRuntime{
+			Phase:     firstNonEmpty(string(run.Activity), string(run.State)),
+			Summary:   firstNonEmpty(strings.TrimSpace(run.ActivityLabel), strings.TrimSpace(run.Summary), "DSH 正在执行"),
+			ElapsedMs: max(int64(0), time.Since(run.CreatedAt).Milliseconds()), UpdatedAt: run.UpdatedAt.UnixMilli(),
+		}
+	} else if strings.TrimSpace(run.Summary) != "" {
+		item.Subtitle = conciseWidgetText(run.Summary, 80)
+	}
+	return item
+}
+
+// pinNewDesktopIconTaskOrdersLocked durably pins every newly visible live task
+// at the left edge of the running zone. Existing positions (including retained
+// and capacity-capped icons) are densely shifted right without changing their
+// relative order. Multiple tasks discovered in one snapshot are newest-first,
+// based on their ephemeral tab order. The write is idempotent; a failed save
+// restores the full prior state so the next snapshot can safely retry.
 func (a *App) pinNewDesktopIconTaskOrdersLocked(snapshot DesktopIconSnapshot) bool {
-	next := 0
-	// The tail is the max order of already-durable icons: persisted positions
-	// (user-dragged) and retained kept icons. Ephemeral snapshot orders for
-	// unpinned tasks are map-iteration noise and must not move the tail.
+	newItems := make([]DesktopIconItem, 0)
 	for _, item := range snapshot.Items {
-		if item.Position.Row != "bottom" || item.Position.Zone != "running" {
+		if item.Kind != "task" || item.Retained || item.Position.Row != "bottom" || item.Position.Zone != "running" {
 			continue
 		}
-		durable := item.Retained
-		if _, ok := a.iconWidgetState.Positions[item.ID]; ok {
-			durable = true
-		}
-		if durable && item.Position.Order >= next {
-			next = item.Position.Order + 1
+		if _, pinned := a.iconWidgetState.Positions[item.ID]; !pinned {
+			newItems = append(newItems, item)
 		}
 	}
-	// Orders persisted for capacity-capped icons stay reserved so a
-	// reappearing icon never collides with a freshly pinned one.
-	for _, position := range a.iconWidgetState.Positions {
-		if position.Row == "bottom" && position.Zone == "running" && position.Order >= next {
-			next = position.Order + 1
-		}
-	}
-	before := cloneDesktopIconState(a.iconWidgetState)
-	changed := false
-	for _, item := range snapshot.Items {
-		if item.Kind != "task" || item.Retained {
-			continue
-		}
-		if _, ok := a.iconWidgetState.Positions[item.ID]; ok {
-			continue
-		}
-		a.iconWidgetState.Positions[item.ID] = DesktopIconPosition{Row: "bottom", Zone: "running", Order: next}
-		next++
-		changed = true
-	}
-	if !changed {
+	if len(newItems) == 0 {
 		return false
+	}
+	sort.SliceStable(newItems, func(i, j int) bool {
+		if newItems[i].Position.Order != newItems[j].Position.Order {
+			return newItems[i].Position.Order > newItems[j].Position.Order
+		}
+		return newItems[i].ID > newItems[j].ID
+	})
+
+	type orderedTask struct {
+		id       string
+		order    int
+		retained bool
+	}
+	existing := make([]orderedTask, 0, len(a.iconWidgetState.Positions)+len(a.iconWidgetState.Kept))
+	seen := make(map[string]struct{}, len(a.iconWidgetState.Positions)+len(a.iconWidgetState.Kept))
+	for id, position := range a.iconWidgetState.Positions {
+		if position.Row != "bottom" || position.Zone != "running" {
+			continue
+		}
+		existing = append(existing, orderedTask{id: id, order: position.Order})
+		seen[id] = struct{}{}
+	}
+	for id, kept := range a.iconWidgetState.Kept {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		existing = append(existing, orderedTask{id: id, order: kept.Order, retained: true})
+	}
+	sort.SliceStable(existing, func(i, j int) bool {
+		if existing[i].order != existing[j].order {
+			return existing[i].order < existing[j].order
+		}
+		return existing[i].id < existing[j].id
+	})
+
+	before := cloneDesktopIconState(a.iconWidgetState)
+	for order, item := range newItems {
+		a.iconWidgetState.Positions[item.ID] = DesktopIconPosition{Row: "bottom", Zone: "running", Order: order}
+	}
+	for index, item := range existing {
+		order := len(newItems) + index
+		if item.retained {
+			kept := a.iconWidgetState.Kept[item.id]
+			kept.Order = order
+			a.iconWidgetState.Kept[item.id] = kept
+			continue
+		}
+		a.iconWidgetState.Positions[item.id] = DesktopIconPosition{Row: "bottom", Zone: "running", Order: order}
 	}
 	if err := a.saveDesktopIconStateLocked(); err != nil {
 		a.iconWidgetState = before
@@ -831,8 +1218,31 @@ func (a *App) pinNewDesktopIconTaskOrdersLocked(snapshot DesktopIconSnapshot) bo
 	return true
 }
 
-func (a *App) desktopRoomSummaries() map[string]string {
-	out := map[string]string{}
+type desktopRoomNoticePresentation struct {
+	Author string
+	Body   string
+}
+
+type desktopRoomNoticePresentations map[string]map[string]desktopRoomNoticePresentation
+
+func addDesktopRoomNoticePresentation(out desktopRoomNoticePresentations, sessionID, itemID string, value desktopRoomNoticePresentation) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || strings.TrimSpace(value.Body) == "" {
+		return
+	}
+	if out[sessionID] == nil {
+		out[sessionID] = map[string]desktopRoomNoticePresentation{}
+	}
+	out[sessionID][strings.TrimSpace(itemID)] = value
+}
+
+// desktopRoomNoticePresentations reads display text from the authoritative
+// Room snapshot. Presentations are keyed by Session and timeline item ID so
+// multiple pending messages never reuse whichever chat happened to be latest.
+// The empty item ID remains a compatibility fallback for non-Room conversation
+// sources whose complete payload lives in their bound Session history.
+func (a *App) desktopRoomNoticePresentations() desktopRoomNoticePresentations {
+	out := desktopRoomNoticePresentations{}
 	a.mu.RLock()
 	for _, tab := range a.runtimeTabsLocked() {
 		if tab == nil || tab.Ctrl == nil {
@@ -850,9 +1260,7 @@ func (a *App) desktopRoomSummaries() map[string]string {
 			continue
 		}
 		for _, key := range []string{tab.ID, tab.SessionID, tab.currentSessionPath(), "path:" + tab.currentSessionPath()} {
-			if strings.TrimSpace(key) != "" {
-				out[key] = text
-			}
+			addDesktopRoomNoticePresentation(out, key, "", desktopRoomNoticePresentation{Body: text})
 		}
 	}
 	a.mu.RUnlock()
@@ -865,16 +1273,62 @@ func (a *App) desktopRoomSummaries() map[string]string {
 	for _, runtime := range runtimes {
 		runtime.mu.RLock()
 		sessionID := firstNonEmpty(runtime.ownerSessionID, runtime.state.SessionID)
-		for i := len(runtime.state.Snapshot.Timeline) - 1; i >= 0; i-- {
-			chat := runtime.state.Snapshot.Timeline[i].Chat
-			if chat != nil && chat.AuthorID != runtime.state.MemberID && chat.AuthorID != runtime.state.AgentID && strings.TrimSpace(chat.Text) != "" {
-				out[sessionID] = conciseWidgetText(chat.Text, 100)
-				break
+		sessionKeys := desktopIconRoomSessionKeys(sessionID, &DesktopIconTaskRef{SessionPath: runtime.ownerSessionPath})
+		authors := map[string]string{}
+		for _, member := range runtime.state.Snapshot.Members {
+			authors[member.ID] = firstNonEmpty(strings.TrimSpace(member.Name), strings.TrimSpace(member.ID))
+			if agentID := strings.TrimSpace(member.Agent.ID); agentID != "" {
+				authors[agentID] = firstNonEmpty(strings.TrimSpace(member.Agent.Name), agentID)
+			}
+		}
+		for _, item := range runtime.state.Snapshot.Timeline {
+			presentation := desktopRoomTimelinePresentation(item, authors)
+			if strings.TrimSpace(presentation.Body) != "" {
+				for _, key := range sessionKeys {
+					addDesktopRoomNoticePresentation(out, key, desktopRoomTimelineItemID(item), presentation)
+				}
 			}
 		}
 		runtime.mu.RUnlock()
 	}
 	return out
+}
+
+func desktopRoomTimelineItemID(item collab.TimelineItem) string {
+	if id := strings.TrimSpace(item.ID); id != "" {
+		return id
+	}
+	return string(item.Type) + ":" + strconv.FormatUint(item.Sequence, 10)
+}
+
+func desktopRoomTimelinePresentation(item collab.TimelineItem, authors map[string]string) desktopRoomNoticePresentation {
+	author := ""
+	body := ""
+	switch item.Type {
+	case collab.TimelineChat:
+		if item.Chat != nil {
+			author, body = item.Chat.AuthorID, item.Chat.Text
+		}
+	case collab.TimelineContribution:
+		if item.Contribution != nil {
+			author = item.Contribution.AuthorID
+			body = firstNonEmpty(strings.TrimSpace(item.Contribution.Body), strings.TrimSpace(item.Contribution.Title))
+		}
+	case collab.TimelineAgentRequest:
+		if item.AgentRequest != nil {
+			author, body = item.AgentRequest.AuthorID, item.AgentRequest.Instruction
+		}
+	case collab.TimelineAgentResult:
+		if item.AgentResult != nil {
+			author, body = item.AgentResult.OwnerID, item.AgentResult.Summary
+		}
+	case collab.TimelineFile:
+		if item.File != nil {
+			author, body = item.File.OwnerID, item.File.Name
+		}
+	}
+	author = firstNonEmpty(strings.TrimSpace(authors[author]), strings.TrimSpace(author))
+	return desktopRoomNoticePresentation{Author: author, Body: strings.TrimSpace(body)}
 }
 
 // desktopIconRoomRefs maps every persisted or live collaboration session ID to
@@ -927,6 +1381,229 @@ func (a *App) desktopIconRoomRefs(tree []ProjectNode) map[string]*DesktopIconTas
 	return out
 }
 
+type desktopIconRoomDescriptor struct {
+	TopicID   string
+	Title     string
+	SessionID string
+	Icon      string
+	Ref       *DesktopIconTaskRef
+	// SessionAliases are additional live session identities that resolve to
+	// this same Room (the resident runtime SessionID when it differs from the
+	// durable tree SessionID). They only widen the identity lookup for pinned/
+	// unread merging; they never replace the display identity or dedupe by title.
+	SessionAliases []string
+}
+
+// desktopIconPinnedRooms joins the durable pin order onto authoritative Room
+// topic nodes. Missing/deleted topics are skipped without mutating the pin
+// file, allowing a later restore or project reappearance to recover the pin.
+func desktopIconPinnedRooms(tree []ProjectNode, topicIDs []string) []desktopIconRoomDescriptor {
+	return desktopIconPinnedRoomsFromDescriptors(desktopIconRoomDescriptors(tree, nil), topicIDs)
+}
+
+func desktopIconRoomDescriptors(tree []ProjectNode, icons map[string]string) map[string]desktopIconRoomDescriptor {
+	byTopic := map[string]desktopIconRoomDescriptor{}
+	var walk func([]ProjectNode)
+	walk = func(nodes []ProjectNode) {
+		for _, node := range nodes {
+			kind := strings.TrimSpace(node.Kind)
+			topicID := strings.TrimSpace(node.TopicID)
+			sessionPath := strings.TrimSpace(node.SessionPath)
+			if (kind == "topic" || kind == "global_topic") && topicID != "" && sessionPath != "" && node.SessionKind == string(agent.SessionKindCollaboration) {
+				if _, exists := byTopic[topicID]; !exists {
+					ref, meta := desktopIconRoomRef(sessionPath)
+					byTopic[topicID] = desktopIconRoomDescriptor{
+						TopicID:   topicID,
+						Title:     firstNonEmpty(strings.TrimSpace(node.Label), strings.TrimSpace(meta.CustomTitle), "Room"),
+						SessionID: firstNonEmpty(strings.TrimSpace(node.SessionID), strings.TrimSpace(meta.ID)),
+						Icon:      normalizeProjectIcon(icons[topicID]),
+						Ref:       ref,
+					}
+				}
+			}
+			walk(node.Children)
+		}
+	}
+	walk(tree)
+	return byTopic
+}
+
+// mergeResidentRoomDescriptors folds active collaboration runtimes into the
+// widget Room projection when the project tree does not yet carry their
+// session identity. A resident runtime is the strongest liveness signal: it is
+// consuming the Room's stream in the background even while the Room tab is not
+// mounted and the project-tree scan is cold or incomplete. Without this, a
+// Room that received a remote message offscreen stays invisible on the desktop
+// until the user opens it (which mounts the tab and backfills the tree node).
+//
+// The merge is deliberately conservative:
+//   - Only runtimes that still hold a Room identity participate; leave/close
+//     clears Room and Snapshot, so left rooms cannot be resurrected here.
+//   - Runtimes whose session identity already resolves to an existing tree
+//     descriptor attach their live SessionID as an identity alias on that
+//     descriptor instead of creating a second Room. The project-tree descriptor
+//     stays authoritative for title/icon/ref.
+func (a *App) mergeResidentRoomDescriptors(roomDescriptors map[string]desktopIconRoomDescriptor) map[string]desktopIconRoomDescriptor {
+	if a == nil {
+		return roomDescriptors
+	}
+	a.collaborationMu.Lock()
+	runtimes := make([]*desktopCollaboration, 0, len(a.collaborations))
+	for _, runtime := range a.collaborations {
+		runtimes = append(runtimes, runtime)
+	}
+	a.collaborationMu.Unlock()
+	if len(runtimes) == 0 {
+		return roomDescriptors
+	}
+	out := roomDescriptors
+	if out == nil {
+		out = map[string]desktopIconRoomDescriptor{}
+	}
+	// Index every existing descriptor by all of its identity keys, so a
+	// resident runtime can find the descriptor it belongs to even when it only
+	// shares the session path and not the tree SessionID.
+	descriptorByKey := map[string]string{}
+	for topicID, room := range out {
+		for _, key := range desktopIconRoomDescriptorKeys(room) {
+			if _, exists := descriptorByKey[key]; !exists {
+				descriptorByKey[key] = topicID
+			}
+		}
+	}
+	for _, runtime := range runtimes {
+		runtime.mu.RLock()
+		sessionID := firstNonEmpty(strings.TrimSpace(runtime.ownerSessionID), strings.TrimSpace(runtime.state.SessionID))
+		sessionPath := strings.TrimSpace(runtime.ownerSessionPath)
+		room := strings.TrimSpace(runtime.state.Room)
+		if room == "" {
+			room = strings.TrimSpace(runtime.state.Snapshot.Room.ID)
+		}
+		roomName := strings.TrimSpace(runtime.state.Snapshot.Room.Name)
+		runtime.mu.RUnlock()
+		if sessionID == "" || room == "" {
+			continue
+		}
+		ref, meta := desktopIconRoomRef(sessionPath)
+		// A resident runtime and the project tree may share one stable TopicID
+		// while living on different session paths (the main session versus the
+		// recovery fork the tree selected). Prefer that durable TopicID so the
+		// runtime unread lands on the existing tree descriptor; SessionID/path
+		// stay the fallback when the sidecar is unreadable.
+		if topicID := strings.TrimSpace(meta.TopicID); topicID != "" {
+			if existing, ok := out[topicID]; ok {
+				if !slices.Contains(existing.SessionAliases, sessionID) {
+					existing.SessionAliases = append(existing.SessionAliases, sessionID)
+					out[topicID] = existing
+				}
+				continue
+			}
+		}
+		if topicID, ok := desktopIconRoomDescriptorForSession(descriptorByKey, sessionID, sessionPath); ok {
+			existing := out[topicID]
+			if !slices.Contains(existing.SessionAliases, sessionID) {
+				existing.SessionAliases = append(existing.SessionAliases, sessionID)
+				out[topicID] = existing
+			}
+			continue
+		}
+		title := firstNonEmpty(roomName, strings.TrimSpace(meta.CustomTitle), strings.TrimSpace(meta.TopicTitle), sessionID)
+		// The descriptor map is keyed by TopicID for project-tree dedupe;
+		// resident entries use a synthetic key so a missing sidecar can never
+		// collide with another resident or tree entry.
+		out["resident:"+sessionID] = desktopIconRoomDescriptor{
+			TopicID:   strings.TrimSpace(meta.TopicID),
+			Title:     title,
+			SessionID: sessionID,
+			Ref:       ref,
+		}
+	}
+	return out
+}
+
+// desktopIconRoomDescriptorForSession returns the descriptor map key that
+// already resolves a resident runtime's session identity, if any. The session
+// path key is what makes a tree descriptor and a live runtime the same Room
+// even when their SessionIDs differ.
+func desktopIconRoomDescriptorForSession(index map[string]string, sessionID, sessionPath string) (string, bool) {
+	for _, key := range desktopIconRoomSessionKeys(sessionID, &DesktopIconTaskRef{SessionPath: sessionPath}) {
+		if topicID, ok := index[key]; ok {
+			return topicID, true
+		}
+	}
+	return "", false
+}
+
+func desktopIconPinnedRoomsFromDescriptors(byTopic map[string]desktopIconRoomDescriptor, topicIDs []string) []desktopIconRoomDescriptor {
+	out := make([]desktopIconRoomDescriptor, 0, min(len(topicIDs), desktopRoomPinLimit))
+	for _, topicID := range topicIDs {
+		if len(out) == desktopRoomPinLimit {
+			break
+		}
+		if room, ok := byTopic[strings.TrimSpace(topicID)]; ok {
+			out = append(out, room)
+		}
+	}
+	return out
+}
+
+func desktopIconRoomForConversation(index map[string]desktopIconRoomDescriptor, conversation unread.Conversation) (desktopIconRoomDescriptor, bool) {
+	for _, key := range desktopIconRoomSessionKeys(conversation.SessionID, nil) {
+		if room, ok := index[key]; ok {
+			return room, true
+		}
+	}
+	return desktopIconRoomDescriptor{}, false
+}
+
+func desktopIconRoomSessionKeys(sessionID string, ref *DesktopIconTaskRef) []string {
+	seen := map[string]bool{}
+	keys := make([]string, 0, 6)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || value == "path:" || seen[value] {
+			return
+		}
+		seen[value] = true
+		keys = append(keys, value)
+	}
+	add(sessionID)
+	path := strings.TrimSpace(strings.TrimPrefix(sessionID, "path:"))
+	add(path)
+	add("path:" + path)
+	add(sessionRuntimeKey(path))
+	add("path:" + sessionRuntimeKey(path))
+	if ref != nil {
+		path = strings.TrimSpace(ref.SessionPath)
+		add(path)
+		add("path:" + path)
+		add(sessionRuntimeKey(path))
+		add("path:" + sessionRuntimeKey(path))
+	}
+	return keys
+}
+
+// desktopIconRoomDescriptorKeys returns every identity key that resolves to a
+// Room descriptor: the durable SessionID, the session path, and any live
+// SessionID aliases attached by the resident-runtime merge. Consumers dedupe,
+// so overlapping aliases are harmless.
+func desktopIconRoomDescriptorKeys(room desktopIconRoomDescriptor) []string {
+	keys := desktopIconRoomSessionKeys(room.SessionID, room.Ref)
+	for _, alias := range room.SessionAliases {
+		keys = append(keys, desktopIconRoomSessionKeys(alias, nil)...)
+	}
+	return keys
+}
+
+func desktopIconPinnedRoomIndex(index map[string]int, conversation unread.Conversation) (int, bool) {
+	for _, key := range desktopIconRoomSessionKeys(conversation.SessionID, nil) {
+		if i, ok := index[key]; ok {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 // desktopIconRoomRef derives the Room identity from its persisted sidecar.
 func desktopIconRoomRef(sessionPath string) (*DesktopIconTaskRef, agent.BranchMeta) {
 	sessionPath = strings.TrimSpace(sessionPath)
@@ -943,15 +1620,60 @@ func desktopIconRoomRef(sessionPath string) (*DesktopIconTaskRef, agent.BranchMe
 func (a *App) recoverDesktopIconActionsLocked() error {
 	var recoveryErr error
 	changed := false
+	pendingRemovals := map[string]bool{}
+	for i := range a.iconWidgetState.Applied {
+		receipt := a.iconWidgetState.Applied[i]
+		if receipt.Status == "pending" && receipt.Action == "remove" && receipt.Conversation != "" {
+			pendingRemovals[receipt.RequestID] = true
+		}
+	}
 	for i := range a.iconWidgetState.Applied {
 		receipt := &a.iconWidgetState.Applied[i]
 		if receipt.Status != "pending" {
+			continue
+		}
+		if receipt.Action == "open_delegation" && receipt.SessionPath != "" {
+			if err := a.advanceDesktopIconDelegation(receipt); err != nil {
+				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover delegation open %s: %w", receipt.RequestID, err))
+				continue
+			}
+			receipt.Status = "applied"
+			if err := a.saveDesktopIconStateLocked(); err != nil {
+				receipt.Status = "pending"
+				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("finish recovered delegation open %s: %w", receipt.RequestID, err))
+			}
+			continue
+		}
+		if receipt.Action == "open_workspace" && receipt.WorkspaceRoot != "" {
+			if receipt.TabID == "" {
+				if err := a.createDesktopIconWorkspaceSessionLocked(receipt); err != nil {
+					recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover workspace session %s: %w", receipt.RequestID, err))
+					continue
+				}
+			}
+			if err := a.exitDesktopIconModeLocked(receipt.TabID); err != nil {
+				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover workspace open %s: %w", receipt.RequestID, err))
+				continue
+			}
+			receipt.Status = "applied"
+			if err := a.saveDesktopIconStateLocked(); err != nil {
+				receipt.Status = "pending"
+				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("finish recovered workspace open %s: %w", receipt.RequestID, err))
+			}
 			continue
 		}
 		if receipt.Action == "continue" && receipt.Text != "" {
 			beforeDelivery := receipt.Delivery
 			progress, err := a.advanceDesktopIconTaskContinue(receipt)
 			if err != nil {
+				// A completed task's controller may simply not be booted yet at
+				// startup. Keep the receipt pending and retry on a later
+				// snapshot instead of surfacing an expected boot state as a
+				// recovery error. Real failures (reopen, history mismatch, …)
+				// still surface below.
+				if errors.Is(err, errDesktopIconTaskControllerNotReady) {
+					continue
+				}
 				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover icon task continuation %s: %w", receipt.RequestID, err))
 				continue
 			}
@@ -973,6 +1695,25 @@ func (a *App) recoverDesktopIconActionsLocked() error {
 		if receipt.Action == "open_search" && receipt.Text != "" {
 			if err := a.openDesktopIconSearchItemLocked(receipt.Text); err != nil {
 				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover icon search navigation %s: %w", receipt.RequestID, err))
+				continue
+			}
+			receipt.Status = "applied"
+			changed = true
+			continue
+		}
+		if receipt.Action == "rename" && receipt.SessionPath != "" && receipt.Text != "" {
+			if err := a.RenameSession(receipt.SessionPath, receipt.Text); err != nil {
+				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover icon session rename %s: %w", receipt.RequestID, err))
+				continue
+			}
+			a.applyDesktopIconKeptRenameLocked(receipt.SessionPath, receipt.Text)
+			receipt.Status = "applied"
+			changed = true
+			continue
+		}
+		if receipt.Action == "remove" && receipt.Conversation != "" {
+			if err := a.finishDesktopIconConversationRemoveLocked(receipt.Conversation, receipt.ReadSequence); err != nil {
+				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover personal icon removal %s: %w", receipt.RequestID, err))
 				continue
 			}
 			receipt.Status = "applied"
@@ -1005,18 +1746,26 @@ func (a *App) recoverDesktopIconActionsLocked() error {
 	}
 	if changed {
 		if err := a.saveDesktopIconStateLocked(); err != nil {
+			// Keep removals visible and retryable when the applied receipt cannot
+			// be persisted. The watermark side effect is idempotent, so the next
+			// snapshot can safely retry without losing the user's action target.
+			for i := range a.iconWidgetState.Applied {
+				if pendingRemovals[a.iconWidgetState.Applied[i].RequestID] {
+					a.iconWidgetState.Applied[i].Status = "pending"
+				}
+			}
 			recoveryErr = errors.Join(recoveryErr, fmt.Errorf("save recovered icon actions: %w", err))
 		}
 	}
 	return recoveryErr
 }
 
-func (a *App) desktopIconPreferences() (string, int) {
+func (a *App) desktopIconPreferences() (style string, hover int, showDelegation, showExternalTools bool) {
 	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
-		return "icons", 1200
+		return "icons", 1200, false, false
 	}
-	return cfg.DesktopWidgetStyle(), cfg.DesktopHoverStatusDelayMs()
+	return cfg.DesktopWidgetStyle(), cfg.DesktopHoverStatusDelayMs(), cfg.DesktopWidgetShowDelegation(), cfg.DesktopWidgetShowExternalTools()
 }
 
 // DesktopIconSearch searches the durable session index plus the complete
@@ -1165,7 +1914,13 @@ func desktopIconWorkspaces(tree []ProjectNode, activeRoot string, slots int) []W
 	spaces := make([]WidgetWorkspaceOption, 0, len(tree))
 	for _, node := range tree {
 		root := normalizeProjectRoot(node.Root)
-		if node.Kind != "project" || root == "" || widgetIsTransientRoot(root, node.Label) {
+		if node.Kind != "project" || root == "" {
+			continue
+		}
+		// Unpinned transient shells stay out of automatic backfill, but an
+		// explicitly pinned workspace must project with its stable identity so
+		// the management dialog's pin never silently disappears from the desktop.
+		if widgetIsTransientRoot(root, node.Label) && !node.Pinned {
 			continue
 		}
 		spaces = append(spaces, WidgetWorkspaceOption{
@@ -1207,11 +1962,111 @@ func desktopIconProjectActivity(node ProjectNode) int64 {
 	return latest
 }
 
-func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomSummaries map[string]string, roomRefs map[string]*DesktopIconTaskRef, subagentCounts map[widgetSubagentKey]int) DesktopIconSnapshot {
-	snapshot := DesktopIconSnapshot{HoverStatusDelayMs: hover, UnreadRevision: unreadState.Summary.Revision}
+type desktopIconSessionPresentation struct {
+	sessionID, workspaceIcon string
+	ref                      *DesktopIconTaskRef
+}
+
+// desktopIconSessionPresentations indexes both runtime and persisted tree
+// identities. Runtime entries win when both exist, while the project tree
+// keeps an unopened historical IM session visually stable after restart.
+func desktopIconSessionPresentations(sources []widgetSource, tree []ProjectNode) map[string]desktopIconSessionPresentation {
+	out := map[string]desktopIconSessionPresentation{}
+	add := func(presentation desktopIconSessionPresentation, keys ...string) {
+		for _, key := range keys {
+			key = strings.TrimSpace(key)
+			if key != "" && key != "path:" {
+				out[key] = presentation
+			}
+		}
+	}
+	var addTree func([]ProjectNode)
+	addTree = func(nodes []ProjectNode) {
+		for _, node := range nodes {
+			sessionPath := strings.TrimSpace(node.SessionPath)
+			if sessionPath != "" {
+				scope := "global"
+				if strings.TrimSpace(node.Root) != "" {
+					scope = "project"
+				}
+				add(desktopIconSessionPresentation{
+					sessionID: strings.TrimSpace(node.SessionID), workspaceIcon: strings.TrimSpace(node.ProjectIcon),
+					ref: desktopIconTaskRef(scope, node.Root, node.TopicID, sessionPath),
+				}, node.SessionID, sessionPath, "path:"+sessionPath, sessionRuntimeKey(sessionPath), "path:"+sessionRuntimeKey(sessionPath))
+			}
+			addTree(node.Children)
+		}
+	}
+	addTree(tree)
+	for _, source := range sources {
+		meta := source.meta
+		sessionPath := strings.TrimSpace(meta.SessionPath)
+		add(desktopIconSessionPresentation{
+			sessionID: strings.TrimSpace(meta.SessionID), workspaceIcon: strings.TrimSpace(meta.ProjectIcon),
+			ref: desktopIconTaskRef(meta.Scope, meta.WorkspaceRoot, meta.TopicID, sessionPath),
+		}, meta.ID, meta.SessionID, meta.WorkID, sessionPath, "path:"+sessionPath, sessionRuntimeKey(sessionPath), "path:"+sessionRuntimeKey(sessionPath))
+	}
+	return out
+}
+
+func desktopIconSessionPresentationFor(presentations map[string]desktopIconSessionPresentation, sessionID string) (desktopIconSessionPresentation, bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	path := strings.TrimSpace(strings.TrimPrefix(sessionID, "path:"))
+	for _, key := range []string{sessionID, path, sessionRuntimeKey(path), "path:" + sessionRuntimeKey(path)} {
+		if presentation, ok := presentations[key]; ok {
+			return presentation, true
+		}
+	}
+	return desktopIconSessionPresentation{}, false
+}
+
+func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomPresentations desktopRoomNoticePresentations, roomRefs map[string]*DesktopIconTaskRef, subagentCounts map[widgetSubagentKey]int, delegations []DesktopIconDelegation) DesktopIconSnapshot {
+	return buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, persisted, hover, roomPresentations, roomRefs, subagentCounts, desktopIconSessionPresentations(sources, nil), nil, delegations)
+}
+
+func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomPresentations desktopRoomNoticePresentations, roomRefs map[string]*DesktopIconTaskRef, subagentCounts map[widgetSubagentKey]int, sessionPresentations map[string]desktopIconSessionPresentation, pinnedRooms []desktopIconRoomDescriptor, delegations []DesktopIconDelegation, roomDescriptorSets ...map[string]desktopIconRoomDescriptor) DesktopIconSnapshot {
+	snapshot := DesktopIconSnapshot{HoverStatusDelayMs: hover, UnreadRevision: unreadState.Summary.Revision, Delegations: []DesktopIconDelegation{}}
+	if delegations != nil {
+		snapshot.Delegations = append(snapshot.Delegations, delegations...)
+	}
 	items := make([]DesktopIconItem, 0, len(sources)+len(spaces)+8)
 	taskBySource := map[string]int{}
+	pinnedRoomBySession := map[string]int{}
+	roomBySession := map[string]desktopIconRoomDescriptor{}
+	addLiveRoom := func(room desktopIconRoomDescriptor) {
+		for _, key := range desktopIconRoomDescriptorKeys(room) {
+			if _, exists := roomBySession[key]; !exists {
+				roomBySession[key] = room
+			}
+		}
+	}
+	for _, room := range pinnedRooms {
+		addLiveRoom(room)
+	}
+	liveRoomGate := len(roomDescriptorSets) > 0
+	if len(roomDescriptorSets) > 0 {
+		for _, room := range roomDescriptorSets[0] {
+			addLiveRoom(room)
+		}
+	}
 	delegatedRunning := 0
+	countedParents := map[widgetSubagentKey]bool{}
+	countedCLI := map[string]bool{}
+	hiddenKeptIDs := map[string]bool{}
+	hiddenKeptPaths := map[string]bool{}
+	for _, source := range sources {
+		if !strings.EqualFold(strings.TrimSpace(source.meta.SessionSource), "cli") && !widgetSourceIsSubagent(source) {
+			continue
+		}
+		for _, id := range []string{source.meta.ID, source.meta.SessionID, source.meta.WorkID} {
+			if id = strings.TrimSpace(id); id != "" {
+				hiddenKeptIDs[id] = true
+			}
+		}
+		if path := strings.TrimSpace(source.meta.SessionPath); path != "" {
+			hiddenKeptPaths[sessionRuntimeKey(path)] = true
+		}
+	}
 	spaceCount := 0
 	for _, space := range spaces {
 		if space.Scope != "auto" && spaceCount < desktopIconMaxSpaces {
@@ -1220,26 +2075,52 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 	}
 	taskLimit := min(desktopIconMaxTasks, max(1, (desktopIconWidth-36)/68-4-spaceCount))
 	taskCount := 0
+	for order, room := range pinnedRooms {
+		item := DesktopIconItem{
+			ID: "room:" + room.TopicID, Kind: "room", SourceID: room.TopicID,
+			Title: firstNonEmpty(strings.TrimSpace(room.Title), "Room"), Icon: room.Icon, Status: "idle",
+			SessionID: strings.TrimSpace(room.SessionID), Notifications: []DesktopIconNotice{},
+			Position: DesktopIconPosition{Row: "top", Zone: "conversation", Order: order}, SessionRef: room.Ref,
+		}
+		items = append(items, item)
+		index := len(items) - 1
+		for _, key := range desktopIconRoomDescriptorKeys(room) {
+			if _, exists := pinnedRoomBySession[key]; !exists {
+				pinnedRoomBySession[key] = index
+			}
+		}
+	}
 
 	for _, source := range sources {
 		meta := source.meta
-		if strings.EqualFold(meta.SessionSource, "cli") || meta.SessionKind == "collaboration" {
+		if meta.SessionKind == "collaboration" {
 			continue
 		}
 		// Real running sub-agents owned by this session are the authoritative
 		// delegation signal. Foreground parents keep their own task icon below
 		// and still contribute their running sub-agents to the fixed entry.
-		realRunning := subagentCounts[newWidgetSubagentKey(source.sessionDir, source.branchID)]
-		if meta.BackgroundOnly {
-			// The legacy compatibility path counts the background tab itself
-			// as the delegated work. When the same source owns real running
-			// sub-agents, those are authoritative and count instead, so a
-			// source is never double counted by both signals — even when the
-			// tab's own turn has already ended (RunningWork=false).
+		parentKey := newWidgetSubagentKey(source.sessionDir, source.branchID)
+		knownRunning := subagentCounts[parentKey]
+		realRunning := knownRunning
+		if countedParents[parentKey] {
+			realRunning = 0
+		} else if knownRunning > 0 {
+			countedParents[parentKey] = true
+		}
+		if strings.EqualFold(strings.TrimSpace(meta.SessionSource), "cli") {
+			// CLI/external dispatch is intentionally hidden as an independent
+			// task icon and projects onto the delegation entry: its own running
+			// turn counts unless it already owns real running sub-agents, which
+			// are the authoritative (non-double-counted) signal.
 			delegatedRunning += realRunning
-			if realRunning == 0 && meta.RunningWork {
+			cliKey := firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID))
+			if knownRunning == 0 && meta.RunningWork && !countedCLI[cliKey] {
 				delegatedRunning++
+				countedCLI[cliKey] = true
 			}
+			continue
+		}
+		if widgetSourceIsSubagent(source) {
 			continue
 		}
 		delegatedRunning += realRunning
@@ -1250,8 +2131,9 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 		items = append(items, item)
 		taskCount++
 		index := len(items) - 1
-		for _, key := range []string{meta.ID, meta.SessionID, meta.WorkID} {
-			if key = strings.TrimSpace(key); key != "" {
+		sessionPath := strings.TrimSpace(meta.SessionPath)
+		for _, key := range []string{meta.ID, meta.SessionID, meta.WorkID, sessionPath, "path:" + sessionPath, sessionRuntimeKey(sessionPath), "path:" + sessionRuntimeKey(sessionPath)} {
+			if key = strings.TrimSpace(key); key != "" && key != "path:" {
 				taskBySource[key] = index
 			}
 		}
@@ -1270,6 +2152,9 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 			break
 		}
 		kept := persisted.Kept[id]
+		if desktopIconKeptIsDelegation(kept, hiddenKeptIDs, hiddenKeptPaths) {
+			continue
+		}
 		if _, live := taskBySource[kept.SourceID]; live {
 			continue
 		}
@@ -1284,33 +2169,73 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 		taskCount++
 	}
 
-	roomCount := 0
+	roomOrder := len(pinnedRooms)
+	regularRoomCount := len(pinnedRooms)
+	personCount := 0
 	for _, conversation := range unreadState.Summary.Conversations {
+		if sequence, dismissed := persisted.DismissedConversations[conversation.Key]; dismissed && sequence >= conversation.LatestSequence && !desktopIconConversationRemovePending(persisted.Applied, conversation.Key) {
+			continue
+		}
 		if index, ok := desktopTaskIndex(taskBySource, conversation); ok && conversation.UnreadCount > 0 {
 			// Task attention is projected from Controller/BranchMeta. The unread
-			// store supplies only its durable watermark so the same completion or
-			// prompt is not rendered and counted twice.
+			// store normally supplies only its durable watermark so the same
+			// completion or prompt is not rendered twice. An IM message can arrive
+			// while the session has no Controller attention notice; in that case
+			// project the unread message onto the real task row instead of dropping
+			// it or rendering a duplicate generic person icon.
 			if len(items[index].Notifications) > 0 {
 				items[index].Notifications[0].Conversation = conversation.Key
 				items[index].Notifications[0].ReadSequence = conversation.LatestSequence
+			} else {
+				items[index].Notifications = noticesForConversation(conversation, roomPresentations[conversation.SessionID])
 			}
 			continue
 		}
 		if conversation.Source != unread.SourceRoom && conversation.Source != unread.SourceIM {
 			continue
 		}
-		if roomCount >= desktopIconMaxRooms {
-			continue
-		}
 		kind := "room"
 		if conversation.Source == unread.SourceIM {
 			kind = "person"
 		}
+		if kind == "room" {
+			_, live := desktopIconRoomForConversation(roomBySession, conversation)
+			if liveRoomGate && !live {
+				// The unread store is durable and intentionally outlives a Room
+				// membership. Only the current project-tree projection may turn
+				// that history back into a desktop icon; stale pins, read markers
+				// and notice presentations cannot resurrect a removed Room.
+				continue
+			}
+			if index, ok := desktopIconPinnedRoomIndex(pinnedRoomBySession, conversation); ok {
+				items[index].Notifications = noticesForConversation(conversation, roomPresentations[conversation.SessionID])
+				items[index].ConversationSequence = conversation.LatestSequence
+				if conversation.UnreadCount > 0 {
+					items[index].Status = "unread"
+				}
+				continue
+			}
+			// Pins own the seven durable Room slots. Legacy/read Room projections
+			// may fill remaining slots, while every unread Room is appended even
+			// when all seven durable positions are occupied.
+			if conversation.UnreadCount == 0 {
+				if regularRoomCount >= desktopRoomPinLimit {
+					continue
+				}
+				regularRoomCount++
+			}
+		} else {
+			if personCount >= desktopIconMaxPeople {
+				continue
+			}
+			personCount++
+		}
 		item := DesktopIconItem{
 			ID: "conversation:" + conversation.Key, Kind: kind, SourceID: conversation.Key,
 			Title: firstNonEmpty(strings.TrimSpace(conversation.Title), "消息"), Status: "unread",
-			Notifications: noticesForConversation(conversation, roomSummaries[conversation.SessionID]),
-			Position:      DesktopIconPosition{Row: "top", Zone: "conversation", Order: roomCount},
+			Notifications:        noticesForConversation(conversation, roomPresentations[conversation.SessionID]),
+			Position:             DesktopIconPosition{Row: "top", Zone: "conversation", Order: roomOrder},
+			ConversationSequence: conversation.LatestSequence,
 		}
 		if kind == "room" {
 			// Room items carry the same backend-generated session identity as
@@ -1318,9 +2243,23 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 			// never depends on the first notice's TabID, a read Room with no
 			// notice, or whatever tab happens to be active.
 			item.SessionRef = roomRefs[conversation.SessionID]
+			if room, ok := desktopIconRoomForConversation(roomBySession, conversation); ok {
+				item.Icon = room.Icon
+				item.SessionID = room.SessionID
+				if room.Ref != nil {
+					item.SessionRef = room.Ref
+				}
+			}
+		} else if presentation, ok := desktopIconSessionPresentationFor(sessionPresentations, conversation.SessionID); ok {
+			// Reuse the corresponding session's exact Agent Icon seed, workspace
+			// badge and durable ref. Opening still uses ResolveUnreadSession so a
+			// stale IM binding keeps its existing repair/retry behavior.
+			item.SessionID = presentation.sessionID
+			item.WorkspaceIcon = presentation.workspaceIcon
+			item.SessionRef = presentation.ref
 		}
 		items = append(items, item)
-		roomCount++
+		roomOrder++
 	}
 
 	spaceOrder := 0
@@ -1344,6 +2283,9 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 	// 新建 → 工作区 → Rooms → 委托 → 搜索. Position.Order is derived from
 	// this slice index, never from map iteration, so the bar order is a Go
 	// contract.
+	if delegations != nil {
+		delegatedRunning = len(snapshot.Delegations)
+	}
 	fixed := []struct{ id, title, icon string }{
 		{"new", "新建", "plus"}, {"workspace", "工作区", "workspace"}, {"rooms", "Rooms", "rooms"}, {"delegate", "委托", "users"}, {"search", "搜索", "search"},
 	}
@@ -1364,12 +2306,18 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 		if position, ok := persisted.Positions[item.ID]; ok && validDesktopIconPosition(*item, position) {
 			item.Position = position
 		}
+		if key := desktopIconAppearanceKey(*item); key != "" {
+			item.AppearanceSeed = persisted.AppearanceSeeds[key]
+		}
 		sortDesktopIconNotices(item.Notifications)
 		item.UnreadCount = desktopIconUnreadCount(*item)
 		if item.UnreadCount > 0 {
 			item.Status = desktopIconStatus(item.Notifications[0].Kind, item.Status)
 		}
 		item.Revision = desktopIconItemRevision(*item)
+		if item.ID == "fixed:delegate" {
+			item.Revision = widgetRevision(item.Revision, desktopIconDelegationRevision(snapshot.Delegations))
+		}
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		left, right := items[i].Position, items[j].Position
@@ -1390,6 +2338,20 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 		snapshot.Error = unreadState.Error
 	}
 	return snapshot
+}
+
+func desktopIconKeptIsDelegation(kept desktopIconKept, hiddenIDs, hiddenPaths map[string]bool) bool {
+	if hiddenIDs[strings.TrimSpace(kept.SourceID)] || hiddenIDs[strings.TrimSpace(kept.SessionID)] {
+		return true
+	}
+	path := strings.TrimSpace(kept.SessionPath)
+	if path == "" {
+		return false
+	}
+	if strings.EqualFold(filepath.Base(filepath.Dir(filepath.Clean(path))), "subagents") {
+		return true
+	}
+	return hiddenPaths[sessionRuntimeKey(path)]
 }
 
 // desktopIconUnreadCount keeps presentation-only retained completion notices
@@ -1489,6 +2451,7 @@ func desktopIconNoticeForKept(kept desktopIconKept, summaries map[string]desktop
 		Body:          body,
 		CreatedAt:     kept.CompletedAt,
 		TabID:         kept.SourceID,
+		Options:       []WidgetOption{},
 		SummaryStatus: status,
 	}
 }
@@ -1497,25 +2460,35 @@ func desktopNoticeForMessage(message WidgetMessage, kind string, priority int, a
 	return DesktopIconNotice{
 		ID: message.ID, Revision: message.Revision, Kind: kind, Priority: priority,
 		Title: message.StateLabel, Body: message.Message, CreatedAt: at, TabID: message.TabID,
-		InteractionID: message.InteractionID, QuestionID: message.QuestionID,
-		Options: append([]WidgetOption(nil), message.Options...), Retryable: message.Kind == "error",
+		InteractionID: message.InteractionID, QuestionID: message.QuestionID, Questions: append([]WidgetQuestion{}, message.Questions...),
+		Options: append([]WidgetOption{}, message.Options...), Retryable: message.Kind == "error",
 	}
 }
 
-func noticesForConversation(conversation unread.Conversation, summary string) []DesktopIconNotice {
+func noticesForConversation(conversation unread.Conversation, presentations map[string]desktopRoomNoticePresentation) []DesktopIconNotice {
 	out := make([]DesktopIconNotice, 0, len(conversation.Items))
 	for _, item := range conversation.Items {
 		kind, priority := "message", 3
-		if item.Priority == unread.PriorityHigh {
-			kind, priority = "needs_input", 1
+		if item.Priority == unread.PriorityHigh && item.Attention == unread.AttentionNone {
+			// High-priority unread events report urgency, not a live structured
+			// interaction. Only Controller.PendingInteraction may project
+			// needs_input/needs_confirm; otherwise a resolved ask is rendered as
+			// a second answerable question until its unread watermark advances.
+			priority = 1
+		} else if item.Attention != unread.AttentionNone {
+			priority = 1
 		}
-		body := strings.TrimSpace(summary)
+		presentation := presentations[item.ID]
+		body := strings.TrimSpace(presentation.Body)
+		if body == "" {
+			body = strings.TrimSpace(presentations[""].Body)
+		}
 		if body == "" {
 			body = "收到一条新消息（摘要需在完整会话中查看）"
 		}
 		out = append(out, DesktopIconNotice{
-			ID: item.ID, Revision: strconv.FormatUint(item.Sequence, 10), Kind: kind, Priority: priority,
-			Title: firstNonEmpty(conversation.Title, "新消息"), Body: body, TabID: conversation.SessionID,
+			ID: item.ID, Revision: strconv.FormatUint(item.Sequence, 10), Kind: kind, Priority: priority, Attention: item.Attention,
+			Title: desktopRoomNoticeTitle(conversation.Title, presentation.Author, item.Attention), Body: body, TabID: conversation.SessionID,
 			CreatedAt: item.OccurredAt.UnixMilli(), Conversation: conversation.Key, ReadSequence: item.Sequence,
 			Options: []WidgetOption{},
 		})
@@ -1523,8 +2496,29 @@ func noticesForConversation(conversation unread.Conversation, summary string) []
 	return out
 }
 
+func desktopRoomNoticeTitle(room, author string, attention unread.ItemAttention) string {
+	author = strings.TrimSpace(author)
+	prefix := author
+	if prefix == "" {
+		prefix = "Room 成员"
+	}
+	switch attention {
+	case unread.AttentionMentionMember:
+		return prefix + " @ 了你"
+	case unread.AttentionMentionAgent:
+		return prefix + " @ 了你的 Agent"
+	case unread.AttentionMentionBoth:
+		return prefix + " @ 了你和你的 Agent"
+	}
+	if author != "" {
+		return author + " · " + firstNonEmpty(strings.TrimSpace(room), "新消息")
+	}
+	return firstNonEmpty(strings.TrimSpace(room), "新消息")
+}
+
 func desktopTaskIndex(index map[string]int, conversation unread.Conversation) (int, bool) {
-	for _, key := range []string{conversation.SessionID, strings.TrimPrefix(conversation.SessionID, "path:")} {
+	path := strings.TrimPrefix(conversation.SessionID, "path:")
+	for _, key := range []string{conversation.SessionID, path, sessionRuntimeKey(path), "path:" + sessionRuntimeKey(path)} {
 		if i, ok := index[strings.TrimSpace(key)]; ok {
 			return i, true
 		}
@@ -1536,6 +2530,11 @@ func sortDesktopIconNotices(notices []DesktopIconNotice) {
 	sort.SliceStable(notices, func(i, j int) bool {
 		if notices[i].Priority != notices[j].Priority {
 			return notices[i].Priority < notices[j].Priority
+		}
+		leftAction := notices[i].Kind == "needs_input" || notices[i].Kind == "needs_confirm"
+		rightAction := notices[j].Kind == "needs_input" || notices[j].Kind == "needs_confirm"
+		if leftAction != rightAction {
+			return leftAction
 		}
 		if notices[i].CreatedAt != notices[j].CreatedAt {
 			return notices[i].CreatedAt < notices[j].CreatedAt
@@ -1559,27 +2558,69 @@ func desktopIconStatus(kind, fallback string) string {
 	}
 }
 
+func desktopIconConversationRemovePending(receipts []desktopIconReceipt, conversation string) bool {
+	for i := range receipts {
+		if receipts[i].Status == "pending" && receipts[i].Action == "remove" && receipts[i].Conversation == conversation {
+			return true
+		}
+	}
+	return false
+}
+
 func desktopIconItemRevision(item DesktopIconItem) string {
-	parts := []string{item.ID, item.Status, strconv.Itoa(item.Position.Order), item.Position.Row, item.Position.Zone}
+	parts := []string{item.ID, item.Title, item.Status, strconv.Itoa(item.Position.Order), item.Position.Row, item.Position.Zone, strconv.FormatUint(item.ConversationSequence, 10), strconv.FormatUint(item.SourceRevision, 10)}
 	if item.Runtime != nil {
 		parts = append(parts, item.Runtime.Phase)
 	}
 	// Identity seed and workspace icon are display-only but revision-bearing:
 	// a changed session identity or project icon must refresh the frontend icon.
-	parts = append(parts, item.SessionID, item.WorkspaceIcon)
+	parts = append(parts, item.SessionID, item.AppearanceSeed, item.WorkspaceIcon, item.Icon)
 	if item.SessionRef != nil {
 		parts = append(parts, item.SessionRef.Scope, item.SessionRef.WorkspaceRoot, item.SessionRef.TopicID, item.SessionRef.SessionPath)
 	}
 	for _, notice := range item.Notifications {
-		parts = append(parts, notice.ID, notice.Revision)
+		parts = append(parts, notice.ID, notice.Revision, notice.Kind, string(notice.Attention), notice.Title, notice.Body)
+	}
+	parts = append(parts, item.Actions...)
+	return widgetRevision(parts...)
+}
+
+// desktopIconAppearanceKey binds explicit appearance changes to a durable
+// session identity. Session path wins because tab IDs change when a retained
+// session is reopened; older entries safely fall back to SessionID/item ID.
+func desktopIconAppearanceKey(item DesktopIconItem) string {
+	if item.Kind != "task" {
+		return ""
+	}
+	if item.SessionRef != nil {
+		if path := strings.TrimSpace(item.SessionRef.SessionPath); path != "" {
+			return "path:" + filepath.Clean(path)
+		}
+		if topic := strings.TrimSpace(item.SessionRef.TopicID); topic != "" {
+			return "topic:" + topic
+		}
+	}
+	if sessionID := strings.TrimSpace(item.SessionID); sessionID != "" {
+		return "session:" + sessionID
+	}
+	return strings.TrimSpace(item.ID)
+}
+
+func desktopIconSnapshotRevision(snapshot DesktopIconSnapshot) string {
+	parts := []string{strconv.Itoa(snapshot.HoverStatusDelayMs), strconv.FormatUint(snapshot.UnreadRevision, 10), desktopIconDelegationRevision(snapshot.Delegations)}
+	for _, item := range snapshot.Items {
+		parts = append(parts, item.ID, item.Revision)
 	}
 	return widgetRevision(parts...)
 }
 
-func desktopIconSnapshotRevision(snapshot DesktopIconSnapshot) string {
-	parts := []string{strconv.Itoa(snapshot.HoverStatusDelayMs), strconv.FormatUint(snapshot.UnreadRevision, 10)}
-	for _, item := range snapshot.Items {
-		parts = append(parts, item.ID, item.Revision)
+func desktopIconDelegationRevision(items []DesktopIconDelegation) string {
+	parts := make([]string, 0, len(items)*8)
+	for _, item := range items {
+		parts = append(parts, item.ID, item.Kind, item.Content, item.Status, item.SessionTitle, item.WorkspaceName, strconv.FormatInt(item.UpdatedAt, 10))
+		if item.SessionRef != nil {
+			parts = append(parts, item.SessionRef.Scope, item.SessionRef.WorkspaceRoot, item.SessionRef.TopicID, item.SessionRef.SessionPath)
+		}
 	}
 	return widgetRevision(parts...)
 }
@@ -1610,7 +2651,7 @@ func validDesktopIconPosition(item DesktopIconItem, position DesktopIconPosition
 		return false
 	}
 	switch item.Kind {
-	case "task":
+	case "task", "external":
 		return position.Zone == "running"
 	case "workspace":
 		return position.Zone == "workspace"
@@ -1622,17 +2663,29 @@ func validDesktopIconPosition(item DesktopIconItem, position DesktopIconPosition
 
 func cloneDesktopIconState(state desktopIconPersistedState) desktopIconPersistedState {
 	clone := desktopIconPersistedState{
-		Positions:           make(map[string]DesktopIconPosition, len(state.Positions)),
-		Kept:                make(map[string]desktopIconKept, len(state.Kept)),
-		Applied:             append([]desktopIconReceipt(nil), state.Applied...),
-		WorkspaceSlots:      state.WorkspaceSlots,
-		CompletionSummaries: make(map[string]desktopIconCompletionSummary, len(state.CompletionSummaries)),
+		Positions:              make(map[string]DesktopIconPosition, len(state.Positions)),
+		Kept:                   make(map[string]desktopIconKept, len(state.Kept)),
+		AppearanceSeeds:        make(map[string]string, len(state.AppearanceSeeds)),
+		DismissedConversations: make(map[string]uint64, len(state.DismissedConversations)),
+		DismissedExternalRuns:  make(map[string]uint64, len(state.DismissedExternalRuns)),
+		Applied:                append([]desktopIconReceipt(nil), state.Applied...),
+		WorkspaceSlots:         state.WorkspaceSlots,
+		CompletionSummaries:    make(map[string]desktopIconCompletionSummary, len(state.CompletionSummaries)),
 	}
 	for id, position := range state.Positions {
 		clone.Positions[id] = position
 	}
 	for id, kept := range state.Kept {
 		clone.Kept[id] = kept
+	}
+	for key, seed := range state.AppearanceSeeds {
+		clone.AppearanceSeeds[key] = seed
+	}
+	for key, sequence := range state.DismissedConversations {
+		clone.DismissedConversations[key] = sequence
+	}
+	for id, revision := range state.DismissedExternalRuns {
+		clone.DismissedExternalRuns[id] = revision
 	}
 	for key, summary := range state.CompletionSummaries {
 		clone.CompletionSummaries[key] = summary
@@ -1688,6 +2741,13 @@ func reorderDesktopIconItems(items []DesktopIconItem, movedID string, target Des
 }
 
 func desktopIconIntent(input DesktopIconActionInput) string {
+	revision := input.Revision
+	if strings.EqualFold(strings.TrimSpace(input.Action), "open_delegation") {
+		// Pending delegation opens persist their exact target identity before
+		// navigation. A retry must keep the same intent even when polling has
+		// advanced or removed the running-list revision meanwhile.
+		revision = ""
+	}
 	raw, _ := json.Marshal(struct {
 		Item, Notice, Revision, Action string
 		Values                         []string
@@ -1695,7 +2755,7 @@ func desktopIconIntent(input DesktopIconActionInput) string {
 		Conversation                   string
 		Read                           uint64
 	}{
-		input.ItemID, input.NoticeID, input.Revision, input.Action, input.Values, input.Position, input.Conversation, input.ReadSequence,
+		input.ItemID, input.NoticeID, revision, input.Action, input.Values, input.Position, input.Conversation, input.ReadSequence,
 	})
 	return widgetRevision(string(raw))
 }
@@ -1749,6 +2809,33 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 			return a.desktopIconActionErrorLocked("invalid", errors.New("requestId was already used for another action"))
 		}
 		if receipt.Status == "pending" {
+			if input.Action == "open_delegation" && receipt.SessionPath != "" {
+				if err := a.advanceDesktopIconDelegation(receipt); err != nil {
+					return a.desktopIconActionErrorLocked("retryable_error", err)
+				}
+				receipt.Status = "applied"
+				if err := a.saveDesktopIconStateLocked(); err != nil {
+					receipt.Status = "pending"
+					return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish delegation open: %w", err))
+				}
+				return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconSnapshotLocked()}
+			}
+			if input.Action == "open" && receipt.Action == "open_workspace" && receipt.WorkspaceRoot != "" {
+				if receipt.TabID == "" {
+					if err := a.createDesktopIconWorkspaceSessionLocked(receipt); err != nil {
+						return a.desktopIconActionErrorLocked("retryable_error", err)
+					}
+				}
+				if err := a.exitDesktopIconModeLocked(receipt.TabID); err != nil {
+					return a.desktopIconActionErrorLocked("retryable_error", err)
+				}
+				receipt.Status = "applied"
+				if err := a.saveDesktopIconStateLocked(); err != nil {
+					receipt.Status = "pending"
+					return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish workspace open: %w", err))
+				}
+				return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconSnapshotLocked()}
+			}
 			if input.Action == "continue" && receipt.Text != "" {
 				progress, err := a.advanceDesktopIconTaskContinue(receipt)
 				if err != nil {
@@ -1785,7 +2872,30 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 				}
 				a.markDesktopIconReceiptApplied(input.RequestID)
 				if err := a.saveDesktopIconStateLocked(); err != nil {
+					a.markDesktopIconReceiptPending(input.RequestID)
 					return a.desktopIconActionErrorLocked("retryable_error", err)
+				}
+				return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconSnapshotLocked()}
+			}
+			if input.Action == "remove" && receipt.Conversation != "" {
+				if err := a.finishDesktopIconConversationRemoveLocked(receipt.Conversation, receipt.ReadSequence); err != nil {
+					return a.desktopIconActionErrorLocked("retryable_error", err)
+				}
+				a.markDesktopIconReceiptApplied(input.RequestID)
+				if err := a.saveDesktopIconStateLocked(); err != nil {
+					return a.desktopIconActionErrorLocked("retryable_error", err)
+				}
+				return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconSnapshotLocked()}
+			}
+			if input.Action == "rename" && receipt.SessionPath != "" && receipt.Text != "" {
+				if err := a.RenameSession(receipt.SessionPath, receipt.Text); err != nil {
+					return a.desktopIconActionErrorLocked("retryable_error", err)
+				}
+				a.applyDesktopIconKeptRenameLocked(receipt.SessionPath, receipt.Text)
+				receipt.Status = "applied"
+				if err := a.saveDesktopIconStateLocked(); err != nil {
+					receipt.Status = "pending"
+					return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish session rename: %w", err))
 				}
 				return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconSnapshotLocked()}
 			}
@@ -1896,6 +3006,175 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 		}
 		return DesktopIconActionResult{Status: "accepted", Snapshot: snapshot}
 	}
+	if input.Action == "open_delegation" {
+		if item.ID != "fixed:delegate" || len(input.Values) != 1 || strings.TrimSpace(input.Values[0]) == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("delegation target is required"))
+		}
+		targetID := strings.TrimSpace(input.Values[0])
+		var target *DesktopIconDelegation
+		for i := range snapshot.Delegations {
+			if snapshot.Delegations[i].ID == targetID {
+				target = &snapshot.Delegations[i]
+				break
+			}
+		}
+		if target == nil {
+			return DesktopIconActionResult{Status: "stale", Error: "委托状态已经变化", Snapshot: snapshot}
+		}
+		if target.SessionRef == nil || strings.TrimSpace(target.SessionRef.SessionPath) == "" {
+			return a.desktopIconActionErrorLocked("retryable_error", errors.New("delegation session identity is unavailable; refresh and retry"))
+		}
+		before := cloneDesktopIconState(a.iconWidgetState)
+		receipt := desktopIconReceipt{
+			RequestID: input.RequestID, Intent: intent, Status: "pending", Action: input.Action, ItemID: item.ID, Text: targetID,
+			TargetKind: target.Kind, TargetScope: target.SessionRef.Scope, TargetTopicID: target.SessionRef.TopicID,
+			WorkspaceRoot: target.SessionRef.WorkspaceRoot, SessionPath: target.SessionRef.SessionPath, AppliedAt: time.Now().UnixMilli(),
+		}
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, receipt)
+		if len(a.iconWidgetState.Applied) > desktopIconActionLimit {
+			a.iconWidgetState.Applied = a.iconWidgetState.Applied[len(a.iconWidgetState.Applied)-desktopIconActionLimit:]
+		}
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetState = before
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("prepare delegation open: %w", err))
+		}
+		stored := &a.iconWidgetState.Applied[len(a.iconWidgetState.Applied)-1]
+		if err := a.advanceDesktopIconDelegation(stored); err != nil {
+			return a.desktopIconActionErrorLocked("retryable_error", err)
+		}
+		stored.Status = "applied"
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			stored.Status = "pending"
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish delegation open: %w", err))
+		}
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+	}
+	if input.Action == "remove" && item.Kind == "person" {
+		conversation := strings.TrimSpace(item.SourceID)
+		if conversation == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("personal conversation is required"))
+		}
+		before := cloneDesktopIconState(a.iconWidgetState)
+		if a.iconWidgetState.DismissedConversations == nil {
+			a.iconWidgetState.DismissedConversations = map[string]uint64{}
+		}
+		a.iconWidgetState.DismissedConversations[conversation] = max(a.iconWidgetState.DismissedConversations[conversation], item.ConversationSequence)
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{
+			RequestID: input.RequestID, Intent: intent, Status: "pending", Action: "remove", ItemID: item.ID,
+			Conversation: conversation, ReadSequence: item.ConversationSequence, AppliedAt: time.Now().UnixMilli(),
+		})
+		if len(a.iconWidgetState.Applied) > desktopIconActionLimit {
+			a.iconWidgetState.Applied = a.iconWidgetState.Applied[len(a.iconWidgetState.Applied)-desktopIconActionLimit:]
+		}
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetState = before
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("prepare personal icon removal: %w", err))
+		}
+		if err := a.finishDesktopIconConversationRemoveLocked(conversation, item.ConversationSequence); err != nil {
+			return a.desktopIconActionErrorLocked("retryable_error", err)
+		}
+		a.markDesktopIconReceiptApplied(input.RequestID)
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.markDesktopIconReceiptPending(input.RequestID)
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish personal icon removal: %w", err))
+		}
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+	}
+	if input.Action == "remove" && item.Kind == "external" {
+		if !slices.Contains(item.Actions, "remove") {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("external run does not expose remove"))
+		}
+		runID := strings.TrimSpace(item.SourceID)
+		if runID == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("external run is required"))
+		}
+		before := cloneDesktopIconState(a.iconWidgetState)
+		if a.iconWidgetState.DismissedExternalRuns == nil {
+			a.iconWidgetState.DismissedExternalRuns = map[string]uint64{}
+		}
+		a.iconWidgetState.DismissedExternalRuns[runID] = max(a.iconWidgetState.DismissedExternalRuns[runID], item.SourceRevision)
+		delete(a.iconWidgetState.Positions, item.ID)
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{
+			RequestID: input.RequestID, Intent: intent, Status: "applied", Action: "remove", ItemID: item.ID, AppliedAt: time.Now().UnixMilli(),
+		})
+		if len(a.iconWidgetState.Applied) > desktopIconActionLimit {
+			a.iconWidgetState.Applied = a.iconWidgetState.Applied[len(a.iconWidgetState.Applied)-desktopIconActionLimit:]
+		}
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetState = before
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("save external icon removal: %w", err))
+		}
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+	}
+	if input.Action == "open" && item.Kind == "workspace" {
+		if strings.TrimSpace(item.SourceID) == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("workspace icon has no target"))
+		}
+		before := cloneDesktopIconState(a.iconWidgetState)
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{
+			RequestID: input.RequestID, Intent: intent, Status: "pending", Action: "open_workspace", ItemID: item.ID,
+			WorkspaceRoot: item.SourceID, AppliedAt: time.Now().UnixMilli(),
+		})
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetState = before
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("prepare workspace open: %w", err))
+		}
+		receipt := &a.iconWidgetState.Applied[len(a.iconWidgetState.Applied)-1]
+		if err := a.createDesktopIconWorkspaceSessionLocked(receipt); err != nil {
+			return a.desktopIconActionErrorLocked("retryable_error", err)
+		}
+		if err := a.exitDesktopIconModeLocked(receipt.TabID); err != nil {
+			return a.desktopIconActionErrorLocked("retryable_error", err)
+		}
+		receipt.Status = "applied"
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			receipt.Status = "pending"
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish workspace open: %w", err))
+		}
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+	}
+	if input.Action == "rename" {
+		if item.Kind != "task" || item.SessionRef == nil || strings.TrimSpace(item.SessionRef.SessionPath) == "" || len(input.Values) != 1 || strings.TrimSpace(input.Values[0]) == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("task session path and non-empty title are required"))
+		}
+		before := cloneDesktopIconState(a.iconWidgetState)
+		title := strings.TrimSpace(input.Values[0])
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{
+			RequestID: input.RequestID, Intent: intent, Status: "pending", Action: "rename", ItemID: item.ID,
+			SessionPath: item.SessionRef.SessionPath, Text: title, AppliedAt: time.Now().UnixMilli(),
+		})
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetState = before
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("prepare session rename: %w", err))
+		}
+		if err := a.RenameSession(item.SessionRef.SessionPath, title); err != nil {
+			return a.desktopIconActionErrorLocked("retryable_error", err)
+		}
+		a.applyDesktopIconKeptRenameLocked(item.SessionRef.SessionPath, title)
+		a.markDesktopIconReceiptApplied(input.RequestID)
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.markDesktopIconReceiptPending(input.RequestID)
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish session rename: %w", err))
+		}
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+	}
+	if input.Action == "randomize_icon" {
+		key := desktopIconAppearanceKey(*item)
+		if key == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("only task session icons can change appearance"))
+		}
+		before := cloneDesktopIconState(a.iconWidgetState)
+		if a.iconWidgetState.AppearanceSeeds == nil {
+			a.iconWidgetState.AppearanceSeeds = map[string]string{}
+		}
+		a.iconWidgetState.AppearanceSeeds[key] = widgetRevision("appearance", key, input.RequestID)
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{RequestID: input.RequestID, Intent: intent, Status: "applied", Action: input.Action, ItemID: item.ID, AppliedAt: time.Now().UnixMilli()})
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetState = before
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("save session icon appearance: %w", err))
+		}
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+	}
 	if input.Action == "move" {
 		before := cloneDesktopIconState(a.iconWidgetState)
 		if input.Position == nil || !validDesktopIconPosition(*item, *input.Position) {
@@ -1922,6 +3201,58 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 		return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("save icon action receipt: %w", err))
 	}
 	return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+}
+
+// createDesktopIconWorkspaceSessionLocked performs only the creation phase of
+// a recoverable workspace open. Once TabID is persisted, every retry resumes
+// the window exit against that same session and never creates another one.
+// Caller holds iconWidgetMu.
+func (a *App) createDesktopIconWorkspaceSessionLocked(receipt *desktopIconReceipt) error {
+	scope, root := "project", strings.TrimSpace(receipt.WorkspaceRoot)
+	if root == widgetWorkspaceGlobal {
+		scope, root = "global", ""
+	}
+	meta, err := a.CreateBlankSession(CreateBlankSessionInput{Scope: scope, WorkspaceRoot: root, RequestID: receipt.RequestID})
+	if err != nil {
+		return fmt.Errorf("create workspace session: %w", err)
+	}
+	receipt.TabID = meta.ID
+	if err := a.saveDesktopIconStateLocked(); err != nil {
+		return fmt.Errorf("record workspace session: %w", err)
+	}
+	return nil
+}
+
+// OpenWidgetWorkspace opens a new ordinary blank Session in the QuickStart-
+// selected workspace and exits icon mode focusing it. It reuses the same
+// idempotent CreateBlankSession primitive and the same workspace routing as
+// StartWidgetConversation ("auto" resolves to the current/recent workspace),
+// so the workspace-icon open flow is not duplicated. requestId makes a lost
+// response or failed window switch a safe idempotent retry.
+func (a *App) OpenWidgetWorkspace(workspace, requestID string) (TabMeta, error) {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		workspace = widgetWorkspaceAuto
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return TabMeta{}, errors.New("requestId is required")
+	}
+	route, err := resolveWidgetWorkspace(workspace, "", a.widgetWorkspaceCandidates())
+	if err != nil {
+		return TabMeta{}, err
+	}
+	a.iconWidgetMu.Lock()
+	defer a.iconWidgetMu.Unlock()
+	a.loadDesktopIconStateLocked()
+	meta, err := a.CreateBlankSession(CreateBlankSessionInput{Scope: route.Scope, WorkspaceRoot: route.Root, RequestID: requestID})
+	if err != nil {
+		return TabMeta{}, fmt.Errorf("create workspace session: %w", err)
+	}
+	if err := a.exitDesktopIconModeLocked(meta.ID); err != nil {
+		return TabMeta{}, err
+	}
+	return meta, nil
 }
 
 func (a *App) applyDesktopIconActionLocked(item DesktopIconItem, notice *DesktopIconNotice, input DesktopIconActionInput) error {
@@ -1962,11 +3293,7 @@ func (a *App) applyDesktopIconActionLocked(item DesktopIconItem, notice *Desktop
 			return a.exitDesktopIconModeLocked(meta.ID)
 		}
 		if item.Kind == "workspace" {
-			tabID, err := a.activateDesktopIconWorkspace(item.SourceID)
-			if err != nil {
-				return err
-			}
-			return a.exitDesktopIconModeLocked(tabID)
+			return errors.New("workspace open must use the recoverable creation path")
 		}
 		return a.exitDesktopIconModeLocked("")
 	case "stop":
@@ -1975,6 +3302,12 @@ func (a *App) applyDesktopIconActionLocked(item DesktopIconItem, notice *Desktop
 		}
 		a.CancelTab(item.SourceID)
 		return nil
+	case "cancel":
+		if item.Kind != "external" || !slices.Contains(item.Actions, "cancel") {
+			return errors.New("external run does not expose cancel")
+		}
+		_, err := a.CancelExternalRun(ExternalRunCancelInput{RunID: item.SourceID, RequestID: input.RequestID})
+		return err
 	case "mark_read":
 		if notice == nil || notice.Conversation == "" {
 			return errors.New("conversation notification is required")
@@ -1994,8 +3327,11 @@ func (a *App) applyDesktopIconActionLocked(item DesktopIconItem, notice *Desktop
 			return errors.New("task notification is required")
 		}
 		message := WidgetMessage{ID: notice.ID, Revision: notice.Revision, TabID: notice.TabID, Message: notice.Body, InteractionID: notice.InteractionID, QuestionID: notice.QuestionID, Options: notice.Options}
-		return a.applyWidgetActionCurrent(message, WidgetActionInput{ItemID: notice.ID, Revision: notice.Revision, RequestID: input.RequestID, Action: input.Action, Values: input.Values})
+		return a.applyWidgetActionCurrent(message, WidgetActionInput{ItemID: notice.ID, Revision: notice.Revision, RequestID: input.RequestID, Action: input.Action, Values: input.Values, Answers: input.Answers})
 	case "remove":
+		if item.Kind != "task" || !item.Retained {
+			return errors.New("only retained task icons can be removed here")
+		}
 		delete(a.iconWidgetState.Kept, item.ID)
 		return nil
 	default:
@@ -2053,11 +3389,29 @@ func (a *App) applyDesktopIconTaskContinueLocked(item DesktopIconItem, notice *D
 	tabID := firstNonEmpty(strings.TrimSpace(notice.TabID), strings.TrimSpace(item.SourceID))
 	ctrl := a.ctrlByTabID(tabID)
 	if ctrl == nil {
-		return a.desktopIconActionErrorLocked("retryable_error", errors.New("completed task controller is not ready"))
+		// A completed task's tab can be closed or pruned while its icon stays
+		// visible. Reopen the exact session from the snapshot ref — the same
+		// identity the open action uses — so continuing never depends on a live
+		// tab or on which tab happens to be active.
+		resolved, err := a.resolveDesktopIconTaskTab(item)
+		if err != nil {
+			return a.desktopIconActionErrorLocked("retryable_error", err)
+		}
+		tabID = resolved
+		ctrl = a.ctrlByTabID(tabID)
+	}
+	if ctrl == nil {
+		return a.desktopIconActionErrorLocked("retryable_error", errDesktopIconTaskControllerNotReady)
+	}
+	ref := item.SessionRef
+	var scope, workspaceRoot, topicID, sessionPath string
+	if ref != nil {
+		scope, workspaceRoot, topicID, sessionPath = ref.Scope, ref.WorkspaceRoot, ref.TopicID, ref.SessionPath
 	}
 	receipt := desktopIconReceipt{
 		RequestID: input.RequestID, Intent: intent, Status: "pending", Action: "continue", ItemID: item.ID,
-		TabID: tabID, Text: strings.TrimSpace(input.Values[0]), BaseUserTurns: len(desktopIconUserMessages(ctrl.History())), AppliedAt: time.Now().UnixMilli(),
+		TabID: tabID, Scope: scope, WorkspaceRoot: workspaceRoot, TopicID: topicID, SessionPath: sessionPath,
+		Text: strings.TrimSpace(input.Values[0]), BaseUserTurns: len(desktopIconUserMessages(ctrl.History())), AppliedAt: time.Now().UnixMilli(),
 	}
 	a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, receipt)
 	if err := a.saveDesktopIconStateLocked(); err != nil {
@@ -2121,6 +3475,13 @@ const (
 	desktopIconReplyConfirmStep desktopIconReplyStep = "confirm"
 )
 
+// errDesktopIconTaskControllerNotReady marks a continuation recovery that is
+// waiting on a session controller that has not been established yet (startup
+// before the tab/controller is restored). It is a deferral, not a failure: the
+// receipt stays pending and the next snapshot retries. The direct action path
+// surfaces it to the frontend as a retryable error, where the user can retry.
+var errDesktopIconTaskControllerNotReady = errors.New("completed task controller is not ready")
+
 func (a *App) advanceDesktopIconPersonReply(receipt *desktopIconReceipt) (desktopIconReplyProgress, error) {
 	ctrl := a.ctrlByTabID(receipt.TabID)
 	if ctrl == nil && receipt.Conversation != "" {
@@ -2168,8 +3529,19 @@ func (a *App) advanceDesktopIconPersonReply(receipt *desktopIconReceipt) (deskto
 
 func (a *App) advanceDesktopIconTaskContinue(receipt *desktopIconReceipt) (desktopIconReplyProgress, error) {
 	ctrl := a.ctrlByTabID(receipt.TabID)
+	if ctrl == nil && strings.TrimSpace(receipt.SessionPath) != "" {
+		// The tab backing a completed task can be closed or absent after a
+		// restart. Reopen the recorded session identity so recovery finishes
+		// instead of surfacing "controller is not ready" on every snapshot.
+		meta, err := a.OpenTopicSession(receipt.Scope, receipt.WorkspaceRoot, receipt.TopicID, receipt.SessionPath)
+		if err != nil {
+			return "", fmt.Errorf("reopen task session: %w", err)
+		}
+		receipt.TabID = meta.ID
+		ctrl = a.ctrlByTabID(meta.ID)
+	}
 	if ctrl == nil {
-		return "", errors.New("completed task controller is not ready")
+		return "", errDesktopIconTaskControllerNotReady
 	}
 	users := desktopIconUserMessages(ctrl.History())
 	step, err := desktopIconTurnNextStep(users, receipt.BaseUserTurns, receipt.Text, receipt.Delivery, ctrl.Running(), "task conversation")
@@ -2241,7 +3613,11 @@ func desktopIconReplyNextStep(users []string, base int, text, delivery string, r
 
 func desktopIconTurnNextStep(users []string, base int, text, delivery string, running bool, context string) (desktopIconReplyStep, error) {
 	if len(users) > base {
-		if strings.TrimSpace(users[base]) == strings.TrimSpace(text) {
+		// The controller prepends transient blocks (response-language, goal,
+		// plan-marker, memory-update, …) to every submitted turn, so the stored
+		// message never equals the raw continuation text byte-for-byte. Compare
+		// against the user-authored part instead of failing the confirmation.
+		if strings.TrimSpace(agent.StripTransientUserBlocks(users[base])) == strings.TrimSpace(text) {
 			return desktopIconReplyConfirmStep, nil
 		}
 		return "", fmt.Errorf("%s changed while recovering the user turn; retry was stopped to avoid a duplicate", context)
@@ -2307,6 +3683,29 @@ func (a *App) markDesktopIconReceiptApplied(requestID string) {
 			return
 		}
 	}
+}
+
+func (a *App) markDesktopIconReceiptPending(requestID string) {
+	for i := range a.iconWidgetState.Applied {
+		if a.iconWidgetState.Applied[i].RequestID == requestID {
+			a.iconWidgetState.Applied[i].Status = "pending"
+			return
+		}
+	}
+}
+
+// finishDesktopIconConversationRemoveLocked advances only the watermark that
+// was visible when the remove action was accepted. MarkRead is monotonic and
+// idempotent; a late message with a larger sequence remains unread and is not
+// suppressed by the persisted dismissed watermark.
+func (a *App) finishDesktopIconConversationRemoveLocked(conversation string, sequence uint64) error {
+	if sequence == 0 {
+		return nil
+	}
+	if _, err := a.MarkUnreadRead(MarkUnreadReadInput{ConversationKey: conversation, UpToSequence: sequence}); err != nil {
+		return fmt.Errorf("advance removed personal conversation watermark: %w", err)
+	}
+	return nil
 }
 
 func (a *App) desktopIconActionErrorLocked(status string, err error) DesktopIconActionResult {

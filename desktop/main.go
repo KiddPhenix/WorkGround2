@@ -148,6 +148,11 @@ func main() {
 			// Inset traffic-lights over a frameless-feeling header; the frontend
 			// leaves a drag region at the top (CSS --wails-draggable).
 			TitleBar: mac.TitleBarHiddenInset(),
+			// The normal app shell still paints an opaque theme background. Keeping
+			// WKWebView transparent lets icon-widget mode reveal the desktop through
+			// its unused canvas; the Darwin native helper switches NSWindow itself
+			// between opaque app mode and a clear click-through widget surface.
+			WebviewIsTransparent: true,
 			// Follow the OS appearance so the title bar matches light/dark system
 			// preference instead of being locked to dark.
 			Appearance: mac.DefaultAppearance,

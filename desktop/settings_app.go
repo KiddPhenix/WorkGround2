@@ -231,6 +231,8 @@ type SettingsView struct {
 	WidgetAlwaysOnTop       bool                      `json:"widgetAlwaysOnTop"`
 	WidgetSkin              string                    `json:"widgetSkin"`
 	WidgetStyle             string                    `json:"widgetStyle"`
+	WidgetShowDelegation    bool                      `json:"widgetShowDelegation"`
+	WidgetShowExternalTools bool                      `json:"widgetShowExternalTools"`
 	HoverStatusDelayMs      int                       `json:"hoverStatusDelayMs"`
 	OwnerDecisionEnabled    bool                      `json:"ownerDecisionEnabled"` // master kill switch for the 主人决策 feature (default off)
 	MemoryCompiler          bool                      `json:"memoryCompilerEnabled"`
@@ -628,6 +630,8 @@ func (a *App) Settings() SettingsView {
 			WidgetAlwaysOnTop:       true,
 			WidgetSkin:              "classic",
 			WidgetStyle:             "icons",
+			WidgetShowDelegation:    false,
+			WidgetShowExternalTools: false,
 			HoverStatusDelayMs:      1200,
 			OwnerDecisionEnabled:    ownerDecisionFeatureEnabled,
 			MemoryCompiler:          true,
@@ -699,6 +703,8 @@ func (a *App) Settings() SettingsView {
 		WidgetAlwaysOnTop:       cfg.DesktopWidgetAlwaysOnTop(),
 		WidgetSkin:              cfg.DesktopWidgetSkin(),
 		WidgetStyle:             cfg.DesktopWidgetStyle(),
+		WidgetShowDelegation:    cfg.DesktopWidgetShowDelegation(),
+		WidgetShowExternalTools: cfg.DesktopWidgetShowExternalTools(),
 		HoverStatusDelayMs:      cfg.DesktopHoverStatusDelayMs(),
 		OwnerDecisionEnabled:    ownerDecisionFeatureEnabled,
 		MemoryCompiler:          cfg.MemoryCompilerEnabled(),
@@ -1465,7 +1471,8 @@ func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEn
 			Name:          "deepseek",
 			Kind:          "openai",
 			BaseURL:       "https://api.deepseek.com",
-			Models:        []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+			Models:        []string{"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"},
+			VisionModels:  []string{"deepseek-v4-flash-vision-exp"},
 			Default:       "deepseek-v4-flash",
 			APIKeyEnv:     "DEEPSEEK_API_KEY",
 			BalanceURL:    "https://api.deepseek.com/user/balance",
@@ -1477,10 +1484,11 @@ func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEn
 			Name:          "openai",
 			Kind:          "openai",
 			BaseURL:       "https://api.openai.com/v1",
-			Models:        []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "o3-mini"},
+			Models:        []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "o3-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
+			VisionModels:  []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
 			Default:       "gpt-4o",
 			APIKeyEnv:     "OPENAI_API_KEY",
-			ContextWindow: 128_000,
+			ContextWindow: 1_050_000,
 		}}, "OPENAI_API_KEY", nil
 	case "anthropic", "anthropic-official":
 		return []config.ProviderEntry{{
@@ -2401,6 +2409,12 @@ func (a *App) SetDesktopWidgetEnabled(enabled bool) error {
 	if err := a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetEnabled(enabled) }); err != nil {
 		return err
 	}
+	if err := configureNativeWindowControls(a, enabled); err != nil {
+		slog.Error("desktop: update native window controls after widget setting changed", "enabled", enabled, "err", err)
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "window:action-error", fmt.Sprintf("更新原生窗口按钮失败：%v", err))
+		}
+	}
 	// Emit event so the frontend can hide/show the widget button without restart.
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "widget:enabled", enabled)
@@ -2515,6 +2529,20 @@ func (a *App) SetDesktopHoverStatusDelayMs(delay int) error {
 		runtime.EventsEmit(a.ctx, "widget:hover-delay", delay)
 	}
 	return nil
+}
+
+// SetDesktopWidgetShowDelegation persists whether the 委托 icon is shown in the
+// icon widget. It is presentation-only: running delegations keep running and
+// their state stays intact; only the desktop icon entry is hidden.
+func (a *App) SetDesktopWidgetShowDelegation(show bool) error {
+	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetShowDelegation(show) })
+}
+
+// SetDesktopWidgetShowExternalTools persists whether the external AI tool (DSH)
+// icon is shown in the icon widget. It is presentation-only: running external
+// tasks keep running; only the desktop icon entry is hidden.
+func (a *App) SetDesktopWidgetShowExternalTools(show bool) error {
+	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetShowExternalTools(show) })
 }
 
 // MigrateDesktopPreferences imports old browser-local desktop preferences into

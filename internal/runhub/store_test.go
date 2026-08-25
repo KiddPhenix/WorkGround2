@@ -64,6 +64,56 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStoreBindingRoundTrip(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	id := RunID("run_bind")
+	if err := s.SaveRun(testRun(id, 1)); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	rec := BindingRecord{
+		RunID:   id,
+		Binding: RunnerBinding{RunID: id, NativeSessionID: "sess-1", ProtocolVersion: "2.0", ProcessRef: "123", Attempt: 1},
+		State:   StateRunning,
+		SavedAt: time.Now(),
+	}
+	if err := s.SaveBinding(rec); err != nil {
+		t.Fatalf("SaveBinding: %v", err)
+	}
+	got, ok, err := s.LoadBinding(id)
+	if err != nil || !ok {
+		t.Fatalf("LoadBinding: ok=%v err=%v", ok, err)
+	}
+	if got.Binding.NativeSessionID != "sess-1" || got.State != StateRunning {
+		t.Fatalf("binding round-trip mismatch: %+v", got)
+	}
+
+	list, err := s.ListBindings()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("ListBindings: n=%d err=%v", len(list), err)
+	}
+}
+
+func TestLoadBindingRejectsRunIDMismatch(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.SaveBinding(BindingRecord{
+		RunID:   "run_a",
+		Binding: RunnerBinding{RunID: "run_b"},
+		State:   StateRunning,
+		SavedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.LoadBinding("run_a"); err == nil || ok {
+		t.Fatalf("LoadBinding mismatch: ok=%v err=%v, want error", ok, err)
+	}
+}
+
 func TestStoreCorruptMetaFailsExplicitly(t *testing.T) {
 	root := t.TempDir()
 	s, err := Open(root)
@@ -257,5 +307,72 @@ func TestListEventsRejectsDuplicateID(t *testing.T) {
 	}
 	if _, err := s.ListEvents(evt.RunID); err == nil || !strings.Contains(err.Error(), "duplicate event") {
 		t.Fatalf("ListEvents duplicate: %v", err)
+	}
+}
+
+func TestValidateBindingRecord(t *testing.T) {
+	valid := BindingRecord{
+		RunID:   "run_x",
+		Binding: RunnerBinding{RunID: "run_x", NativeSessionID: "sess-1", ProtocolVersion: "2.0", ProcessRef: "pid:1", Attempt: 1},
+		State:   StateRunning,
+		SavedAt: time.Now(),
+	}
+	if err := validateBindingRecord(valid); err != nil {
+		t.Fatalf("valid binding rejected: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*BindingRecord)
+	}{
+		{"unsafe run id", func(r *BindingRecord) { r.RunID = "../bad" }},
+		{"diverging binding id", func(r *BindingRecord) { r.Binding.RunID = "run_y" }},
+		{"bad state", func(r *BindingRecord) { r.State = RunState("bogus") }},
+		{"zero attempt", func(r *BindingRecord) { r.Binding.Attempt = 0 }},
+		{"zero savedAt", func(r *BindingRecord) { r.SavedAt = time.Time{} }},
+		{"empty session", func(r *BindingRecord) { r.Binding.NativeSessionID = "" }},
+		{"empty process ref", func(r *BindingRecord) { r.Binding.ProcessRef = "" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := valid
+			tc.mutate(&rec)
+			if err := validateBindingRecord(rec); err == nil {
+				t.Fatalf("validateBindingRecord(%+v) = nil, want error", rec)
+			}
+		})
+	}
+}
+
+func TestListBindingsRejectsOrphanBinding(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := RunID("run_x")
+	if err := s.SaveBinding(BindingRecord{
+		RunID:   id,
+		Binding: RunnerBinding{RunID: id, NativeSessionID: "sess-1", ProtocolVersion: "2.0", ProcessRef: "pid:1", Attempt: 1},
+		State:   StateRunning,
+		SavedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListBindings(); err == nil || !strings.Contains(err.Error(), "orphan") {
+		t.Fatalf("ListBindings orphan: got %v, want orphan error", err)
+	}
+}
+
+func TestListBindingsRejectsIllegalRunDir(t *testing.T) {
+	root := t.TempDir()
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "runs", "bad!"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListBindings(); err == nil || !strings.Contains(err.Error(), "illegal run directory") {
+		t.Fatalf("ListBindings illegal dir: got %v, want illegal error", err)
 	}
 }

@@ -1084,6 +1084,11 @@ export function reducer(s: State, a: Action): State {
       const backendTurnStartAt = typeof a.turnStartAt === "number" && a.turnStartAt > 0 ? a.turnStartAt : 0;
       const missingTurnStart = foregroundRunning && !s.turnStartAt;
       const missingActivity = foregroundRunning && !s.activityStage;
+      const promptActivityStage: Stage = s.ask ? "waiting_answer" : "waiting_approval";
+      const wrongPromptActivity = foregroundRunning && pendingPrompt && s.activityStage !== promptActivityStage;
+      const stalePromptState = foregroundRunning && !pendingPrompt && Boolean(
+        s.approval || s.ask || s.activityStage === "waiting_approval" || s.activityStage === "waiting_answer",
+      );
       const turnStartChanged = foregroundRunning && backendTurnStartAt > 0 && backendTurnStartAt !== s.turnStartAt;
       if (
         foregroundRunning === s.running &&
@@ -1094,9 +1099,16 @@ export function reducer(s: State, a: Action): State {
         cancellable === s.cancellable &&
         !missingTurnStart &&
         !missingActivity &&
+        !wrongPromptActivity &&
+        !stalePromptState &&
         !turnStartChanged
       ) return s;
       if (foregroundRunning) {
+        const activityStage = pendingPrompt
+          ? promptActivityStage
+          : s.activityStage === "waiting_approval" || s.activityStage === "waiting_answer"
+            ? "waiting_model"
+            : s.activityStage ?? "waiting_model";
         return {
           ...s,
           running: true,
@@ -1107,8 +1119,10 @@ export function reducer(s: State, a: Action): State {
           cancelRequested,
           cancellable,
           turnStartAt: backendTurnStartAt || s.turnStartAt || Date.now(),
-          activityStage: s.activityStage ?? (s.ask ? "waiting_answer" : s.approval ? "waiting_approval" : "waiting_model"),
-          activityStageSeed: s.activityStage ? s.activityStageSeed : Date.now(),
+          approval: pendingPrompt ? s.approval : undefined,
+          ask: pendingPrompt ? s.ask : undefined,
+          activityStage,
+          activityStageSeed: activityStage === s.activityStage && s.activityStage ? s.activityStageSeed : Date.now(),
         };
       }
       if (s.turnActive && a.finishActiveTurn === false) {
@@ -2008,21 +2022,41 @@ export function useController() {
   const approve = useCallback((id: string, allow: boolean, session: boolean, persist: boolean) => {
     if (!activeTabId) return;
     dispatchTo(activeTabId, { type: "clearApproval" });
-    app.ApproveTab(sessionTarget(activeTabId), id, allow, session, persist).catch(() => {});
-  }, [activeTabId, dispatchTo, sessionTarget]);
+    app.ApproveTab(sessionTarget(activeTabId), id, allow, session, persist).catch((error) => {
+      // The RPC failed, so the backend may still be holding this prompt. Surface
+      // the failure and re-reconcile/replay rather than leaving the gate silently
+      // cleared while the backend stays blocked.
+      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: `Approve failed: ${errorMessage(error)}` });
+      replayPendingPromptsForActiveTab(activeTabId, () => app.ReplayPendingPromptsForSession(sessionTarget(activeTabId)));
+      void reconcileTabRuntime(activeTabId, { hydrateSessionData: false });
+    });
+  }, [activeTabId, dispatchTo, reconcileTabRuntime, sessionTarget]);
 
   const answerQuestion = useCallback((id: string, answers: QuestionAnswer[]) => {
     if (!activeTabId) return;
     dispatchTo(activeTabId, { type: "clearAsk" });
-    app.AnswerQuestionForTab(sessionTarget(activeTabId), id, answers).catch(() => {});
-  }, [activeTabId, dispatchTo, sessionTarget]);
+    app.AnswerQuestionForTab(sessionTarget(activeTabId), id, answers).catch((error) => {
+      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: `Answer failed: ${errorMessage(error)}` });
+      replayPendingPromptsForActiveTab(activeTabId, () => app.ReplayPendingPromptsForSession(sessionTarget(activeTabId)));
+      void reconcileTabRuntime(activeTabId, { hydrateSessionData: false });
+    });
+  }, [activeTabId, dispatchTo, reconcileTabRuntime, sessionTarget]);
 
-  const setControllerMode = useCallback((mode: Mode): Promise<void> => {
-    if (!activeTabId) return Promise.resolve();
-    return app.SetModeForTab(sessionTarget(activeTabId), mode).then(() => {
-      if (modeHasAutoApproveTools(mode) && activeTabId) dispatchTo(activeTabId, { type: "clearApproval" });
-    }).catch(() => {});
-  }, [activeTabId, dispatchTo, sessionTarget]);
+  const setControllerMode = useCallback(async (mode: Mode): Promise<void> => {
+    if (!activeTabId) return;
+    const sessionId = sessionTarget(activeTabId);
+    try {
+      await app.SetModeForTab(sessionId, mode);
+    } catch (error) {
+      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: `Mode switch failed: ${errorMessage(error)}` });
+      await reconcileTabRuntime(activeTabId, { hydrateSessionData: false });
+      return;
+    }
+    // Reconcile instead of optimistically clearing: YOLO drains auto-allowable
+    // tool prompts but keeps fresh gates (plan approval, business decisions), so
+    // the backend must be re-read to know whether a prompt is still pending.
+    await reconcileTabRuntime(activeTabId, { hydrateSessionData: false });
+  }, [activeTabId, dispatchTo, reconcileTabRuntime, sessionTarget]);
 
   const setCollaborationMode = useCallback(async (mode: CollaborationMode): Promise<void> => {
     if (!activeTabId) return;
@@ -2034,10 +2068,20 @@ export function useController() {
   const setToolApprovalMode = useCallback(async (mode: ToolApprovalMode): Promise<void> => {
     if (!activeTabId) return;
     const sessionId = sessionTarget(activeTabId);
-    await app.SetToolApprovalModeForTab(sessionId, mode).catch(() => {});
-    if (mode === "auto" || mode === "yolo") dispatchTo(activeTabId, { type: "clearApproval" });
+    try {
+      await app.SetToolApprovalModeForTab(sessionId, mode);
+    } catch (error) {
+      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: `Approval mode switch failed: ${errorMessage(error)}` });
+      await reconcileTabRuntime(activeTabId, { hydrateSessionData: false });
+      return;
+    }
     await refreshMetaForTab(activeTabId, sessionId, dispatchTo);
-  }, [activeTabId, dispatchTo, sessionTarget]);
+    // Reconcile instead of dispatching clearApproval: the backend drains prompts
+    // the new posture auto-allows but keeps fresh prompts (plan approval, explicit
+    // business decisions) pending. Re-reading/replaying restores any still-open
+    // interaction instead of silently hiding a gate that is still blocking.
+    await reconcileTabRuntime(activeTabId, { hydrateSessionData: false });
+  }, [activeTabId, dispatchTo, reconcileTabRuntime, sessionTarget]);
 
   const setGoal = useCallback(async (goal: string): Promise<void> => {
     if (!activeTabId) return;
@@ -2568,6 +2612,22 @@ export function useController() {
     return meta;
   }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);
 
+  const createBlankSession = useCallback(async (scope: string, workspaceRoot: string, requestId: string, singleSurface = false): Promise<TabMeta> => {
+    const meta = await app.CreateBlankSession({ scope, workspaceRoot, requestId });
+    if (singleSurface) {
+      for (const id of Array.from(statesRef.current.keys())) {
+        if (id !== meta.id) statesRef.current.delete(id);
+      }
+    }
+    setActiveTabId(meta.id);
+    activeTabIdRef.current = meta.id;
+    confirmBackendActiveTab(meta.id);
+    dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
+    void loadSessionDataForTab(meta.id, true, "open-topic");
+    seedOpenTabRuntime(meta);
+    return meta;
+  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);
+
   const ensureBlankSurface = useCallback(async (scope: string, workspaceRoot: string): Promise<TabMeta> => {
     const meta = await app.EnsureBlankSurface(scope, workspaceRoot);
     for (const id of Array.from(statesRef.current.keys())) {
@@ -2630,7 +2690,7 @@ export function useController() {
     loadOlderHistory,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, setModel, setEffort, setTokenMode,
     fetchMemory, remember, forget, saveDoc, pinMemory,
-    switchTab, openProjectTab, openGlobalTab, openTopicSession, openLinkedSession, ensureBlankTab, activateTopic, activateLinkedSession, ensureBlankSurface, closeTab, reorderTabs, retryTabStartup,
+    switchTab, openProjectTab, openGlobalTab, openTopicSession, openLinkedSession, createBlankSession, ensureBlankTab, activateTopic, activateLinkedSession, ensureBlankSurface, closeTab, reorderTabs, retryTabStartup,
     syncActiveTab: syncActiveTabFromBackend,
   };
 }

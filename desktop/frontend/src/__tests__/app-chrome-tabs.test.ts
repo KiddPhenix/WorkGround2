@@ -137,6 +137,14 @@ ok(
 );
 
 ok(
+  appSource.includes('EventsOn("window:action-error"') &&
+    appSource.includes("reportWidgetError(payload)") &&
+    appSource.includes('getAttribute("data-platform") === "darwin"') &&
+    appSource.includes("(widgetEnabled || widgetMode) && !nativeMacWidgetShortcut"),
+  "macOS native window actions share frontend error reporting without duplicating the Cmd+M handler",
+);
+
+ok(
   finalDeclaration(".windows-resize-handle--right", "right") === "0" &&
     finalDeclaration(".windows-resize-handle--right", "cursor") === "ew-resize" &&
     finalDeclaration(".windows-resize-handle--bottom", "bottom") === "0" &&

@@ -4,6 +4,7 @@
 
 import {
   canUsePromptHistory,
+  isComposerGuideKey,
   isComposerSubmitKey,
   isFnKeyEvent,
   normalizeComposerSubmitKey,
@@ -75,6 +76,22 @@ eq(isComposerSubmitKey({ key: "Enter", shiftKey: false, ctrlKey: false, metaKey:
 eq(isComposerSubmitKey({ key: "Enter", shiftKey: false, ctrlKey: true, metaKey: false, altKey: false }, "ctrl_enter", false), true, "Ctrl+Enter mode sends on Ctrl+Enter");
 eq(isComposerSubmitKey({ key: "Enter", shiftKey: false, ctrlKey: false, metaKey: true, altKey: false }, "ctrl_enter", false), true, "Ctrl+Enter mode also accepts Meta+Enter");
 eq(isComposerSubmitKey({ key: "Enter", shiftKey: false, ctrlKey: true, metaKey: false, altKey: false }, "ctrl_enter", true), false, "IME composing Enter never sends");
+
+// isComposerGuideKey: while running, the guide shortcut immediately steers the
+// turn instead of following the ordinary submit path; while idle it never fires.
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: false, metaKey: false, altKey: false }, "enter", false, true), true, "enter mode: Shift+Enter guides while running");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: false, metaKey: false, altKey: false }, "enter", false, false), false, "enter mode: Shift+Enter stays newline while idle");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: false, ctrlKey: false, metaKey: false, altKey: false }, "enter", false, true), false, "enter mode: plain Enter is the ordinary submit while running");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: true, metaKey: false, altKey: false }, "enter", false, true), false, "enter mode: Ctrl+Shift+Enter is not a guide shortcut");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: false, metaKey: true, altKey: false }, "enter", false, true), false, "enter mode: Meta+Shift+Enter is not a guide shortcut");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: false, metaKey: false, altKey: false }, "enter", true, true), false, "enter mode: IME composing Shift+Enter never guides");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: false, metaKey: false, altKey: true }, "enter", false, true), false, "enter mode: Alt+Shift+Enter never guides");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: true, metaKey: false, altKey: false }, "ctrl_enter", false, true), true, "ctrl_enter mode: Ctrl+Shift+Enter guides while running");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: false, metaKey: true, altKey: false }, "ctrl_enter", false, true), true, "ctrl_enter mode: Meta+Shift+Enter guides (macOS equivalence)");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: false, ctrlKey: true, metaKey: false, altKey: false }, "ctrl_enter", false, true), false, "ctrl_enter mode: Ctrl+Enter is the ordinary submit while running");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: false, metaKey: false, altKey: false }, "ctrl_enter", false, true), false, "ctrl_enter mode: plain Shift+Enter stays newline");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: true, metaKey: false, altKey: false }, "ctrl_enter", false, false), false, "ctrl_enter mode: Ctrl+Shift+Enter stays newline while idle");
+eq(isComposerGuideKey({ key: "Enter", shiftKey: true, ctrlKey: true, metaKey: false, altKey: false }, "ctrl_enter", true, true), false, "ctrl_enter mode: IME composing Ctrl+Shift+Enter never guides");
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

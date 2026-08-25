@@ -147,9 +147,10 @@ func (c *desktopCollaboration) loadPersisted() {
 	}
 	adoptedV2 := false
 	if os.IsNotExist(err) {
-		adoptedV2, err = c.adoptLegacyV2Cache()
-		if err != nil {
-			c.state.LastError = "load collaboration state: " + err.Error()
+		var adoptErr error
+		adoptedV2, adoptErr = c.adoptLegacyV2Cache()
+		if adoptErr != nil {
+			c.state.LastError = "load collaboration state: " + adoptErr.Error()
 			c.state.Retryable = true
 			return
 		}
@@ -169,6 +170,7 @@ func (c *desktopCollaboration) loadPersisted() {
 		}
 		return
 	}
+	persistedSessionID := strings.TrimSpace(p.SessionID)
 	p = c.repairPersisted(p)
 	identityChanged := false
 	if c.ownerSessionPath != "" {
@@ -182,16 +184,15 @@ func (c *desktopCollaboration) loadPersisted() {
 		identityChanged = persistedPath != c.ownerSessionPath
 		p.SessionPath = c.ownerSessionPath
 	}
-	if c.ownerSessionID != "" && strings.TrimSpace(p.SessionID) != c.ownerSessionID {
-		if migrated {
+	if c.ownerSessionID != "" && persistedSessionID != c.ownerSessionID {
+		if migrated && persistedSessionID != "" {
 			// Legacy file belongs to a different session — skip
 			// migration to prevent cross-session data contamination.
 			return
 		}
-		// v2 file is per-session (keyed by hash of sessionID). A
-		// mismatched internal SessionID is a format-upgrade artefact;
-		// repair it instead of rejecting the cached Room/Snapshot.
-		p.SessionID = c.ownerSessionID
+		// SessionPath is the durable Room owner. SessionID can rotate when
+		// its tab runtime is rebuilt, so repair a stale value and persist the
+		// current routing identity without rejecting the cached Room.
 		identityChanged = true
 	}
 	if p.Starts != nil {
@@ -225,6 +226,7 @@ func (c *desktopCollaboration) loadPersisted() {
 			ReferenceIDs: append([]string(nil), value.ReferenceIDs...), ContextRefs: append([]string(nil), value.ContextRefs...), QueuedAt: queuedAt,
 			PublishIndex: value.PublishIndex,
 			Automatic:    value.Automatic,
+			ReadOnly:     value.ReadOnly,
 			Updates:      make(chan collaborationRunUpdate, 32),
 		})
 	}
@@ -517,8 +519,14 @@ func (c *desktopCollaboration) repairPersisted(value collaborationPersistedState
 	if strings.TrimSpace(value.Description) == "" {
 		value.Description = strings.TrimSpace(value.Snapshot.Room.Description)
 	}
-	if strings.TrimSpace(value.SessionID) == "" {
-		value.SessionID = c.ownerSessionID
+	if owner := strings.TrimSpace(c.ownerSessionID); owner != "" {
+		value.SessionID = owner
+		for i := range value.Runs {
+			value.Runs[i].SessionID = owner
+		}
+		for i := range value.Queue {
+			value.Queue[i].SessionID = owner
+		}
 	}
 	for _, member := range value.Snapshot.Members {
 		if member.ID != value.MemberID {
@@ -588,7 +596,7 @@ func (c *desktopCollaboration) persistedRunsLocked() []collaborationPersistedRun
 			RunID: run.RunID, CommandID: run.CommandID, SessionID: run.SessionID,
 			AgentRequestID: run.AgentRequestID, Instruction: run.Instruction,
 			ReferenceIDs: append([]string(nil), run.ReferenceIDs...), ContextRefs: append([]string(nil), run.ContextRefs...), QueuedAt: run.QueuedAt, PublishIndex: run.PublishIndex,
-			Automatic: run.Automatic,
+			Automatic: run.Automatic, ReadOnly: run.ReadOnly,
 		})
 	}
 	return result
@@ -605,7 +613,7 @@ func (c *desktopCollaboration) persistedQueueLocked() []collaborationPersistedRu
 			RunID: run.RunID, CommandID: run.CommandID, SessionID: run.SessionID,
 			AgentRequestID: run.AgentRequestID, Instruction: run.Instruction,
 			ReferenceIDs: append([]string(nil), run.ReferenceIDs...), ContextRefs: append([]string(nil), run.ContextRefs...), QueuedAt: run.QueuedAt, PublishIndex: run.PublishIndex,
-			Automatic: run.Automatic,
+			Automatic: run.Automatic, ReadOnly: run.ReadOnly,
 		})
 	}
 	return result

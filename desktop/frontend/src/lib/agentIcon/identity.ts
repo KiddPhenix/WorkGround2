@@ -25,6 +25,8 @@ export function stableIndex(seedKey: string, domain: string, mod: number): numbe
 
 /** 按文档 §5.2 的 seed 优先级：sessionId → sessionPath → topicId → item.id。 */
 export function identitySeedKey(item: DesktopIconItem): string {
+  const appearance = (item.appearanceSeed ?? "").trim();
+  if (appearance) return appearance;
   const sessionId = (item.sessionId ?? "").trim();
   if (sessionId) return sessionId;
   const path = item.sessionRef?.sessionPath?.trim();

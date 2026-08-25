@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,10 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"workground2/internal/imageutil"
 	"workground2/internal/proc"
 )
 
-const maxImageAttachmentBytes = 10 * 1024 * 1024
+const maxImageAttachmentBytes = imageutil.MaxBytes
 const maxFileAttachmentBytes = 25 * 1024 * 1024
 const maxAttachmentCreateAttempts = 1000
 
@@ -506,26 +506,9 @@ func attachmentPath(ext string) string {
 }
 
 func detectedImageMime(raw []byte) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	mime := http.DetectContentType(raw[:min(len(raw), 512)])
-	if imageExt(mime) == "" {
-		return ""
-	}
-	return mime
+	return imageutil.Mime(raw)
 }
 
 func imageExt(mime string) string {
-	switch strings.ToLower(strings.TrimSpace(mime)) {
-	case "image/png":
-		return ".png"
-	case "image/jpeg":
-		return ".jpg"
-	case "image/gif":
-		return ".gif"
-	case "image/webp":
-		return ".webp"
-	}
-	return ""
+	return imageutil.Ext(mime)
 }

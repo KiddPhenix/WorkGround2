@@ -117,3 +117,12 @@ func KillTracked(cmd *exec.Cmd, job uintptr) {
 	}
 	KillTree(cmd)
 }
+
+// ReleaseTracked closes the Job Object handle StartTracked created for a child
+// that has already exited naturally, without terminating the (now empty) job.
+// It is idempotent with respect to the caller zeroing the handle afterwards.
+func ReleaseTracked(job uintptr) {
+	if job != 0 {
+		_ = windows.CloseHandle(windows.Handle(job))
+	}
+}

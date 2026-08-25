@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -672,6 +673,42 @@ func TestOfficialDeepSeekTemplateDefaultsToRMBPricing(t *testing.T) {
 	}
 	if got.Prices["deepseek-v4-pro"] == nil || got.Prices["deepseek-v4-pro"].Currency != "¥" || got.Prices["deepseek-v4-pro"].Output != 6 {
 		t.Fatalf("deepseek-v4-pro price = %+v, want RMB pricing", got.Prices["deepseek-v4-pro"])
+	}
+}
+
+func TestOfficialDeepSeekTemplateIncludesVisionExp(t *testing.T) {
+	entries, _, err := officialProviderTemplate("deepseek", "en")
+	if err != nil {
+		t.Fatalf("officialProviderTemplate: %v", err)
+	}
+	got := entries[0]
+	if !reflect.DeepEqual(got.Models, []string{"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"}) {
+		t.Fatalf("deepseek template models = %v, want vision-exp appended", got.Models)
+	}
+	if !reflect.DeepEqual(got.VisionModels, []string{"deepseek-v4-flash-vision-exp"}) {
+		t.Fatalf("deepseek template vision_models = %v, want only vision-exp", got.VisionModels)
+	}
+}
+
+func TestOfficialOpenAITemplateIncludesGPT56(t *testing.T) {
+	entries, keyEnv, err := officialProviderTemplate("openai", "en")
+	if err != nil {
+		t.Fatalf("officialProviderTemplate: %v", err)
+	}
+	if keyEnv != "OPENAI_API_KEY" {
+		t.Fatalf("key env = %q, want OPENAI_API_KEY", keyEnv)
+	}
+	got := entries[0]
+	if got.ContextWindow != 1_050_000 {
+		t.Fatalf("openai template context window = %d, want 1050000", got.ContextWindow)
+	}
+	for _, model := range []string{"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if !slices.Contains(got.Models, model) {
+			t.Fatalf("openai template models = %v, want %q", got.Models, model)
+		}
+		if !slices.Contains(got.VisionModels, model) {
+			t.Fatalf("openai template vision_models = %v, want %q", got.VisionModels, model)
+		}
 	}
 }
 

@@ -10,6 +10,9 @@
 package runhub
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -200,10 +203,13 @@ type AgentRun struct {
 	ActivityLabel   string       `json:"activityLabel,omitempty"`
 	Summary         string       `json:"summary,omitempty"`
 	Capabilities    Capabilities `json:"capabilities,omitempty"`
-	Revision        uint64       `json:"revision"`
-	LastSeenAt      time.Time    `json:"lastSeenAt"`
-	CreatedAt       time.Time    `json:"createdAt"`
-	UpdatedAt       time.Time    `json:"updatedAt"`
+	// LaunchFingerprint closes the run-written/receipt-missing crash window
+	// without persisting the launch prompt. It is internal and never projected.
+	LaunchFingerprint string    `json:"launchFingerprint,omitempty"`
+	Revision          uint64    `json:"revision"`
+	LastSeenAt        time.Time `json:"lastSeenAt"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
 // EventPayload carries the typed, sanitized extras an event may update. It
@@ -234,12 +240,24 @@ type RunEvent struct {
 
 // LaunchIntent is the idempotent request to start one managed run.
 type LaunchIntent struct {
-	RequestID         string `json:"requestId"`
-	RunnerProfileID   string `json:"runnerProfileId"`
-	Source            Source `json:"source,omitempty"`
-	Workspace         string `json:"workspace,omitempty"`
-	Prompt            string `json:"prompt,omitempty"`
-	PermissionProfile string `json:"permissionProfile,omitempty"`
+	RequestID         string       `json:"requestId"`
+	RunnerProfileID   string       `json:"runnerProfileId"`
+	Source            Source       `json:"source,omitempty"`
+	Workspace         string       `json:"workspace,omitempty"`
+	Prompt            string       `json:"prompt,omitempty"`
+	PermissionProfile string       `json:"permissionProfile,omitempty"`
+	Capabilities      Capabilities `json:"capabilities,omitempty"`
+}
+
+func launchIntentFingerprint(intent LaunchIntent) string {
+	raw, _ := json.Marshal(intent)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func sanitizedLaunchIntent(intent LaunchIntent) LaunchIntent {
+	intent.Prompt = ""
+	return intent
 }
 
 // RunnerBinding ties a run to the concrete runner/process that drives it.
@@ -307,8 +325,8 @@ type RunProjection struct {
 	Summary         string       `json:"summary,omitempty"`
 	Capabilities    Capabilities `json:"capabilities,omitempty"`
 	Revision        uint64       `json:"revision"`
-	CreatedAt       time.Time    `json:"createdAt"`
-	UpdatedAt       time.Time    `json:"updatedAt"`
+	CreatedAt       time.Time    `json:"createdAt" ts_type:"string"`
+	UpdatedAt       time.Time    `json:"updatedAt" ts_type:"string"`
 }
 
 // ChangeKind is the coarse shape of a subscription notification.
@@ -435,6 +453,14 @@ func (r AgentRun) validate() error {
 	}
 	if r.Revision == 0 {
 		return fmt.Errorf("runhub: run %q has zero revision", r.ID)
+	}
+	if r.LaunchFingerprint != "" {
+		if len(r.LaunchFingerprint) != sha256.Size*2 {
+			return fmt.Errorf("runhub: run %q has invalid launch fingerprint", r.ID)
+		}
+		if _, err := hex.DecodeString(r.LaunchFingerprint); err != nil {
+			return fmt.Errorf("runhub: run %q has invalid launch fingerprint: %w", r.ID, err)
+		}
 	}
 	if r.CreatedAt.IsZero() || r.UpdatedAt.IsZero() || r.LastSeenAt.IsZero() {
 		return fmt.Errorf("runhub: run %q has missing timestamps", r.ID)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import gsap from "gsap";
+import { gsap } from "gsap";
 import { DUR_FAST, EASE_OUT, prefersReducedMotion } from "./gsapAnimations";
 
 const BOTTOM_THRESHOLD_PX = 80;

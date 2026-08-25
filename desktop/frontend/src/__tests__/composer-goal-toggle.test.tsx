@@ -7,7 +7,7 @@ import { createRoot } from "react-dom/client";
 import { Composer, composerPickFileEntry } from "../components/Composer";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
-import { useComposerQueueStore } from "../store/composerQueue";
+import { makeQueueItem, useComposerQueueStore } from "../store/composerQueue";
 import type { AppBindings } from "../lib/bridge";
 import type { CollaborationMode, ToolApprovalMode, TokenMode } from "../lib/types";
 
@@ -998,6 +998,282 @@ console.log("\ncomposer /rebuild_vocabulary skill routing");
     await flushTimers();
   });
   eq(calls.send.join(","), "/rebuild_vocabulary", "queued rebuild Skill can be converted to guidance");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+console.log("\ncomposer running guidance shortcuts");
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  const sends: Array<{ display: string; submit?: string }> = [];
+  const { root, rerender } = await renderComposer({
+    running: true,
+    tabId: "sess-a",
+    onSend: (display, submit) => sends.push({ display, submit }),
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+
+  await rerender({ insertRequest: { id: 1001, text: "queue me", mode: "replace" } });
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(sends.length, 0, "running enter-mode Enter queues instead of sending");
+  eq(useComposerQueueStore.getState().items.filter((i) => (i.sessionId ?? "") === "sess-a").length, 1, "running Enter adds one current-session queue item");
+  eq(textarea.value, "", "queued ordinary submit clears the draft");
+
+  await rerender({ insertRequest: { id: 1002, text: "guide now", mode: "replace" } });
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(sends.length, 1, "running enter-mode Shift+Enter immediately guides");
+  eq(sends[0]?.display, "guide now", "guided send uses the fully-built display text");
+  eq(sends[0]?.submit, "guide now", "guided send passes the submit text");
+  eq(textarea.value, "", "successful guide clears the draft");
+  eq(useComposerQueueStore.getState().items.filter((i) => (i.sessionId ?? "") === "sess-a").length, 1, "immediate guide does not add a queue item");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  const sends: string[] = [];
+  const { root, rerender } = await renderComposer({
+    running: true,
+    submitKey: "ctrl_enter",
+    tabId: "sess-b",
+    onSend: (display) => sends.push(display),
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+
+  await rerender({ insertRequest: { id: 2001, text: "queue ctrl", mode: "replace" } });
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(sends.length, 0, "running ctrl_enter-mode Ctrl+Enter queues instead of sending");
+  eq(useComposerQueueStore.getState().items.filter((i) => (i.sessionId ?? "") === "sess-b").length, 1, "running Ctrl+Enter adds one current-session queue item");
+
+  await rerender({ insertRequest: { id: 2002, text: "guide ctrl", mode: "replace" } });
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(sends.join(","), "guide ctrl", "running Ctrl+Shift+Enter immediately guides");
+
+  await rerender({ insertRequest: { id: 2003, text: "guide meta", mode: "replace" } });
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(sends.join(","), "guide ctrl,guide meta", "running Meta+Shift+Enter guides with macOS equivalence");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  const sends: string[] = [];
+  const { root, rerender } = await renderComposer({
+    running: false,
+    onSend: (display) => sends.push(display),
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+  await rerender({ insertRequest: { id: 3001, text: "line one", mode: "replace" } });
+
+  const event = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+  await act(async () => {
+    textarea.dispatchEvent(event);
+    await flushTimers();
+  });
+  eq(sends.length, 0, "idle Shift+Enter does not submit");
+  eq(useComposerQueueStore.getState().items.length, 0, "idle Shift+Enter does not queue");
+  eq(event.defaultPrevented, false, "idle Shift+Enter is left to the browser for a newline");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  let attempts = 0;
+  const { root, rerender } = await renderComposer({
+    running: true,
+    onSend: async (display) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("steer failed");
+    },
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+  await rerender({ insertRequest: { id: 4001, text: "retry me", mode: "replace" } });
+
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  await waitFor("steer failure toast", () => document.body.textContent?.includes("steer failed") === true);
+  eq(textarea.value, "retry me", "failed guide keeps the draft");
+  eq(attempts, 1, "failed guide calls onSend once");
+
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(attempts, 2, "retried guide calls onSend again");
+  eq(textarea.value, "", "successful guide retry clears the draft");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  let resolveSend: (() => void) | undefined;
+  let sends = 0;
+  const { root, rerender } = await renderComposer({
+    running: true,
+    onSend: () => {
+      sends += 1;
+      return new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      });
+    },
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+  await rerender({ insertRequest: { id: 5001, text: "dedupe me", mode: "replace" } });
+
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(sends, 1, "same-flight guide submit is deduped");
+
+  await act(async () => {
+    resolveSend?.();
+    await flushTimers();
+  });
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [makeQueueItem({ sessionId: "sess-a", content: "queued" })] });
+  let entered = 0;
+  const { root } = await renderComposer({
+    running: true,
+    tabId: "sess-a",
+    onEnterWidgetMode: () => {
+      entered += 1;
+    },
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(entered, 0, "current-session queue blocks widget entry");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [makeQueueItem({ sessionId: "sess-other", content: "queued elsewhere" })] });
+  let entered = 0;
+  const { root } = await renderComposer({
+    running: true,
+    tabId: "sess-a",
+    onEnterWidgetMode: () => {
+      entered += 1;
+    },
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(entered, 1, "other-session queue does not block widget entry");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  let entered = 0;
+  const { root, rerender } = await renderComposer({
+    running: true,
+    collaborationMode: "goal",
+    goal: "finish migration",
+    onEnterWidgetMode: () => {
+      entered += 1;
+    },
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+
+  await rerender({ insertRequest: { id: 6001, text: "keep going", mode: "replace" } });
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  ok(document.querySelector(".composer-guidance-item") !== null, "goal-mode guidance becomes pending before the empty submit");
+
+  await rerender({ collaborationMode: "normal" });
+
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(entered, 0, "goal pending guidance still blocks widget entry after leaving goal mode");
 
   await act(async () => {
     root.unmount();

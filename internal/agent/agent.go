@@ -1261,13 +1261,28 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 			return newMaxStepsPause(a.maxSteps, a.maxStepsKey)
 		}
 
-		results := a.executeBatch(ctx, calls)
+		results, images := a.executeBatch(ctx, calls)
 		for i, call := range calls {
 			a.session.Add(provider.Message{
 				Role:       provider.RoleTool,
 				Content:    results[i],
 				ToolCallID: call.ID,
 				Name:       call.Name,
+			})
+		}
+		// After the tool-call/tool-result pairing is complete, deliver any
+		// images the read-only tools produced (view_image) as real pixels on a
+		// host-origin user message, in call order. Failed calls carry no images.
+		var viewImages []string
+		for _, imgs := range images {
+			viewImages = append(viewImages, imgs...)
+		}
+		if len(viewImages) > 0 {
+			a.session.Add(provider.Message{
+				Role:    provider.RoleUser,
+				Content: viewImageResultMessage(len(viewImages)),
+				Images:  viewImages,
+				Origin:  provider.MessageOriginHost,
 			})
 		}
 		a.flushReadOnlyNudge()
@@ -1963,7 +1978,7 @@ func (a *Agent) systemPrompt() string {
 // write/read ordering stays provider-ordered. ToolResult events are emitted
 // after the batch in call order, so emission stays serial even when execution
 // parallelised.
-func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []string {
+func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) ([]string, [][]string) {
 	for _, c := range calls {
 		t, ok := a.tools.Get(c.Name)
 		ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly()}
@@ -1984,6 +1999,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []s
 	}
 
 	results := make([]string, len(calls))
+	images := make([][]string, len(calls))
 	outcomes := make([]toolOutcome, len(calls))
 	durations := make([]int64, len(calls))
 	run := func(i int) {
@@ -1991,6 +2007,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []s
 		outcomes[i] = a.executeOne(ctx, calls[i])
 		durations[i] = time.Since(start).Milliseconds()
 		results[i] = outcomes[i].output
+		images[i] = outcomes[i].images
 	}
 	cancelled := false
 	markCancelled := func(start int) {
@@ -2085,7 +2102,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []s
 		a.applyStormBreaker(calls, outcomes, results)
 		a.updateReadOnlyStreak(calls, outcomes)
 	}
-	return results
+	return results, images
 }
 
 func (a *Agent) updateReadOnlyStreak(calls []provider.ToolCall, outcomes []toolOutcome) {
@@ -2123,6 +2140,17 @@ func (a *Agent) flushReadOnlyNudge() {
 	a.readOnlyNudgeDue = false
 	a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(readOnlyStreakNudgeMessage()), Origin: provider.MessageOriginHost})
 	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("read-only streak (%d rounds): convergence nudge injected", a.readOnlyStreak)})
+}
+
+// viewImageResultMessage is the short source note carried on the host user
+// message that delivers view_image pixels to the model. It tells the model the
+// images are the ones it asked to view, so it inspects them instead of
+// re-reading the path.
+func viewImageResultMessage(count int) string {
+	if count == 1 {
+		return "The image you requested with view_image is attached below. Inspect it directly."
+	}
+	return fmt.Sprintf("%d images you requested with view_image are attached below, in call order. Inspect them directly.", count)
 }
 
 func (a *Agent) withPreviewFileDiffs(calls []provider.ToolCall) []provider.ToolCall {
@@ -2306,6 +2334,7 @@ type toolOutcome struct {
 	errMsg    string
 	truncated bool
 	truncMsg  string
+	images    []string
 }
 
 // executeOne runs a single tool call. It is pure with respect to the event sink
@@ -2447,7 +2476,14 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	cctx = tool.WithProgress(cctx, func(chunk string) {
 		a.sink.Emit(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: callID, Output: chunk}})
 	})
-	result, err := t.Execute(cctx, json.RawMessage(call.Arguments))
+	var result string
+	var images []string
+	var err error
+	if executor, ok := t.(tool.ImageExecutor); ok {
+		result, images, err = executor.ExecuteImages(cctx, json.RawMessage(call.Arguments))
+	} else {
+		result, err = t.Execute(cctx, json.RawMessage(call.Arguments))
+	}
 	if a.evidence != nil {
 		if call.Name == "complete_step" {
 			rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), err == nil, t.ReadOnly())
@@ -2488,7 +2524,7 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 		a.hooks.SubagentStop(ctx, result)
 	}
 	body, truncMsg := fitToolOutput(t, result)
-	return toolOutcome{output: body, truncated: truncMsg != "", truncMsg: truncMsg}
+	return toolOutcome{output: body, images: append([]string(nil), images...), truncated: truncMsg != "", truncMsg: truncMsg}
 }
 
 func (a *Agent) checkPlanModeReadOnlyTrust(ctx context.Context, call provider.ToolCall, t tool.Tool) (bool, toolOutcome, bool) {

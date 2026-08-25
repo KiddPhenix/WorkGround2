@@ -54,25 +54,39 @@ type WidgetOption struct {
 	Code        string `json:"code,omitempty"`
 }
 
+// WidgetQuestion is one structured `ask` question projected onto the widget.
+// The widget/icon popups render from these typed fields instead of parsing the
+// prompt text, so multi-question asks stay fully answerable outside the main
+// window. Option Value mirrors Label for widgets; answers are validated against
+// the current Controller.PendingInteraction before being applied.
+type WidgetQuestion struct {
+	ID      string         `json:"id"`
+	Header  string         `json:"header,omitempty"`
+	Prompt  string         `json:"prompt"`
+	Options []WidgetOption `json:"options"`
+	Multi   bool           `json:"multi,omitempty"`
+}
+
 // WidgetMessage is the only important message shown by compact mode. Context
 // is repeated on every message so users never need a list to identify it.
 type WidgetMessage struct {
-	ID             string         `json:"id"`
-	Revision       string         `json:"revision"`
-	TabID          string         `json:"tabId"`
-	ProjectName    string         `json:"projectName"`
-	TaskName       string         `json:"taskName"`
-	TaskNameCode   string         `json:"taskNameCode,omitempty"`
-	Kind           string         `json:"kind"`
-	StateLabel     string         `json:"stateLabel"`
-	StateCode      string         `json:"stateCode,omitempty"`
-	Message        string         `json:"message"`
-	MessageCode    string         `json:"messageCode,omitempty"`
-	MessageCount   int            `json:"messageCount,omitempty"`
-	InteractionID  string         `json:"interactionId,omitempty"`
-	QuestionID     string         `json:"questionId,omitempty"`
-	Options        []WidgetOption `json:"options"`
-	RequiresWindow bool           `json:"requiresWindow,omitempty"`
+	ID             string           `json:"id"`
+	Revision       string           `json:"revision"`
+	TabID          string           `json:"tabId"`
+	ProjectName    string           `json:"projectName"`
+	TaskName       string           `json:"taskName"`
+	TaskNameCode   string           `json:"taskNameCode,omitempty"`
+	Kind           string           `json:"kind"`
+	StateLabel     string           `json:"stateLabel"`
+	StateCode      string           `json:"stateCode,omitempty"`
+	Message        string           `json:"message"`
+	MessageCode    string           `json:"messageCode,omitempty"`
+	MessageCount   int              `json:"messageCount,omitempty"`
+	InteractionID  string           `json:"interactionId,omitempty"`
+	QuestionID     string           `json:"questionId,omitempty"`
+	Questions      []WidgetQuestion `json:"questions,omitempty"`
+	Options        []WidgetOption   `json:"options"`
+	RequiresWindow bool             `json:"requiresWindow,omitempty"`
 }
 
 // WidgetSnapshot is a projection of the existing controller/tab state. It has
@@ -93,12 +107,15 @@ type WidgetSnapshot struct {
 }
 
 // WidgetActionInput carries stale-write and retry protection for one action.
+// Answers carries the structured reply of a multi-question ask (one entry per
+// question); legacy single-question replies keep using Values.
 type WidgetActionInput struct {
-	ItemID    string   `json:"itemId"`
-	Revision  string   `json:"revision"`
-	RequestID string   `json:"requestId"`
-	Action    string   `json:"action"`
-	Values    []string `json:"values"`
+	ItemID    string           `json:"itemId"`
+	Revision  string           `json:"revision"`
+	RequestID string           `json:"requestId"`
+	Action    string           `json:"action"`
+	Values    []string         `json:"values"`
+	Answers   []QuestionAnswer `json:"answers,omitempty"`
 }
 
 // WidgetActionResult exposes retryable/stale outcomes instead of swallowing
@@ -308,7 +325,7 @@ func (a *App) RefreshWidgetWindowRegion() error {
 	if a.ctx == nil {
 		return nil
 	}
-	style, _ := a.desktopIconPreferences()
+	style, _, _, _ := a.desktopIconPreferences()
 	if style == "icons" {
 		return nil
 	}
@@ -344,9 +361,9 @@ func (a *App) applyWidgetGeometry(state WidgetWindowState, alwaysOnTop bool) err
 	if err := setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y); err != nil {
 		return err
 	}
-	return a.applyWidgetRegion(func() error {
+	return errors.Join(setDesktopIconNativeMode(false), a.applyWidgetRegion(func() error {
 		return setWidgetWindowRegion(state.Width, state.Height)
-	})
+	}))
 }
 
 func (a *App) applyDesktopIconGeometry(state WidgetWindowState, alwaysOnTop bool) error {
@@ -357,6 +374,9 @@ func (a *App) applyDesktopIconGeometry(state WidgetWindowState, alwaysOnTop bool
 	runtime.WindowSetMinSize(a.ctx, desktopIconMinWidth, desktopIconMinHeight)
 	runtime.WindowSetAlwaysOnTop(a.ctx, alwaysOnTop)
 	if err := setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y); err != nil {
+		return err
+	}
+	if err := setDesktopIconNativeMode(true); err != nil {
 		return err
 	}
 	// Keep the full transparent surface available until React reports the first
@@ -469,6 +489,10 @@ func (a *App) switchDesktopWidgetStyleLocked(style string) (string, error) {
 		return previous, errors.Join(err, rollback(oldState, alwaysOnTop))
 	}
 	a.widgetStyle = style
+	if style == "icons" {
+		a.widgetSurfaceGen = 0
+		a.widgetSurfaceState = normalized
+	}
 	return previous, nil
 }
 
@@ -477,7 +501,7 @@ func (a *App) restoreMainGeometry(state DesktopWindowState, ok bool) error {
 		return a.widgetWindowOps.restoreMain(state, ok)
 	}
 	runtime.WindowSetAlwaysOnTop(a.ctx, false)
-	regionErr := a.applyWidgetRegion(clearWidgetWindowRegion)
+	regionErr := errors.Join(setDesktopIconNativeMode(false), a.applyWidgetRegion(clearWidgetWindowRegion))
 	runtime.WindowSetMinSize(a.ctx, 760, 480)
 	if !ok {
 		runtime.WindowSetSize(a.ctx, 1280, 800)
@@ -531,7 +555,7 @@ func (a *App) applyEnterWidgetMode() error {
 	if err := saveMainWindowState(mainState); err != nil {
 		return fmt.Errorf("save main window: %w", err)
 	}
-	style, _ := a.desktopIconPreferences()
+	style, _, _, _ := a.desktopIconPreferences()
 	state, ok := loadWidgetWindowState()
 	if style == "icons" {
 		// Always rebuild the icon canvas from the monitor that owns the main
@@ -563,6 +587,10 @@ func (a *App) applyEnterWidgetMode() error {
 		return err
 	}
 	a.widgetStyle = style
+	if style == "icons" {
+		a.widgetSurfaceGen = 0
+		a.widgetSurfaceState = state
+	}
 	return nil
 }
 
@@ -789,6 +817,133 @@ func (a *App) widgetSubagentCounts(sources []widgetSource) (map[widgetSubagentKe
 	return counts, errors.Join(errs...)
 }
 
+// widgetDelegations builds the typed running-delegation projection consumed by
+// icon mode. Each session directory is scanned once, real running sub-agents
+// and explicit CLI/external dispatch are the only delegation sources, and every
+// target carries the exact session identity needed for navigation. Ordinary
+// BackgroundOnly sessions are deliberately excluded: they stay as their own
+// running task icon instead of being projected as delegated work.
+func (a *App) widgetDelegations(sources []widgetSource) ([]DesktopIconDelegation, map[widgetSubagentKey]int, error) {
+	dirs := map[string]bool{}
+	parents := map[widgetSubagentKey]widgetSource{}
+	for _, source := range sources {
+		if dir := strings.TrimSpace(source.sessionDir); dir != "" {
+			dir = filepath.Clean(dir)
+			dirs[dir] = true
+		}
+		key := newWidgetSubagentKey(source.sessionDir, source.branchID)
+		if key.sessionDir == "" || key.branchID == "" {
+			continue
+		}
+		current, ok := parents[key]
+		if !ok || (!current.meta.Active && source.meta.Active) {
+			parents[key] = source
+		}
+	}
+
+	counts := map[widgetSubagentKey]int{}
+	byID := map[string]DesktopIconDelegation{}
+	var errs []error
+	dirList := make([]string, 0, len(dirs))
+	for dir := range dirs {
+		dirList = append(dirList, dir)
+	}
+	sort.Strings(dirList)
+	for _, dir := range dirList {
+		runs, err := agent.RunningSubagents(dir)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		for _, run := range runs {
+			key := newWidgetSubagentKey(dir, run.ParentSession)
+			counts[key]++
+			parent, found := parents[key]
+			content := conciseWidgetText(agent.UserPreviewText(run.Description), 120)
+			if content == "" {
+				label := firstNonEmpty(strings.TrimSpace(run.Name), strings.TrimSpace(run.Kind), "委托任务")
+				content = conciseWidgetText(label+" · "+run.Ref, 120)
+			}
+			item := DesktopIconDelegation{
+				ID:      "subagent:" + widgetRevision(dir, run.Ref),
+				Kind:    "subagent",
+				Content: content,
+				Status:  "running",
+			}
+			if !run.UpdatedAt.IsZero() {
+				item.UpdatedAt = run.UpdatedAt.UnixMilli()
+			}
+			if found {
+				meta := parent.meta
+				item.SessionTitle = firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "所属 Session")
+				item.WorkspaceName = firstNonEmpty(strings.TrimSpace(meta.WorkspaceName), "WorkGround2")
+				item.SessionRef = desktopIconTaskRef(meta.Scope, meta.WorkspaceRoot, meta.TopicID, meta.SessionPath)
+			} else {
+				item.SessionTitle = "Session " + run.ParentSession
+				errs = append(errs, fmt.Errorf("running delegation %q has no loaded parent session identity", run.Ref))
+			}
+			byID[item.ID] = item
+		}
+	}
+
+	for _, source := range sources {
+		meta := source.meta
+		// Delegation only aggregates real running sub-agents (scanned above)
+		// and explicit CLI/external dispatch. An ordinary Session that entered
+		// BackgroundOnly solely because of a background Job is NOT a delegation:
+		// it keeps its own running task icon and never counts here.
+		isCLI := strings.EqualFold(strings.TrimSpace(meta.SessionSource), "cli")
+		if !isCLI || !meta.RunningWork {
+			continue
+		}
+		if counts[newWidgetSubagentKey(source.sessionDir, source.branchID)] > 0 {
+			continue
+		}
+		item := DesktopIconDelegation{
+			ID:            "cli:" + widgetRevision(firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID)), strings.TrimSpace(meta.SessionPath)),
+			Kind:          "cli",
+			Content:       conciseWidgetText(firstNonEmpty(agent.UserPreviewText(source.requestText), agent.UserPreviewText(meta.ActivityText), strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "CLI 委托"), 120),
+			Status:        "running",
+			SessionTitle:  firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "所属 Session"),
+			WorkspaceName: firstNonEmpty(strings.TrimSpace(meta.WorkspaceName), "WorkGround2"),
+			UpdatedAt:     meta.TurnStartedAt,
+			SessionRef:    desktopIconTaskRef(meta.Scope, meta.WorkspaceRoot, meta.TopicID, meta.SessionPath),
+		}
+		byID[item.ID] = item
+	}
+
+	items := make([]DesktopIconDelegation, 0, len(byID))
+	for _, item := range byID {
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].UpdatedAt != items[j].UpdatedAt {
+			return items[i].UpdatedAt > items[j].UpdatedAt
+		}
+		if items[i].SessionTitle != items[j].SessionTitle {
+			return items[i].SessionTitle < items[j].SessionTitle
+		}
+		return items[i].ID < items[j].ID
+	})
+	return items, counts, errors.Join(errs...)
+}
+
+func widgetSourceIsSubagent(source widgetSource) bool {
+	if strings.EqualFold(strings.TrimSpace(source.meta.SessionSource), "subagent") {
+		return true
+	}
+	path := strings.TrimSpace(source.meta.SessionPath)
+	if path == "" {
+		return false
+	}
+	if strings.EqualFold(filepath.Base(filepath.Dir(filepath.Clean(path))), "subagents") {
+		return true
+	}
+	if dir := strings.TrimSpace(source.sessionDir); dir != "" {
+		return strings.EqualFold(filepath.Clean(filepath.Dir(path)), filepath.Join(filepath.Clean(dir), "subagents"))
+	}
+	return false
+}
+
 // retryLeaseTabs retries startup after a session lease becomes available.
 func (a *App) retryLeaseTabs() {
 	a.retryLeaseTabsWith(agent.SessionLeaseHeldByOtherRuntime, a.RetryTabStartup)
@@ -1002,13 +1157,15 @@ func messageForPending(source widgetSource) WidgetMessage {
 	}
 
 	ask := pending.Ask
+	message := baseWidgetMessage(meta, "reply", "等待回复", "")
+	message.StateCode = "reply"
+	message.ID = "ask:" + meta.ID + ":" + ask.ID
+	message.InteractionID = ask.ID
+	message.Questions = widgetQuestions(ask.Questions)
 	if len(ask.Questions) != 1 {
-		message := baseWidgetMessage(meta, "reply", "等待回复", fmt.Sprintf("需要回答 %d 个问题，请在主窗口继续。", len(ask.Questions)))
-		message.StateCode = "reply"
+		message.Message = fmt.Sprintf("需要回答 %d 个问题，请在主窗口继续。", len(ask.Questions))
 		message.MessageCode = "multi_question"
 		message.MessageCount = len(ask.Questions)
-		message.ID = "ask:" + meta.ID + ":" + ask.ID
-		message.InteractionID = ask.ID
 		message.RequiresWindow = true
 		message.Revision = widgetMessageRevision(message)
 		return message
@@ -1018,10 +1175,8 @@ func messageForPending(source widgetSource) WidgetMessage {
 	if len(question.Options) > 0 && !question.Multi {
 		kind = "choice"
 	}
-	message := baseWidgetMessage(meta, kind, "等待回复", conciseWidgetText(question.Prompt, 110))
-	message.StateCode = "reply"
-	message.ID = "ask:" + meta.ID + ":" + ask.ID
-	message.InteractionID = ask.ID
+	message.Kind = kind
+	message.Message = conciseWidgetText(question.Prompt, 110)
 	message.QuestionID = question.ID
 	message.RequiresWindow = question.Multi || len(question.Options) > 3
 	if !message.RequiresWindow {
@@ -1032,6 +1187,22 @@ func messageForPending(source widgetSource) WidgetMessage {
 	}
 	message.Revision = widgetMessageRevision(message)
 	return message
+}
+
+// widgetQuestions projects the current ask's questions into the widget DTO.
+// Every question keeps its full option set so the icon popup can render any
+// standard ask (1-4 questions, 2-4 options, single/multi, custom answers)
+// without parsing prompt text.
+func widgetQuestions(questions []event.AskQuestion) []WidgetQuestion {
+	out := make([]WidgetQuestion, 0, len(questions))
+	for _, question := range questions {
+		options := make([]WidgetOption, 0, len(question.Options))
+		for _, option := range question.Options {
+			options = append(options, WidgetOption{Label: option.Label, Description: option.Description, Value: option.Label})
+		}
+		out = append(out, WidgetQuestion{ID: question.ID, Header: question.Header, Prompt: question.Prompt, Options: options, Multi: question.Multi})
+	}
+	return out
 }
 
 func baseWidgetMessage(meta TabMeta, kind, state, message string) WidgetMessage {
@@ -1061,7 +1232,23 @@ func widgetMessageRevision(message WidgetMessage) string {
 		message.StateCode,
 		message.MessageCode,
 		fmt.Sprint(message.MessageCount),
+		widgetQuestionsSignature(message.Questions),
 	)
+}
+
+// widgetQuestionsSignature renders the structured question set into the
+// revision so an ask whose options change (but whose prompt text stays the
+// same) still invalidates stale widget actions and re-triggers the icon
+// popup's once-per-revision reminder.
+func widgetQuestionsSignature(questions []WidgetQuestion) string {
+	parts := make([]string, 0, len(questions)*6)
+	for _, question := range questions {
+		parts = append(parts, question.ID, question.Header, question.Prompt, fmt.Sprint(question.Multi))
+		for _, option := range question.Options {
+			parts = append(parts, option.Label, option.Description)
+		}
+	}
+	return strings.Join(parts, "\x00")
 }
 
 func conciseWidgetText(text string, maxRunes int) string {
@@ -1200,7 +1387,7 @@ func (a *App) pruneWidgetDeferredLocked() {
 func (a *App) applyWidgetActionCurrent(current WidgetMessage, input WidgetActionInput) error {
 	switch input.Action {
 	case "answer":
-		if current.InteractionID == "" || current.QuestionID == "" || len(input.Values) == 0 {
+		if current.InteractionID == "" {
 			return errors.New("answer value is required")
 		}
 		ctrl := a.ctrlByTabID(current.TabID)
@@ -1208,7 +1395,28 @@ func (a *App) applyWidgetActionCurrent(current WidgetMessage, input WidgetAction
 			return errors.New("task is not ready")
 		}
 		pending, ok := ctrl.PendingInteraction()
-		if !ok || pending.Kind != control.PendingInteractionAsk || pending.Ask.ID != current.InteractionID || len(pending.Ask.Questions) != 1 {
+		if !ok || pending.Kind != control.PendingInteractionAsk || pending.Ask.ID != current.InteractionID {
+			return errors.New("pending question changed")
+		}
+		if len(input.Answers) > 0 {
+			// Structured multi-question reply: every question of the current
+			// ask must be answered exactly once. The pending interaction is
+			// re-read here (never trusted from the notice), so an expired or
+			// changed ask fails explicitly and can be retried with the latest
+			// snapshot. requestId keeps the retry idempotent.
+			out, err := widgetAnswersForPending(pending.Ask, input.Answers)
+			if err != nil {
+				return err
+			}
+			ctrl.AnswerQuestion(pending.Ask.ID, out)
+			return nil
+		}
+		// Legacy single-question reply (Values): only valid while the current
+		// ask is exactly one question and matches the notice's question id.
+		if current.QuestionID == "" || len(input.Values) == 0 {
+			return errors.New("answer value is required")
+		}
+		if len(pending.Ask.Questions) != 1 {
 			return errors.New("pending question changed")
 		}
 		question := pending.Ask.Questions[0]
@@ -1244,4 +1452,55 @@ func (a *App) applyWidgetActionCurrent(current WidgetMessage, input WidgetAction
 
 func (a *App) widgetActionErrorLocked(status string, err error) WidgetActionResult {
 	return WidgetActionResult{Status: status, Error: err.Error(), Snapshot: a.widgetSnapshotLocked()}
+}
+
+// widgetAnswersForPending validates one structured batch reply against the
+// current ask and normalizes it into controller answers. Every question of the
+// current ask must be answered exactly once (no half-answered ask), single
+// questions accept exactly one value and multi questions at least one. Values
+// are trimmed and deduplicated; an option-picked label passes through unchanged
+// and any other non-empty text is accepted as that question's free-form custom
+// answer, so each question keeps its custom-answer path. The ask is re-read
+// from the controller by the caller, so stale answers fail explicitly here.
+func widgetAnswersForPending(ask event.Ask, answers []QuestionAnswer) ([]event.AskAnswer, error) {
+	byQuestion := make(map[string][]string, len(answers))
+	for _, answer := range answers {
+		questionID := strings.TrimSpace(answer.QuestionID)
+		if questionID == "" {
+			return nil, errors.New("answer questionId is required")
+		}
+		if _, exists := byQuestion[questionID]; exists {
+			return nil, fmt.Errorf("duplicate answer for question %q", questionID)
+		}
+		byQuestion[questionID] = answer.Selected
+	}
+
+	out := make([]event.AskAnswer, 0, len(ask.Questions))
+	for _, question := range ask.Questions {
+		selected, exists := byQuestion[question.ID]
+		if !exists || len(selected) == 0 {
+			return nil, fmt.Errorf("answer required for question %q", question.ID)
+		}
+		clean := make([]string, 0, len(selected))
+		seen := make(map[string]struct{}, len(selected))
+		for _, value := range selected {
+			if value = strings.TrimSpace(value); value == "" {
+				return nil, fmt.Errorf("question %q has an empty answer", question.ID)
+			}
+			if _, duplicate := seen[value]; duplicate {
+				return nil, fmt.Errorf("question %q repeats value %q", question.ID, value)
+			}
+			seen[value] = struct{}{}
+			clean = append(clean, value)
+		}
+		if !question.Multi && len(clean) != 1 {
+			return nil, fmt.Errorf("question %q accepts exactly one option", question.ID)
+		}
+		delete(byQuestion, question.ID)
+		out = append(out, event.AskAnswer{QuestionID: question.ID, Selected: clean})
+	}
+	for questionID := range byQuestion {
+		return nil, fmt.Errorf("unknown question %q", questionID)
+	}
+	return out, nil
 }

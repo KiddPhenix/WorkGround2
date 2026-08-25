@@ -138,6 +138,16 @@ type OutputLimiter interface {
 	LimitOutput(s string, maxBytes int) (out string, ok bool)
 }
 
+// ImageExecutor is an optional capability a tool implements when one execution
+// can also produce images the model should see directly (e.g. view_image).
+// Images are returned with the text from the same call and carried out-of-band
+// as data URLs, avoiding hidden mutable state and string-encoded image payloads.
+// Execute remains the ordinary Tool entry point for callers that only consume
+// text; the Agent prefers ExecuteImages when this interface is available.
+type ImageExecutor interface {
+	ExecuteImages(ctx context.Context, args json.RawMessage) (text string, images []string, err error)
+}
+
 // --- process-global built-in set (populated by builtin subpackage init) ---
 
 var builtins = map[string]Tool{}

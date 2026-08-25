@@ -253,7 +253,9 @@ function realTask(id: string): DesktopIconItem {
 	const fixed: DesktopIconItem = { id: "fixed:new", kind: "fixed", sourceId: "new", title: "新建", status: "idle", unreadCount: 0, notifications: [], position: { row: "bottom", zone: "fixed", order: 0 }, revision: "1" };
 	const opt = quickStartJobItem({ requestId: "r1", intent, phase: "running", createdAt: 1, updatedAt: 1 });
 	const merged = mergeQuickStartItems([task, workspace, fixed], [opt]);
-	assert.deepEqual(merged.map((item) => item.id), ["task:t1", "workspace:w", "opt:r1", "fixed:new"], "optimistic icons render after real tasks/workspaces but before the fixed bar");
+	assert.deepEqual(merged.map((item) => item.id), ["opt:r1", "task:t1", "workspace:w", "fixed:new"], "the newest optimistic Session stays at the far-left edge of the bottom row");
+	const newer = quickStartJobItem({ requestId: "r2", intent, phase: "running", createdAt: 2, updatedAt: 2 });
+	assert.deepEqual(mergeQuickStartItems([task, workspace, fixed], [newer, opt]).map((item) => item.id), ["opt:r2", "opt:r1", "task:t1", "workspace:w", "fixed:new"], "simultaneous optimistic Sessions remain newest-first at the left edge");
 	assert.deepEqual(mergeQuickStartItems([fixed], []), [fixed], "no jobs means no merge (same reference)");
 	assert.equal(mergeQuickStartItems([], [opt]).length, 1, "an empty snapshot still renders the optimistic icon");
 }
@@ -356,6 +358,38 @@ function realTask(id: string): DesktopIconItem {
 	assert.ok(!runner.jobs()[submitted.requestId], "old(no-real) resolving later never resurrects the reconciled job");
 }
 
+{
+	// A one-second authoritative poll reads a fresh object from localStorage.
+	// Equivalent content must keep the runner reference and skip subscribers,
+	// otherwise every idle poll forces DesktopIconMode + hit-region layout work.
+	const storage = fakeStorage();
+	const runner = createQuickStartJobRunner({
+		deliver: async () => accepted("tab-1"),
+		storage,
+		wait: async () => {},
+	});
+	const seen: QuickStartJobs[] = [];
+	runner.subscribe((jobs) => seen.push(jobs));
+	const initial = runner.jobs();
+	runner.reconcile([]);
+	runner.reconcile([realTask("task:unrelated")]);
+	assert.equal(seen.length, 1, "equivalent empty polls do not notify subscribers");
+	assert.equal(runner.jobs(), initial, "equivalent polls preserve the current jobs reference");
+
+	const submitted = runner.submit(intent);
+	if (!submitted.ok) throw new Error("submit failed");
+	assert.equal(seen.length, 2, "a real job addition still notifies subscribers");
+	const running = runner.jobs();
+	runner.reconcile([]);
+	assert.equal(seen.length, 2, "an equivalent running-job poll stays silent");
+	assert.equal(runner.jobs(), running, "an equivalent populated poll also preserves identity");
+	await flush();
+	assert.equal(seen.length, 3, "the real running-to-accepted transition still notifies");
+	runner.reconcile([realTask("task:tab-1")]);
+	assert.equal(seen.length, 4, "the authoritative handoff deletion still notifies");
+	assert.ok(!runner.jobs()[submitted.requestId], "the real task handoff still removes the optimistic job");
+}
+
 // --- runner: submit is synchronous and delivery is background ---
 
 {
@@ -433,6 +467,7 @@ function realTask(id: string): DesktopIconItem {
 	if (!first.ok || !second.ok) throw new Error("submit failed");
 	assert.notEqual(first.requestId, second.requestId, "each submit owns a fresh requestId");
 	assert.equal(calls.length, 2, "both jobs dispatch independently");
+	assert.deepEqual(calls[1].existingTitles, [quickStartJobPromptLabel(intent)], "a later naming request sees other frontend-only optimistic icon labels");
 
 	// Double dispatch of the SAME requestId (resume/retry while in flight).
 	runner.retry(first.requestId);

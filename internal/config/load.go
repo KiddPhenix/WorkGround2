@@ -129,6 +129,7 @@ func LoadForRoot(root string) (*Config, error) {
 	normalizeLegacyProviderModels(cfg)
 	normalizeDesktopOfficialProviderAccess(cfg)
 	normalizeOfficialDeepSeekModels(cfg)
+	normalizeOfficialNewModels(cfg)
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
@@ -489,6 +490,7 @@ func normalizeConfigForEdit(cfg *Config) bool {
 	migratedMimo := normalizeLegacyMimoCustomProviders(cfg)
 	normalizeLegacyProviderModels(cfg)
 	normalizeDesktopOfficialProviderAccess(cfg)
+	normalizeOfficialNewModels(cfg)
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
@@ -647,6 +649,87 @@ func normalizeOfficialDeepSeekModels(c *Config) {
 			ensureProviderModels(p, []string{"deepseek-v4-pro"}, "deepseek-v4-pro")
 		}
 	}
+}
+
+// deepSeekVisionExpModel is the new DeepSeek V4 Flash vision variant. It keeps
+// Flash's reasoning/effort scale (see effort.go and provider/openai.IsDeepSeek).
+const deepSeekVisionExpModel = "deepseek-v4-flash-vision-exp"
+
+// openAIGPT56Models lists the GPT-5.6 series added to the official OpenAI API
+// catalog. Every variant is vision- and reasoning-capable (see capability.go).
+func openAIGPT56Models() []string {
+	return []string{"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
+}
+
+// normalizeOfficialNewModels additively merges newly-added official catalog
+// models into already-configured official DeepSeek/OpenAI providers, so an
+// existing setup sees the new entries without a config rewrite. It is
+// idempotent, preserves the user's default, existing/custom models, overrides
+// and explicit vision selection, and never injects the official catalog into a
+// custom gateway (the endpoint host must be the official one). The legacy
+// deepseek-flash/deepseek-pro single-model entries are left untouched.
+func normalizeOfficialNewModels(c *Config) {
+	if c == nil {
+		return
+	}
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if isCodexCLIProvider(p) {
+			mergeOfficialNewModels(p, openAIGPT56Models(), nil)
+			continue
+		}
+		switch officialProviderKind(p) {
+		case "deepseek":
+			switch strings.TrimSpace(p.Name) {
+			case "deepseek-flash", "deepseek-pro":
+				continue // legacy single-model entries stay as-is
+			}
+			mergeOfficialNewModels(p, []string{deepSeekVisionExpModel}, []string{deepSeekVisionExpModel})
+		case "openai":
+			gpt56 := openAIGPT56Models()
+			mergeOfficialNewModels(p, gpt56, gpt56)
+		}
+	}
+}
+
+func isCodexCLIProvider(p *ProviderEntry) bool {
+	if p == nil || !strings.EqualFold(strings.TrimSpace(p.Kind), "cli") {
+		return false
+	}
+	name := strings.TrimSpace(p.Command)
+	if i := strings.LastIndexAny(name, `/\\`); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.ToLower(name)
+	name = strings.TrimSuffix(strings.TrimSuffix(name, ".exe"), ".cmd")
+	return name == "codex"
+}
+
+// mergeOfficialNewModels appends new official chat models to p without dropping
+// anything already present. Vision metadata is only auto-populated when the
+// user has not explicitly configured vision (Vision or VisionModels); an
+// explicit selection is preserved.
+func mergeOfficialNewModels(p *ProviderEntry, models, visionModels []string) {
+	if p == nil || len(models) == 0 {
+		return
+	}
+	before := append([]string(nil), p.ModelList()...)
+	merged := mergeModelLists(p.ModelList(), models)
+	if stringSlicesEqual(before, merged) || len(merged) == 0 {
+		return
+	}
+	p.Model = merged[0]
+	if len(merged) > 1 {
+		p.Models = merged
+		p.Default = firstKnownModel(p.Default, merged, merged[0])
+	} else {
+		p.Models = nil
+		p.Default = ""
+	}
+	if len(visionModels) == 0 || p.Vision || p.VisionModels != nil {
+		return
+	}
+	p.VisionModels = mergeModelLists(nil, visionModels)
 }
 
 func officialProviderHost(baseURL string) string {

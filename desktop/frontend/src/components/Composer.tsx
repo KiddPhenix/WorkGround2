@@ -5,10 +5,10 @@ import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
 import { app, onFilesDropped } from "../lib/bridge";
-import { canUsePromptHistory, isComposerSubmitKey, isFnKeyEvent, normalizeComposerSubmitKey, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
+import { canUsePromptHistory, isComposerGuideKey, isComposerSubmitKey, isFnKeyEvent, normalizeComposerSubmitKey, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { useI18n } from "../lib/i18n";
-import { activityLead, stageDisplay, type Stage } from "../lib/activity";
+import { activityLeadForStage, stageDisplay, type Stage } from "../lib/activity";
 import { detectShortcutPlatform, matchesShortcut } from "../lib/keyboardShortcuts";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createRafResizeUpdater } from "../lib/resizeDrag";
@@ -1305,6 +1305,33 @@ export function Composer({
     }
   }, [imageInputEnabled, attachments, composerPrompt]);
 
+  const buildSubmitPayload = async (
+    currentText: string,
+    currentAttachments: Attachment[],
+    currentWorkspaceRefs: WorkspaceReference[],
+  ): Promise<{ displayText: string; submitText: string }> => {
+    const trimmedText = currentText.trim();
+    const orderedAttachments = sortComposerAttachments(currentAttachments);
+    const refs = [
+      ...currentWorkspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
+      ...orderedAttachments.map((a) => `@${a.path}`),
+    ].join(" ");
+    const displayRefs = [
+      ...currentWorkspaceRefs.map((ref) => formatWorkspaceReference(ref.displayPath || ref.path, ref.isDir)),
+      ...orderedAttachments.map(formatAttachmentDisplayReference),
+    ].join(" ");
+    const displayText = [trimmedText, displayRefs].filter(Boolean).join(trimmedText && displayRefs ? " " : "");
+    // When past:chats refs are attached, prepend their formatted transcript
+    // to submitText only (displayText stays unchanged so the user still sees
+    // their original prompt in the input preview). With no refs we keep the
+    // original submitText verbatim — no header, no rewording.
+    const currentSessionRefs = sessionRefsRef.current;
+    const sessionContext = currentSessionRefs.length === 0 ? "" : await buildSessionContext(currentSessionRefs);
+    const baseSubmitText = [expandPastedBlocks(trimmedText), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
+    const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
+    return { displayText, submitText };
+  };
+
   const submit = async () => {
     if (disabled || (!runningRef.current && submitDisabled) || readOnly || submittingRef.current) return;
     const submitDraftKey = activeDraftKeyRef.current;
@@ -1315,7 +1342,12 @@ export function Composer({
     const currentWorkspaceRefs = workspaceRefsRef.current;
     if (!trimmedText && currentAttachments.length === 0 && currentWorkspaceRefs.length === 0) {
       if (runningRef.current) {
-        if (widgetEnabled) void onEnterWidgetMode?.();
+        const currentSessionId = tabId ?? "";
+        const hasCurrentSessionQueue = useComposerQueueStore.getState().items.some((item) => (item.sessionId ?? "") === currentSessionId);
+        const hasPendingGuidance = pendingGuidance.length > 0;
+        if (!hasCurrentSessionQueue && !hasPendingGuidance) {
+          if (widgetEnabled) void onEnterWidgetMode?.();
+        }
         return;
       }
       if (goalModeOn && !activeGoal) {
@@ -1328,24 +1360,7 @@ export function Composer({
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      const orderedAttachments = sortComposerAttachments(currentAttachments);
-      const refs = [
-        ...currentWorkspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
-        ...orderedAttachments.map((a) => `@${a.path}`),
-      ].join(" ");
-      const displayRefs = [
-        ...currentWorkspaceRefs.map((ref) => formatWorkspaceReference(ref.displayPath || ref.path, ref.isDir)),
-        ...orderedAttachments.map(formatAttachmentDisplayReference),
-      ].join(" ");
-      const displayText = [trimmedText, displayRefs].filter(Boolean).join(trimmedText && displayRefs ? " " : "");
-      // PR-B: when past:chats refs are attached, prepend their formatted transcript
-      // to submitText only (displayText stays unchanged so the user still sees their
-      // original prompt in the input preview). With no refs we keep the original
-      // submitText verbatim — no header, no rewording, byte-identical to pre-PR-B.
-      const currentSessionRefs = sessionRefsRef.current;
-      const sessionContext = currentSessionRefs.length === 0 ? "" : await buildSessionContext(currentSessionRefs);
-      const baseSubmitText = [expandPastedBlocks(trimmedText), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
-      const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
+      const { displayText, submitText } = await buildSubmitPayload(currentText, currentAttachments, currentWorkspaceRefs);
       if (runningRef.current) {
         const queuedText = displayText.trim();
         const queuedSubmitText = submitText.trim();
@@ -1377,6 +1392,34 @@ export function Composer({
       } else {
         await onSend(displayText, submitText);
       }
+      clearSubmittedDraft(submitDraftKey);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error), "warn");
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  const guideSubmit = async () => {
+    if (!runningRef.current || disabled || readOnly || submittingRef.current) return;
+    const submitDraftKey = activeDraftKeyRef.current;
+    const currentText = textRef.current;
+    const trimmedText = currentText.trim();
+    if (pendingPaste > 0) return;
+    const currentAttachments = attachmentsRef.current;
+    const currentWorkspaceRefs = workspaceRefsRef.current;
+    if (!trimmedText && currentAttachments.length === 0 && currentWorkspaceRefs.length === 0) return;
+    setComposerPrompt(null);
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      const { displayText, submitText } = await buildSubmitPayload(currentText, currentAttachments, currentWorkspaceRefs);
+      // Context expansion may outlive the turn that accepted the shortcut. A
+      // late guide must stay as a retryable draft instead of becoming a new
+      // turn through onSend's now-idle route.
+      if (!runningRef.current) return;
+      await onSend(displayText, submitText);
       clearSubmittedDraft(submitDraftKey);
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error), "warn");
@@ -2098,8 +2141,12 @@ export function Composer({
       return;
     }
 
-    // Enter handling follows the user-configured submit shortcut.
-    if (isComposerSubmitKey(e, composerSubmitKey, composing)) {
+    // Enter handling follows the user-configured submit shortcut. While a turn
+    // is running, the guide shortcut immediately steers it instead of queuing.
+    if (isComposerGuideKey(e, composerSubmitKey, composing, running)) {
+      e.preventDefault();
+      void guideSubmit();
+    } else if (isComposerSubmitKey(e, composerSubmitKey, composing)) {
       e.preventDefault();
       submit();
     }
@@ -2185,16 +2232,18 @@ export function Composer({
   const runActivity = (() => {
     if (running && turnStartAt && activityStage) {
       const elapsedMs = Math.max(0, now - turnStartAt);
-      const { flavor } = stageDisplay(activityStage, locale, activityStageSeed ?? 0);
+      const { label, flavor } = stageDisplay(activityStage, locale, activityStageSeed ?? 0);
       const tok = turnTokens && turnTokens > 0 ? ` · ↓ ${fmtTokens(turnTokens)} ${t("status.tokens")}` : "";
-      return `${activityLead(flavor)} ${fmtElapsed(elapsedMs)}${tok}`;
+      return `${activityLeadForStage(activityStage, label, flavor)} ${fmtElapsed(elapsedMs)}${tok}`;
     }
     if (retry) return t("status.retrying", { attempt: retry.attempt, max: retry.max });
     return null;
   })();
   const submitEmpty = !text.trim() && attachments.length === 0 && workspaceRefs.length === 0;
   const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly;
-  const submitTooltip = running ? t("composer.queueGuidance") : t(composerSubmitKey === "ctrl_enter" ? "composer.sendCtrlEnter" : "composer.send");
+  const submitTooltip = running
+    ? t(composerSubmitKey === "ctrl_enter" ? "composer.queueGuidanceCtrlEnter" : "composer.queueGuidance")
+    : t(composerSubmitKey === "ctrl_enter" ? "composer.sendCtrlEnter" : "composer.send");
   const composerPlaceholder = readOnly
     ? t("composer.readOnlyChannel")
     : disabled

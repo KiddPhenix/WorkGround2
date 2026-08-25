@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/collab"
 )
 
@@ -88,6 +89,8 @@ func newSchedulerTestRuntime(t *testing.T, snapshot collab.Snapshot) *desktopCol
 	c.submitAgent = func(_, _, _ string) error { return nil }
 	c.prepareAutoAgent = func(string) (string, error) { return "ask", nil }
 	c.restoreAutoAgent = func(string, string) {}
+	c.prepareAgentReadOnly = func(string) (bool, error) { return false, nil }
+	c.restoreAgentReadOnly = func(string, bool) {}
 	c.scheduler = newCollaborationScheduler()
 	c.conn = &collaborationConnection{
 		mode: "host", room: snapshot.Room.ID,
@@ -106,7 +109,7 @@ func TestSchedulerMentionTriggersAgent(t *testing.T) {
 		chatItem("chat-1", "member-b", "hello @Alice Agent please help", []string{"member-a"}, []string{"agent-a"}),
 	)
 	s := newCollaborationScheduler()
-	input := s.nextMention(snap, "member-a", "agent-a", "session-a", nil)
+	input := s.nextMention(snap, "member-a", "agent-a", "session-a", defaultCollaborationAgentConfig(), nil)
 	if input == nil {
 		t.Fatal("expected mention to trigger agent start")
 	}
@@ -120,7 +123,7 @@ func TestSchedulerMentionSkipsWhenAlreadyHandled(t *testing.T) {
 		chatItem("chat-1", "member-b", "@Alice Agent go", []string{"member-a"}, []string{"agent-a"}),
 	)
 	s := newCollaborationScheduler()
-	input := s.nextMention(snap, "member-a", "agent-a", "session-a", map[string]bool{"chat-1": true})
+	input := s.nextMention(snap, "member-a", "agent-a", "session-a", defaultCollaborationAgentConfig(), map[string]bool{"chat-1": true})
 	if input != nil {
 		t.Fatal("expected mention to be skipped when already handled")
 	}
@@ -133,7 +136,7 @@ func TestSchedulerMentionSkipsWhenAlreadyStarted(t *testing.T) {
 		agentRunItem("cmd-1", "member-a", requestID),
 	)
 	s := newCollaborationScheduler()
-	input := s.nextMention(snap, "member-a", "agent-a", "session-a", nil)
+	input := s.nextMention(snap, "member-a", "agent-a", "session-a", defaultCollaborationAgentConfig(), nil)
 	if input != nil {
 		t.Fatal("expected mention to be skipped when agent command already exists")
 	}
@@ -539,6 +542,175 @@ func TestSchedulerMentionsAlwaysFireOnSignal(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Question-only mode: @mentions must not execute operation instructions
+// ---------------------------------------------------------------------------
+
+func TestSchedulerQuestionOnlyMentionOperationDoesNotFire(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent 帮我写文件 main.go 并运行测试", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "message"
+	c.state.AgentConfig.AutoRespondQuestions = true
+	c.state.AgentConfig.AutoRespondRequests = false
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 0 {
+		t.Fatalf("question-only mode: @operation instruction must not trigger Agent, got %d starts: %+v", len(captured), captured)
+	}
+}
+
+func TestSchedulerQuestionOnlyMentionQuestionFiresReadOnly(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent 这个报错怎么排查？", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "message"
+	c.state.AgentConfig.AutoRespondQuestions = true
+	c.state.AgentConfig.AutoRespondRequests = false
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 1 {
+		t.Fatalf("question-only mode: @question must trigger Agent, got %d starts", len(captured))
+	}
+	if !strings.HasPrefix(captured[0].RequestID, mentionPrefix) {
+		t.Errorf("expected mention prefix, got %q", captured[0].RequestID)
+	}
+	if !captured[0].ReadOnly {
+		t.Error("question-only @question run must be read-only at runtime")
+	}
+
+	// Replay the same snapshot after the command is handled: no duplicate start.
+	c.state.Snapshot.Timeline = append(c.state.Snapshot.Timeline,
+		agentRunItem("cmd-question", "member-a", captured[0].RequestID))
+	captured = nil
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 0 {
+		t.Fatalf("replayed question-only mention must not fire twice, got %d", len(captured))
+	}
+}
+
+func TestSchedulerQuestionOnlyMentionWithOperationQuestionFiresReadOnly(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent 能帮我写文件吗？", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "message"
+	c.state.AgentConfig.AutoRespondQuestions = true
+	c.state.AgentConfig.AutoRespondRequests = false
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 1 {
+		t.Fatalf("question-shaped mention must still trigger an answer, got %d starts", len(captured))
+	}
+	if !captured[0].ReadOnly {
+		t.Error("question-shaped mention with an operation request must NOT gain write capability")
+	}
+}
+
+func TestSchedulerQuestionOnlyPlainQuestionFiresReadOnly(t *testing.T) {
+	snap := collab.Snapshot{
+		Room: collab.Room{ID: "room-a"},
+		Members: []collab.Member{
+			{ID: "member-a", Name: "Alice", Status: collab.MemberOnline, Agent: collab.AgentDescriptor{ID: "agent-a", Status: collab.AgentIdle}},
+			{ID: "member-b", Name: "Bob", Status: collab.MemberOnline, Agent: collab.AgentDescriptor{}}, // no agent
+		},
+		Timeline: []collab.TimelineItem{
+			chatItem("chat-1", "member-b", "这个接口为什么超时？", nil, nil),
+		},
+	}
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "message"
+	c.state.AgentConfig.AutoRespondQuestions = true
+	c.state.AgentConfig.AutoRespondRequests = false
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 1 {
+		t.Fatalf("plain question must trigger Agent in question-only mode, got %d starts", len(captured))
+	}
+	if !strings.HasPrefix(captured[0].RequestID, autoQuestionPrefix) {
+		t.Errorf("expected question prefix, got %q", captured[0].RequestID)
+	}
+	if !captured[0].ReadOnly {
+		t.Error("question-only plain-question run must be read-only at runtime")
+	}
+}
+
+func TestSchedulerOperationsModeMentionKeepsFullCapability(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent 帮我写文件 main.go", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "message"
+	c.state.AgentConfig.AutoRespondQuestions = true
+	c.state.AgentConfig.AutoRespondRequests = true
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 1 {
+		t.Fatalf("operations mode: @operation instruction must still trigger Agent, got %d starts", len(captured))
+	}
+	if captured[0].ReadOnly {
+		t.Error("operations mode must keep full (non-read-only) Agent capability")
+	}
+}
+
+func TestSchedulerQuestionOnlyManualModeMentionsUnchanged(t *testing.T) {
+	// Both auto-response flags off: mentions keep their existing unconditional
+	// semantics (recognition off, mentions still fire).
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent 帮我写文件 main.go", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.state.AgentConfig.RecognitionMode = "off"
+	c.state.AgentConfig.AutoRespondQuestions = false
+	c.state.AgentConfig.AutoRespondRequests = false
+
+	var captured []StartCollaborationAgentInput
+	c.startAgentHook = func(_ context.Context, input StartCollaborationAgentInput) {
+		captured = append(captured, input)
+	}
+
+	s := newCollaborationScheduler()
+	s.scheduleOnce(context.Background(), c, wakeSignal)
+	if len(captured) != 1 {
+		t.Fatalf("manual mode mentions must keep firing, got %d starts", len(captured))
+	}
+	if captured[0].ReadOnly {
+		t.Error("manual mode mention must keep full capability")
+	}
+}
+
 func TestSchedulerMentionsDoNotFireOnTicker(t *testing.T) {
 	snap := snapshotWithTimeline(
 		chatItem("chat-1", "member-b", "@Alice Agent help", []string{"member-a"}, []string{"agent-a"}),
@@ -662,9 +834,49 @@ func TestSchedulerStartupResidencyRestoresRuntime(t *testing.T) {
 	}
 }
 
+func TestSchedulerOffTabTransportResidencyDoesNotQueueAgentRun(t *testing.T) {
+	snap := snapshotWithTimeline(
+		chatItem("chat-1", "member-b", "@Alice Agent help", []string{"member-a"}, []string{"agent-a"}),
+	)
+	c := newSchedulerTestRuntime(t, snap)
+	c.startAgentHook = nil
+	c.agentReady = func(string) (bool, error) { return false, nil }
+
+	c.scheduler.scheduleOnce(context.Background(), c, wakeSignal)
+	c.mu.RLock()
+	starts := len(c.starts)
+	queued := len(c.queuedRuns)
+	c.mu.RUnlock()
+	if starts != 0 || queued != 0 {
+		t.Fatalf("off-tab scheduler queued Agent work: starts=%d queued=%d", starts, queued)
+	}
+}
+
 func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	if err := addProject(root, ""); err != nil {
+		t.Fatal(err)
+	}
 	app := NewApp()
-	sessionPath := filepath.Join(t.TempDir(), "inactive-room.jsonl")
+	defer app.closeCollaborations()
+	sessionDir := desktopSessionDir(root)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(sessionDir, "inactive-room.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(sessionPath, agent.BranchMeta{
+		ID: string(agent.BranchID(sessionPath)), Scope: "project", WorkspaceRoot: root,
+		TopicID: "topic-registered-room", TopicTitle: "Registered Room", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureTopicIndexed("project", root, "topic-registered-room", "Registered Room", topicTitleSourceAuto); err != nil {
+		t.Fatal(err)
+	}
 	sessionID := "session_scheduler_restore_registered"
 	tab := &WorkspaceTab{ID: "inactive-room", SessionID: sessionID, SessionPath: sessionPath}
 	app.trackSession(tab)
@@ -675,7 +887,10 @@ func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
 	writeState := func(name, id string) string {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), name)
-		data, err := json.Marshal(collaborationPersistedState{SessionID: id, SessionPath: sessionPath})
+		data, err := json.Marshal(collaborationPersistedState{
+			Mode: "client", Host: "127.0.0.1", Room: "room-stale-check",
+			SessionID: id, SessionPath: sessionPath,
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -685,7 +900,8 @@ func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
 		return path
 	}
 
-	app.restoreOneCollaboration(writeState("registered.json", sessionID))
+	noopStart := func(*desktopCollaboration, string) {}
+	app.restoreOneCollaborationWithRegistry(writeState("registered.json", sessionID), noopStart, loadProjectsFile())
 	app.collaborationMu.Lock()
 	registered := app.collaborations[sessionID]
 	app.collaborationMu.Unlock()
@@ -693,13 +909,68 @@ func TestRestoreOneCollaborationUsesOnlyRegisteredSession(t *testing.T) {
 		t.Fatal("inactive registered Room Session was not restored")
 	}
 
+	stalePath := filepath.Join(sessionDir, "stale-room.jsonl")
+	if err := os.WriteFile(stalePath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(stalePath, agent.BranchMeta{
+		ID: string(agent.BranchID(stalePath)), Scope: "project", WorkspaceRoot: root,
+		TopicID: "topic-removed-room", TopicTitle: "Removed Room", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	staleID := "session_scheduler_restore_stale"
-	app.restoreOneCollaboration(writeState("stale.json", staleID))
+	staleState := filepath.Join(t.TempDir(), "stale.json")
+	data, err := json.Marshal(collaborationPersistedState{
+		Mode: "client", Host: "127.0.0.1", Room: "room-stale-check",
+		SessionID: staleID, SessionPath: stalePath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleState, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.restoreOneCollaborationWithRegistry(staleState, noopStart, loadProjectsFile())
 	app.collaborationMu.Lock()
 	stale := app.collaborations[staleID]
 	app.collaborationMu.Unlock()
 	if stale != nil {
 		t.Fatal("closed Room cache must not create a ghost Agent runtime")
+	}
+
+	trashDir := filepath.Join(sessionDir, sessionTrashDir, "trashed-room.jsonl")
+	if err := os.MkdirAll(trashDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	trashPath := filepath.Join(trashDir, "trashed-room.jsonl")
+	if err := os.WriteFile(trashPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(trashPath, agent.BranchMeta{
+		ID: string(agent.BranchID(trashPath)), Scope: "project", WorkspaceRoot: root,
+		TopicID: "topic-registered-room", TopicTitle: "Registered Room", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	trashID := "session_scheduler_restore_trash"
+	trashState := filepath.Join(t.TempDir(), "trash.json")
+	data, err = json.Marshal(collaborationPersistedState{
+		Mode: "client", Host: "127.0.0.1", Room: "room-trash-check",
+		SessionID: trashID, SessionPath: trashPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trashState, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.restoreOneCollaborationWithRegistry(trashState, noopStart, loadProjectsFile())
+	app.collaborationMu.Lock()
+	trashed := app.collaborations[trashID]
+	app.collaborationMu.Unlock()
+	if trashed != nil {
+		t.Fatal("trashed Room Session was restored")
 	}
 }
 

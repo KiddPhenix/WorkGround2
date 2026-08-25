@@ -45,6 +45,7 @@ import type {
 } from "../collab/types";
 
 import { addBreadcrumb } from "./breadcrumbs";
+import { projectIconKey } from "./projectIcons";
 import { t } from "./i18n";
 import { providerRequiresKey } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
@@ -201,6 +202,18 @@ export interface WidgetOption {
   code?: "allow" | "deny";
 }
 
+// WidgetQuestion is one structured `ask` question projected from the backend
+// (mirrors WireAskQuestion). The icon popup renders every standard ask — 1-4
+// questions, 2-4 options, single/multi, custom answers — from these typed
+// fields instead of parsing prompt text.
+export interface WidgetQuestion {
+  id: string;
+  header?: string;
+  prompt: string;
+  options: WidgetOption[];
+  multi?: boolean;
+}
+
 export interface WidgetMessage {
   id: string;
   revision: string;
@@ -216,6 +229,7 @@ export interface WidgetMessage {
   messageCount?: number;
   interactionId?: string;
   questionId?: string;
+  questions?: WidgetQuestion[];
   options: WidgetOption[];
   requiresWindow?: boolean;
 }
@@ -262,6 +276,7 @@ export interface WidgetActionInput {
   requestId: string;
 	action: "answer" | "approve" | "deny" | "next" | "retry" | "open" | "later";
   values: string[];
+  answers?: QuestionAnswer[];
 }
 
 export interface WidgetActionResult {
@@ -278,6 +293,8 @@ export interface WidgetConversationInput {
   model?: string;
   /** Per-send tool approval posture; empty = user default. */
   approvalMode?: string;
+  /** Frontend-only optimistic icon labels; backend merges authoritative titles. */
+  existingTitles?: string[];
 }
 
 export interface WidgetWorkspaceOption {
@@ -293,6 +310,7 @@ export interface WidgetConversationResult {
   status: "accepted" | "already_applied" | "retryable_error" | "invalid";
   error?: string;
   tabId?: string;
+  sessionName?: string;
   workspaceRoot?: string;
   workspaceName?: string;
   routeReason?: string;
@@ -305,7 +323,8 @@ export type DesktopIconStatus = "idle" | "unread" | "thinking" | "running" | "ne
 export interface DesktopIconNotice {
   id: string; revision: string; kind: "message" | "needs_input" | "needs_confirm" | "completed" | "failed";
   priority: number; title: string; body: string; createdAt: number; tabId?: string; conversation?: string;
-  readSequence?: number; interactionId?: string; questionId?: string; options: WidgetOption[]; retryable?: boolean;
+  readSequence?: number; interactionId?: string; questionId?: string; questions?: WidgetQuestion[]; options: WidgetOption[]; retryable?: boolean;
+  attention?: "mention_member" | "mention_agent" | "mention_both";
   summaryStatus?: "ready" | "failed";
 }
 
@@ -321,21 +340,56 @@ export interface DesktopIconTaskRef {
   sessionPath?: string;
 }
 export interface DesktopIconItem {
-  id: string; kind: "room" | "person" | "task" | "workspace" | "fixed"; sourceId: string; title: string;
+	id: string; kind: "room" | "person" | "task" | "workspace" | "fixed" | "external"; sourceId: string; title: string;
   subtitle?: string; icon?: string; status: DesktopIconStatus; unreadCount: number; activityCount?: number; notifications: DesktopIconNotice[];
   runtimeStatus?: DesktopIconRuntime; position: DesktopIconPosition; revision: string; retained?: boolean;
   // 纯展示字段（Agent Icon）：稳定身份 seed 与 workspace 图标键；旧 retained
   // 数据可能缺 sessionId，前端按 sessionRef/sessionPath 稳定回退。
   sessionId?: string;
+  appearanceSeed?: string;
   workspaceIcon?: string;
   sessionRef?: DesktopIconTaskRef;
+  conversationSequence?: number;
+	actions?: Array<"launch" | "cancel" | "open" | "retry" | "resume" | "approve" | "send" | "remove">;
+	sourceRevision?: number;
 }
-export interface DesktopIconSnapshot { items: DesktopIconItem[]; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
+export interface DesktopIconDelegation {
+  id: string; kind: "subagent" | "background" | "cli"; content: string; status: "running";
+  sessionTitle: string; workspaceName?: string; updatedAt?: number; sessionRef?: DesktopIconTaskRef;
+}
+export interface DesktopIconSnapshot { items: DesktopIconItem[]; delegations: DesktopIconDelegation[]; delegationError?: string; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
 export interface DesktopIconSearchItem { id: string; kind: "session" | "room" | "person" | "task" | "workspace"; title: string; subtitle?: string; sourceId: string; lastActivityAt?: number; }
 export interface DesktopIconSearchResult { items: DesktopIconSearchItem[]; error?: string; }
-export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
+export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; answers?: QuestionAnswer[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
 export interface DesktopIconActionResult { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; error?: string; snapshot: DesktopIconSnapshot; }
+export interface ExternalRunCapabilities { cancel: boolean; open: boolean; retry: boolean; resume: boolean; approve: boolean; send: boolean; }
+export interface ExternalRunProjection {
+	id: string; source: "dsh" | "codex" | "claude"; nativeSessionId?: string; ownership: "managed" | "observed"; workspace?: string;
+	title?: string; state: "queued" | "starting" | "running" | "waiting_user" | "succeeded" | "failed" | "cancelled" | "interrupted" | "stale";
+	activity?: "thinking" | "tool" | "responding" | "background" | "idle"; activityLabel?: string; summary?: string;
+	capabilities: ExternalRunCapabilities; revision: number; createdAt: string; updatedAt: string;
+}
+export interface ExternalRunProfileView { id: string; ready: boolean; root?: string; version?: string; capabilities: ExternalRunCapabilities; missing?: Array<{ kind: string; detail: string }>; error?: string; }
+export interface ExternalRunSnapshot { runs: ExternalRunProjection[]; dsh: ExternalRunProfileView; workspace?: string; revision: string; error?: string; }
+export interface ExternalRunReceipt { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; runId?: string; eventId?: string; revision?: number; message?: string; }
+export interface ExternalRunLaunchInput { requestId: string; workspace?: string; prompt: string; }
+export interface ExternalRunLaunchResult { receipt: ExternalRunReceipt; run: ExternalRunProjection; snapshot: ExternalRunSnapshot; }
+export interface ExternalRunCancelInput { runId: string; requestId: string; }
+export interface ExternalRunActionResult { receipt: ExternalRunReceipt; run: ExternalRunProjection; snapshot: ExternalRunSnapshot; }
 export interface DesktopIconRect { x: number; y: number; width: number; height: number; }
+export interface DesktopIconHitRegionsInput { rects: DesktopIconRect[]; generation: number; }
+// DesktopIconSurfaceInput is one monotonic native-canvas resize request. Width
+// and height are the content's logical bounds, envelope is the safety margin
+// added on every side, and generation is the coordinator's request token.
+export interface DesktopIconSurfaceInput { width: number; height: number; envelope: number; generation: number; }
+export interface DesktopIconSurfaceResult { width: number; height: number; x: number; y: number; generation: number; }
+export interface CreateBlankSessionInput { scope: string; workspaceRoot: string; requestId: string; }
+export interface DailyRoutine {
+  id: string; workspaceRoot?: string; name: string; prompt: string; goal: string;
+  successSteps?: string[]; failureLessons?: string[]; sourceSessionPath?: string;
+  sourceRevision: string; createdAt: number; updatedAt: number;
+}
+export interface DailyRoutineResult { status: "accepted" | "already_applied" | "pending" | "retryable_error" | "invalid"; error?: string; routine?: DailyRoutine; tabId?: string; }
 // DesktopIconDiagnosticsInput is one typed diagnostics record appended by the
 // icon widget for an idle-hover trace. It carries measurements and stable
 // widget markers only — never task content, prompts, icon titles or user
@@ -405,13 +459,27 @@ export interface AppBindings extends WailsWorkBindings {
 	GetWidgetSnapshot(): Promise<WidgetSnapshot>;
 	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
+	OpenWidgetWorkspace(workspace: string, requestId: string): Promise<TabMeta>;
 	ListWidgetWorkspaces(): Promise<WidgetWorkspaceOption[]>;
 	GetDesktopIconSnapshot(): Promise<DesktopIconSnapshot>;
+	GetExternalRunSnapshot(): Promise<ExternalRunSnapshot>;
+	LaunchDSHRun(input: ExternalRunLaunchInput): Promise<ExternalRunLaunchResult>;
+	CancelExternalRun(input: ExternalRunCancelInput): Promise<ExternalRunActionResult>;
 	GetDesktopWorkspaceSlots(): Promise<number>;
+	GetDesktopRoomPins(): Promise<string[]>;
+	GetDesktopRoomIcons(): Promise<Record<string, string>>;
 	DesktopIconSearch(query: string): Promise<DesktopIconSearchResult>;
 	ApplyDesktopIconAction(input: DesktopIconActionInput): Promise<DesktopIconActionResult>;
-	SetDesktopIconHitRegions(rects: DesktopIconRect[]): Promise<void>;
+	CreateDailyRoutine(input: { tabId?: string; sessionRef?: DesktopIconTaskRef; requestId: string }): Promise<DailyRoutineResult>;
+	ListDailyRoutines(workspaceRoot: string): Promise<DailyRoutine[]>;
+	RunDailyRoutine(input: { workspaceRoot: string; routineId: string; requestId: string }): Promise<DailyRoutineResult>;
+	RenameDailyRoutine(input: { workspaceRoot: string; routineId: string; name: string }): Promise<DailyRoutineResult>;
+	DeleteDailyRoutine(input: { workspaceRoot: string; routineId: string }): Promise<DailyRoutineResult>;
+	SetDesktopIconHitRegions(input: DesktopIconHitRegionsInput): Promise<void>;
+	SetDesktopIconSurface(input: DesktopIconSurfaceInput): Promise<DesktopIconSurfaceResult>;
 	SetDesktopWorkspaceSlots(slots: number): Promise<void>;
+	SetDesktopRoomPinned(topicID: string, pinned: boolean): Promise<void>;
+	SetDesktopRoomIcon(topicID: string, icon: string): Promise<void>;
 	WriteDesktopIconDiagnostics(input: DesktopIconDiagnosticsInput): Promise<void>;
 	DesktopIconDiagnosticsPath(): Promise<string>;
 	RefreshWidgetWindowRegion(): Promise<void>;
@@ -749,6 +817,8 @@ export interface AppBindings extends WailsWorkBindings {
   SetDesktopMetrics(enabled: boolean): Promise<void>;
   SetDesktopWidgetEnabled(enabled: boolean): Promise<void>;
   SetDesktopWidgetAlwaysOnTop(on: boolean): Promise<void>;
+  SetDesktopWidgetShowDelegation(show: boolean): Promise<void>;
+  SetDesktopWidgetShowExternalTools(show: boolean): Promise<void>;
   SetDesktopWidgetSkin(skin: string): Promise<void>;
   SetDesktopWidgetStyle(style: string): Promise<void>;
   SetDesktopHoverStatusDelayMs(delay: number): Promise<void>;
@@ -790,6 +860,7 @@ export interface AppBindings extends WailsWorkBindings {
   OpenLinkedSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
   CreateWorkSession(input: { scope: string; workspaceRoot: string; requestId: string; tabId?: string }): Promise<{ tabMeta: TabMeta; workView?: unknown; duplicate: boolean; error?: string; recoverable: boolean }>;
   CreateReusableWorkSession(tabID: string, input: { flowId: string; values?: Record<string, unknown>; requestId: string }): Promise<import("../work/types").CreateReusableWorkSessionResult>;
+  CreateBlankSession(input: CreateBlankSessionInput): Promise<TabMeta>;
   EnsureBlankTab(scope: string, workspaceRoot: string): Promise<TabMeta>;
   ActivateTopic(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
   ActivateLinkedSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
@@ -1158,7 +1229,7 @@ function bridgeBreadcrumb(method: string): string {
   if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion)/.test(method))
     return `skill ${method}`;
   if (/^(MinimiseMainWindow|ToggleMaximiseMainWindow|IsMainWindowMaximised|CloseMainWindow|DismissMainWindow)$/.test(method)) return `window ${method}`;
-  if (/^(OpenProjectTab|OpenGlobalTab|OpenTopicSession|OpenLinkedSession|EnsureBlankTab|ActivateTopic|ActivateLinkedSession|EnsureBlankSurface|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace)/.test(method))
+  if (/^(OpenProjectTab|OpenGlobalTab|OpenTopicSession|OpenLinkedSession|CreateBlankSession|EnsureBlankTab|ActivateTopic|ActivateLinkedSession|EnsureBlankSurface|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace)/.test(method))
     return `nav ${method}`;
   return "";
 }
@@ -1302,6 +1373,8 @@ function makeMockApp(): AppBindings {
   const desktopWidgetSkin = mockWidgetSkin();
 	let desktopWidgetStyle = mockWidgetStyle();
 	let desktopWorkspaceSlots = 4;
+	let desktopRoomPins: string[] = [];
+	let desktopRoomIcons: Record<string, string> = {};
   let widgetMode = widgetScenario.startsWith("widget-");
   let widgetRevision = 1;
 	let widgetConversationStarted = false;
@@ -1446,12 +1519,21 @@ function makeMockApp(): AppBindings {
 	const mockDesktopIconSnapshot = (): DesktopIconSnapshot => ({
 		style: desktopWidgetStyle, revision: `icons-${widgetRevision}`, hoverStatusDelayMs: settings?.hoverStatusDelayMs ?? 1200,
 		unreadRevision: widgetRevision,
+		delegations: [],
 		items: [
-			{ id: "conversation:room-design", kind: "room", sourceId: "room-design", title: "产品 Room", status: "unread", unreadCount: 2, position: { row: "top", zone: "conversation", order: 0 }, revision: `room-${widgetRevision}`, notifications: [{ id: "room-msg", revision: "2", kind: "message", priority: 3, title: "小组件讨论", body: "收到一条新消息", createdAt: t0, conversation: "room-design", readSequence: 2, options: [] }] },
+			{ id: "conversation:room-design", kind: "room", sourceId: "room-design", title: "产品 Room", status: "unread", unreadCount: 2, position: { row: "top", zone: "conversation", order: 0 }, revision: `room-${widgetRevision}`, notifications: [{ id: "room-msg", revision: "2", kind: "message", priority: 9, title: "小组件讨论", body: "收到一条新消息", createdAt: t0, conversation: "room-design", readSequence: 2, attention: "mention_agent", options: [] }] },
 			{ id: "task:tab-wg2", kind: "task", sourceId: "tab-wg2", title: "桌面图标模式", subtitle: "WorkGround2", status: widgetScenario === "widget-running" ? "running" : "thinking", unreadCount: 0, runtimeStatus: { phase: widgetScenario === "widget-running" ? "Running" : "Thinking", summary: widgetScenario === "widget-running" ? "read_file 执行中" : "正在核对真实状态投影", elapsedMs: 84_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 0 }, revision: `task-${widgetRevision}`, notifications: [] },
+			{ id: "external:run-dsh-demo", kind: "external", sourceId: "run-dsh-demo", title: "DSH · WorkGround2", subtitle: "WorkGround2", status: "running", unreadCount: 0, runtimeStatus: { phase: "tool", summary: "DSH 正在执行", elapsedMs: 18_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 1 }, revision: `dsh-${widgetRevision}`, notifications: [], actions: ["cancel"] },
 			...(desktopWorkspaceSlots > 0 ? [{ id: "workspace:~/projects/WorkGround2", kind: "workspace", sourceId: "~/projects/WorkGround2", title: "WorkGround2", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "workspace", order: 0 }, revision: "workspace", notifications: [] } satisfies DesktopIconItem] : []),
 			...(["new", "delegate", "search"] as const).map((id, order) => ({ id: `fixed:${id}`, kind: "fixed" as const, sourceId: id, title: { new: "新建", delegate: "委托", search: "搜索" }[id], icon: id, status: "idle" as const, unreadCount: 0, position: { row: "bottom" as const, zone: "fixed" as const, order }, revision: `fixed-${id}`, notifications: [] })),
+			{ id: "fixed:dsh", kind: "fixed", sourceId: "dsh", title: "DSH", subtitle: "0.1.0-rc.8 · 快速启动", icon: "terminal", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "fixed", order: 3 }, revision: "fixed-dsh", notifications: [], actions: ["launch"] },
 		],
+	});
+	const mockExternalRunSnapshot = (): ExternalRunSnapshot => ({
+		workspace: "~/projects/WorkGround2",
+		revision: `external-${widgetRevision}`,
+		dsh: { id: "dsh-rc8", ready: true, root: "D:/Work/dsh", version: "0.1.0-rc.8", capabilities: { cancel: true, open: false, retry: false, resume: false, approve: false, send: false } },
+		runs: [{ id: "run-dsh-demo", source: "dsh", ownership: "managed", workspace: "~/projects/WorkGround2", title: "DSH · WorkGround2", state: "running", activity: "tool", activityLabel: "DSH 正在执行", capabilities: { cancel: true, open: false, retry: false, resume: false, approve: false, send: false }, revision: widgetRevision, createdAt: new Date(t0 - 18_000).toISOString(), updatedAt: new Date(t0).toISOString() }],
 	});
   // Mutable so MCP add/remove/retry are observable in browser dev.
   let capServers: ServerView[] = [
@@ -1838,7 +1920,8 @@ function makeMockApp(): AppBindings {
       { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
     officialProviders: [
-      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"], visionModels: ["deepseek-v4-flash-vision-exp"], visionModelsConfigured: true, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+      { name: "openai", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.openai.com/v1", modelsUrl: "", models: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "o3-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], visionModels: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], visionModelsConfigured: true, default: "gpt-4o", apiKeyEnv: "OPENAI_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_050_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
     permissions: { mode: "ask", allow: ["ls", "read_file"], ask: [], deny: ["Bash(rm:*)"], browser: { allowPasswordInput: true, allowFileUpload: true } },
     browserLaunch: { incognito: false },
@@ -1978,6 +2061,8 @@ function makeMockApp(): AppBindings {
     widgetAlwaysOnTop: true,
     widgetSkin: "classic",
 		widgetStyle: "icons",
+    widgetShowDelegation: false,
+    widgetShowExternalTools: false,
 		hoverStatusDelayMs: 1200,
     ownerDecisionEnabled: false, // master kill switch for the 主人决策 feature (default off)
     memoryCompilerEnabled: true,
@@ -2003,9 +2088,10 @@ function makeMockApp(): AppBindings {
       name: "Codex CLI",
       description: "Runs Codex CLI in exec mode and sends the model request on stdin.",
       command: "codex",
-      args: ["exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5.5"],
-      protocol: "text",
-      model: "default",
+      args: ["exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5.6-sol"],
+      protocol: "jsonl",
+      model: "gpt-5.6-sol",
+      models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6"],
       capabilities: ["web_search"],
       timeoutSeconds: 120,
       installed: true,
@@ -2385,6 +2471,7 @@ function makeMockApp(): AppBindings {
     setMockTabRunning(currentMockTurnTabId(), false);
     emit({ kind: "turn_done" });
   };
+  const mockBlankCreates = new Map<string, { target: string; tabId: string }>();
   let mockTabs: TabMeta[] = freshMock ? [
     {
       id: "tab_global",
@@ -2774,6 +2861,17 @@ function makeMockApp(): AppBindings {
 				snapshot: mockWidgetSnapshot(),
 			};
 		},
+		async OpenWidgetWorkspace(workspace: string, requestId: string) {
+			let scope = "global";
+			let workspaceRoot = "";
+			if (workspace.startsWith("project:")) {
+				scope = "project";
+				workspaceRoot = workspace.slice("project:".length);
+			}
+			widgetRevision += 1;
+			widgetMode = false;
+			return this.CreateBlankSession({ scope, workspaceRoot, requestId });
+		},
 		async ListWidgetWorkspaces() {
 			return [
 				{ scope: "auto", name: "自动" },
@@ -2783,7 +2881,23 @@ function makeMockApp(): AppBindings {
 			];
 		},
 		async GetDesktopIconSnapshot() { return mockDesktopIconSnapshot(); },
+		async GetExternalRunSnapshot() { return mockExternalRunSnapshot(); },
+		async LaunchDSHRun(input) {
+			if (!input.requestId || !input.prompt.trim()) throw new Error("requestId and prompt are required");
+			widgetRevision += 1;
+			const snapshot = mockExternalRunSnapshot();
+			return { receipt: { status: "accepted", runId: snapshot.runs[0].id, revision: snapshot.runs[0].revision }, run: snapshot.runs[0], snapshot };
+		},
+		async CancelExternalRun(input) {
+			if (!input.runId || !input.requestId) throw new Error("runId and requestId are required");
+			widgetRevision += 1;
+			const snapshot = mockExternalRunSnapshot();
+			const run = { ...snapshot.runs[0], state: "cancelled" as const, revision: widgetRevision };
+			return { receipt: { status: "accepted", runId: run.id, revision: run.revision }, run, snapshot: { ...snapshot, runs: [run] } };
+		},
 		async GetDesktopWorkspaceSlots() { return desktopWorkspaceSlots; },
+		async GetDesktopRoomPins() { return [...desktopRoomPins]; },
+		async GetDesktopRoomIcons() { return { ...desktopRoomIcons }; },
 		async DesktopIconSearch(query) {
 			const needle = query.trim().toLowerCase();
 			const items: DesktopIconSearchItem[] = [
@@ -2799,10 +2913,54 @@ function makeMockApp(): AppBindings {
 			widgetRevision += 1;
 			return { status: "accepted", snapshot: mockDesktopIconSnapshot() };
 		},
+		async CreateDailyRoutine(input) {
+			return { status: "accepted", routine: { id: `mock-${input.requestId}`, workspaceRoot: "~/projects/WorkGround2", name: "启动测试", goal: "运行测试", prompt: "启动一轮测试", sourceRevision: "mock", createdAt: Date.now(), updatedAt: Date.now() } };
+		},
+		async ListDailyRoutines(workspaceRoot) {
+			return [{ id: "mock-routine", workspaceRoot, name: "启动测试", goal: "运行一轮测试", prompt: "启动一轮测试", successSteps: ["运行定向测试"], failureLessons: ["失败时保留日志并重试"], sourceRevision: "mock", createdAt: Date.now(), updatedAt: Date.now() }];
+		},
+		async RunDailyRoutine(input) { return { status: "accepted", tabId: `daily-${input.routineId}` }; },
+		async RenameDailyRoutine(input) { return { status: "accepted", routine: { id: input.routineId, workspaceRoot: input.workspaceRoot, name: input.name, goal: "运行一轮测试", prompt: "启动一轮测试", sourceRevision: "mock", createdAt: Date.now(), updatedAt: Date.now() } }; },
+		async DeleteDailyRoutine() { return { status: "accepted" }; },
 		async SetDesktopIconHitRegions() {},
+		async SetDesktopIconSurface(input) {
+			// Mock mirrors the backend clamp: bounded by and anchored to the
+			// bottom-right of a virtual 1920×1080 work area.
+			const width = Math.min(1920, Math.max(640, input.width + input.envelope * 2));
+			const height = Math.min(1080, Math.max(540, input.height + input.envelope * 2));
+			return { width, height, x: Math.max(0, 1920 - width - 16), y: Math.max(0, 1080 - height - 24), generation: input.generation };
+		},
 		async SetDesktopWorkspaceSlots(slots: number) {
 			if (!Number.isInteger(slots) || slots < 0 || slots > 4) throw new Error("desktop workspace slots must be between 0 and 4");
 			desktopWorkspaceSlots = slots;
+			widgetRevision += 1;
+		},
+		async SetDesktopRoomPinned(topicID: string, pinned: boolean) {
+			const id = topicID.trim();
+			if (!id) throw new Error("topicID is required");
+			const current = desktopRoomPins.includes(id);
+			if (current === pinned) return;
+			if (pinned) {
+				if (desktopRoomPins.length >= 7) throw new Error("desktop Room pin limit reached (7)");
+				desktopRoomPins = [id, ...desktopRoomPins];
+			} else {
+				desktopRoomPins = desktopRoomPins.filter((candidate) => candidate !== id);
+			}
+			widgetRevision += 1;
+		},
+		async SetDesktopRoomIcon(topicID: string, icon: string) {
+			const id = topicID.trim();
+			if (!id) throw new Error("topicID is required");
+			const raw = icon.trim().toLowerCase();
+			const normalized = projectIconKey(raw);
+			if (raw && !normalized) throw new Error(`unsupported Room icon ${icon}`);
+			if (desktopRoomIcons[id] === normalized || (!normalized && !(id in desktopRoomIcons))) return;
+			if (normalized) desktopRoomIcons = { ...desktopRoomIcons, [id]: normalized };
+			else {
+				const next = { ...desktopRoomIcons };
+				delete next[id];
+				desktopRoomIcons = next;
+			}
 			widgetRevision += 1;
 		},
 		async WriteDesktopIconDiagnostics() {},
@@ -4618,7 +4776,8 @@ function makeMockApp(): AppBindings {
     },
     async AddOfficialProviderAccess(kind: string, key: string, _name: string) {
       const templates: Record<string, ProviderView> = {
-        deepseek: { name: "deepseek", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: !!key.trim(), balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+        deepseek: { name: "deepseek", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"], visionModels: ["deepseek-v4-flash-vision-exp"], visionModelsConfigured: true, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: !!key.trim(), balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
+        openai: { name: "openai", builtIn: true, added: true, kind: "openai", baseUrl: "https://api.openai.com/v1", modelsUrl: "", models: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "o3-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], visionModels: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o4-mini", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"], visionModelsConfigured: true, default: "gpt-4o", apiKeyEnv: "OPENAI_API_KEY", keySet: !!key.trim(), balanceUrl: "", contextWindow: 1_050_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
       };
       const next = templates[kind];
       if (!next) throw new Error(`unknown official provider template ${kind}`);
@@ -4829,6 +4988,12 @@ function makeMockApp(): AppBindings {
         },
         async SetDesktopWidgetAlwaysOnTop(on: boolean) {
           settings.widgetAlwaysOnTop = on;
+        },
+        async SetDesktopWidgetShowDelegation(show: boolean) {
+          settings.widgetShowDelegation = show;
+        },
+        async SetDesktopWidgetShowExternalTools(show: boolean) {
+          settings.widgetShowExternalTools = show;
         },
         async SetDesktopWidgetSkin(skin: string) {
           settings.widgetSkin = skin;
@@ -5252,6 +5417,21 @@ function makeMockApp(): AppBindings {
       }
       const topic = await this.CreateTopic(targetScope, targetRoot, "");
       return targetScope === "global" ? this.OpenGlobalTab(topic.id) : this.OpenProjectTab(targetRoot, topic.id);
+    },
+    async CreateBlankSession(input: CreateBlankSessionInput) {
+      const targetScope = input.scope === "project" && input.workspaceRoot ? "project" : "global";
+      const targetRoot = targetScope === "project" ? input.workspaceRoot : "";
+      const target = `${targetScope}:${targetRoot}`;
+      const prior = mockBlankCreates.get(input.requestId);
+      if (prior && prior.target !== target) throw new Error("requestId was already used for another blank-session target");
+      if (prior) {
+        const existing = mockTabs.find((tab) => tab.id === prior.tabId);
+        if (existing) { setMockActiveTab(existing.id); return { ...existing, active: true }; }
+      }
+      const topic = await this.CreateTopic(targetScope, targetRoot, "");
+      const tab = targetScope === "global" ? await this.OpenGlobalTab(topic.id) : await this.OpenProjectTab(targetRoot, topic.id);
+      mockBlankCreates.set(input.requestId, { target, tabId: tab.id });
+      return tab;
     },
     async ActivateTopic(scope: string, workspaceRoot: string, topicID: string, sessionPath: string) {
       const tab = sessionPath

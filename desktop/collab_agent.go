@@ -178,6 +178,14 @@ func collaborationAgentInput(snapshot collab.Snapshot, selfAgentID, instruction 
 	return strings.Join(parts, "\n\n"), nil
 }
 
+// collaborationReadOnlyAnswerMarker directs a text-only Room run to answer in
+// text. Runtime enforcement comes from the scoped executor read-only gate.
+const collaborationReadOnlyAnswerMarker = "你现在处于房间协作的只读回答模式：请直接用文本回答上面的问题或请求，不要输出执行计划，不要请求批准，不要修改文件、不要运行命令、不要执行任何其他有副作用的操作。写文件、编辑、命令、安装和记忆修改等调用在运行时会被强制拒绝。"
+
+func collaborationReadOnlyAnswerInput(input string) string {
+	return input + "\n\n" + collaborationReadOnlyAnswerMarker
+}
+
 func collaborationAgentOutput(summary string, snapshot collab.Snapshot, selfAgentID string, fallbackReferences []string) (string, []collab.AgentHandoff) {
 	start := strings.LastIndex(summary, roomHandoffsStart)
 	if start < 0 {
@@ -293,6 +301,7 @@ func (c *desktopCollaboration) runPublisher(run *collaborationAgentRun) {
 		cancel()
 		if update.Final {
 			c.restoreAgentApproval(run)
+			c.restoreAgentReadOnlyForRun(run)
 			c.mu.Lock()
 			removed := false
 			if c.runs[run.SessionID] == run {
@@ -335,6 +344,40 @@ func (c *desktopCollaboration) restoreAgentApproval(run *collaborationAgentRun) 
 	if previous != "" {
 		c.restoreAutoAgent(run.SessionID, previous)
 	}
+}
+
+// prepareAgentReadOnlyForRun enables the scoped runtime gate and remembers its
+// prior state. The prepared flag makes restoration genuinely idempotent.
+func (c *desktopCollaboration) prepareAgentReadOnlyForRun(run *collaborationAgentRun) error {
+	if run == nil || !run.ReadOnly || c.prepareAgentReadOnly == nil {
+		return nil
+	}
+	previous, err := c.prepareAgentReadOnly(run.SessionID)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	run.RestoreReadOnly = previous
+	run.ReadOnlyPrepared = true
+	c.mu.Unlock()
+	return nil
+}
+
+// restoreAgentReadOnlyForRun restores the scoped runtime gate once.
+func (c *desktopCollaboration) restoreAgentReadOnlyForRun(run *collaborationAgentRun) {
+	if run == nil || !run.ReadOnly || c.restoreAgentReadOnly == nil {
+		return
+	}
+	c.mu.Lock()
+	if !run.ReadOnlyPrepared {
+		c.mu.Unlock()
+		return
+	}
+	previous := run.RestoreReadOnly
+	run.RestoreReadOnly = false
+	run.ReadOnlyPrepared = false
+	c.mu.Unlock()
+	c.restoreAgentReadOnly(run.SessionID, previous)
 }
 
 func (c *desktopCollaboration) startNextQueuedAgent(sessionID string) {
@@ -493,6 +536,9 @@ func (c *desktopCollaboration) observeAgentEvent(sessionID string, value event.E
 		run.PromptOpen = false
 		run.Prompt = nil
 		c.mu.Unlock()
+		// The local turn is over; release the scoped gate before Room publishing
+		// or network retry so an unrelated manual turn cannot inherit it.
+		c.restoreAgentReadOnlyForRun(run)
 		c.emitState()
 		run.Updates <- collaborationRunUpdate{Status: status, Summary: summary, Error: errText, Final: true}
 	default:

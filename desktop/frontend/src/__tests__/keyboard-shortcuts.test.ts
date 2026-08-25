@@ -3,6 +3,7 @@
 import { JSDOM } from "jsdom";
 
 import {
+  comboFromKeyboardEvent,
   defaultShortcutCombo,
   formatShortcutCombo,
   formatShortcutComboParts,
@@ -72,6 +73,9 @@ eq(matchesShortcut(event("k", { metaKey: true }), "commandPalette.open", "darwin
 eq(matchesShortcut(event("k", { ctrlKey: true }), "commandPalette.open", "windows"), true, "Ctrl+K opens the palette on Windows");
 eq(matchesShortcut({ key: "?", shiftKey: true }, "shortcuts.show", "darwin"), true, "? opens shortcut help");
 eq(matchesShortcut({ key: "+", metaKey: true, shiftKey: true }, "textSize.increase", "darwin"), true, "Cmd+Plus still increases text size");
+eq(comboFromKeyboardEvent({}), null, "ignores keyboard events without a key");
+eq(matchesShortcut({}, "commandPalette.open", "windows"), false, "missing key does not crash shortcut matching");
+eq(comboFromKeyboardEvent({ key: "" }), null, "ignores keyboard events with an empty key");
 eq(formatShortcutCombo(defaultShortcutCombo("settings.open", "darwin"), "darwin"), "⌘,", "formats mac settings shortcut");
 eq(JSON.stringify(formatShortcutComboParts(defaultShortcutCombo("settings.open", "darwin"), "darwin")), JSON.stringify(["⌘", ","]), "splits mac settings shortcut for display");
 eq(formatShortcutCombo(defaultShortcutCombo("settings.open", "windows"), "windows"), "Ctrl+,", "formats Windows settings shortcut");

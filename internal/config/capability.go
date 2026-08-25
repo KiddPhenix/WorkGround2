@@ -37,21 +37,25 @@ const (
 // tool name (e.g. "codex").
 var builtinModelCapabilities = map[string][]ModelCapability{
 	// ── OpenAI ──────────────────────────────────────────────
-	"gpt-4o":       {CapVision, CapReasoning},
-	"gpt-4o-mini":  {CapVision},
-	"gpt-4-turbo":  {CapVision},
-	"gpt-4.1":      {CapVision},
-	"gpt-4.1-mini": {CapVision},
-	"gpt-4.1-nano": {CapVision},
-	"o1":           {CapReasoning},
-	"o1-mini":      {CapReasoning},
-	"o3":           {CapVision, CapReasoning},
-	"o3-mini":      {CapReasoning},
-	"o4-mini":      {CapVision, CapReasoning},
-	"gpt-5":        {CapVision, CapReasoning},
-	"gpt-5.5":      {CapVision, CapReasoning},
-	"gpt-5-mini":   {CapVision},
-	"gpt-5-nano":   {CapVision},
+	"gpt-4o":        {CapVision, CapReasoning},
+	"gpt-4o-mini":   {CapVision},
+	"gpt-4-turbo":   {CapVision},
+	"gpt-4.1":       {CapVision},
+	"gpt-4.1-mini":  {CapVision},
+	"gpt-4.1-nano":  {CapVision},
+	"o1":            {CapReasoning},
+	"o1-mini":       {CapReasoning},
+	"o3":            {CapVision, CapReasoning},
+	"o3-mini":       {CapReasoning},
+	"o4-mini":       {CapVision, CapReasoning},
+	"gpt-5":         {CapVision, CapReasoning},
+	"gpt-5.5":       {CapVision, CapReasoning},
+	"gpt-5.6":       {CapVision, CapReasoning},
+	"gpt-5.6-sol":   {CapVision, CapReasoning},
+	"gpt-5.6-terra": {CapVision, CapReasoning},
+	"gpt-5.6-luna":  {CapVision, CapReasoning},
+	"gpt-5-mini":    {CapVision},
+	"gpt-5-nano":    {CapVision},
 
 	// ── Anthropic ───────────────────────────────────────────
 	"claude-3-opus-20240229":     {CapVision},
@@ -68,8 +72,9 @@ var builtinModelCapabilities = map[string][]ModelCapability{
 	"gemini-2.0-flash": {CapVision},
 
 	// ── DeepSeek ────────────────────────────────────────────
-	"deepseek-chat":     {},
-	"deepseek-reasoner": {CapReasoning},
+	"deepseek-chat":                {},
+	"deepseek-reasoner":            {CapReasoning},
+	"deepseek-v4-flash-vision-exp": {CapVision, CapReasoning},
 
 	// ── MiMo ────────────────────────────────────────────────
 	"mimo-v2.5":    {CapVision},

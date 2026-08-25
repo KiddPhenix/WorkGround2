@@ -169,8 +169,12 @@ func TestCodexLocalCLIPresetUsesJSONLStream(t *testing.T) {
 	if codex.Protocol != "jsonl" {
 		t.Fatalf("codex protocol = %q, want jsonl", codex.Protocol)
 	}
-	if codex.Model != "gpt-5.5" {
-		t.Fatalf("codex model = %q, want gpt-5.5 to match --model arg", codex.Model)
+	if codex.Model != "gpt-5.6-sol" {
+		t.Fatalf("codex model = %q, want gpt-5.6-sol to match --model arg", codex.Model)
+	}
+	wantModels := []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6"}
+	if !slices.Equal(codex.Models, wantModels) {
+		t.Fatalf("codex models = %v, want selectable GPT-5.6 series %v", codex.Models, wantModels)
 	}
 }
 
@@ -1811,8 +1815,11 @@ api_key_env = "DEEPSEEK_API_KEY"
 	if !ok {
 		t.Fatal("deepseek provider not saved")
 	}
-	if len(p.Models) != 2 || p.Models[0] != "deepseek-v4-flash" || p.Models[1] != "deepseek-v4-pro" || p.Default != "deepseek-v4-flash" {
+	if len(p.Models) != 3 || p.Models[0] != "deepseek-v4-flash" || p.Models[1] != "deepseek-v4-pro" || p.Models[2] != "deepseek-v4-flash-vision-exp" || p.Default != "deepseek-v4-flash" {
 		t.Fatalf("deepseek provider after add = %+v, want official model list", p)
+	}
+	if !reflect.DeepEqual(p.VisionModels, []string{"deepseek-v4-flash-vision-exp"}) {
+		t.Fatalf("deepseek provider vision_models = %v, want only vision-exp", p.VisionModels)
 	}
 	if !providerAccessSet(cfg.Desktop.ProviderAccess)["deepseek"] {
 		t.Fatalf("provider_access missing deepseek: %+v", cfg.Desktop.ProviderAccess)
@@ -2010,6 +2017,7 @@ func TestModelsForTabOnlyListsProviderAccessWhenConfigured(t *testing.T) {
 	for _, want := range []string{
 		"deepseek/deepseek-v4-flash",
 		"deepseek/deepseek-v4-pro",
+		"deepseek/deepseek-v4-flash-vision-exp",
 		"mimo-pro/mimo-v2.5-pro",
 		"mimo-pro/mimo-v2.5",
 	} {
@@ -2025,8 +2033,8 @@ func TestModelsForTabOnlyListsProviderAccessWhenConfigured(t *testing.T) {
 			t.Fatalf("Models() refs = %+v, should not include hidden provider %s", models, hidden)
 		}
 	}
-	if len(models) != 4 {
-		t.Fatalf("Models() len = %d, want 4: %+v", len(models), models)
+	if len(models) != 5 {
+		t.Fatalf("Models() len = %d, want 5: %+v", len(models), models)
 	}
 }
 

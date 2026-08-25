@@ -50,12 +50,6 @@
   sweep();
   setTimeout(sweep, 400);
 
-  /* contributors marquee — duplicate the server-rendered set for a seamless loop */
-  document.querySelectorAll(".crew-row").forEach((row) => {
-    const set = row.querySelector(".crew-set");
-    if (set) row.appendChild(set.cloneNode(true));
-  });
-
   /* download / channel tabs */
   const tabs = Array.from(document.querySelectorAll(".dl-tab"));
   const panes = Array.from(document.querySelectorAll(".dl-pane"));

@@ -190,6 +190,29 @@ func TestNormalizeInvocationLeavesNonCodexCLIAlone(t *testing.T) {
 	}
 }
 
+func TestSyncCodexModelArgFollowsSelectedModel(t *testing.T) {
+	args := syncCodexModelArg([]string{"exec", "--json", "--model", "gpt-5.5"}, "gpt-5.6-terra")
+	want := []string{"exec", "--json", "--model", "gpt-5.6-terra"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %+v, want --model rewritten to selected model", args)
+	}
+}
+
+func TestSyncCodexModelArgAppendsWhenMissing(t *testing.T) {
+	args := syncCodexModelArg([]string{"exec", "--json"}, "gpt-5.6-luna")
+	last := args[len(args)-2:]
+	if last[0] != "--model" || last[1] != "gpt-5.6-luna" {
+		t.Fatalf("args = %+v, want --model gpt-5.6-luna appended", args)
+	}
+}
+
+func TestSyncCodexModelArgLeavesNonCodexAlone(t *testing.T) {
+	args := syncCodexModelArg([]string{"--print"}, "gpt-5.6-sol")
+	if strings.Join(args, "\x00") != "--print" {
+		t.Fatalf("args = %+v, want non-Codex args unchanged", args)
+	}
+}
+
 func newTestProvider(t *testing.T, protocol string) provider.Provider {
 	t.Helper()
 	return newTestProviderMode(t, protocol, protocol)

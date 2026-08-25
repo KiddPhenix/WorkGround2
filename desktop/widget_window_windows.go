@@ -385,7 +385,70 @@ func nativeDefaultDesktopIconWindowState(_ context.Context) (WidgetWindowState, 
 func defaultDesktopIconWindowStateForWorkArea(work w32Rect, dpi uint32) WidgetWindowState {
 	logicalWidth := scaleToDefaultDPI(int(work.Right-work.Left), dpi)
 	logicalHeight := scaleToDefaultDPI(int(work.Bottom-work.Top), dpi)
-	return WidgetWindowState{Width: logicalWidth, Height: logicalHeight, X: int(work.Left), Y: int(work.Top)}
+	// The icon canvas is a bounded transparent surface anchored to the
+	// bottom-right corner. It follows the desktopIcon defaults with the same
+	// edge/bottom gap semantics as the pager, but never fills or exceeds the
+	// work area — a full-screen WebView2 surface is what drives the periodic
+	// DWM/GPU peaks.
+	width := min(desktopIconWidth, max(desktopIconMinWidth, logicalWidth-widgetEdgeGap*2))
+	height := min(desktopIconHeight, max(desktopIconMinHeight, logicalHeight-widgetBottomGap*2))
+	width = min(width, logicalWidth)
+	height = min(height, logicalHeight)
+	return WidgetWindowState{
+		Width:  width,
+		Height: height,
+		X:      max(int(work.Left), int(work.Right)-scaleForDPI(width+widgetEdgeGap, dpi)),
+		Y:      max(int(work.Top), int(work.Bottom)-scaleForDPI(height+widgetBottomGap, dpi)),
+	}
+}
+
+// desktopIconSurfaceStateForWorkArea clamps a requested icon-surface content
+// size (plus its safety envelope) to the current work area and anchors it at
+// the bottom-right corner. The 1080x720 constants are only the initial size:
+// dense/zoomed icon rows and tall management popups may grow beyond them.
+func desktopIconSurfaceStateForWorkArea(work w32Rect, dpi uint32, width, height, envelope int) WidgetWindowState {
+	width = max(0, width)
+	height = max(0, height)
+	envelope = max(0, envelope)
+	contentWidth := width + envelope*2
+	contentHeight := height + envelope*2
+	logicalWidth := scaleToDefaultDPI(int(work.Right-work.Left), dpi)
+	logicalHeight := scaleToDefaultDPI(int(work.Bottom-work.Top), dpi)
+	targetWidth := max(desktopIconMinWidth, contentWidth)
+	targetHeight := max(desktopIconMinHeight, contentHeight)
+	targetWidth = min(targetWidth, logicalWidth)
+	targetHeight = min(targetHeight, logicalHeight)
+	return WidgetWindowState{
+		Width:  targetWidth,
+		Height: targetHeight,
+		X:      max(int(work.Left), int(work.Right)-scaleForDPI(targetWidth+widgetEdgeGap, dpi)),
+		Y:      max(int(work.Top), int(work.Bottom)-scaleForDPI(targetHeight+widgetBottomGap, dpi)),
+	}
+}
+
+// applyDesktopIconSurface resizes the native icon window to the requested
+// surface bounds. It re-reads the monitor that owns the window on every call so
+// display/DPI changes are picked up instead of a stale persisted geometry.
+func applyDesktopIconSurface(_ context.Context, input DesktopIconSurfaceInput) (WidgetWindowState, error) {
+	hwnd := findWidgetHWND()
+	if hwnd == 0 {
+		return WidgetWindowState{}, fmt.Errorf("applyDesktopIconSurface: window not found")
+	}
+	monitor, _, _ := procMonitorFromWindow.Call(uintptr(hwnd), monitorDefaultNearest)
+	if monitor == 0 {
+		return WidgetWindowState{}, fmt.Errorf("applyDesktopIconSurface: monitor not found")
+	}
+	info := w32MonitorInfo{Size: uint32(unsafe.Sizeof(w32MonitorInfo{}))}
+	ret, _, _ := procGetMonitorInfoW.Call(monitor, uintptr(unsafe.Pointer(&info)))
+	if ret == 0 {
+		return WidgetWindowState{}, fmt.Errorf("applyDesktopIconSurface: monitor info unavailable")
+	}
+	dpi, _, _ := procGetDpiForWindow.Call(uintptr(hwnd))
+	state := desktopIconSurfaceStateForWorkArea(info.Work, uint32(dpi), input.Width, input.Height, input.Envelope)
+	if err := setDesktopWindowBounds(nil, state.Width, state.Height, state.X, state.Y); err != nil {
+		return WidgetWindowState{}, err
+	}
+	return state, nil
 }
 
 // setWidgetWindowRegion clips the native window to the same octagonal shape as
@@ -487,6 +550,14 @@ func clearWidgetWindowRegion() error {
 	}
 	return redrawWidgetWindow(hwnd)
 }
+
+// Windows already gets its transparent appearance and input shape from the
+// Wails translucency flags plus HRGN clipping, so it needs no extra mode hook.
+func setDesktopIconNativeMode(bool) error { return nil }
+
+func configureNativeWindowControls(*App, bool) error { return nil }
+
+func restoreNativeWindowControls() {}
 
 // widgetTaskbarOps are the raw window operations a taskbar style switch needs.
 // The production wiring talks to user32; tests inject fakes so no real Explorer

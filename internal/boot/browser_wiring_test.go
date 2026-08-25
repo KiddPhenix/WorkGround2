@@ -215,7 +215,7 @@ func TestBrowserToolSelectionMatrix(t *testing.T) {
 
 func TestAddBuiltinsDoesNotWarnForRuntimeBrowserNames(t *testing.T) {
 	var stderr bytes.Buffer
-	addBuiltins(tool.NewRegistry(), []string{"browser_state"}, nil, sandbox.Spec{}, time.Second, builtin.SearchSpec{}, &stderr, "", netclient.ProxySpec{}, nil, builtin.NewPathResolver(), nil, nil)
+	addBuiltins(tool.NewRegistry(), []string{"browser_state"}, nil, sandbox.Spec{}, time.Second, builtin.SearchSpec{}, &stderr, "", netclient.ProxySpec{}, nil, builtin.NewPathResolver(), nil, nil, true)
 	if stderr.Len() != 0 {
 		t.Fatalf("runtime browser tool was reported unknown: %s", stderr.String())
 	}

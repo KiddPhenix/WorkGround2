@@ -226,6 +226,7 @@ type Controller struct {
 	canceling               bool
 	autosaveWG              sync.WaitGroup
 	planMode                bool
+	runtimeReadOnly         bool
 	sessionPath             string
 	recoveryDepthCapNotices map[string]bool
 	snapshotMu              sync.Mutex
@@ -253,10 +254,13 @@ type pendingApproval struct {
 
 // pendingAsk is an in-flight ask question batch. questions is retained so the
 // AskRequest can be re-emitted to a frontend that reconnected after the original
-// event (see ReplayPendingPrompts).
+// event (see ReplayPendingPrompts). recovered marks an ask hydrated from the
+// durable sidecar after a restart: it has no live reply channel, so answering it
+// starts a recovery turn instead of signaling a waiter.
 type pendingAsk struct {
 	questions []event.AskQuestion
 	reply     chan []event.AskAnswer
+	recovered bool
 }
 
 type AutoResearchEvidenceInput struct {
@@ -1569,8 +1573,14 @@ func (c *Controller) Cancel() {
 	}
 	c.mu.Unlock()
 	actionCount := c.cancelBlockActions()
+	// Converge any pending structured ask — whether it is blocking a live turn or
+	// was recovered after a restart and has no running goroutine. Tool approvals
+	// only exist while a turn runs, so clearing them here is a no-op for the
+	// recovered case.
+	for _, id := range c.approval.clearAll() {
+		c.clearPendingAskSidecar(id)
+	}
 	if cancel != nil {
-		c.approval.clearAll()
 		cancel()
 		return
 	}
@@ -1859,6 +1869,14 @@ func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]
 	defer c.approval.promptMu.Unlock()
 
 	id, reply := c.approval.registerAsk(questions)
+	// Persist before showing the prompt: a crash or restart while the user is
+	// deciding must be able to re-project this exact question. If the write fails
+	// we refuse to surface an unrecoverable prompt and let the model see the error
+	// instead of a fake question.
+	if err := c.persistPendingAsk(id, questions); err != nil {
+		c.approval.cancelAsk(id)
+		return nil, fmt.Errorf("persist pending ask: %w", err)
+	}
 	nextStep := ""
 	if len(questions) > 0 {
 		nextStep = strings.TrimSpace(questions[0].Prompt)
@@ -1877,6 +1895,10 @@ func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]
 		c.updateTaskMemory(taskMemoryPatch{current: stringPtr("执行中"), currentSource: stringPtr("runtime"), nextStep: stringPtr(""), nextStepSource: stringPtr("")})
 		return ans, nil
 	case <-waitCtx.Done():
+		// Context cancellation (timeout or a non-interactive shutdown) must not
+		// delete the durable sidecar: the question was never answered, so it stays
+		// recoverable on the next resume. Explicit Cancel() converges the sidecar
+		// through clearAll + clearPendingAskSidecar before cancelling.
 		c.approval.cancelAsk(id)
 		return nil, waitCtx.Err()
 	}
@@ -1893,11 +1915,26 @@ func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
 // distinguish a successful handoff from a late/orphaned answer while keeping
 // AnswerQuestion's compatibility surface unchanged.
 func (c *Controller) ResolveQuestion(id string, answers []event.AskAnswer) bool {
-	if pending, ok := c.approval.resolveAsk(id); ok {
-		pending.reply <- answers // buffered, never blocks
+	pending, ok := c.approval.resolveAsk(id)
+	if !ok {
+		return false
+	}
+	if pending.recovered {
+		if !c.startRecoveredAskTurn(id, pending, answers) {
+			// The turn couldn't start (busy): keep the question answerable and
+			// retryable instead of silently dropping the answer. Its sidecar has
+			// deliberately not been cleared yet.
+			c.approval.restoreRecoveredAsk(id, pending.questions)
+			return false
+		}
 		return true
 	}
-	return false
+	// A live waiter consumes the buffered answer immediately. Clear its durable
+	// prompt before handing it back so a later restart cannot re-project a choice
+	// already accepted by the original turn.
+	c.clearPendingAskSidecar(id)
+	pending.reply <- answers // buffered, never blocks
+	return true
 }
 
 // ReplayPendingPrompts re-emits the ApprovalRequest / AskRequest event for every
@@ -1917,13 +1954,33 @@ func (c *Controller) ReplayPendingPrompts() {
 	}
 }
 
-// SetPlanMode flips the executor's read-only gate without touching the
-// cache-stable prompt prefix, and remembers the state so Compose can prepend the
-// plan-mode marker to outgoing turns.
+// SetPlanMode updates the user-visible planning flow. The executor remains
+// read-only while either plan mode or a scoped runtime policy requires it.
 func (c *Controller) SetPlanMode(v bool) {
 	c.mu.Lock()
 	c.planMode = v
+	c.setReadOnlyGate(v || c.runtimeReadOnly)
 	c.mu.Unlock()
+}
+
+// RuntimeReadOnly reports the scoped execution policy used by automatic
+// callers that need text-only answers without entering the plan workflow.
+func (c *Controller) RuntimeReadOnly() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.runtimeReadOnly
+}
+
+// SetRuntimeReadOnly changes only the executor tool gate. It deliberately does
+// not mutate planMode, prepend a plan marker, or request plan approval.
+func (c *Controller) SetRuntimeReadOnly(v bool) {
+	c.mu.Lock()
+	c.runtimeReadOnly = v
+	c.setReadOnlyGate(c.planMode || v)
+	c.mu.Unlock()
+}
+
+func (c *Controller) setReadOnlyGate(v bool) {
 	if c.executor != nil {
 		c.executor.SetPlanMode(v)
 	}
@@ -2951,6 +3008,10 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	// Load pinned memories (best-effort; empty list on fresh session).
 	_ = c.pinnedMemos.load(path)
 	c.snapshotMu.Unlock()
+	// Hydrate a pending ask that survived a restart. This runs outside snapshotMu:
+	// it emits a notice through the sink, which must not re-enter a controller
+	// lock.
+	c.loadPendingAsk(path)
 	c.recoverInterruptedTurn(path)
 	c.maybeColdResumePrune(path)
 }
@@ -3354,6 +3415,7 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 	c.setActiveJobSession(info.Path)
 	c.rebindCheckpoints(info.Path)
 	c.inheritTaskMemory(info.Path)
+	c.transplantPendingAskSidecar(path, info.Path)
 	c.transplantInFlightTurnMarker(path, info.Path)
 	appendSnapshotConflictDiagnostic(path, mode, "forked_recovery_branch", saveErr, info.Path, info.Existing)
 	slog.Warn("controller: snapshot conflict; forked recovery branch",
@@ -4343,11 +4405,8 @@ func (c *Controller) SetBypass(on bool) {
 func (c *Controller) SetMode(plan, autoApproveTools bool) {
 	c.mu.Lock()
 	c.planMode = plan
+	c.setReadOnlyGate(plan || c.runtimeReadOnly)
 	c.mu.Unlock()
-
-	if c.executor != nil {
-		c.executor.SetPlanMode(plan)
-	}
 	if autoApproveTools {
 		c.SetToolApprovalMode(ToolApprovalYolo)
 	} else {

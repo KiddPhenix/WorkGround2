@@ -39,6 +39,74 @@ func TestLaunchIdempotent(t *testing.T) {
 	}
 }
 
+func TestLaunchRejectsRequestIDIntentConflict(t *testing.T) {
+	h, _ := newTestHub(t)
+	first := LaunchIntent{RequestID: "req-1", Source: SourceDSH, Workspace: "w1", Prompt: "first"}
+	if rec, _ := h.Launch(first); rec.Status != ReceiptAccepted {
+		t.Fatalf("first launch status = %s, want accepted", rec.Status)
+	}
+
+	rec, got := h.Launch(LaunchIntent{RequestID: "req-1", Source: SourceDSH, Workspace: "w2", Prompt: "second"})
+	if rec.Status != ReceiptInvalid {
+		t.Fatalf("conflicting launch status = %s, want invalid", rec.Status)
+	}
+	if !strings.Contains(rec.Message, "another launch intent") {
+		t.Fatalf("conflicting launch message = %q", rec.Message)
+	}
+	if got.Workspace != "w1" {
+		t.Fatalf("conflicting launch changed workspace to %q", got.Workspace)
+	}
+	if runs := h.List(Filter{}); len(runs) != 1 {
+		t.Fatalf("conflicting launch created %d runs, want 1", len(runs))
+	}
+}
+
+func TestLaunchFreezesAdapterCapabilities(t *testing.T) {
+	h, _ := newTestHub(t)
+	rec, run := h.Launch(LaunchIntent{RequestID: "req-cap", Source: SourceDSH, Capabilities: Capabilities{Cancel: true}})
+	if rec.Status != ReceiptAccepted || !run.Capabilities.Cancel {
+		t.Fatalf("launch = (%s, %+v), want accepted with cancel", rec.Status, run.Capabilities)
+	}
+	got, ok := h.Get(run.ID)
+	if !ok || !got.Capabilities.Cancel || got.Capabilities.Open || got.Capabilities.Resume {
+		t.Fatalf("stored capabilities = %+v", got.Capabilities)
+	}
+}
+
+func TestLaunchReceiptDoesNotPersistPrompt(t *testing.T) {
+	h, dir := newTestHub(t)
+	secret := "do not persist this prompt"
+	rec, _ := h.Launch(LaunchIntent{RequestID: "req-private", Source: SourceDSH, Workspace: "w", Prompt: secret})
+	if rec.Status != ReceiptAccepted {
+		t.Fatalf("launch status = %s", rec.Status)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "launches"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("launch receipts = %d, err=%v", len(entries), err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "launches", entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("launch receipt leaked prompt: %s", raw)
+	}
+	if !strings.Contains(string(raw), "intentFingerprint") {
+		t.Fatalf("launch receipt has no intent fingerprint: %s", raw)
+	}
+
+	h2, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay, _ := h2.Launch(LaunchIntent{RequestID: "req-private", Source: SourceDSH, Workspace: "w", Prompt: secret}); replay.Status != ReceiptAlreadyApplied {
+		t.Fatalf("replay after reload = %s", replay.Status)
+	}
+	if conflict, _ := h2.Launch(LaunchIntent{RequestID: "req-private", Source: SourceDSH, Workspace: "w", Prompt: "changed"}); conflict.Status != ReceiptInvalid {
+		t.Fatalf("conflict after reload = %s", conflict.Status)
+	}
+}
+
 func TestLaunchInvalidRequestID(t *testing.T) {
 	h, _ := newTestHub(t)
 	r, _ := h.Launch(LaunchIntent{RequestID: "../bad"})
@@ -304,7 +372,7 @@ func TestLaunchBackfillFailureReturnsRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := AgentRun{
-		ID: deriveRunID("req-1"), Source: SourceDSH, Ownership: OwnershipManaged,
+		ID: DeriveRunID("req-1"), Source: SourceDSH, Ownership: OwnershipManaged,
 		State: StateQueued, Activity: ActivityIdle, Revision: 1,
 		LastSeenAt: time.Now(), CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
@@ -333,6 +401,41 @@ func TestLaunchBackfillFailureReturnsRetryable(t *testing.T) {
 	}
 }
 
+func TestLaunchCrashWindowRejectsChangedIntentWithoutReceipt(t *testing.T) {
+	dir := t.TempDir()
+	intent := LaunchIntent{RequestID: "req-crash", RunnerProfileID: "dsh-rc8", Source: SourceDSH, Workspace: "w1", Prompt: "original", Capabilities: Capabilities{Cancel: true}}
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Round(0)
+	run := AgentRun{
+		ID: DeriveRunID(intent.RequestID), Source: intent.Source, Ownership: OwnershipManaged,
+		Workspace: intent.Workspace, Capabilities: intent.Capabilities, LaunchFingerprint: launchIntentFingerprint(intent),
+		State: StateQueued, Activity: ActivityIdle, Revision: 1,
+		LastSeenAt: now, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := intent
+	changed.Prompt = "changed"
+	if rec, _ := h.Launch(changed); rec.Status != ReceiptInvalid {
+		t.Fatalf("changed crash-window retry = %s, want invalid", rec.Status)
+	}
+	if entries, err := os.ReadDir(filepath.Join(dir, "launches")); err != nil || len(entries) != 0 {
+		t.Fatalf("conflict wrote launch receipt: entries=%d err=%v", len(entries), err)
+	}
+	if rec, _ := h.Launch(intent); rec.Status != ReceiptAlreadyApplied {
+		t.Fatalf("matching crash-window retry = %s, want already_applied", rec.Status)
+	}
+}
+
 func TestSubscribeNotifiesCreatedAndUpdated(t *testing.T) {
 	h, _ := newTestHub(t)
 	ch, cancel := h.Subscribe()
@@ -346,6 +449,59 @@ func TestSubscribeNotifiesCreatedAndUpdated(t *testing.T) {
 	h.Report(RunEvent{EventID: "evt-run", RunID: run.ID, Type: EventRunning})
 	if c := <-ch; c.Kind != ChangeUpdated || c.Run.State != StateRunning {
 		t.Fatalf("second change = %+v", c)
+	}
+}
+
+func TestRecoverBindingsSettlesOrphansWithoutRestarting(t *testing.T) {
+	h, dir := newTestHub(t)
+
+	// A running run with a persisted binding becomes interrupted.
+	_, running := h.Launch(LaunchIntent{RequestID: "req-running", Source: SourceDSH})
+	h.Report(RunEvent{EventID: "evt-run", RunID: running.ID, Type: EventRunning})
+	if err := h.store.SaveBinding(BindingRecord{
+		RunID:   running.ID,
+		Binding: RunnerBinding{RunID: running.ID, NativeSessionID: "sess-running", ProtocolVersion: "2.0", ProcessRef: "fake", Attempt: 1},
+		State:   StateRunning, SavedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A queued run with no binding becomes stale.
+	_, queued := h.Launch(LaunchIntent{RequestID: "req-queued", Source: SourceDSH})
+
+	n, err := h.RecoverBindings()
+	if err != nil {
+		t.Fatalf("RecoverBindings: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("RecoverBindings settled %d, want 2", n)
+	}
+	if got, _ := h.Get(running.ID); got.State != StateInterrupted {
+		t.Fatalf("running orphan state = %s, want interrupted", got.State)
+	}
+	if got, _ := h.Get(queued.ID); got.State != StateStale {
+		t.Fatalf("queued orphan state = %s, want stale", got.State)
+	}
+
+	// Re-running is idempotent and never revives a terminal run.
+	n, err = h.RecoverBindings()
+	if err != nil || n != 0 {
+		t.Fatalf("second RecoverBindings = (%d, %v), want (0, nil)", n, err)
+	}
+	if got, _ := h.Get(running.ID); got.State != StateInterrupted {
+		t.Fatalf("state regressed to %s", got.State)
+	}
+
+	// A fresh reload also remembers the settlements and stays idempotent.
+	h2, err := New(dir)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got, _ := h2.Get(running.ID); got.State != StateInterrupted {
+		t.Fatalf("reloaded orphan state = %s", got.State)
+	}
+	if n, _ := h2.RecoverBindings(); n != 0 {
+		t.Fatalf("reload RecoverBindings settled %d, want 0", n)
 	}
 }
 

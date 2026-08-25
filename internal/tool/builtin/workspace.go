@@ -64,6 +64,7 @@ func (w Workspace) Tools(enabled ...string) []tool.Tool {
 		"glob":          globTool{workDir: w.Dir, paths: w.ReadPaths, forbidRoots: forbidRoots},
 		"grep":          grepTool{workDir: w.Dir, paths: w.ReadPaths, rg: w.Search.RgPath, forbidRoots: forbidRoots, sb: w.Bash},
 		"web_fetch":     webFetch{proxySpec: w.ProxySpec},
+		"view_image":    viewImage{workDir: w.Dir, forbidRoots: forbidRoots},
 	}
 	all := tool.Builtins()
 	if len(enabled) == 0 {

@@ -5,7 +5,7 @@
 //   - Weighted picker respects boundaries and is deterministic
 //   - Event/tool classification covers all relevant WireEvent kinds
 
-import { activityLead, getPool, getStageLabels, pickWeighted, stageFromEvent, classifyTool, type Stage } from "../lib/activity";
+import { activityLead, activityLeadForStage, getPool, getStageLabels, pickWeighted, stageFromEvent, classifyTool, type Stage } from "../lib/activity";
 
 let passed = 0;
 let failed = 0;
@@ -154,6 +154,13 @@ eq(stageFromEvent("tool_dispatch", undefined, "someRandomTool"), "tooling", "unk
 eq(stageFromEvent("tool_result"), "processing_result", "tool_result → processing_result");
 eq(activityLead("从噪声中提取有效信号"), "从噪声中提取有效信号", "processing_result keeps only flavor copy");
 eq(activityLead("让 Bug 主动交代"), "让 Bug 主动交代", "other stages omit the generic stage label");
+
+// Waiting stages surface their explicit label so a pending interaction can't be
+// read as "waiting for the model".
+eq(activityLeadForStage("waiting_approval", "等待确认", "停在人类审批门前"), "等待确认 · 停在人类审批门前", "waiting_approval surfaces the approval label");
+eq(activityLeadForStage("waiting_answer", "等待答复", "等您做决定"), "等待答复 · 等您做决定", "waiting_answer surfaces the answer label");
+eq(activityLeadForStage("waiting_approval", "Awaiting approval", "Holding at the human checkpoint"), "Awaiting approval · Holding at the human checkpoint", "waiting_approval surfaces the en approval label");
+eq(activityLeadForStage("thinking", "思考中", "对齐思路"), "对齐思路", "non-waiting stage keeps flavor-only copy");
 
 // compaction
 eq(stageFromEvent("compaction_started"), "compacting", "compaction_started → compacting");

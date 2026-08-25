@@ -101,13 +101,23 @@ func (s *collaborationScheduler) scheduleOnce(ctx context.Context, c *desktopCol
 	agentID := state.AgentID
 	sessionID := state.SessionID
 	config := state.AgentConfig
+	// Transport/unread residency intentionally outlives the local Controller.
+	// Do not turn an off-tab Room message into a queued Agent command; the same
+	// snapshot is reconsidered after the workspace becomes ready.
+	if c.startAgentHook == nil && c.agentReady != nil {
+		ready, err := c.agentReady(sessionID)
+		if err != nil || !ready {
+			return
+		}
+	}
 
 	// Build the set of already-handled references from existing agent runs.
 	handledRefs := buildSchedulerHandledRefs(snapshot, memberID)
 
-	// Priority 1: @mentions (always active on signal, no config flag).
+	// Priority 1: @mentions (always active on signal). In question-only mode
+	// only question-shaped mentions fire, and the run is read-only at runtime.
 	if reason == wakeSignal {
-		if input := s.nextMention(snapshot, memberID, agentID, sessionID, handledRefs); input != nil {
+		if input := s.nextMention(snapshot, memberID, agentID, sessionID, config, handledRefs); input != nil {
 			s.startOrLog(ctx, c, *input)
 			return
 		}
@@ -148,6 +158,9 @@ func (s *collaborationScheduler) scheduleOnce(ctx context.Context, c *desktopCol
 	// Priority 3: Unanswered questions from non-agent members.
 	if scanQuestions && config.AutoRespondQuestions {
 		if input := s.nextQuestion(snapshot, memberID, agentID, sessionID, handledRefs); input != nil {
+			// Question-only mode answers in text only; the runtime boundary
+			// refuses write tools, commands and other side-effecting calls.
+			input.ReadOnly = schedulerQuestionOnlyMode(config)
 			s.startOrLog(ctx, c, *input)
 			return
 		}
@@ -241,11 +254,16 @@ func schedulerStableHash(value string, seed uint32) string {
 func (s *collaborationScheduler) nextMention(
 	snapshot collab.Snapshot,
 	memberID, agentID, sessionID string,
+	config CollaborationAgentConfig,
 	handledRefs map[string]bool,
 ) *StartCollaborationAgentInput {
 	if memberID == "" || agentID == "" {
 		return nil
 	}
+	// In question-only mode an @mention must itself be a question; operation
+	// instructions ("@Agent 帮我写文件") must not trigger execution. Mentions in
+	// manual or operations mode keep their existing unconditional semantics.
+	questionOnly := schedulerQuestionOnlyMode(config)
 	for _, item := range snapshot.Timeline {
 		if item.Type != collab.TimelineChat || item.Chat == nil {
 			continue
@@ -258,6 +276,9 @@ func (s *collaborationScheduler) nextMention(
 		if handledRefs[item.ID] {
 			continue
 		}
+		if questionOnly && !schedulerQuestionRE.MatchString(chat.Text) {
+			continue
+		}
 		requestID := schedulerMentionRequestID(item.ID, agentID)
 		if schedulerHasAgentCommandID(snapshot, memberID, requestID) {
 			continue
@@ -268,9 +289,18 @@ func (s *collaborationScheduler) nextMention(
 			Instruction:  "在房间协作中提到你：" + chat.Text,
 			ReferenceIDs: []string{item.ID},
 			Automatic:    true,
+			ReadOnly:     questionOnly,
 		}
 	}
 	return nil
+}
+
+// schedulerQuestionOnlyMode reports whether the Agent is configured to answer
+// questions only: automatic operation requests are disabled. In this mode
+// question-triggered runs must answer in text and are forced read-only at
+// runtime (no write tools, commands, or other side effects).
+func schedulerQuestionOnlyMode(config CollaborationAgentConfig) bool {
+	return config.AutoRespondQuestions && !config.AutoRespondRequests
 }
 
 // ---------------------------------------------------------------------------

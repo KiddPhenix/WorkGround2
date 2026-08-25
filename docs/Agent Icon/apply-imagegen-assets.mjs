@@ -261,14 +261,16 @@ export async function applyImagegenAssets(options) {
 
   const [frameSource, hatSource, hairSource, eyeSource, toolSource] = await Promise.all([
     readRaster(sharp, path.join(sourceRoot, 'robot-frame-master-v2.png'), false),
-    readRaster(sharp, path.join(sourceRoot, 'headwear-atlas-v3.png'), true),
-    readRaster(sharp, path.join(sourceRoot, 'hair-atlas-v3.png'), true),
+    // 两个历史槽位继续保持 15 + 15 的稳定索引，但视觉统一为机器人
+    // 原生头部模块；不再把人类帽子/发型贴到机器人外壳上。
+    readRaster(sharp, path.join(sourceRoot, 'head-modules-a-v1.png'), true),
+    readRaster(sharp, path.join(sourceRoot, 'head-modules-b-v1.png'), true),
     readRaster(sharp, path.join(sourceRoot, 'eyes-states-v3.png'), true),
     readRaster(sharp, path.join(sourceRoot, 'tools-atlas-v2.png'), true)
   ]);
 
-  await writeAtlasLayers(sharp, hatSource, 5, 3, HAT_IDS, path.join(pngRoot, 'hats'), { width: 50, height: 27, bottom: 28 });
-  await writeAtlasLayers(sharp, hairSource, 5, 3, HAIR_IDS, path.join(pngRoot, 'hair'), { width: 52, height: 30, bottom: 31 });
+  await writeAtlasLayers(sharp, hatSource, 5, 3, HAT_IDS, path.join(pngRoot, 'hats'), { width: 38, height: 25, bottom: 27 });
+  await writeAtlasLayers(sharp, hairSource, 5, 3, HAIR_IDS, path.join(pngRoot, 'hair'), { width: 42, height: 22, bottom: 27 });
   await writeAtlasLayers(sharp, toolSource, 6, 4, TOOL_IDS, path.join(pngRoot, 'tools'), { width: 22, height: 22, bottom: 63, right: 63 });
 
   const neutralFrame = await fitLayer(sharp, frameSource, 62, 48, 64);

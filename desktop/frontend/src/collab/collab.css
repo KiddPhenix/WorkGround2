@@ -388,6 +388,20 @@
 .collab-agent-scan { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; margin-top: -2px; }
 .collab-agent-scan select, .collab-agent-scan input { width: 100%; color: var(--collab-text); font-size: 12px; }
 .collab-agent-scan select { cursor: pointer; }
+.collab-surface select {
+  appearance: none;
+  padding-right: 28px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--collab-muted) 50%),
+    linear-gradient(135deg, var(--collab-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 9px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px, 4px 4px;
+}
+.collab-surface select:disabled { cursor: not-allowed; opacity: .55; }
+.collab-composer select { padding-right: 24px; }
 .collab-agent-cycle { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; height: 26px; padding: 0 6px 0 9px; border: 0; border-radius: 6px; color: var(--collab-text); background: transparent; font-size: 10.5px; font-weight: 620; cursor: pointer; transition: color .15s ease, background .15s ease; }
 .collab-agent-cycle:hover:not(:disabled) { color: color-mix(in srgb, var(--collab-accent) 72%, var(--collab-text)); background: var(--collab-accent-soft); }
 .collab-agent-cycle:focus-visible { outline: 1px solid color-mix(in srgb, var(--collab-accent) 62%, transparent); outline-offset: 1px; }

@@ -218,7 +218,22 @@ func (a *approvalManager) registerAsk(questions []event.AskQuestion) (string, ch
 	return id, reply
 }
 
-// cancelAsk drops a pending ask (timeout/abort path).
+// restoreRecoveredAsk re-inserts an ask hydrated from the durable sidecar after
+// a restart. It has no live reply channel, so answering it starts a recovery
+// turn instead of signaling a waiter; nextID is advanced past the restored ID so
+// a fresh ask can never collide with it.
+func (a *approvalManager) restoreRecoveredAsk(id string, questions []event.AskQuestion) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.asks[id] = pendingAsk{questions: questions, recovered: true}
+	if n, err := strconv.Atoi(id); err == nil && n >= a.nextID {
+		a.nextID = n
+	}
+}
+
+// cancelAsk drops a pending ask (timeout/abort path). It deliberately does not
+// touch the durable sidecar: context cancellation is not an answer, so the
+// question stays recoverable.
 func (a *approvalManager) cancelAsk(id string) {
 	a.mu.Lock()
 	delete(a.asks, id)
@@ -235,12 +250,19 @@ func (a *approvalManager) resolveAsk(id string) (pendingAsk, bool) {
 }
 
 // clearAll drops every in-flight prompt without signaling — the cancel path,
-// where blocked waiters unblock via their cancelled context instead.
-func (a *approvalManager) clearAll() {
+// where blocked waiters unblock via their cancelled context instead. It returns
+// the ask IDs that were dropped so the Controller can converge their durable
+// sidecars too.
+func (a *approvalManager) clearAll() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	askIDs := make([]string, 0, len(a.asks))
+	for id := range a.asks {
+		askIDs = append(askIDs, id)
+	}
 	clear(a.approvals)
 	clear(a.asks)
+	return askIDs
 }
 
 // clearActionApprovals drops only Work Action prompts. Ordinary tool, plan and
@@ -380,16 +402,14 @@ func normalizeToolApprovalMode(mode string) string {
 }
 
 func requiresFreshApprovalTool(tool string) bool {
-	switch tool {
-	case planApprovalTool, memoryRememberTool, memoryForgetTool:
-		return true
-	default:
-		return false
-	}
+	return tool == planApprovalTool
 }
 
 func approvalNotificationText(tool, subject string) string {
-	if requiresFreshApprovalTool(tool) {
+	// Plan approval and memory tools keep their subject out of external
+	// notifications: plan subjects are empty and memory subjects can embed
+	// private body text that must not leak into a desktop/phone ping.
+	if tool == planApprovalTool || tool == memoryRememberTool || tool == memoryForgetTool {
 		return "approval needed: " + tool
 	}
 	if subject == "" {

@@ -25,6 +25,7 @@ type LocalCLIOptionView struct {
 	Args           []string `json:"args"`
 	Protocol       string   `json:"protocol"`
 	Model          string   `json:"model"`
+	Models         []string `json:"models"`
 	Capabilities   []string `json:"capabilities"`
 	TimeoutSeconds int      `json:"timeoutSeconds"`
 	Installed      bool     `json:"installed"`
@@ -40,6 +41,7 @@ type onboardingLocalCLIPreset struct {
 	Args        []string
 	Protocol    string
 	Model       string
+	Models      []string
 }
 
 var onboardingLocalCLIPresets = []onboardingLocalCLIPreset{
@@ -48,9 +50,10 @@ var onboardingLocalCLIPresets = []onboardingLocalCLIPreset{
 		Name:        "Codex CLI",
 		Description: "Runs Codex CLI in exec JSONL mode and sends the model request on stdin.",
 		Commands:    []string{"codex", "codex.exe", "codex.cmd"},
-		Args:        []string{"exec", "--json", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5.5"},
+		Args:        []string{"exec", "--json", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5.6-sol"},
 		Protocol:    "jsonl",
-		Model:       "gpt-5.5",
+		Model:       "gpt-5.6-sol",
+		Models:      []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6"},
 	},
 	{
 		ID:          "claude",
@@ -173,6 +176,10 @@ func localCLIProviderEntry(opt LocalCLIOptionView) config.ProviderEntry {
 	if protocol == "" {
 		protocol = "text"
 	}
+	models := append([]string(nil), opt.Models...)
+	if len(models) == 0 {
+		models = []string{model}
+	}
 	entry := config.ProviderEntry{
 		Name:           localCLIProviderName(opt.ID),
 		Kind:           "cli",
@@ -181,7 +188,7 @@ func localCLIProviderEntry(opt LocalCLIOptionView) config.ProviderEntry {
 		Protocol:       protocol,
 		TimeoutSeconds: timeout,
 		Model:          model,
-		Models:         []string{model},
+		Models:         models,
 		Default:        model,
 		ContextWindow:  128000,
 	}
@@ -251,6 +258,7 @@ func scanLocalCLIOptionsWithPresets(presets []onboardingLocalCLIPreset) []LocalC
 			Args:           append([]string{}, preset.Args...),
 			Protocol:       protocol,
 			Model:          model,
+			Models:         append([]string{}, preset.Models...),
 			Capabilities:   capabilities,
 			TimeoutSeconds: onboardingLocalCLITimeoutSeconds,
 			Installed:      installed,

@@ -246,6 +246,28 @@ export interface QuickStartJob {
 
 export type QuickStartJobs = Record<string, QuickStartJob>;
 
+function sameQuickStartJob(a: QuickStartJob | undefined, b: QuickStartJob | undefined): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	return a.requestId === b.requestId
+		&& a.phase === b.phase
+		&& a.error === b.error
+		&& a.tabId === b.tabId
+		&& a.createdAt === b.createdAt
+		&& a.updatedAt === b.updatedAt
+		&& a.intent.prompt === b.intent.prompt
+		&& a.intent.workspace === b.intent.workspace
+		&& a.intent.model === b.intent.model
+		&& a.intent.approvalMode === b.intent.approvalMode;
+}
+
+function sameQuickStartJobs(a: QuickStartJobs, b: QuickStartJobs): boolean {
+	if (a === b) return true;
+	const keys = Object.keys(a);
+	if (keys.length !== Object.keys(b).length) return false;
+	return keys.every((key) => sameQuickStartJob(a[key], b[key]));
+}
+
 export interface QuickStartJobLedger {
 	version: 1;
 	jobs: QuickStartJobs;
@@ -503,14 +525,14 @@ export function quickStartJobItem(job: QuickStartJob): DesktopIconItem {
 	};
 }
 
-// mergeQuickStartItems appends the optimistic jobs after the authoritative
-// task icons but before the fixed bottom bar (新建/工作区/Rooms/委托/搜索), so
-// a new send appears among real tasks without displacing the fixed bar.
+// mergeQuickStartItems inserts newest-first optimistic jobs at the left edge of
+// the bottom row. The authoritative handoff pins the real task to that same
+// edge, so a new Session never jumps from beside 新建 to beside the workspaces.
 export function mergeQuickStartItems(items: DesktopIconItem[], optimistic: DesktopIconItem[]): DesktopIconItem[] {
 	if (optimistic.length === 0) return items;
-	const fixedAt = items.findIndex((item) => item.position.zone === "fixed");
-	if (fixedAt < 0) return [...items, ...optimistic];
-	return [...items.slice(0, fixedAt), ...optimistic, ...items.slice(fixedAt)];
+	const bottomAt = items.findIndex((item) => item.position.row === "bottom");
+	if (bottomAt < 0) return [...items, ...optimistic];
+	return [...items.slice(0, bottomAt), ...optimistic, ...items.slice(bottomAt)];
 }
 
 // reconcileQuickStartJobs removes an accepted job the moment its real task
@@ -704,7 +726,12 @@ export function createQuickStartJobRunner(options: QuickStartJobRunnerOptions): 
 			// instead of being erased by a stale removal intent.
 			if (!fallbackToMemory) next = jobs;
 		}
-		notify(next);
+		// readQuickStartJobs parses a fresh object on every one-second snapshot
+		// reconcile. Preserve the current reference and skip subscribers when the
+		// typed job state is equivalent, otherwise a no-op poll forces React to
+		// rerender and re-run hit-region rAF/layout measurement forever.
+		if (sameQuickStartJobs(jobs, next)) next = jobs;
+		else notify(next);
 		return { next, saved, error };
 	};
 
@@ -757,6 +784,9 @@ export function createQuickStartJobRunner(options: QuickStartJobRunnerOptions): 
 			workspace: job.intent.workspace || undefined,
 			model: job.intent.model || undefined,
 			approvalMode: job.intent.approvalMode || undefined,
+			existingTitles: Object.values(jobs)
+				.filter((other) => other.requestId !== requestId)
+				.map((other) => quickStartJobPromptLabel(other.intent)),
 		};
 		const transition = (requestId: string, to: (current: QuickStartJob | undefined) => QuickStartJob | undefined) => {
 			const result = commit({ kind: "update", requestId, to });

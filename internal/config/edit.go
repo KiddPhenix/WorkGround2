@@ -484,6 +484,21 @@ func (c *Config) SetDesktopHoverStatusDelayMs(delay int) error {
 	return nil
 }
 
+// SetDesktopWidgetShowDelegation sets whether the 委托 icon is shown in the
+// icon widget. It is presentation-only and never affects running delegations.
+func (c *Config) SetDesktopWidgetShowDelegation(show bool) error {
+	c.Desktop.WidgetShowDelegation = &show
+	return nil
+}
+
+// SetDesktopWidgetShowExternalTools sets whether the external AI tool (DSH)
+// icon is shown in the icon widget. It is presentation-only and never affects
+// running external tasks.
+func (c *Config) SetDesktopWidgetShowExternalTools(show bool) error {
+	c.Desktop.WidgetShowExternalTools = &show
+	return nil
+}
+
 // SetShowReasoning sets the CLI's default verbose-reasoning preference. When
 // true, thinking text is shown in the chat TUI on startup; when false (the
 // default), it stays collapsed until the user toggles it with Ctrl+O or

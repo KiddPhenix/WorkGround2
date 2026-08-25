@@ -70,6 +70,16 @@ func SessionTaskMemory(sessionPath string) string {
 	return sessionStem(sessionPath) + ".task-memory.json"
 }
 
+// SessionPendingAsk is the durable structured-ask sidecar (<id>.pending-ask.json).
+// It holds the one question batch currently blocking a turn on a user decision so
+// a restart can re-project it and, once answered, resume the same session safely.
+func SessionPendingAsk(sessionPath string) string {
+	if sessionPath == "" {
+		return ""
+	}
+	return sessionStem(sessionPath) + ".pending-ask.json"
+}
+
 // SessionEventLog is the append-only transcript event log (<id>.events.jsonl).
 func SessionEventLog(sessionPath string) string {
 	if sessionPath == "" {
@@ -164,6 +174,7 @@ func SessionSidecarFiles(sessionPath string) []string {
 		SessionPinnedMemo(sessionPath),
 		SessionGoalState(sessionPath),
 		SessionTaskMemory(sessionPath),
+		SessionPendingAsk(sessionPath),
 		SessionEventLog(sessionPath),
 		SessionEventIndex(sessionPath),
 		SessionConflictLog(sessionPath),

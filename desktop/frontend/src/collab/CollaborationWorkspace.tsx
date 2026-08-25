@@ -37,6 +37,7 @@ interface CollaborationWorkspaceProps {
   sessionError?: string;
   onRetrySession?(): void;
   windowActions?: ReactNode;
+  revealSignal?: number;
 }
 
 function statusLabel(status: string, c: ReturnType<typeof collabCopy>) {
@@ -70,7 +71,7 @@ async function copyText(value: string): Promise<void> {
   if (!copied) throw new Error("copy failed");
 }
 
-export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onClose, onConnected, onConnectRequest, submitKey = "enter", modelLabel = "—", onSwitchModel = async () => {}, workspaces = [], workspaceRoot = "", onWorkspaceChange = () => {}, sessionResolving = false, sessionError, onRetrySession = () => {}, windowActions }: CollaborationWorkspaceProps) {
+export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onClose, onConnected, onConnectRequest, submitKey = "enter", modelLabel = "—", onSwitchModel = async () => {}, workspaces = [], workspaceRoot = "", onWorkspaceChange = () => {}, sessionResolving = false, sessionError, onRetrySession = () => {}, windowActions, revealSignal = 0 }: CollaborationWorkspaceProps) {
   const { t } = useI18n();
   const c = collabCopy(t);
   const controller = useCollabController(sessionID || "");
@@ -91,7 +92,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
   const [contextOpen, setContextOpen] = useState(false);
   const [agentCollaborationOpen, setAgentCollaborationOpen] = useState(false);
   const [activityAnchor, setActivityAnchor] = useState<AgentActivityAnchor>();
-  const { scrollRef: timelineRef, stick: timelineStick, onScroll: onTimelineScroll, snapToBottom: snapTimelineToBottom } = useScrollManager();
+  const { scrollRef: timelineRef, stick: timelineStick, onScroll: onTimelineScroll, snapToBottom: snapTimelineToBottom, scrollToBottomAfterLayout: scrollTimelineToBottomAfterLayout } = useScrollManager();
   const ownsRoom = Boolean(sessionID) && state.selfSessionId === sessionID;
   const usable = ownsRoom && Boolean(state.room);
   const onlineMembers = state.members.filter((member) => member.online);
@@ -109,6 +110,15 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
   useLayoutEffect(() => {
     snapTimelineToBottom();
   }, [snapTimelineToBottom, sessionID, state.room?.room]);
+
+  // A reveal intent (e.g. returning from widget mode) repins the .collab-scroll
+  // timeline to the latest messages across the layout frames that follow, so a
+  // Room that kept its old scroll position while hidden reappears at the bottom
+  // instead of waiting for the next incoming message.
+  useLayoutEffect(() => {
+    if (revealSignal <= 0) return;
+    scrollTimelineToBottomAfterLayout(5);
+  }, [revealSignal, scrollTimelineToBottomAfterLayout]);
 
   useLayoutEffect(() => {
     if (timelineStick.current) snapTimelineToBottom();

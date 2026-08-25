@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type CSSProperties, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { ShellExpandProvider, useShellExpand } from "./lib/shellExpand";
 import gsap from "gsap";
@@ -170,6 +170,7 @@ import {
   normalizeThemePreference,
   normalizeThemeStyleForTheme,
   readLegacyThemePreference,
+  syncNativeIconWidgetBackground,
   type Theme,
 } from "./lib/theme";
 import { applyTextSize, DEFAULT_TEXT_SIZE, getTextSize, nextTextSize } from "./lib/textSize";
@@ -1130,6 +1131,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     reorderTabs,
     openTopicSession,
     openLinkedSession,
+    createBlankSession,
     activateTopic,
     activateLinkedSession,
     syncActiveTab,
@@ -1148,6 +1150,20 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   const [tabOrderIds, setTabOrderIds] = useState<string[]>([]);
   const [tabRevealSignal, setTabRevealSignal] = useState(0);
   const [transcriptRevealSignal, setTranscriptRevealSignal] = useState(0);
+  const [roomRevealSignal, setRoomRevealSignal] = useState(0);
+  // Returning from widget mode reveals the main window again: the current
+  // Session or Room kept its old scroll position while hidden, so emit one
+  // observable reveal intent per `true -> false` transition. Initial startup
+  // sits at `false` and must never trigger a reveal.
+  const wasWidgetActiveRef = useRef(widgetActive);
+  useLayoutEffect(() => {
+    const was = wasWidgetActiveRef.current;
+    wasWidgetActiveRef.current = widgetActive;
+    if (was && !widgetActive) {
+      setTranscriptRevealSignal((value) => value + 1);
+      setRoomRevealSignal((value) => value + 1);
+    }
+  }, [widgetActive]);
   const [linkedWorkReturn, setLinkedWorkReturn] = useState<LinkedWorkReturn | null>(null);
   const [linkedWorkReturning, setLinkedWorkReturning] = useState(false);
   const linkedWorkReturningRef = useRef(false);
@@ -3157,6 +3173,17 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     enqueueNavigation({ kind: "blank", scope, workspaceRoot: scope === "project" ? workspaceRoot : "" }),
   [enqueueNavigation]);
 
+  const createProjectSession = useCallback(async (scope: string, workspaceRoot: string): Promise<void> => {
+    if (scope !== "project") return openBlankSession(scope, "");
+    try {
+      await createBlankSession("project", workspaceRoot, `blank-session-${crypto.randomUUID()}`, singleSurfaceLayout);
+      await refreshTabMetas();
+    } catch (err: any) {
+      showToast(err?.message || String(err), "error");
+      throw err;
+    }
+  }, [createBlankSession, openBlankSession, refreshTabMetas, showToast, singleSurfaceLayout]);
+
   const handleNewTab = useCallback(async () => {
     closeTransientOverlays();
     setAssistantOpen(false);
@@ -4232,11 +4259,12 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                   activeWorkspaceRoot={activeTab?.workspaceRoot}
                   activeTopicId={activeTab?.topicId}
                   activeSessionPath={activeTab?.sessionPath}
+                  activeContentVisible={!widgetActive}
                   imTopicSources={imTopicSources}
                   onOpenTopic={handleOpenTopic}
                   onOpenCrewSession={handleOpenCrewSession}
                   onOpenProjectHistory={openProjectHistory}
-                  onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
+                  onCreateTopic={createProjectSession}
                   onTopicsChanged={refreshProjectsAndTabs}
                   onRenameTopic={renameTopic}
                   onRenameSession={renameSidebarSession}
@@ -4284,6 +4312,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                 modelLabel={state.meta?.label ?? t("status.connecting")}
                 onSwitchModel={switchModel}
                 onConnectRequest={() => { void openCollaborationDialog(activeTab.sessionId); }}
+                revealSignal={roomRevealSignal}
                 windowActions={sessionWindowActions}
               />
             ) : showWorkSurface && activeTab?.workId && !workUnavailable ? (
@@ -4538,11 +4567,12 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
               activeWorkspaceRoot={activeTab?.workspaceRoot}
               activeTopicId={activeTab?.topicId}
               activeSessionPath={activeTab?.sessionPath}
+              activeContentVisible={!widgetActive}
               imTopicSources={imTopicSources}
               onOpenTopic={handleOpenTopic}
               onOpenCrewSession={handleOpenCrewSession}
               onOpenProjectHistory={openProjectHistory}
-              onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
+              onCreateTopic={createProjectSession}
               onTopicsChanged={refreshProjectsAndTabs}
               onRenameTopic={renameTopic}
               onRenameSession={renameSidebarSession}
@@ -4938,6 +4968,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                 modelLabel={state.meta?.label ?? t("status.connecting")}
                 onSwitchModel={switchModel}
                 onConnectRequest={() => { void openCollaborationDialog(activeTab.sessionId); }}
+                revealSignal={roomRevealSignal}
               />
             ) : (
               <Transcript
@@ -5405,10 +5436,24 @@ export default function App() {
     });
   }, []);
 
-  // Ctrl+M / Cmd+M toggles widget mode bidirectionally.
+  // Native macOS traffic-light actions run outside React. Surface a failed
+  // widget transition through the same toast path as the Windows controls.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.runtime) return;
+    return window.runtime.EventsOn("window:action-error", (payload: unknown) => {
+      reportWidgetError(payload);
+    });
+  }, [reportWidgetError]);
+
+  // macOS Cmd+M belongs to the native Window menu, whose AppKit bridge routes
+  // it through the same guarded action as the yellow traffic-light button.
+  // Keep the frontend shortcut on Windows/Linux only so one keypress cannot
+  // trigger both the menu callback and the React coordinator.
+  const nativeMacWidgetShortcut = typeof document !== "undefined"
+    && document.documentElement.getAttribute("data-platform") === "darwin";
   useGlobalShortcut("widgetMode.toggle", () => {
     void widgetCoordinator.toggle().catch(reportWidgetError);
-  }, [reportWidgetError, widgetCoordinator], widgetEnabled || widgetMode);
+  }, [reportWidgetError, widgetCoordinator], (widgetEnabled || widgetMode) && !nativeMacWidgetShortcut);
 
   // Widget mode: init from backend, then subscribe to authoritative widget:mode events.
   useEffect(() => {
@@ -5428,6 +5473,12 @@ export default function App() {
       unsubscribe?.();
     };
   }, [reportWidgetError, widgetCoordinator]);
+
+  // Run before React paints the new mode so a macOS theme update cannot expose
+  // the native opaque background behind the otherwise transparent icon canvas.
+  useLayoutEffect(() => {
+    syncNativeIconWidgetBackground(widgetMode);
+  }, [widgetMode]);
 
   return (
 	<>

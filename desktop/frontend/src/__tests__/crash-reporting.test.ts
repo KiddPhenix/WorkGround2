@@ -6,6 +6,7 @@ import {
   formatPerformanceContext,
   globalCrashReportReason,
   normalizeCrashError,
+  PERFORMANCE_MONITOR_INTERVAL_MS,
   performanceLabelForReason,
   recordPerformanceLog,
   shouldRecordEventLoopLagSample,
@@ -31,6 +32,8 @@ function eq(a: unknown, b: unknown, label: string) {
 }
 
 console.log("\ncrash reporting");
+
+eq(PERFORMANCE_MONITOR_INTERVAL_MS, 7_000, "samples global performance pressure every seven seconds");
 
 const err = new TypeError("invalid argument");
 err.stack = "TypeError: invalid argument\n    at submit (src/App.tsx:12:3)";
