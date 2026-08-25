@@ -43642,6 +43642,12 @@ body > .mermaid-diagram--fullscreen {
   transition: transform 180ms ease-out, filter 180ms ease-out;
 }
 
+/* Active runs follow the latest user turn at the transcript tail. Match the
+   user message's 82% column so the card's left inset aligns with its text. */
+.app--workbench .session-run-stream--active .run-work-window {
+  align-self: flex-end;
+}
+
 .app--workbench .run-work-window--running,
 .app--workbench .run-work-window--queued,
 .app--workbench .run-work-window--reconnecting {

@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runMatchesStream } from "../components/desktop-ui/IrisInfoComponents";
+import {
+  ACTIVE_RUN_STATUSES,
+  TERMINAL_RUN_STATUSES,
+  runMatchesStream,
+} from "../components/desktop-ui/IrisInfoComponents";
 import type { RunRecord } from "../store/run";
 
 let passed = 0;
@@ -27,6 +31,7 @@ function run(runId: string, turnId: string, status: RunRecord["status"], started
 const first = run("first", "turn:1", "completed", 1);
 const second = run("second", "turn:2", "failed", 2);
 const orphan = run("orphan", "legacy-id", "cancelled", 3);
+const active = run("active", "turn:1", "running", 4);
 
 ok(runMatchesStream(first, "session-1", undefined, "turn:1"), "turn stream selects the run assigned to that transcript turn");
 ok(!runMatchesStream(second, "session-1", undefined, "turn:1"), "turn stream excludes runs from other turns");
@@ -34,14 +39,27 @@ ok(!runMatchesStream(second, "session-1", undefined, "turn:1"), "turn stream exc
 ok(runMatchesStream(orphan, "session-1", undefined, undefined, true), "tail fallback keeps legacy or unassigned runs visible");
 ok(!runMatchesStream(first, "session-1", undefined, undefined, true), "tail fallback excludes turn-assigned runs");
 
+ok(runMatchesStream(active, "session-1", ACTIVE_RUN_STATUSES), "active tail selects a running run even when it keeps its original turn identity");
+ok(!runMatchesStream(active, "session-1", TERMINAL_RUN_STATUSES, "turn:1"), "original turn stream excludes a run until it reaches a terminal state");
+ok(runMatchesStream(first, "session-1", TERMINAL_RUN_STATUSES, "turn:1"), "original turn stream keeps the completed run process with its transcript turn");
+
 const testDir = dirname(fileURLToPath(import.meta.url));
 const styles = readFileSync(resolve(testDir, "../styles.css"), "utf8");
+const sessionSurface = readFileSync(resolve(testDir, "../components/SessionSurface.tsx"), "utf8");
+const runSlotStart = sessionSurface.indexOf('data-testid="session-run-slot"');
+const runSlotEnd = sessionSurface.indexOf("</div>", runSlotStart);
+const runSlot = runSlotStart >= 0 && runSlotEnd > runSlotStart ? sessionSurface.slice(runSlotStart, runSlotEnd) : "";
+ok(sessionSurface.includes("statuses={TERMINAL_RUN_STATUSES}\n                  turnId={`turn:${turn + 1}`}"), "transcript turn footers project terminal runs only");
+ok(runSlot.includes("statuses={ACTIVE_RUN_STATUSES}") && !runSlot.includes("ACTIVE_RUN_STATUSES} unassignedOnly"), "transcript tail projects every active run regardless of its original turn identity");
+ok(runSlot.includes("statuses={TERMINAL_RUN_STATUSES} unassignedOnly"), "transcript tail preserves the legacy terminal fallback without duplicating assigned runs");
 const actionRule = styles.match(/\.session-run-action__panel\s*\{([^}]*)\}/)?.[1] ?? "";
 ok(actionRule.includes("flex: 1 0 100%") && actionRule.includes("width: 100%"), "expanded terminal process fills the next line of the action row");
 ok(styles.includes(".session-run-action__toggle[aria-expanded=\"true\"]"), "terminal process exposes an explicit expanded state");
 const windowRule = styles.match(/\.run-work-window\s*\{([^}]*)\}/)?.[1] ?? "";
 ok(windowRule.includes("height: 220px") && windowRule.includes("min-height: 220px"), "active and expanded process views share one fixed-size window");
 ok(!styles.includes(".run-work-window__inner") && !styles.includes(".run-result-face"), "run presentation has no flip surface or result face");
+const activeAlignRule = styles.match(/\.session-run-stream--active \.run-work-window\s*\{([^}]*)\}/)?.[1] ?? "";
+ok(activeAlignRule.includes("align-self: flex-end"), "active tail aligns with the latest user text column");
 
 process.stdout.write(`\n${passed + failed} tests · ${passed} passed · ${failed} failed\n`);
 if (failed > 0) process.exit(1);
