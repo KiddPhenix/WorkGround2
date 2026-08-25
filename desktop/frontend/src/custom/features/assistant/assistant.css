@@ -335,6 +335,62 @@
 
 .assistant-event__body .assistant-event__error { color: #e98975; }
 
+/* Run summary — restrained Markdown prose, sized independently from the
+   oversized timeline headings and kept from overflowing the narrow column. */
+.assistant-event__summary {
+  max-width: 760px;
+  margin-top: 14px;
+}
+.assistant-event__summary .md {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #b6b1a9;
+}
+.assistant-event__summary .md p {
+  max-width: 760px;
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #b6b1a9;
+}
+.assistant-event__summary .md h1,
+.assistant-event__summary .md h2,
+.assistant-event__summary .md h3,
+.assistant-event__summary .md h4 {
+  display: block;
+  margin: 16px 0 8px;
+  color: #e7dfd4;
+  font-family: inherit;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+.assistant-event__summary .md h1 { font-size: 1.25em; }
+.assistant-event__summary .md h2 { font-size: 1.15em; }
+.assistant-event__summary .md h3 { font-size: 1.05em; }
+.assistant-event__summary .md h4 { font-size: 1em; }
+.assistant-event__summary .md ul,
+.assistant-event__summary .md ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+.assistant-event__summary .md li {
+  margin: 3px 0;
+}
+.assistant-event__summary .md a,
+.assistant-event__summary .md .md-code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.assistant-event__summary .md .md-code {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: #34373a;
+}
+.assistant-event__summary .md .code-block {
+  max-width: 100%;
+}
+
 .assistant-run-state {
   display: inline-flex;
   margin-left: 10px;
@@ -368,14 +424,24 @@
 .assistant-text-action:hover,
 .assistant-text-action:focus-visible { outline: none; color: #ffa06c; text-decoration: underline; }
 
+.assistant-handoff-zone {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  max-width: 940px;
+  margin-bottom: 40px;
+  padding: 4px 0 16px;
+  background: rgba(11, 12, 17, 0.88);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid #242729;
+}
+
 .assistant-handoff {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) 36px;
   align-items: center;
   max-width: 940px;
   min-height: 72px;
-  margin-top: 2px;
-  border-top: 1px solid #242729;
   color: #877c70;
 }
 
@@ -400,6 +466,7 @@
   align-items: center;
   gap: 7px;
   max-width: 940px;
+  margin-top: 10px;
   padding: 9px 12px;
   border: 1px solid #2d493a;
   border-radius: 7px;

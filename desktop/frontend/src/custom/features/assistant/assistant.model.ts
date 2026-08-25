@@ -42,6 +42,13 @@ export function runStateLabel(state: AssistantRun["state"], locale: string): str
   return labels[state][locale === "en" ? 0 : 1];
 }
 
+// Short, stable timeline heading for a run — carries the state semantics
+// without ever promoting the summary prose into a large title.
+export function runTitleLabel(state: AssistantRun["state"], locale: string): string {
+  const label = runStateLabel(state, locale);
+  return locale === "en" ? `Run ${label.toLowerCase()}` : `本次运行${label}`;
+}
+
 export type AssistantRunAction = "rerun" | "cancel" | "attention" | "none";
 
 export function responsibilityStatusLabel(status: AssistantResponsibility["status"], locale: string): string {
@@ -134,13 +141,7 @@ export function nextRoutineDate(routine: AssistantRoutine, now: Date): Date | nu
   return next;
 }
 
-function firstSentence(value: string): string {
-  const trimmed = value.trim();
-  const match = trimmed.match(/^(.+?[。！？.!?])(?:\s|$)/);
-  return match?.[1] ?? trimmed;
-}
-
-export function timelineEntries(snapshot: AssistantSnapshot, day: Date, copy: AssistantCopy): AssistantTimelineEntry[] {
+export function timelineEntries(snapshot: AssistantSnapshot, day: Date, locale: string, copy: AssistantCopy): AssistantTimelineEntry[] {
   const sameDay = (date: Date) => date.getFullYear() === day.getFullYear() && date.getMonth() === day.getMonth() && date.getDate() === day.getDate();
   const entries: AssistantTimelineEntry[] = [];
   for (const run of snapshot.runs) {
@@ -150,7 +151,7 @@ export function timelineEntries(snapshot: AssistantSnapshot, day: Date, copy: As
       id: run.id,
       at,
       kind: "run",
-      title: run.summary ? firstSentence(run.summary) : runStateLabel(run.state, "zh"),
+      title: runTitleLabel(run.state, locale),
       detail: run.summary,
       run,
     });

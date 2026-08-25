@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useI18n } from "../../../lib/i18n";
 import { useToast } from "../../../lib/toast";
+import { Markdown } from "../../../components/Markdown";
 import {
   assistantApplyMemory,
   assistantCancel,
@@ -178,7 +179,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID }: Assistan
   const [handoff, setHandoff] = useState("");
   const [handoffNotice, setHandoffNotice] = useState(false);
   const today = useMemo(() => new Date(), [data.snapshot?.revision]);
-  const timeline = useMemo(() => data.snapshot ? timelineEntries(data.snapshot, today, copy) : [], [copy, data.snapshot, today]);
+  const timeline = useMemo(() => data.snapshot ? timelineEntries(data.snapshot, today, locale, copy) : [], [copy, data.snapshot, locale, today]);
   const openAttention = data.snapshot?.attention.filter((item) => attentionInboxAction(item, data.snapshot?.runs.find((run) => run.id === item.run_id)) !== "none").length ?? 0;
 
   const run = useCallback(async (routineID?: string) => {
@@ -292,6 +293,16 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID }: Assistan
       )}
 
       <div className="assistant-workspace__scroll">
+        <div className="assistant-handoff-zone">
+          <form className="assistant-handoff" onSubmit={(event) => { event.preventDefault(); void submitHandoff(); }}>
+            <ChevronRight size={18} aria-hidden="true" />
+            <label className="sr-only" htmlFor="assistant-handoff-input">{copy.taskPlaceholder}</label>
+            <input id="assistant-handoff-input" value={handoff} onChange={(event) => setHandoff(event.target.value)} placeholder={copy.taskPlaceholder} disabled={Boolean(busy)} />
+            <button type="submit" disabled={!handoff.trim() || Boolean(busy)} aria-label={copy.send}><Send size={16} /></button>
+          </form>
+          {handoffNotice && <div className="assistant-notice" role="status"><Check size={14} />{copy.queued}<button type="button" aria-label={copy.close} onClick={() => setHandoffNotice(false)}><X size={13} /></button></div>}
+        </div>
+
         <div className="assistant-day">
           <h1><span>{copy.today}</span>，{formatAssistantDate(today, locale)}</h1>
         </div>
@@ -303,8 +314,12 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID }: Assistan
               <div className="assistant-event__body">
                 <h2>{entry.title}</h2>
                 {entry.kind === "run" && entry.run && <span className={`assistant-run-state assistant-run-state--${entry.run.state}`}>{runStateLabel(entry.run.state, locale)}</span>}
-                {entry.detail && entry.detail !== entry.title && <p>{entry.detail}</p>}
-                {entry.run?.error && <p className="assistant-event__error">{entry.run.error.message}</p>}
+                {entry.kind === "run" ? (
+                  entry.run?.summary ? <div className="assistant-event__summary"><Markdown text={entry.run.summary} /></div> : null
+                ) : (
+                  entry.detail && entry.detail !== entry.title ? <p>{entry.detail}</p> : null
+                )}
+                {entry.run?.error && entry.run.error.message.trim() !== entry.run.summary?.trim() && <p className="assistant-event__error">{entry.run.error.message}</p>}
                 {entry.kind === "next" && entry.routine && (
                   <button type="button" className="assistant-text-action" onClick={() => setManageTab("routines")}>{copy.changeTime}<ChevronRight size={13} /></button>
                 )}
@@ -312,14 +327,6 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID }: Assistan
             </article>
           ))}
         </div>
-
-        <form className="assistant-handoff" onSubmit={(event) => { event.preventDefault(); void submitHandoff(); }}>
-          <ChevronRight size={18} aria-hidden="true" />
-          <label className="sr-only" htmlFor="assistant-handoff-input">{copy.taskPlaceholder}</label>
-          <input id="assistant-handoff-input" value={handoff} onChange={(event) => setHandoff(event.target.value)} placeholder={copy.taskPlaceholder} disabled={Boolean(busy)} />
-          <button type="submit" disabled={!handoff.trim() || Boolean(busy)} aria-label={copy.send}><Send size={16} /></button>
-        </form>
-        {handoffNotice && <div className="assistant-notice" role="status"><Check size={14} />{copy.queued}<button type="button" aria-label={copy.close} onClick={() => setHandoffNotice(false)}><X size={13} /></button></div>}
       </div>
 
       {manageTab && (

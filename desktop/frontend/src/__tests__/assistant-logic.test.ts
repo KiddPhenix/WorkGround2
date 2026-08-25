@@ -1,5 +1,9 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { assistantCopy } from "../custom/features/assistant/assistant.copy";
-import { attentionInboxAction, attentionNeedsRebind, attentionRejectResolution, attentionResolution, nextRoutineDate, responsibilityLabel, responsibilityStatusLabel, runHistoryAction, scheduleLabel, timelineEntries } from "../custom/features/assistant/assistant.model";
+import { attentionInboxAction, attentionNeedsRebind, attentionRejectResolution, attentionResolution, nextRoutineDate, responsibilityLabel, responsibilityStatusLabel, runHistoryAction, runTitleLabel, scheduleLabel, timelineEntries } from "../custom/features/assistant/assistant.model";
 import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, completeAssistantRequest, pendingAssistantMutation, pendingAssistantRequest, runAssistantApproval, runAssistantCASMutation, runAssistantOutcome, runAssistantResume } from "../custom/features/assistant/assistant.requests";
 import type { AssistantAttentionItem, AssistantRun, AssistantSnapshot } from "../custom/features/assistant/assistant.types";
 import { normalizeAssistantList } from "../custom/features/assistant/assistant.bridge";
@@ -59,18 +63,24 @@ const snapshot: AssistantSnapshot = {
   opportunities: [],
   updated_at: day.toISOString(),
 };
-const entries = timelineEntries(snapshot, day, copy);
+const entries = timelineEntries(snapshot, day, "zh", copy);
 ok(entries.some((entry) => entry.kind === "run"), "timeline projects factual run state");
 ok(entries.some((entry) => entry.kind === "memory"), "timeline projects explicit memory");
 ok(entries.some((entry) => entry.kind === "next"), "timeline projects the next routine");
 ok(entries.every((entry, index) => index === 0 || entries[index - 1].at.getTime() >= entry.at.getTime()), "timeline orders every entry newest first");
 ok(entries.map((entry) => entry.kind).join(",") === "next,memory,run", "timeline keeps future, recent, and older entries in descending order");
+const runEntry = entries.find((entry) => entry.kind === "run")!;
+ok(runEntry.title === "本次运行已完成", "run timeline title is a short state label, not summary prose");
+ok(runEntry.detail === "测试通过。发布说明待补。" && runEntry.title !== runEntry.detail, "run summary is preserved as detail, not promoted to the title");
+ok(runTitleLabel("succeeded", "zh") === "本次运行已完成", "zh run title reads as a completed run");
+ok(runTitleLabel("succeeded", "en") === "Run completed", "en run title localizes");
+ok(runTitleLabel("failed", "zh") === "本次运行失败", "failed run title carries its state");
 const tiedEntries = timelineEntries({
   ...snapshot,
   routines: [],
   memory: { revision: 1, items: [] },
   runs: [{ ...snapshot.runs[0], id: "run-b" }, { ...snapshot.runs[0], id: "run-a" }],
-}, day, copy);
+}, day, "zh", copy);
 ok(tiedEntries.map((entry) => entry.id).join(",") === "run-a,run-b", "timeline uses stable ids when timestamps and kinds match");
 
 ok(responsibilityStatusLabel("blocked", "zh") === "被阻塞" && responsibilityStatusLabel("blocked", "en") === "Blocked", "responsibility status localizes");
@@ -226,6 +236,21 @@ await runAssistantResume({
   completeKeys: [assistantOutcomeKey("assistant-1", "attention-outcome-retry", "retry_acknowledged")],
 });
 ok(outcomeResumeIDs[0] === outcomeResumeIDs[1], "verified retry refresh replays the same Resume receipt");
+
+// ── Run summary Markdown structure ─────────────────────────────────────────
+// The assistant timeline renders run summaries through the same
+// react-markdown + remark-gfm pipeline as <Markdown>. Asserting the rendered
+// HTML here (server-side, no jsdom async lazy-load) covers headings, lists,
+// and bold without depending on the browser Markdown chunk timing.
+const summaryHtml = renderToStaticMarkup(
+  createElement(ReactMarkdown, {
+    remarkPlugins: [remarkGfm],
+    children: "## 结论\n\n- 第一点\n- 第二点\n\n**重点**内容",
+  }),
+);
+ok(summaryHtml.includes("<h2>"), "markdown headings render as h2");
+ok(summaryHtml.includes("<ul>") && summaryHtml.includes("<li>"), "markdown lists render as ul/li");
+ok(summaryHtml.includes("<strong>"), "markdown bold renders as strong");
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

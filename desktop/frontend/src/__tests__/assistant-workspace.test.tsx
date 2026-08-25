@@ -53,6 +53,34 @@ ok(host.textContent?.includes("让它继续工作") ?? false, "primary repeat ac
 ok(host.querySelector("#assistant-handoff-input") !== null, "quick handoff input is keyboard accessible");
 ok(host.querySelectorAll(".assistant-event").length >= 2, "timeline renders run and memory events");
 
+// ── Handoff placement: top, single, sticky zone ────────────────────────
+const scrollBox = host.querySelector(".assistant-workspace__scroll");
+const handoffInput = scrollBox?.querySelector("#assistant-handoff-input") ?? null;
+const handoffZone = scrollBox?.querySelector(".assistant-handoff-zone") ?? null;
+const dayHeading = scrollBox?.querySelector(".assistant-day") ?? null;
+const timelineBox = scrollBox?.querySelector(".assistant-timeline") ?? null;
+ok(host.querySelectorAll("#assistant-handoff-input").length === 1, "handoff input appears exactly once in the DOM");
+const precedes = (a: Element | null, b: Element | null) => Boolean(a && b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+ok(precedes(handoffInput, dayHeading), "handoff input sits before the date heading");
+ok(precedes(handoffInput, timelineBox), "handoff input sits before the timeline");
+ok(handoffZone !== null && handoffZone === handoffInput?.closest(".assistant-handoff-zone"), "handoff input lives inside the sticky top zone");
+
+// ── Run heading stays short; summary renders as Markdown ──────────────
+const runEvents = [...host.querySelectorAll(".assistant-event--run")];
+ok(runEvents.length >= 2, "timeline shows multiple run events");
+ok(
+  runEvents.every((event) => {
+    const heading = event.querySelector("h2")?.textContent ?? "";
+    return !heading.includes("测试都通过了") && !heading.includes("构建脚本前置检查");
+  }),
+  "run h2 never promotes summary prose into the heading",
+);
+ok(runEvents.every((event) => event.querySelector("h2")?.textContent === "本次运行已完成"), "completed run h2 uses the short state title");
+ok(runEvents.every((event) => event.querySelector(".assistant-event__summary .md") !== null), "every run summary renders through the markdown container");
+ok(runEvents.some((event) => event.querySelector(".assistant-event__summary .md")?.textContent?.includes("测试都通过了")), "full run summary is preserved inside the markdown body");
+const nonRunEvents = [...host.querySelectorAll(".assistant-event--memory, .assistant-event--next")];
+ok(nonRunEvents.length >= 1 && nonRunEvents.every((event) => event.querySelector(".md") === null), "memory and next events stay plain text");
+
 const manage = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;
 await act(async () => { manage?.click(); });
 const workspaceInput = [...host.querySelectorAll("input")].find((input) => input.value === "~/projects/WorkGround2");
