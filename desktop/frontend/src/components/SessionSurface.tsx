@@ -6,7 +6,14 @@ import { Composer } from './Composer';
 import { ApprovalModal } from './ApprovalModal';
 import { AskCard } from './AskCard';
 import { ClearContextCard } from './ClearContextCard';
-import { SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar } from './desktop-ui/IrisInfoComponents';
+import {
+  ACTIVE_RUN_STATUSES,
+  TERMINAL_RUN_STATUSES,
+  SessionRunStream,
+  SessionArtifactShelf,
+  SessionQueueTray,
+  SessionConfigBar,
+} from './desktop-ui/IrisInfoComponents';
 import { ArrowLeft } from 'lucide-react';
 
 import type {
@@ -283,7 +290,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
               extraActions={(
                 <SessionRunStream
                   sessionId={renderSessionId}
-                  statuses={["completed", "failed", "cancelled"]}
+                  statuses={TERMINAL_RUN_STATUSES}
                   inlineTerminal
                   onStop={onCancel}
                 />
@@ -294,7 +301,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
               <p>将采用本地存储并预留云端同步接口，确保数据一致性与恢复能力。</p>
               <p>后续会输出设计文档与实现计划。</p>
             </div>
-            <SessionRunStream sessionId={renderSessionId} statuses={["queued", "running", "waiting_user", "reconnecting"]} onStop={onCancel} />
+            <SessionRunStream sessionId={renderSessionId} statuses={ACTIVE_RUN_STATUSES} onStop={onCancel} />
           </div>
         ) : sidebarImDetailConnection ? (
           <div>{t("botDetail.title", { name: sidebarImDetailConnection.title })}</div>
@@ -329,6 +336,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
               renderTurnFooter={(turn: number) => (
                 <SessionRunStream
                   sessionId={renderSessionId}
+                  statuses={TERMINAL_RUN_STATUSES}
                   turnId={`turn:${turn + 1}`}
                   inlineTerminal
                   onStop={onCancel}
@@ -336,7 +344,8 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
               )}
             />
             <div data-testid="session-run-slot" style={{ display: 'contents' }}>
-              <SessionRunStream sessionId={renderSessionId} unassignedOnly onStop={onCancel} />
+              <SessionRunStream sessionId={renderSessionId} statuses={ACTIVE_RUN_STATUSES} onStop={onCancel} />
+              <SessionRunStream sessionId={renderSessionId} statuses={TERMINAL_RUN_STATUSES} unassignedOnly onStop={onCancel} />
             </div>
           </div>
         )}

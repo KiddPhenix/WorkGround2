@@ -209,10 +209,13 @@ export function SessionMemoryBar({
 
 // ── SessionRunStream ───────────────────────────────────────────────────────
 
+export const ACTIVE_RUN_STATUSES = ["queued", "running", "waiting_user", "reconnecting"] as const satisfies readonly RunStatus[];
+export const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled"] as const satisfies readonly RunStatus[];
+
 export function runMatchesStream(
   run: RunRecord,
   sessionId: string,
-  statuses?: RunStatus[],
+  statuses?: readonly RunStatus[],
   turnId?: string,
   unassignedOnly = false,
 ): boolean {
@@ -230,7 +233,7 @@ export function SessionRunStream({
   onStop,
 }: {
   sessionId: string;
-  statuses?: RunStatus[];
+  statuses?: readonly RunStatus[];
   turnId?: string;
   unassignedOnly?: boolean;
   /** Place completed-run controls directly in the surrounding turn action row. */
@@ -302,7 +305,7 @@ export function SessionRunStream({
       <>
         {terminalRuns.map(renderTerminalAction)}
         {activeRuns.length > 0 && (
-          <div className="session-run-stream" aria-label="任务运行记录">
+          <div className="session-run-stream session-run-stream--active" aria-label="任务运行记录">
             {activeRuns.map(renderRun)}
           </div>
         )}
@@ -311,7 +314,7 @@ export function SessionRunStream({
   }
 
   return (
-    <div className={`session-run-stream${terminalOnly ? " session-run-stream--terminal" : ""}`} aria-label="任务运行记录">
+    <div className={`session-run-stream${terminalOnly ? " session-run-stream--terminal" : ""}${activeRuns.length > 0 ? " session-run-stream--active" : ""}`} aria-label="任务运行记录">
       {terminalRuns.length > 0 && (
         <div className="turn-actions session-run-actions" aria-label="已结束运行">
           {terminalRuns.map(renderTerminalAction)}
