@@ -382,6 +382,10 @@ func (r *AssistantRuntime) Wake() {
 
 func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 	now := time.Now()
+	if err := r.resumeAutoMemoryApprovals(now); err != nil {
+		r.recordDiagnostic("memory_approval_recovery", err)
+		slog.Warn("desktop: assistant memory approval recovery had failures", "err", err)
+	}
 	if result, err := r.scheduler.Tick(now); err != nil {
 		r.recordDiagnostic("schedule", err)
 		slog.Error("desktop: assistant schedule tick failed", "err", err, "failures", len(result.Failures))
@@ -406,6 +410,65 @@ func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 			defer r.wg.Done()
 			r.execute(ctx, run)
 		}()
+	}
+}
+
+func (r *AssistantRuntime) resumeAutoMemoryApprovals(now time.Time) error {
+	assistants, listErr := r.store.List()
+	issues := []error{}
+	if listErr != nil {
+		issues = append(issues, listErr)
+	}
+	for _, record := range assistants {
+		snapshot, err := r.store.Get(record.ID)
+		if err != nil {
+			issues = append(issues, err)
+			continue
+		}
+		runs := make(map[string]assistant.Run, len(snapshot.Runs))
+		for _, run := range snapshot.Runs {
+			runs[run.ID] = run
+		}
+		for _, item := range snapshot.Attention {
+			if !autoAllowedAssistantMemoryTool(item.Tool) || !strings.HasPrefix(item.Action, "approve_tool") {
+				continue
+			}
+			run, ok := runs[item.RunID]
+			if !ok || run.State != assistant.RunWaitingApproval || item.ResumeToken != run.ResumeToken {
+				continue
+			}
+			if item.State == assistant.AttentionOpen {
+				resolved, resolveErr := r.store.ResolveAttention(assistant.ResolveAttentionInput{
+					RequestID:   assistant.StableID("request", "auto-memory-resolve/"+item.ID),
+					AssistantID: record.ID, AttentionID: item.ID, ExpectedRevision: item.Revision,
+					State: assistant.AttentionApproved, Resolution: "助手记忆工具按冻结权限自动允许", Now: now,
+				})
+				if resolveErr != nil {
+					issues = append(issues, fmt.Errorf("resolve %s: %w", item.ID, resolveErr))
+					continue
+				}
+				item = *resolved
+			}
+			if item.State != assistant.AttentionApproved {
+				continue
+			}
+			if _, resumeErr := r.store.Resume(assistant.ResumeInput{
+				RequestID: assistant.StableID("request", "auto-memory-resume/"+item.ID),
+				RunID:     run.ID, Now: now,
+			}); resumeErr != nil {
+				issues = append(issues, fmt.Errorf("resume %s: %w", run.ID, resumeErr))
+			}
+		}
+	}
+	return errors.Join(issues...)
+}
+
+func autoAllowedAssistantMemoryTool(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "memory", "remember", "forget":
+		return true
+	default:
+		return false
 	}
 }
 

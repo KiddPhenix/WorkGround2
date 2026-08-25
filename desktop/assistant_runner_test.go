@@ -198,6 +198,70 @@ func createAssistantRunWithTask(t *testing.T, store *assistant.Store, requestID,
 	return snapshot, run
 }
 
+func TestAssistantRuntimeAutoResumesPersistedMemoryApproval(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, run := createAssistantRun(t, store, "memory-recovery")
+	now := time.Now()
+	claimed, ok, err := store.Claim("desktop-test", now, time.Minute)
+	if err != nil || !ok || claimed.ID != run.ID {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	waiting, err := store.RequestApproval(assistant.ApprovalInput{
+		RequestID: "memory-approval", RunID: run.ID, LeaseOwner: "desktop-test", LeaseFence: claimed.LeaseFence,
+		Action: "approve_tool:remember", Summary: "save writing principles", Tool: "remember", Subject: "writing-principles",
+		SessionPath: "sessions/memory", ResumeToken: "memory-token", Now: now.Add(time.Second),
+	})
+	if err != nil || waiting.State != assistant.RunWaitingApproval {
+		t.Fatalf("RequestApproval: run=%+v err=%v", waiting, err)
+	}
+
+	if err := service.resumeAutoMemoryApprovals(now.Add(2 * time.Second)); err != nil {
+		t.Fatalf("resumeAutoMemoryApprovals: %v", err)
+	}
+	if err := service.resumeAutoMemoryApprovals(now.Add(3 * time.Second)); err != nil {
+		t.Fatalf("idempotent recovery: %v", err)
+	}
+	got, err := store.Get(snapshot.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Runs) != 1 || got.Runs[0].State != assistant.RunQueued {
+		t.Fatalf("recovered run = %+v, want queued", got.Runs)
+	}
+	if len(got.Attention) != 1 || got.Attention[0].State != assistant.AttentionApproved || !strings.Contains(got.Attention[0].Resolution, "自动允许") {
+		t.Fatalf("recovered attention = %+v", got.Attention)
+	}
+}
+
+func TestAssistantRuntimeKeepsSensitiveApprovalOpen(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, run := createAssistantRun(t, store, "publish-recovery")
+	now := time.Now()
+	claimed, ok, err := store.Claim("desktop-test", now, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	if _, err := store.RequestApproval(assistant.ApprovalInput{
+		RequestID: "publish-approval", RunID: run.ID, LeaseOwner: "desktop-test", LeaseFence: claimed.LeaseFence,
+		Action: "approve_tool:publish", Summary: "publish result", Tool: "publish", Subject: "public post",
+		SessionPath: "sessions/publish", ResumeToken: "publish-token", Now: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.resumeAutoMemoryApprovals(now.Add(2 * time.Second)); err != nil {
+		t.Fatalf("resumeAutoMemoryApprovals: %v", err)
+	}
+	got, err := store.Get(snapshot.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runs[0].State != assistant.RunWaitingApproval || got.Attention[0].State != assistant.AttentionOpen {
+		t.Fatalf("sensitive approval changed: run=%+v attention=%+v", got.Runs[0], got.Attention[0])
+	}
+}
+
 func TestAssistantRuntimeRejectsMissingLiveWebEvidence(t *testing.T) {
 	host := &assistantHostStub{}
 	service, store := newAssistantTestRuntime(t, host)
