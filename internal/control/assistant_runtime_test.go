@@ -205,6 +205,47 @@ func TestTrySubmitUserTurnWithPolicyInstallsGateBeforeRun(t *testing.T) {
 	}
 }
 
+func TestTrySubmitUserTurnWithPolicyRespectsExplicitMemoryAllow(t *testing.T) {
+	for _, toolName := range []string{"remember", "forget"} {
+		t.Run(toolName, func(t *testing.T) {
+			result := make(chan permissionCheckResult, 1)
+			approvals := make(chan event.Approval, 1)
+			var c *Controller
+			runner := permissionCheckingRunner{
+				result: result,
+				check: func() (bool, error) {
+					allow, _, err := c.permissionGate.Check(context.Background(), toolName, json.RawMessage(`{"name":"assistant-note"}`), false)
+					return allow, err
+				},
+			}
+			c = New(Options{
+				Runner: runner,
+				Sink: event.FuncSink(func(e event.Event) {
+					if e.Kind == event.ApprovalRequest {
+						approvals <- e.Approval
+					}
+				}),
+			})
+			c.EnableInteractiveApproval()
+			policy := permission.New("ask", []string{"memory", "remember", "forget"}, nil, nil)
+			if !c.TrySubmitUserTurnWithPolicy("assistant turn", "assistant turn", policy, ToolApprovalAuto) {
+				t.Fatal("idle controller rejected assistant turn")
+			}
+			select {
+			case approval := <-approvals:
+				c.Approve(approval.ID, false, false, false)
+				t.Fatalf("explicitly allowed %s emitted approval: %+v", toolName, approval)
+			case got := <-result:
+				if got.err != nil || !got.allow {
+					t.Fatalf("%s gate result allow=%v err=%v, want allow", toolName, got.allow, got.err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("%s gate did not finish", toolName)
+			}
+		})
+	}
+}
+
 func TestTrySubmitUserTurnWithPolicyUsesExactOneShotGrant(t *testing.T) {
 	session := agent.NewSession("sys")
 	release := make(chan struct{})
