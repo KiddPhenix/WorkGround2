@@ -10,6 +10,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| Assistant 删除与管理页关闭区避让 | `in_progress` | `developping/assistant-delete-ui+2026-08-25` | `Codex` | `desktop/assistant_app.go`、`desktop/frontend/src/custom/features/assistant`、相关测试 | 调整功能：为 Assistant 提供明确确认、幂等且失败可见的删除入口；管理助手页关闭按钮避开 Windows 原生标题栏控制区，保持拖拽与交互命中。截图驱动 GUI 调整，不使用 WorkGround2 Worker。 |
 | Assistant Session 链接导航一致性 | `done` | `developping/assistant-session-navigation+2026-08-25` | `Codex` | `desktop/frontend/src/App.tsx`、`assistant-workspace.test.tsx` | 调整功能：Assistant Run 状态链接改走统一 linked-session 导航队列，按冻结 `session_path` 更新 Active Tab、加载对应历史并适配单窗口布局；成功后才关闭 Assistant，失败保持现场并显式提示。Assistant 174 项、Work 导航契约 41 项、连续导航 15 项、TypeScript、前端生产构建与 Wails 正式构建通过；未启动程序。 |
 | Assistant 与设置窗口拖拽区 | `done` | `developping/window-drag-regions+2026-08-25` | `Codex` | `desktop/frontend/src/custom/features/assistant/assistant.css`、`desktop/frontend/src/styles.css`、相关契约测试 | 调整功能：Assistant 顶栏空白区与全窗口设置保留顶栏可拖动原生窗口；选择器、按钮和设置内容显式退出拖拽区，保持交互命中。Assistant 171 项、设置布局、CSS 门禁、TypeScript、前端生产构建与 Wails 正式构建通过；未启动程序。 |
 | 浏览器原生能力优先与页面现场保护 | `done` | `developping/browser-native-first-no-reload+2026-08-25` | `Codex + WorkGround2` | `internal/config/config.go`、`internal/boot/boot.go`、`internal/tool/browser/tools.go`、`internal/tool/builtin/bash.go`、浏览器契约文档及相关测试 | 调整功能：所有默认及自定义 system prompt 统一要求已覆盖的浏览器操作优先使用内置 `browser_*`，Playwright 仅在原生工具不可用、明确失败或缺少必要能力时通过 `browser_attach` 接管同一浏览器；禁止仅为观察、同步或重试刷新页面或重进同一 URL，并明确 `browser_state(refresh=true)` 只重建观察快照、绝不 reload。Config/Boot/Browser/Bash 四包测试、vet 与 diff check 通过。 |
