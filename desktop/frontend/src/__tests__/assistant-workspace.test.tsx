@@ -137,11 +137,11 @@ const nonRunEvents = [...host.querySelectorAll(".assistant-event--memory, .assis
 ok(nonRunEvents.length >= 1 && nonRunEvents.every((event) => event.querySelector(".md") === null), "memory and next events stay plain text");
 
 // ── Timeline run state: a bound session opens the coding-agent session ──
-let openedSession: { scope: string; workspaceRoot: string; sessionPath: string } | null = null;
+let openedSession: { scope: string; workspaceRoot: string; sessionPath: string; assistantID: string; assistantName: string } | null = null;
 await act(async () => {
   root.render(
     <LocaleProvider><ToastProvider>
-      <AssistantWorkspace onOpenSession={(scope, workspaceRoot, sessionPath) => { openedSession = { scope, workspaceRoot, sessionPath }; }} />
+      <AssistantWorkspace onOpenSession={(target) => { openedSession = target; }} />
     </ToastProvider></LocaleProvider>,
   );
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -156,8 +156,10 @@ ok(openedSession !== null, "clicking the bound run state opens the coding-agent 
 ok(
   openedSession?.scope === "project" &&
     openedSession?.workspaceRoot === "~/projects/WorkGround2" &&
-    openedSession?.sessionPath === "/mock/sessions/assistant-scan.jsonl",
-  "bound run state maps Assistant workspace scope to the Desktop project scope and preserves the path",
+    openedSession?.sessionPath === "/mock/sessions/assistant-scan.jsonl" &&
+    openedSession?.assistantID === "assistant-code-project" &&
+    openedSession?.assistantName === "代码项目助手",
+  "bound run state preserves the owning Assistant identity together with the exact session path",
 );
 const unboundBadge = [...host.querySelectorAll(".assistant-event--run .assistant-run-state")].find((element) => element.tagName !== "BUTTON");
 ok(unboundBadge !== undefined && unboundBadge.tagName === "SPAN", "unbound run keeps a non-interactive badge");
@@ -257,18 +259,22 @@ const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8");
 const assistantCssSource = readFileSync(resolve(testDir, "../custom/features/assistant/assistant.css"), "utf8");
 const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
 const controllerSource = readFileSync(resolve(testDir, "../lib/useController.ts"), "utf8");
-const assistantNavigationBlock = appSource.match(/const handleNavigateToAssistantSession = useCallback\([\s\S]*?\n  \}, \[enqueueNavigation\]\);/)?.[0] ?? "";
+const assistantNavigationBlock = appSource.match(/const handleNavigateToAssistantSession = useCallback\([\s\S]*?\n  \}, \[activeTab\?\.sessionPath, enqueueNavigation\]\);/)?.[0] ?? "";
 ok(
   assistantNavigationBlock.includes('kind: "linked-session"') &&
     assistantNavigationBlock.includes('topicId: ""') &&
-    assistantNavigationBlock.includes("sessionPath,") &&
-    assistantNavigationBlock.includes("onOpened: () => setAssistantOpen(false)"),
-  "assistant session links use the serialized linked-session navigation queue and close only after success",
+    assistantNavigationBlock.includes("sessionPath: target.sessionPath") &&
+    assistantNavigationBlock.includes("originSessionPath: activeTab?.sessionPath") &&
+    assistantNavigationBlock.includes("setLinkedAssistantReturn") &&
+    assistantNavigationBlock.includes("setAssistantOpen(false)"),
+  "assistant session links preserve return context and close only after serialized navigation succeeds",
 );
 ok(
   appSource.includes("onOpenSession={handleNavigateToAssistantSession}") &&
+    appSource.includes('testId: "session-assistant-return"') &&
+    appSource.includes("handleReturnToAssistant") &&
     !appSource.includes('void app.OpenLinkedSession(scope, workspaceRoot, "", sessionPath)'),
-  "assistant workspace no longer bypasses frontend tab activation and history hydration",
+  "assistant workspace uses exact-path navigation and exposes a return-to-Assistant header action",
 );
 const linkedSessionControllerBlock = controllerSource.match(/const openLinkedSession = useCallback\([\s\S]*?\n  \}, \[[^\]]*\]\);/)?.[0] ?? "";
 ok(

@@ -33615,7 +33615,7 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
 }
 
-.session-header__work-return {
+.session-header__return {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
@@ -33633,18 +33633,18 @@ body > .mermaid-diagram--fullscreen {
   --wails-draggable: no-drag;
 }
 
-.session-header__work-return:hover:not(:disabled) {
+.session-header__return:hover:not(:disabled) {
   border-color: var(--button-border-hover);
   background: var(--button-bg-hover);
   color: var(--fg);
 }
 
-.session-header__work-return:focus-visible {
+.session-header__return:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.session-header__work-return:disabled {
+.session-header__return:disabled {
   cursor: wait;
   opacity: 0.6;
 }
@@ -45005,19 +45005,23 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-main {
-  padding-right: 106px;
+  padding-right: 66px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-main {
+  padding-right: 82px;
 }
 
 .app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-project {
   position: absolute;
   right: 10px;
-  max-width: 78px;
+  max-width: 46px;
   transition: opacity var(--dur-fast), transform var(--dur-fast);
 }
 
 .app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-project {
   right: 34px;
-  max-width: 64px;
+  max-width: 32px;
 }
 
 .app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic:hover .project-tree__topic-pin-state,

@@ -159,8 +159,9 @@ ok(
 ok(
   appSource.includes("targetSessionPath: sessionRef.sessionPath")
     && appSource.includes("handleReturnToLinkedWork")
-    && sessionSurfaceSource.includes('data-testid="session-work-return"')
-    && sessionSurfaceSource.includes("workReturn.onReturn"),
+    && appSource.includes('testId: "session-work-return"')
+    && sessionSurfaceSource.includes('data-testid={headerReturn.testId}')
+    && sessionSurfaceSource.includes("headerReturn.onReturn"),
   "隐藏会话保留来源 Work，并提供明确返回入口",
 );
 ok(

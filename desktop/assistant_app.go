@@ -119,7 +119,12 @@ func (a *App) AssistantGet(assistantID string) (assistant.Snapshot, error) {
 	if err != nil {
 		return assistant.Snapshot{}, err
 	}
-	return service.store.Get(assistantID)
+	snapshot, err := service.store.Get(assistantID)
+	if err != nil {
+		return assistant.Snapshot{}, err
+	}
+	a.reconcileAssistantSessionTitles(snapshot)
+	return snapshot, nil
 }
 
 func (a *App) AssistantCreate(req AssistantCreateRequest) (assistant.Snapshot, error) {

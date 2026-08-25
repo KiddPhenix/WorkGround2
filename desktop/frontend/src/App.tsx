@@ -69,7 +69,7 @@ import { AddOnLauncherButton, AddOnWorkbenchOverlay } from "./components/desktop
 import { SessionStatusIndicators } from "./components/SessionStatusIndicators";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
-import { AssistantSidebarEntry, AssistantWorkspace } from "./custom/features/assistant/AssistantWorkspace";
+import { AssistantSidebarEntry, AssistantWorkspace, type AssistantSessionTarget } from "./custom/features/assistant/AssistantWorkspace";
 import { WorkCard } from "./components/work/WorkCard";
 import { LinkedSessionCard } from "./components/work/LinkedSessionCard";
 import { WorkAvailabilitySurface } from "./components/work/WorkAvailabilitySurface";
@@ -458,6 +458,12 @@ type LinkedWorkReturn = {
   sessionPath: string;
   workId: string;
   label: string;
+  targetSessionPath: string;
+};
+type LinkedAssistantReturn = {
+  assistantID: string;
+  label: string;
+  originSessionPath: string;
   targetSessionPath: string;
 };
 type SidebarImTopicSource = {
@@ -1167,6 +1173,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   const [linkedWorkReturn, setLinkedWorkReturn] = useState<LinkedWorkReturn | null>(null);
   const [linkedWorkReturning, setLinkedWorkReturning] = useState(false);
   const linkedWorkReturningRef = useRef(false);
+  const [linkedAssistantReturn, setLinkedAssistantReturn] = useState<LinkedAssistantReturn | null>(null);
   const activeTab = useMemo(
     () => tabMetas.find((tab) => tab.id === activeTabId)
       ?? tabMetas.find((tab) => tab.sessionId === activeSessionId)
@@ -3946,16 +3953,40 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     sendToTabConfirmed,
   ]);
 
-  const handleNavigateToAssistantSession = useCallback((scope: "global" | "project", workspaceRoot: string, sessionPath: string): void => {
+  const handleNavigateToAssistantSession = useCallback((target: AssistantSessionTarget): void => {
     void enqueueNavigation({
       kind: "linked-session",
-      scope,
-      workspaceRoot,
+      scope: target.scope,
+      workspaceRoot: target.workspaceRoot,
       topicId: "",
-      sessionPath,
-      onOpened: () => setAssistantOpen(false),
+      sessionPath: target.sessionPath,
+      onOpened: () => {
+        setAssistantFocusID(target.assistantID);
+        setLinkedAssistantReturn({
+          assistantID: target.assistantID,
+          label: target.assistantName,
+          originSessionPath: activeTab?.sessionPath || "",
+          targetSessionPath: target.sessionPath,
+        });
+        setAssistantOpen(false);
+      },
     });
-  }, [enqueueNavigation]);
+  }, [activeTab?.sessionPath, enqueueNavigation]);
+
+  const handleReturnToAssistant = useCallback((target: LinkedAssistantReturn): void => {
+    closeTransientOverlays();
+    setAssistantFocusID(target.assistantID);
+    setLinkedAssistantReturn(null);
+    setAssistantOpen(true);
+  }, [closeTransientOverlays]);
+
+  useEffect(() => {
+    if (!linkedAssistantReturn) return;
+    const currentPath = comparableSessionPath(activeTab?.sessionPath);
+    const originPath = comparableSessionPath(linkedAssistantReturn.originSessionPath);
+    const targetPath = comparableSessionPath(linkedAssistantReturn.targetSessionPath);
+    if (currentPath && currentPath !== originPath && currentPath !== targetPath) setLinkedAssistantReturn(null);
+  }, [activeTab?.sessionPath, linkedAssistantReturn]);
 
   // ── Linked task Session navigation with an explicit Work return path ─
   const handleNavigateToLinkedSession = useCallback(async (sessionRef: SessionRef): Promise<void> => {
@@ -4068,6 +4099,10 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     label: linkedOwnerTab.sessionDisplayTitle || linkedOwnerTab.topicTitle || "Work",
     targetSessionPath: activeTab.sessionPath,
   } : null);
+  const activeLinkedAssistantReturn = linkedAssistantReturn
+    && comparableSessionPath(activeTab?.sessionPath) === comparableSessionPath(linkedAssistantReturn.targetSessionPath)
+    ? linkedAssistantReturn
+    : null;
   const showReadyWork = showWorkSurface && workEnabled === true && !workConfigFailed && workCapable === true;
   const workUnavailable = workEnabled === false || workConfigFailed || workCapabilityFailed;
   // ── Dev-only: ?uiFixture=iris seeds stores with chapter 16 data ────────
@@ -4425,9 +4460,18 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
             ) : (
               <SessionSurface
                 {...sessionSurfaceProps}
-                workReturn={activeLinkedWorkReturn ? {
-                  label: activeLinkedWorkReturn.label,
+                headerReturn={activeLinkedAssistantReturn ? {
+                  ariaLabel: locale.startsWith("zh") ? `返回 ${activeLinkedAssistantReturn.label}` : `Back to ${activeLinkedAssistantReturn.label}`,
+                  label: locale.startsWith("zh") ? "返回助手" : "Back to Assistant",
+                  pending: false,
+                  testId: "session-assistant-return",
+                  onReturn: () => handleReturnToAssistant(activeLinkedAssistantReturn),
+                } : activeLinkedWorkReturn ? {
+                  ariaLabel: `返回 ${activeLinkedWorkReturn.label}`,
+                  label: "返回 Work",
+                  pendingLabel: "正在返回…",
                   pending: linkedWorkReturning,
+                  testId: "session-work-return",
                   onReturn: () => { void handleReturnToLinkedWork(activeLinkedWorkReturn); },
                 } : undefined}
               />

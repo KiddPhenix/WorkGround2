@@ -164,12 +164,15 @@ ok(
     finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "position") === "absolute" &&
     finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "right") === "10px" &&
     finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-project", "right") === "10px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-main", "padding-right") === "66px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-main", "padding-right") === "82px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-project", "max-width") === "46px" &&
     finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-project", "right") === "34px" &&
-    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-project", "max-width") === "64px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-project", "max-width") === "32px" &&
     includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-project") &&
     includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-pin-state") &&
     includes(stylesSource, "transform: translateX(-3px);"),
-  "CSS: pinned state stays at the right edge while project metadata shifts left and both yield to row actions",
+  "CSS: Recent reserves most row width for readable titles while project metadata and pin state yield to actions",
 );
 ok(
   finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "top") === "6px" &&

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/assistant"
 	"workground2/internal/control"
 	"workground2/internal/decision"
@@ -196,6 +197,76 @@ func createAssistantRunWithTask(t *testing.T, store *assistant.Store, requestID,
 		t.Fatalf("Trigger: %v", err)
 	}
 	return snapshot, run
+}
+
+func TestAssistantRunTopicTitleUsesFrozenUserIntent(t *testing.T) {
+	tests := []struct {
+		name string
+		run  assistant.Run
+		want string
+	}{
+		{name: "prompt", run: assistant.Run{Prompt: "调查最近的构建失败", Mission: "维护项目"}, want: "调查最近的构建失败"},
+		{name: "mission fallback", run: assistant.Run{Mission: "持续整理发布反馈"}, want: "持续整理发布反馈"},
+		{name: "empty", run: assistant.Run{}, want: defaultTopicTitle},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := assistantRunTopicTitle(tt.run); got != tt.want {
+				t.Fatalf("assistantRunTopicTitle() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	if !isLegacyAssistantTopicTitle("你正在执行一个长期助手…") || isLegacyAssistantTopicTitle("调查最近的构建失败") {
+		t.Fatal("legacy Assistant title classification drifted")
+	}
+}
+
+func TestReconcileAssistantSessionTitleRepairsOnlyAutoLegacyTitle(t *testing.T) {
+	root := t.TempDir()
+	sessionPath := filepath.Join(root, "assistant-session.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := agent.EnsureBranchMeta(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.Scope = "project"
+	meta.WorkspaceRoot = root
+	meta.TopicID = "assistant-topic"
+	meta.TopicTitle = "你正在执行一个长期助手…"
+	meta.SessionKind = agent.SessionKindAssistant
+	meta.AssistantID = "assistant-readable"
+	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := setTopicTitleWithSource(root, meta.TopicID, meta.TopicTitle, topicTitleSourceAuto); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{}
+	run := assistant.Run{
+		ID: "run-readable", AssistantID: meta.AssistantID, SessionPath: sessionPath,
+		Scope: assistant.ScopeWorkspace, WorkspaceRoot: root, Prompt: "整理论坛热门帖子并附原文链接",
+	}
+	updated, err := app.reconcileAssistantSessionTitle(run)
+	if err != nil || !updated {
+		t.Fatalf("reconcileAssistantSessionTitle() updated=%v err=%v", updated, err)
+	}
+	if got := loadTopicTitle(root, meta.TopicID); got != "整理论坛热门帖子并附原文链接" {
+		t.Fatalf("reconciled title = %q", got)
+	}
+	updated, err = app.reconcileAssistantSessionTitle(run)
+	if err != nil || updated {
+		t.Fatalf("idempotent reconcile updated=%v err=%v", updated, err)
+	}
+
+	if err := setTopicTitleWithSource(root, meta.TopicID, "用户手动标题", topicTitleSourceManual); err != nil {
+		t.Fatal(err)
+	}
+	if updated, err := app.reconcileAssistantSessionTitle(run); err != nil || updated {
+		t.Fatalf("manual title was replaced: updated=%v err=%v", updated, err)
+	}
 }
 
 func TestAssistantRuntimeAutoResumesPersistedMemoryApproval(t *testing.T) {
