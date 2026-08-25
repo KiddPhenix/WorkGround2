@@ -393,7 +393,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// same rule the openai provider uses for its deepseek protocol detection
 	// (openai.go: protocol == "deepseek", or an unset protocol against a
 	// deepseek base URL). Config defaults to enabled; opt out per install.
-	useAnchoredBootstrap := cfg.AnchoredBootstrapEnabled() && isDeepSeekProvider(entry)
+	useAnchoredBootstrap := shouldUseAnchoredBootstrap(cfg.AnchoredBootstrapEnabled(), isDeepSeekProvider(entry), opts.SessionKind)
 	modelRef := entry.Name + "/" + entry.Model
 	if opts.EffortOverride != nil {
 		entry.Effort = *opts.EffortOverride
@@ -1719,6 +1719,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	dshTransferred = true
 	return ctrl, nil
+}
+
+// shouldUseAnchoredBootstrap keeps the three-tool DeepSeek cold-start surface
+// for ordinary sessions, but Assistant Runs need their full capability catalog
+// on the first turn. In particular, live_web evidence cannot be produced when
+// browser tools are hidden behind the coding-only bootstrap.
+func shouldUseAnchoredBootstrap(enabled, deepSeek bool, kind agent.SessionKind) bool {
+	return enabled && deepSeek && kind != agent.SessionKindAssistant
 }
 
 func ensureWorkDir(path string) error {

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"workground2/internal/agent"
 	"workground2/internal/config"
 )
 
@@ -35,5 +36,22 @@ func TestAssistantSystemPromptNeverSilentlyLocalInspection(t *testing.T) {
 	got := assistantSystemPrompt("")
 	if !strings.Contains(got, "Never silently replace requested live website inspection with local cache") {
 		t.Fatalf("assistant prompt missing the no-local-substitution rule:\n%s", got)
+	}
+}
+
+func TestAssistantSkipsCodingOnlyAnchoredBootstrap(t *testing.T) {
+	if shouldUseAnchoredBootstrap(true, true, agent.SessionKindAssistant) {
+		t.Fatal("Assistant first turn must expose the full tool catalog")
+	}
+	for _, kind := range []agent.SessionKind{"", agent.SessionKindNormal, agent.SessionKindWork, agent.SessionKindCollaboration} {
+		if !shouldUseAnchoredBootstrap(true, true, kind) {
+			t.Fatalf("ordinary session kind %q unexpectedly lost anchored bootstrap", kind)
+		}
+	}
+	if shouldUseAnchoredBootstrap(false, true, agent.SessionKindNormal) {
+		t.Fatal("disabled bootstrap was enabled")
+	}
+	if shouldUseAnchoredBootstrap(true, false, agent.SessionKindNormal) {
+		t.Fatal("non-DeepSeek session enabled DeepSeek bootstrap")
 	}
 }

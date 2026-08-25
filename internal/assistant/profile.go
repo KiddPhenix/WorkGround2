@@ -127,7 +127,7 @@ func EvidenceFailure(missing []Capability) Failure {
 	}
 	return Failure{
 		Code:         "evidence_missing",
-		Message:      fmt.Sprintf("required capability evidence missing: %s", strings.Join(codes, ", ")),
+		Message:      fmt.Sprintf("本次运行未取得必需能力的成功工具证据（%s）；浏览器/Web 工具可能未调用、不可用或执行失败，运行将按策略重试", strings.Join(codes, ", ")),
 		Retryable:    true,
 		OutcomeKnown: true,
 	}
