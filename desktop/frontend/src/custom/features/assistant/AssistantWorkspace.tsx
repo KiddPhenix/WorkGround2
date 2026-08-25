@@ -56,17 +56,31 @@ import "./assistant.css";
 
 type ManageTab = "overview" | "routines" | "memory" | "history" | "attention" | "plan";
 
+export interface AssistantSessionTarget {
+  scope: "global" | "project";
+  workspaceRoot: string;
+  sessionPath: string;
+  assistantID: string;
+  assistantName: string;
+}
+
 interface AssistantWorkspaceProps {
-  onOpenSession?: (scope: "global" | "project", workspaceRoot: string, sessionPath: string) => void;
+  onOpenSession?: (target: AssistantSessionTarget) => void;
   focusAssistantID?: string;
   composerSubmitKey?: ComposerSubmitKey;
 }
 
-function assistantRunSessionTarget(run: AssistantRun, owner: AssistantRecord): [scope: "global" | "project", workspaceRoot: string, sessionPath: string] | null {
+function assistantRunSessionTarget(run: AssistantRun, owner: AssistantRecord): AssistantSessionTarget | null {
   const sessionPath = run.session_path?.trim();
   if (!sessionPath) return null;
   const scope = (run.scope || owner.scope) === "workspace" ? "project" : "global";
-  return [scope, scope === "project" ? run.workspace_root || owner.workspace_root || "" : "", sessionPath];
+  return {
+    scope,
+    workspaceRoot: scope === "project" ? run.workspace_root || owner.workspace_root || "" : "",
+    sessionPath,
+    assistantID: owner.id,
+    assistantName: owner.name,
+  };
 }
 
 export function AssistantSidebarEntry({ active, collapsed = false, onClick }: { active: boolean; collapsed?: boolean; onClick: () => void }) {
@@ -360,7 +374,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
                       className={`assistant-run-state assistant-run-state--${run.state} assistant-run-state--link`}
                       title={copy.openSession}
                       aria-label={`${label}，${copy.openSession}`}
-                      onClick={() => onOpenSession(...target)}
+                      onClick={() => onOpenSession(target)}
                     >
                       {label}
                       <ExternalLink size={11} aria-hidden="true" />
@@ -718,7 +732,7 @@ function RunHistory({ snapshot, busy, act, onRun, onAttention, onOpenSession }: 
     const sessionTarget = assistantRunSessionTarget(run, snapshot.assistant);
     const directInput = !run.routine_id ? run.prompt?.trim() : "";
     const result = run.summary || run.error?.message || snapshot.routines.find((item) => item.id === run.routine_id)?.title;
-    return <article key={run.id} className="assistant-history-item"><div><strong>{runStateLabel(run.state, locale)}</strong><time>{formatTimelineTime(new Date(run.started_at || run.created_at), locale)}</time></div>{directInput && <div className="assistant-history-item__prompt"><span>{copy.youSaid}</span><p>{directInput}</p></div>}{result && <div className="assistant-history-item__result"><AssistantMarkdown text={result} /></div>}{run.state === "retry_wait" && <span className="assistant-history-item__hint">{copy.waitingRetry}</span>}<div>{sessionTarget && onOpenSession && <button className="assistant-text-action" type="button" onClick={() => onOpenSession(...sessionTarget)}><ExternalLink size={13} />{copy.openSession}</button>}{action === "rerun" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void onRun(run.routine_id)}><RefreshCw size={13} />{copy.rerun}</button>}{action === "cancel" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void cancel(run.id)}><X size={13} />{copy.stopRun}</button>}{action === "attention" && <button className="assistant-text-action" type="button" onClick={onAttention}><AlertCircle size={13} />{copy.handleAttention}</button>}</div></article>;
+    return <article key={run.id} className="assistant-history-item"><div><strong>{runStateLabel(run.state, locale)}</strong><time>{formatTimelineTime(new Date(run.started_at || run.created_at), locale)}</time></div>{directInput && <div className="assistant-history-item__prompt"><span>{copy.youSaid}</span><p>{directInput}</p></div>}{result && <div className="assistant-history-item__result"><AssistantMarkdown text={result} /></div>}{run.state === "retry_wait" && <span className="assistant-history-item__hint">{copy.waitingRetry}</span>}<div>{sessionTarget && onOpenSession && <button className="assistant-text-action" type="button" onClick={() => onOpenSession(sessionTarget)}><ExternalLink size={13} />{copy.openSession}</button>}{action === "rerun" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void onRun(run.routine_id)}><RefreshCw size={13} />{copy.rerun}</button>}{action === "cancel" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void cancel(run.id)}><X size={13} />{copy.stopRun}</button>}{action === "attention" && <button className="assistant-text-action" type="button" onClick={onAttention}><AlertCircle size={13} />{copy.handleAttention}</button>}</div></article>;
   })}</div>;
 }
 

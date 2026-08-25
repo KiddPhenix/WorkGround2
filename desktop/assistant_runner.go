@@ -116,6 +116,95 @@ func ensureAssistantSessionMeta(sessionPath, assistantID string) error {
 	return agent.SaveBranchMetaPreserveUpdated(sessionPath, meta)
 }
 
+func assistantRunTopicTitle(run assistant.Run) string {
+	if title := topicTitleFromUserText(run.Prompt); title != "" {
+		return title
+	}
+	if title := topicTitleFromUserText(run.Mission); title != "" {
+		return title
+	}
+	return defaultTopicTitle
+}
+
+func isLegacyAssistantTopicTitle(title string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" || title == defaultTopicTitle {
+		return true
+	}
+	lower := strings.ToLower(title)
+	return strings.HasPrefix(title, "你正在执行一个") || strings.HasPrefix(lower, "you are executing a")
+}
+
+// reconcileAssistantSessionTitles repairs titles produced from the Assistant's
+// internal execution envelope. Manual/custom titles are authoritative and are
+// never replaced. The repair is safe to repeat on every AssistantGet.
+func (a *App) reconcileAssistantSessionTitles(snapshot assistant.Snapshot) {
+	changed := false
+	for _, run := range snapshot.Runs {
+		updated, err := a.reconcileAssistantSessionTitle(run)
+		if err != nil {
+			slog.Warn("assistant session title reconciliation failed", "assistant_id", run.AssistantID, "run_id", run.ID, "error", err)
+			continue
+		}
+		changed = changed || updated
+	}
+	if changed {
+		a.invalidatePromptHistoryCache()
+		a.emitProjectTreeChanged()
+	}
+}
+
+func (a *App) reconcileAssistantSessionTitle(run assistant.Run) (bool, error) {
+	sessionPath := strings.TrimSpace(run.SessionPath)
+	desired := assistantRunTopicTitle(run)
+	if sessionPath == "" || desired == defaultTopicTitle {
+		return false, nil
+	}
+	meta, ok, err := agent.LoadBranchMeta(sessionPath)
+	if err != nil || !ok {
+		return false, err
+	}
+	if strings.TrimSpace(meta.TopicID) == "" || strings.TrimSpace(meta.CustomTitle) != "" {
+		return false, nil
+	}
+	if owner := strings.TrimSpace(meta.AssistantID); owner != "" && owner != strings.TrimSpace(run.AssistantID) {
+		return false, nil
+	}
+	if meta.SessionKind != agent.SessionKindAssistant && strings.TrimSpace(meta.AssistantID) == "" {
+		return false, nil
+	}
+
+	titleRoot := ""
+	if meta.Scope == "project" || (strings.TrimSpace(meta.Scope) == "" && run.Scope == assistant.ScopeWorkspace) {
+		titleRoot = normalizeProjectRoot(meta.WorkspaceRoot)
+		if titleRoot == "" {
+			titleRoot = normalizeProjectRoot(run.WorkspaceRoot)
+		}
+		if titleRoot == "" {
+			return false, nil
+		}
+	}
+	if loadTopicTitleSource(titleRoot, meta.TopicID) == topicTitleSourceManual {
+		return false, nil
+	}
+	current := strings.TrimSpace(loadTopicTitle(titleRoot, meta.TopicID))
+	if current == "" {
+		current = strings.TrimSpace(meta.TopicTitle)
+	}
+	if !isLegacyAssistantTopicTitle(current) || current == desired {
+		return false, nil
+	}
+	if err := setTopicTitleWithSource(titleRoot, meta.TopicID, desired, topicTitleSourceAuto); err != nil {
+		return false, err
+	}
+	meta.TopicTitle = desired
+	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
+		return false, err
+	}
+	a.updateOpenTopicTitle(meta.TopicID, desired)
+	return true, nil
+}
+
 // ensureAssistantBackgroundTab creates a fresh blank background session for an
 // Assistant run and stamps the Assistant identity into its BranchMeta BEFORE the
 // tab's controller builds, so boot.Build selects the Assistant system prompt on
@@ -140,7 +229,7 @@ func (a *App) ensureAssistantBackgroundTab(run assistant.Run) (*WorkspaceTab, er
 		workspaceRoot = ""
 	}
 	topicID := newTopicID()
-	if err := setTopicTitleWithSource(workspaceRoot, topicID, defaultTopicTitle, topicTitleSourceAuto); err != nil {
+	if err := setTopicTitleWithSource(workspaceRoot, topicID, assistantRunTopicTitle(run), topicTitleSourceAuto); err != nil {
 		return nil, err
 	}
 	_ = prependTopicInProjectsFile(workspaceRoot, topicID, false)
@@ -217,7 +306,6 @@ func (h appAssistantSessionHost) TrySubmit(tabID, prompt string, policy assistan
 		return false, nil
 	}
 	h.app.ensureTabTopicIndexedForUserTurn(tab)
-	h.app.maybeAutoTitleTopicFromText(tab, prompt)
 	h.app.emitProjectTreeChanged()
 	return true, nil
 }

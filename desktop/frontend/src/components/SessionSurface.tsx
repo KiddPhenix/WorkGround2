@@ -101,9 +101,12 @@ export interface SessionSurfaceProps {
   headerTitle: string;
   irisFixtureActive: boolean;
   sidebarImDetailConnection: { title: string } | null;
-  workReturn?: {
+  headerReturn?: {
+    ariaLabel: string;
     label: string;
+    pendingLabel?: string;
     pending: boolean;
+    testId: string;
     onReturn: () => void;
   };
 
@@ -209,7 +212,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   headerTitle,
   irisFixtureActive,
   sidebarImDetailConnection,
-  workReturn,
+  headerReturn,
   contextPercent,
   runtimeMode,
   foregroundActive,
@@ -257,17 +260,17 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
     >
       {!embedded && <header className="session-header">
         <div className="session-header__identity">
-          {workReturn && (
+          {headerReturn && (
             <button
               type="button"
-              className="session-header__work-return"
-              data-testid="session-work-return"
-              disabled={workReturn.pending}
-              aria-label={`返回 ${workReturn.label}`}
-              onClick={workReturn.onReturn}
+              className="session-header__return"
+              data-testid={headerReturn.testId}
+              disabled={headerReturn.pending}
+              aria-label={headerReturn.ariaLabel}
+              onClick={headerReturn.onReturn}
             >
               <ArrowLeft size={16} aria-hidden="true" />
-              <span>{workReturn.pending ? '正在返回…' : '返回 Work'}</span>
+              <span>{headerReturn.pending ? headerReturn.pendingLabel ?? headerReturn.label : headerReturn.label}</span>
             </button>
           )}
           <h1 className="session-header__title" title={headerTitle}>
