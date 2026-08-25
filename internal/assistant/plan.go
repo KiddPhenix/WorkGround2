@@ -229,6 +229,41 @@ func MergeProgressBlocks(blocks []ProgressBlock) ProgressBlock {
 	return out
 }
 
+// RebaseProgress aligns a model progress patch with the authoritative plan so
+// a stale plan revision or a re-declared alias never rewrites an existing
+// objective. The current plan's revision wins, and for an alias already present
+// the plan's objective is authoritative while the declaration's done_criteria,
+// next_action and depends_on still apply. It reports whether the patch changed.
+func RebaseProgress(plan Plan, progress *ProgressBlock) bool {
+	if progress == nil {
+		return false
+	}
+	changed := false
+	if progress.PlanRevision != plan.Revision {
+		progress.PlanRevision = plan.Revision
+		changed = true
+	}
+	byAlias := make(map[string]string, len(plan.Responsibilities))
+	for _, r := range plan.Responsibilities {
+		if alias := strings.TrimSpace(r.Alias); alias != "" {
+			byAlias[alias] = r.Objective
+		}
+	}
+	for i := range progress.Responsibilities {
+		d := &progress.Responsibilities[i]
+		alias := strings.TrimSpace(d.Alias)
+		if alias != d.Alias {
+			d.Alias = alias
+			changed = true
+		}
+		if objective, ok := byAlias[alias]; ok && objective != strings.TrimSpace(d.Objective) {
+			d.Objective = objective
+			changed = true
+		}
+	}
+	return changed
+}
+
 func progressBlockEmpty(b ProgressBlock) bool {
 	return b.PlanRevision == 0 && b.Responsibility == "" && len(b.Responsibilities) == 0 &&
 		len(b.Active) == 0 && len(b.Complete) == 0 && len(b.Artifacts) == 0 && len(b.Opportunities) == 0

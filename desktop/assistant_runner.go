@@ -615,26 +615,19 @@ func (r *AssistantRuntime) failKnown(run assistant.Run, code string, err error, 
 }
 
 // completeRun records a successful turn together with any progress patch the
-// model emitted. Run completion and plan/artifact changes commit atomically; a
-// malformed progress block rejects the whole result and moves the run to an
-// observable, retryable failure instead of silently dropping it.
+// model emitted. Run completion and plan/artifact changes commit atomically. A
+// patch that cannot be applied never fails the whole run: the runner rebases a
+// stale plan revision against the latest plan (bounded), and if the metadata is
+// still malformed, cyclic or blocked it records a diagnostic and completes the
+// run without the patch. Only a failure to persist even that no-progress
+// completion keeps the explicit failure path.
 func (r *AssistantRuntime) completeRun(run assistant.Run, selected *assistant.Responsibility, planRevision int64, result assistantTurnResult, sessionPath string) {
 	summary := strings.TrimSpace(assistant.StripProgressBlocks(result.Summary))
-	blocks, parseErrs := assistant.ParseProgressBlocks(result.ProgressText)
-	if len(parseErrs) > 0 {
-		for _, perr := range parseErrs {
-			r.recordDiagnostic("progress_parse", perr)
-			slog.Warn("desktop: assistant progress block parse failed", "run", run.ID, "err", perr)
-		}
-		r.failProgress(run, "progress_parse_failed", errors.Join(parseErrs...), true)
-		return
-	}
 	selectedID := ""
 	if selected != nil {
 		selectedID = selected.ID
 	}
-	input := assistant.CompleteRunInput{
-		RequestID:        fmt.Sprintf("progress:%s:%d", run.ID, run.LeaseFence),
+	base := assistant.CompleteRunInput{
 		RunID:            run.ID,
 		LeaseOwner:       run.LeaseOwner,
 		LeaseFence:       run.LeaseFence,
@@ -643,33 +636,92 @@ func (r *AssistantRuntime) completeRun(run assistant.Run, selected *assistant.Re
 		ResponsibilityID: selectedID,
 		Now:              time.Now(),
 	}
-	if len(blocks) > 0 {
-		input.Progress = assistant.MergeProgressBlocks(blocks)
-		input.Progress.PlanRevision = planRevision
+
+	blocks, parseErrs := assistant.ParseProgressBlocks(result.ProgressText)
+	for _, perr := range parseErrs {
+		r.recordDiagnostic("progress_parse", perr)
+		slog.Warn("desktop: assistant progress block parse failed", "run", run.ID, "err", perr)
 	}
-	if _, err := r.store.CompleteRunWithProgress(input); err != nil {
-		r.recordDiagnostic("progress_apply", err)
-		slog.Error("desktop: apply assistant progress failed", "run", run.ID, "err", err)
-		// The next attempt is a fresh model turn and can repair a stale revision,
-		// bad alias or invalid dependency patch. Runner retry limits keep this
-		// bounded while preserving an explicit recovery path.
-		r.failProgress(run, "progress_apply_failed", err, true)
+	if len(parseErrs) == 0 && len(blocks) > 0 {
+		base.Progress = assistant.MergeProgressBlocks(blocks)
+		base.Progress.PlanRevision = planRevision
+		if err := r.applyProgressWithRebase(base, run); err != nil {
+			r.recordDiagnostic("progress_apply", err)
+			slog.Warn("desktop: assistant progress patch discarded; completing run without it", "run", run.ID, "err", err)
+		} else {
+			return
+		}
+	}
+
+	// Complete the run without the patch. This is the only remaining place a
+	// successful turn can still fail: if even the no-progress completion cannot
+	// be persisted, keep the explicit, observable retry path.
+	base.Progress = assistant.ProgressBlock{}
+	base.RequestID = fmt.Sprintf("complete:%s:%d", run.ID, run.LeaseFence)
+	if _, err := r.store.CompleteRunWithProgress(base); err != nil {
+		if r.runSucceeded(run.AssistantID, run.ID) {
+			return
+		}
+		r.failKnown(run, "complete_failed", err, true)
 	}
 }
 
-// failProgress persists a progress parse/apply failure with the run's lease
-// released. Retryable failures return to retry_wait with a bounded delay, so a
-// transient conflict or a malformed block can be recovered on the next attempt
-// without leaving a half-applied plan.
-func (r *AssistantRuntime) failProgress(run assistant.Run, code string, err error, retryable bool) {
-	_, failErr := r.runner.Fail(run, assistant.Failure{
-		Code: code, Message: err.Error(), Retryable: retryable,
-		OutcomeKnown: true, RetryAfter: time.Minute, Now: time.Now(),
-	})
-	if failErr != nil {
-		r.recordDiagnostic(code, failErr)
-		slog.Error("desktop: persist assistant progress failure failed", "run", run.ID, "err", failErr)
+// assistantProgressRebaseLimit bounds how many times a conflicting progress
+// patch is rebased against the latest plan before it is discarded.
+const assistantProgressRebaseLimit = 3
+
+// applyProgressWithRebase applies one progress patch, rebasing it against the
+// latest plan whenever the store reports a revision conflict. Each attempt uses
+// a distinct deterministic request ID so rebased input never collides with a
+// prior receipt fingerprint, and an ambiguous write result is resolved by the
+// persisted run state so a committed patch is never re-applied.
+func (r *AssistantRuntime) applyProgressWithRebase(input assistant.CompleteRunInput, run assistant.Run) error {
+	for attempt := 0; attempt <= assistantProgressRebaseLimit; attempt++ {
+		if attempt > 0 {
+			snapshot, err := r.store.Get(run.AssistantID)
+			if err != nil {
+				return err
+			}
+			assistant.RebaseProgress(snapshot.Plan, &input.Progress)
+		}
+		input.RequestID = progressRequestID(run, attempt)
+		if _, err := r.store.CompleteRunWithProgress(input); err == nil {
+			return nil
+		} else if !errors.Is(err, assistant.ErrConflict) {
+			if r.runSucceeded(run.AssistantID, run.ID) {
+				return nil
+			}
+			return err
+		}
 	}
+	if r.runSucceeded(run.AssistantID, run.ID) {
+		return nil
+	}
+	return fmt.Errorf("assistant: progress still conflicts after %d rebases: %w", assistantProgressRebaseLimit, assistant.ErrConflict)
+}
+
+// progressRequestID derives a deterministic, attempt-scoped request ID so a
+// rebased attempt never reuses a prior receipt fingerprint.
+func progressRequestID(run assistant.Run, attempt int) string {
+	if attempt == 0 {
+		return fmt.Sprintf("progress:%s:%d", run.ID, run.LeaseFence)
+	}
+	return fmt.Sprintf("progress:%s:%d:%d", run.ID, run.LeaseFence, attempt)
+}
+
+// runSucceeded reports whether the persisted run already reached the succeeded
+// state, used to resolve an ambiguous write result without re-applying a patch.
+func (r *AssistantRuntime) runSucceeded(assistantID, runID string) bool {
+	snapshot, err := r.store.Get(assistantID)
+	if err != nil {
+		return false
+	}
+	for i := range snapshot.Runs {
+		if snapshot.Runs[i].ID == runID {
+			return snapshot.Runs[i].State == assistant.RunSucceeded
+		}
+	}
+	return false
 }
 
 // failEvidence persists a missing-capability failure with a bounded retry. It

@@ -921,7 +921,7 @@ func TestAssistantCompleteRunAppliesProgressAndStripsSummary(t *testing.T) {
 	}
 }
 
-func TestAssistantCompleteRunFailsOnBlockedProgress(t *testing.T) {
+func TestAssistantCompleteRunSucceedsDiscardingBlockedProgress(t *testing.T) {
 	host := &assistantHostStub{}
 	service, store := newAssistantTestRuntime(t, host)
 	snapshot, _ := createAssistantRun(t, store, "blocked")
@@ -935,18 +935,21 @@ func TestAssistantCompleteRunFailsOnBlockedProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Runs[0].State != assistant.RunRetryWait {
-		t.Fatalf("run state = %s, want retry_wait", got.Runs[0].State)
+	if got.Runs[0].State != assistant.RunSucceeded {
+		t.Fatalf("run state = %s, want succeeded", got.Runs[0].State)
 	}
-	if got.Runs[0].Error == nil || got.Runs[0].Error.Code != "progress_apply_failed" || !got.Runs[0].Error.Retryable {
-		t.Fatalf("run error = %+v, want retryable progress_apply_failed", got.Runs[0].Error)
+	if got.Runs[0].Summary != "tried" || got.Runs[0].SessionPath != "C:/assistant/session.jsonl" {
+		t.Fatalf("summary/session not preserved on discarded patch: %+v", got.Runs[0])
 	}
 	if got.Plan.Revision != 1 || len(got.Plan.Responsibilities) != 0 {
-		t.Fatalf("plan mutated on failed patch: %+v", got.Plan)
+		t.Fatalf("plan mutated on blocked patch: %+v", got.Plan)
+	}
+	if !hasAssistantDiagnostic(service, "progress_apply") {
+		t.Fatalf("blocked patch did not record a progress_apply diagnostic: %+v", service.Diagnostics())
 	}
 }
 
-func TestAssistantCompleteRunFailsOnMalformedProgress(t *testing.T) {
+func TestAssistantCompleteRunSucceedsDiscardingMalformedProgress(t *testing.T) {
 	host := &assistantHostStub{}
 	service, store := newAssistantTestRuntime(t, host)
 	snapshot, _ := createAssistantRun(t, store, "malformed")
@@ -954,8 +957,8 @@ func TestAssistantCompleteRunFailsOnMalformedProgress(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Claim: %v ok=%v", err, ok)
 	}
-	// The trailing valid block must NOT be applied: a malformed block rejects the
-	// whole progress result.
+	// The trailing valid block must NOT be applied: a malformed block discards
+	// the whole progress result while the run still succeeds.
 	service.completeRun(*claimed, nil, snapshot.Plan.Revision, assistantTurnResult{
 		Summary:      "tried",
 		ProgressText: `<assistant-progress>not-json</assistant-progress><assistant-progress>{"complete":["scan"]}</assistant-progress>`,
@@ -964,18 +967,24 @@ func TestAssistantCompleteRunFailsOnMalformedProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Runs[0].State != assistant.RunRetryWait {
-		t.Fatalf("run state = %s, want retry_wait", got.Runs[0].State)
+	if got.Runs[0].State != assistant.RunSucceeded {
+		t.Fatalf("run state = %s, want succeeded", got.Runs[0].State)
 	}
-	if got.Runs[0].Error == nil || got.Runs[0].Error.Code != "progress_parse_failed" || !got.Runs[0].Error.Retryable {
-		t.Fatalf("run error = %+v, want retryable progress_parse_failed", got.Runs[0].Error)
+	if got.Runs[0].Summary != "tried" || got.Runs[0].SessionPath != "C:/assistant/session.jsonl" {
+		t.Fatalf("summary/session not preserved on malformed patch: %+v", got.Runs[0])
 	}
 	if got.Plan.Revision != 1 || len(got.Plan.Responsibilities) != 0 {
 		t.Fatalf("plan mutated on malformed patch: %+v", got.Plan)
 	}
+	if !hasAssistantDiagnostic(service, "progress_parse") {
+		t.Fatalf("malformed patch did not record a progress_parse diagnostic: %+v", service.Diagnostics())
+	}
+	if hasAssistantDiagnostic(service, "progress_apply") {
+		t.Fatalf("malformed patch unexpectedly tried to apply: %+v", service.Diagnostics())
+	}
 }
 
-func TestAssistantCompleteRunRetriesInvalidProgressPatch(t *testing.T) {
+func TestAssistantCompleteRunSucceedsDiscardingInvalidProgressPatch(t *testing.T) {
 	host := &assistantHostStub{}
 	service, store := newAssistantTestRuntime(t, host)
 	snapshot, _ := createAssistantRun(t, store, "invalid-patch")
@@ -989,18 +998,46 @@ func TestAssistantCompleteRunRetriesInvalidProgressPatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Runs[0].State != assistant.RunRetryWait {
-		t.Fatalf("run state = %s, want retry_wait", got.Runs[0].State)
+	if got.Runs[0].State != assistant.RunSucceeded {
+		t.Fatalf("run state = %s, want succeeded", got.Runs[0].State)
 	}
-	if got.Runs[0].Error == nil || got.Runs[0].Error.Code != "progress_apply_failed" || !got.Runs[0].Error.Retryable {
-		t.Fatalf("run error = %+v, want retryable progress_apply_failed", got.Runs[0].Error)
+	if got.Runs[0].Summary != "tried" || got.Runs[0].SessionPath != "C:/assistant/session.jsonl" {
+		t.Fatalf("summary/session not preserved on invalid patch: %+v", got.Runs[0])
 	}
 	if got.Plan.Revision != 1 || len(got.Plan.Responsibilities) != 0 {
 		t.Fatalf("plan mutated on invalid patch: %+v", got.Plan)
 	}
+	if !hasAssistantDiagnostic(service, "progress_apply") {
+		t.Fatalf("invalid patch did not record a progress_apply diagnostic: %+v", service.Diagnostics())
+	}
 }
 
-func TestAssistantCompleteRunRetriesOnStalePlanConflict(t *testing.T) {
+func TestAssistantCompleteRunSucceedsDiscardingCycleProgress(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "cycle")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	block := `<assistant-progress>{"responsibilities":[{"alias":"a","objective":"a","depends_on":["b"]},{"alias":"b","objective":"b","depends_on":["a"]}]}</assistant-progress>`
+	service.completeRun(*claimed, nil, snapshot.Plan.Revision, assistantTurnResult{Summary: "tried", ProgressText: block}, "C:/assistant/session.jsonl")
+	got, err := store.Get(snapshot.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runs[0].State != assistant.RunSucceeded {
+		t.Fatalf("run state = %s, want succeeded", got.Runs[0].State)
+	}
+	if got.Plan.Revision != 1 || len(got.Plan.Responsibilities) != 0 {
+		t.Fatalf("plan mutated on cyclic patch: %+v", got.Plan)
+	}
+	if !hasAssistantDiagnostic(service, "progress_apply") {
+		t.Fatalf("cyclic patch did not record a progress_apply diagnostic: %+v", service.Diagnostics())
+	}
+}
+
+func TestAssistantCompleteRunRebasesStalePlanRevision(t *testing.T) {
 	host := &assistantHostStub{}
 	service, store := newAssistantTestRuntime(t, host)
 	snapshot, _ := createAssistantRun(t, store, "stale")
@@ -1039,8 +1076,73 @@ func TestAssistantCompleteRunRetriesOnStalePlanConflict(t *testing.T) {
 			target = r
 		}
 	}
-	if target.State != assistant.RunRetryWait || target.Error == nil || target.Error.Code != "progress_apply_failed" || !target.Error.Retryable {
-		t.Fatalf("stale conflict not retryable: %+v", target)
+	if target.State != assistant.RunSucceeded {
+		t.Fatalf("stale revision was not rebased into success: %+v", target)
+	}
+	if len(got.Plan.Responsibilities) != 2 || assistantRespByAlias(got, "b") == nil {
+		t.Fatalf("new alias was not applied after rebase: %+v", got.Plan)
+	}
+	if hasAssistantDiagnostic(service, "progress_apply") {
+		t.Fatalf("rebase recorded a spurious progress_apply diagnostic: %+v", service.Diagnostics())
+	}
+}
+
+func TestAssistantCompleteRunRebasesExistingAliasObjective(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "alias-objective")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	// Seed an authoritative objective for alias "consolidate" and advance the
+	// plan revision so the next patch is both stale and re-declares the alias
+	// with a different objective.
+	if _, err := store.CompleteRunWithProgress(assistant.CompleteRunInput{
+		RequestID: "seed", RunID: claimed.ID, LeaseOwner: "desktop-test", LeaseFence: claimed.LeaseFence,
+		Progress: assistant.ProgressBlock{PlanRevision: 1, Responsibilities: []assistant.RespDecl{{Alias: "consolidate", Objective: "merge duplicates"}}},
+		Now:      time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Trigger(assistant.TriggerInput{
+		AssistantID: snapshot.Assistant.ID, RoutineID: snapshot.Routines[0].ID,
+		RequestID: "run-alias-objective-second", Trigger: assistant.TriggerManual, Now: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run2, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok || run2.ID != second.ID {
+		t.Fatalf("Claim second: run=%+v ok=%v err=%v", run2, ok, err)
+	}
+	block := `<assistant-progress>{"responsibilities":[{"alias":"consolidate","objective":"rewrite everything"}],"complete":["consolidate"]}</assistant-progress>`
+	service.completeRun(*run2, nil, 1 /* stale */, assistantTurnResult{Summary: "consolidated", ProgressText: block}, "C:/assistant/session.jsonl")
+	got, err := store.Get(snapshot.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target assistant.Run
+	for _, r := range got.Runs {
+		if r.ID == run2.ID {
+			target = r
+		}
+	}
+	if target.State != assistant.RunSucceeded {
+		t.Fatalf("alias-objective conflict not rebased into success: %+v", target)
+	}
+	resp := assistantRespByAlias(got, "consolidate")
+	if resp == nil {
+		t.Fatalf("consolidate responsibility missing: %+v", got.Plan)
+	}
+	if resp.Objective != "merge duplicates" {
+		t.Fatalf("existing objective was rewritten by the stale declaration: %+v", resp)
+	}
+	if resp.Status != assistant.RespDone {
+		t.Fatalf("legal complete was not applied after rebase: %+v", resp)
+	}
+	if hasAssistantDiagnostic(service, "progress_apply") || hasAssistantDiagnostic(service, "complete_failed") {
+		t.Fatalf("rebase recorded a spurious failure diagnostic: %+v", service.Diagnostics())
 	}
 }
 
@@ -1064,6 +1166,24 @@ func TestAssistantObserveEventCollectsRawProgressFromTextDeltas(t *testing.T) {
 	if strings.Contains(result.Summary, "<assistant-progress>") {
 		t.Fatalf("stripped message leaked raw protocol into summary: %q", result.Summary)
 	}
+}
+
+func hasAssistantDiagnostic(service *AssistantRuntime, operation string) bool {
+	for _, d := range service.Diagnostics() {
+		if d.Operation == operation {
+			return true
+		}
+	}
+	return false
+}
+
+func assistantRespByAlias(snapshot assistant.Snapshot, alias string) *assistant.Responsibility {
+	for i := range snapshot.Plan.Responsibilities {
+		if snapshot.Plan.Responsibilities[i].Alias == alias {
+			return &snapshot.Plan.Responsibilities[i]
+		}
+	}
+	return nil
 }
 
 func waitAssistantRunState(t *testing.T, store *assistant.Store, assistantID, runID string, want assistant.RunState) assistant.Run {

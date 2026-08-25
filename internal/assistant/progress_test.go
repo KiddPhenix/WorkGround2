@@ -40,6 +40,58 @@ func TestParseProgressBlocksReportsMalformed(t *testing.T) {
 	}
 }
 
+func TestRebaseProgressKeepsPlanRevisionAndObjectiveAuthoritative(t *testing.T) {
+	t.Parallel()
+	plan := Plan{
+		Revision: 4,
+		Responsibilities: []Responsibility{
+			{Alias: "consolidate", Objective: "merge duplicates"},
+			{Alias: "scan", Objective: "scan changes"},
+		},
+	}
+	progress := ProgressBlock{
+		PlanRevision: 1,
+		Responsibilities: []RespDecl{
+			{Alias: " consolidate ", Objective: "rewrite everything", DoneCriteria: "shipped", NextAction: "ship it"},
+			{Alias: "fresh", Objective: "new objective"},
+		},
+		Complete: []string{"consolidate"},
+	}
+	if !RebaseProgress(plan, &progress) {
+		t.Fatal("expected the patch to change")
+	}
+	if progress.PlanRevision != 4 {
+		t.Fatalf("plan revision = %d, want 4", progress.PlanRevision)
+	}
+	if progress.Responsibilities[0].Objective != "merge duplicates" {
+		t.Fatalf("existing alias objective was not kept authoritative: %+v", progress.Responsibilities[0])
+	}
+	if progress.Responsibilities[0].Alias != "consolidate" {
+		t.Fatalf("existing alias was not normalized: %+v", progress.Responsibilities[0])
+	}
+	if progress.Responsibilities[0].DoneCriteria != "shipped" || progress.Responsibilities[0].NextAction != "ship it" {
+		t.Fatalf("legal done/next fields were dropped: %+v", progress.Responsibilities[0])
+	}
+	if progress.Responsibilities[1].Objective != "new objective" {
+		t.Fatalf("new alias objective was overwritten: %+v", progress.Responsibilities[1])
+	}
+	if len(progress.Complete) != 1 || progress.Complete[0] != "consolidate" {
+		t.Fatalf("complete list was mutated: %+v", progress.Complete)
+	}
+}
+
+func TestRebaseProgressNoopWhenAlreadyAligned(t *testing.T) {
+	t.Parallel()
+	plan := Plan{Revision: 3, Responsibilities: []Responsibility{{Alias: "scan", Objective: "scan changes"}}}
+	progress := ProgressBlock{
+		PlanRevision:     3,
+		Responsibilities: []RespDecl{{Alias: "scan", Objective: "scan changes"}},
+	}
+	if RebaseProgress(plan, &progress) {
+		t.Fatal("expected an already-aligned patch to be unchanged")
+	}
+}
+
 func mustClaimRun(t *testing.T, store *Store) Run {
 	t.Helper()
 	run, ok, err := store.Claim("worker-a", testEpoch, time.Minute)

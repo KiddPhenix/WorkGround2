@@ -238,7 +238,7 @@ type Opportunity struct {
 - 职责用稳定 alias 引用；重声明同一 alias 且目标一致是幂等 no-op，目标不一致是冲突。
 - `depends_on` 用 alias；省略表示不变，`[]` 表示清空。同一块内允许前向引用与「下游+上游同时完成」，自依赖与环被拒绝。
 - 完成与激活对顺序不敏感：同一块内同时完成下游与上游会被接受；依赖变更会双向重算 readiness（blocked ↔ ready），未完成依赖时 `complete`/`active` 被拒绝，已 done 的责任不允许新增未完成依赖。
-- 失败状态可观察：解析错误把 Run 置为 `progress_parse_failed`，应用错误置为 `progress_apply_failed`；两者都进入受最大尝试次数约束的可重试状态，让下一次模型回合修正 stale revision、坏 alias 或非法依赖，计划保持原样。
+- 进度元数据不拖垮 Run：stale `plan_revision` 以最新 Plan 有界 rebase（最多 3 次）；已存在 alias 的 objective 以当前 Plan 为权威、忽略模型重复声明的不同 objective，该声明中的合法 done/next/depends_on 仍按最新 Plan 应用。解析失败或仍无法应用的 malformed / cycle / missing alias / blocked 补丁记录可观察 diagnostic 后丢弃，Run 以同一 summary/session 成功落盘，计划不被半修改，既有 active 责任留待后续 Run 自动继续。只有连「无 progress 的 Run 成功落盘」也失败时才沿用显式失败/重试路径。
 
 `CompleteRunWithProgress` 是唯一收敛的进度写入：以调用方 request ID/指纹幂等，做环校验、依赖重算、stale revision 拒绝，并把「Run 完成 + 计划/证据变化」连同内嵌 request receipt 一起写入单一 `aggregate.json` 的原子替换（临时文件 + rename），要么全部提交要么全部不提交，崩溃后重放返回原结果。旧快照在读取时惰性归一化为空计划，无需迁移。
 
@@ -268,7 +268,7 @@ type Opportunity struct {
 3. Desktop 宿主创建后台 Topic/Session，但不改变用户当前活动页。
 4. 组装动态上下文：使命、Routine、记忆快照、当前责任图和确定性的 ready/active 责任、权限和当前时间。
 5. 通过现有 Controller 提交普通用户 Turn；需要长推进时使用 Goal 能力。
-6. 成功后解析并脱敏 `<assistant-progress>` 块，用 `CompleteRunWithProgress` 原子提交 Run 结果 + 计划/证据变化；解析失败进入 `progress_parse_failed`，冲突/依赖未满足进入 `progress_apply_failed`（均可观察、可重试）。
+6. 成功后解析并脱敏 `<assistant-progress>` 块，用 `CompleteRunWithProgress` 原子提交 Run 结果 + 计划/证据变化；stale `plan_revision` 或 alias/objective 冲突以最新 Plan 有界 rebase 重试，仍无法应用的进度元数据记录 diagnostic 后丢弃、Run 照常成功落盘。
 7. Store 原子提交结果；其它失败根据错误分类进入 retry 或 attention。
 8. UI 订阅快照变化，不由网络回包直接操作 Panel。
 
