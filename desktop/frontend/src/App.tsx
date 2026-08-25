@@ -3946,6 +3946,17 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     sendToTabConfirmed,
   ]);
 
+  const handleNavigateToAssistantSession = useCallback((scope: "global" | "project", workspaceRoot: string, sessionPath: string): void => {
+    void enqueueNavigation({
+      kind: "linked-session",
+      scope,
+      workspaceRoot,
+      topicId: "",
+      sessionPath,
+      onOpened: () => setAssistantOpen(false),
+    });
+  }, [enqueueNavigation]);
+
   // ── Linked task Session navigation with an explicit Work return path ─
   const handleNavigateToLinkedSession = useCallback(async (sessionRef: SessionRef): Promise<void> => {
     if (activeTab?.sessionKind !== "work" || !activeTab.workId || !activeTab.topicId || !activeTab.sessionPath) {
@@ -4312,12 +4323,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
             {workbenchSidebarRestoreControl}
 
             {showAssistantSurface ? (
-              <AssistantWorkspace focusAssistantID={assistantFocusID} composerSubmitKey={composerSubmitKey} onOpenSession={(scope, workspaceRoot, sessionPath) => {
-                setAssistantOpen(false);
-                void app.OpenLinkedSession(scope, workspaceRoot, "", sessionPath)
-                  .then(() => refreshProjectsAndTabs())
-                  .catch((error) => showToast(error instanceof Error ? error.message : String(error), "error"));
-              }} />
+              <AssistantWorkspace focusAssistantID={assistantFocusID} composerSubmitKey={composerSubmitKey} onOpenSession={handleNavigateToAssistantSession} />
             ) : showCollaborationSurface && activeTab?.sessionId ? (
               <CollaborationWorkspace
                 sessionID={activeTab.sessionId}
