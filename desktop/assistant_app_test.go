@@ -201,3 +201,77 @@ func TestNewAssistantRuntimeUsesRequestedStoreRoot(t *testing.T) {
 		t.Fatalf("configured store root has no assistant snapshot: matches=%v err=%v", matches, err)
 	}
 }
+
+func TestPickAssistantWorkspaceWithoutContextIsACleanCancel(t *testing.T) {
+	app := &App{}
+	got, err := app.PickAssistantWorkspace("ignored")
+	if err != nil {
+		t.Fatalf("PickAssistantWorkspace with nil ctx = %v, want no error", err)
+	}
+	if got != "" {
+		t.Fatalf("PickAssistantWorkspace = %q, want empty string", got)
+	}
+}
+
+func TestCreateAssistantWorkspaceRejectsInvalidInput(t *testing.T) {
+	app := &App{}
+	parent := t.TempDir()
+
+	cases := []struct {
+		name      string
+		parentDir string
+		dirName   string
+	}{
+		{"empty parent", "", "child"},
+		{"empty name", parent, ""},
+		{"dot", parent, "."},
+		{"dotdot", parent, ".."},
+		{"separator", parent, "a/b"},
+		{"windows separator", parent, `a\b`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := app.CreateAssistantWorkspace(tc.parentDir, tc.dirName); err == nil {
+				t.Fatalf("CreateAssistantWorkspace(%q, %q) = %q, want error", tc.parentDir, tc.dirName, got)
+			}
+		})
+	}
+
+	if got, err := app.CreateAssistantWorkspace(parent, filepath.Join("..", "escape")); err == nil {
+		t.Fatalf("CreateAssistantWorkspace escaped parent: %q, want error", got)
+	}
+}
+
+func TestCreateAssistantWorkspaceCreatesAndIsIdempotent(t *testing.T) {
+	app := &App{}
+	parent := filepath.Join(t.TempDir(), "parent")
+	want := filepath.Join(parent, "child")
+
+	created, err := app.CreateAssistantWorkspace(parent, "child")
+	if err != nil {
+		t.Fatalf("CreateAssistantWorkspace: %v", err)
+	}
+	if created != want {
+		t.Fatalf("created = %q, want clean absolute path %q", created, want)
+	}
+	info, err := os.Stat(created)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("created path is not a directory: info=%v err=%v", info, err)
+	}
+
+	replay, err := app.CreateAssistantWorkspace(parent, "child")
+	if err != nil || replay != want {
+		t.Fatalf("idempotent replay = %q err=%v, want %q", replay, err, want)
+	}
+
+	file := filepath.Join(parent, "occupied")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := app.CreateAssistantWorkspace(parent, "occupied"); err == nil {
+		t.Fatalf("CreateAssistantWorkspace over a file = %q, want error", got)
+	}
+}

@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Clock3,
   ExternalLink,
+  FolderOpen,
   History,
   Pause,
   Play,
@@ -27,9 +28,11 @@ import {
   assistantApplyMemory,
   assistantCancel,
   assistantCreate,
+  assistantCreateWorkspace,
   assistantDelete,
   assistantGet,
   assistantList,
+  assistantPickWorkspace,
   assistantPutRoutine,
   assistantResolveAttention,
   assistantResume,
@@ -853,6 +856,12 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
     routineID: assistantEntityID("routine"),
     createdAt: new Date().toISOString(),
   }));
+  const [picking, setPicking] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const workspaceOp = useRef<"pick" | "create" | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createParent, setCreateParent] = useState("");
+  const [createName, setCreateName] = useState("");
   useEffect(() => { nameRef.current?.focus(); }, []);
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
@@ -881,6 +890,56 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
     setMission(chosen.mission);
     setConfirmed(false);
     setLearnFirst(true);
+  };
+
+  const pickDirectory = async (defaultDir: string): Promise<string | null> => {
+    if (workspaceOp.current) return null;
+    workspaceOp.current = "pick";
+    setPicking(true);
+    try {
+      return await assistantPickWorkspace(defaultDir);
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : copy.error, "error");
+      return null;
+    } finally {
+      workspaceOp.current = null;
+      setPicking(false);
+    }
+  };
+
+  const pickWorkspace = async () => {
+    const picked = await pickDirectory(workspace);
+    if (picked) setWorkspace(picked);
+  };
+
+  const pickCreateParent = async () => {
+    const picked = await pickDirectory(createParent);
+    if (picked) setCreateParent(picked);
+  };
+
+  const openCreate = () => {
+    setCreateParent(workspace.trim() ? workspace : "");
+    setCreateName("");
+    setCreateOpen(true);
+  };
+
+  const createWorkspace = async () => {
+    if (workspaceOp.current) return;
+    const parent = createParent.trim();
+    const name = createName.trim();
+    if (!parent || !name) return;
+    workspaceOp.current = "create";
+    setCreating(true);
+    try {
+      const created = await assistantCreateWorkspace(parent, name);
+      setWorkspace(created);
+      setCreateOpen(false);
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : copy.error, "error");
+    } finally {
+      workspaceOp.current = null;
+      setCreating(false);
+    }
   };
 
   const generalRoutineSchedule = (): AssistantRoutine["schedule"] => {
@@ -974,7 +1033,32 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
             </div>
             <label>{copy.name}<input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.createName} required /></label>
             <label>{copy.mission}<textarea rows={5} value={mission} onChange={(event) => setMission(event.target.value)} placeholder={copy.createMission} required /></label>
-            <label>{copy.workspace}<input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="D:\\Work\\Project" /></label>
+            <div className="assistant-create__workspace">
+              <label>{copy.workspace}<input id="assistant-workspace-input" value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="D:\\Work\\Project" /></label>
+              <div className="assistant-create__workspace-actions">
+                <button className="assistant-button" type="button" disabled={picking || creating} onClick={() => void pickWorkspace()} aria-label={copy.workspacePick}>{picking ? <RefreshCw className="assistant-spin" size={14} /> : <FolderOpen size={14} />}{copy.workspacePick}</button>
+                <button className="assistant-button" type="button" disabled={picking || creating} onClick={openCreate} aria-label={copy.workspaceNew}><Plus size={14} />{copy.workspaceNew}</button>
+              </div>
+              {createOpen && (
+                <div className="assistant-create__new-workspace" role="group" aria-label={copy.workspaceNew}>
+                  <div className="assistant-create__new-workspace-field">
+                    <span>{copy.workspaceNewParent}</span>
+                    <span className="assistant-create__new-workspace-row">
+                      <input id="assistant-new-parent" value={createParent} onChange={(event) => setCreateParent(event.target.value)} placeholder="D:\\Work" />
+                      <button className="assistant-button" type="button" disabled={picking || creating} onClick={() => void pickCreateParent()} aria-label={copy.workspacePick}>{copy.workspacePick}</button>
+                    </span>
+                  </div>
+                  <div className="assistant-create__new-workspace-field">
+                    <span>{copy.workspaceNewName}</span>
+                    <input id="assistant-new-name" value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder={copy.workspaceNewNamePlaceholder} />
+                  </div>
+                  <div className="assistant-create__new-workspace-actions">
+                    <button className="assistant-button" type="button" disabled={creating} onClick={() => setCreateOpen(false)}>{copy.cancel}</button>
+                    <button className="assistant-button assistant-button--accent" type="button" disabled={picking || creating || !createParent.trim() || !createName.trim()} onClick={() => void createWorkspace()}>{creating && <RefreshCw className="assistant-spin" size={14} />}{copy.workspaceNewCreate}</button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {template && template.id === "code" && (
               <div className="assistant-create__routines">
