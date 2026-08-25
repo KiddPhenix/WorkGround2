@@ -405,6 +405,49 @@
 .assistant-event__summary .md .code-block {
   max-width: 100%;
 }
+.assistant-markdown {
+  min-width: 0;
+}
+.assistant-markdown > .md + .md {
+  margin-top: 10px;
+}
+.assistant-markdown__fold {
+  max-width: 760px;
+  margin: 10px 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(8, 10, 12, 0.22);
+}
+.assistant-markdown__fold > summary {
+  padding: 9px 12px;
+  color: #9b9790;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+}
+.assistant-markdown__fold[open] > summary {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  color: #d0c9bf;
+}
+.assistant-markdown__fold-body {
+  padding: 10px 12px 4px;
+}
+.assistant-markdown__fold-body > .md > :first-child {
+  margin-top: 0;
+}
+.assistant-markdown__fold-body > .md > :last-child {
+  margin-bottom: 0;
+}
+.assistant-event__summary .message-image,
+.assistant-history-item__result .message-image {
+  max-width: 100%;
+}
+.assistant-event__summary .message-image__preview img,
+.assistant-history-item__result .message-image__preview img {
+  max-height: min(480px, 55vh);
+}
 
 .assistant-run-state {
   display: inline-flex;

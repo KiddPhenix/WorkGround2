@@ -128,6 +128,11 @@ ok(
 ok(runEvents.every((event) => event.querySelector("h2")?.textContent === "发布准备检查"), "routine run h2 shows the actual routine name");
 ok(runEvents.every((event) => event.querySelector(".assistant-event__summary .md") !== null), "every run summary renders through the markdown container");
 ok(runEvents.some((event) => event.querySelector(".assistant-event__summary .md")?.textContent?.includes("测试都通过了")), "full run summary is preserved inside the markdown body");
+const reportImage = host.querySelector('.assistant-event__summary img[src="https://example.com/assistant-build-report.png"]') as HTMLImageElement | null;
+ok(reportImage?.alt === "构建结果预览" && reportImage.getAttribute("loading") === "lazy", "assistant summary displays Markdown images through the preview component");
+const evidenceFold = host.querySelector(".assistant-event__summary details.assistant-markdown__fold") as HTMLDetailsElement | null;
+ok(evidenceFold?.open === false && evidenceFold.querySelector("summary")?.textContent === "取证证据", "evidence section is collapsed by default");
+ok(evidenceFold?.textContent?.includes("CI 日志") ?? false, "collapsed evidence remains available for explicit expansion");
 const nonRunEvents = [...host.querySelectorAll(".assistant-event--memory, .assistant-event--next")];
 ok(nonRunEvents.length >= 1 && nonRunEvents.every((event) => event.querySelector(".md") === null), "memory and next events stay plain text");
 

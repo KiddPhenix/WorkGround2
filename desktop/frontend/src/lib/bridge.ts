@@ -2673,7 +2673,7 @@ function makeMockApp(): AppBindings {
         scheduled_for: assistantISO(9, 30),
         started_at: assistantISO(9, 30),
         finished_at: assistantISO(9, 34),
-        summary: "测试都通过了，但发布说明还缺一段升级提醒。所有单元测试与集成测试通过，构建产物已生成。变更包括任务取消逻辑修复、日志脱敏优化，以及 Windows 构建脚本的健壮性增强。CI 日志、构建产物与差异统计已归档。",
+        summary: "## 结论\n\n测试都通过了，但发布说明还缺一段升级提醒。所有单元测试与集成测试通过，构建产物已生成。\n\n![构建结果预览](https://example.com/assistant-build-report.png)\n\n## 取证证据\n\n变更包括任务取消逻辑修复、日志脱敏优化，以及 Windows 构建脚本的健壮性增强。CI 日志、构建产物与差异统计已归档。",
         revision: 1,
         created_at: assistantISO(9, 30),
         updated_at: assistantISO(9, 34),

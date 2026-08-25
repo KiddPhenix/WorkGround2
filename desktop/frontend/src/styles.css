@@ -5384,6 +5384,7 @@ a[href] {
   margin-top: 12px;
 }
 .message-image {
+  display: block;
   width: fit-content;
   max-width: min(720px, 100%);
   margin: 12px 0 2px;
@@ -5418,6 +5419,7 @@ a[href] {
   object-fit: contain;
 }
 .message-image__caption {
+  display: block;
   max-width: 100%;
   margin-top: 7px;
   overflow: hidden;

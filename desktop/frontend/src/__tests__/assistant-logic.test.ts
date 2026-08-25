@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { assistantCopy } from "../custom/features/assistant/assistant.copy";
+import { isCollapsedAssistantSection, splitAssistantMarkdown } from "../custom/features/assistant/AssistantMarkdown";
 import { attentionInboxAction, attentionNeedsRebind, attentionRejectResolution, attentionResolution, nextRoutineDate, responsibilityLabel, responsibilityStatusLabel, runContentTitle, runHistoryAction, scheduleLabel, timelineEntries } from "../custom/features/assistant/assistant.model";
 import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, completeAssistantRequest, pendingAssistantMutation, pendingAssistantRequest, runAssistantApproval, runAssistantCASMutation, runAssistantOutcome, runAssistantResume } from "../custom/features/assistant/assistant.requests";
 import type { AssistantAttentionItem, AssistantRun, AssistantSnapshot } from "../custom/features/assistant/assistant.types";
@@ -260,6 +261,35 @@ const summaryHtml = renderToStaticMarkup(
 ok(summaryHtml.includes("<h2>"), "markdown headings render as h2");
 ok(summaryHtml.includes("<ul>") && summaryHtml.includes("<li>"), "markdown lists render as ul/li");
 ok(summaryHtml.includes("<strong>"), "markdown bold renders as strong");
+
+const foldedSections = splitAssistantMarkdown([
+  "## 结论",
+  "",
+  "发布条件已满足。",
+  "",
+  "![构建报告](https://example.com/build.png)",
+  "",
+  "## 取证证据",
+  "",
+  "- CI 通过",
+  "- 构建产物存在",
+  "",
+  "## 下一步",
+  "",
+  "补齐发布说明。",
+  "",
+  "**说明**",
+  "",
+  "这里只记录验证口径。",
+].join("\n"));
+ok(foldedSections.length === 4, "assistant markdown separates visible prose from two folded process sections");
+ok(foldedSections[0]?.kind === "content" && foldedSections[0].markdown.includes("![构建报告]"), "visible conclusion keeps Markdown images in the ordinary renderer path");
+ok(foldedSections[1]?.kind === "collapsed" && foldedSections[1].title === "取证证据" && foldedSections[1].markdown.includes("CI 通过"), "evidence heading is collapsed with its body");
+ok(foldedSections[2]?.kind === "content" && foldedSections[2].markdown.includes("## 下一步"), "next-step conclusion remains visible");
+ok(foldedSections[3]?.kind === "collapsed" && foldedSections[3].title === "说明", "standalone bold explanation label is collapsed");
+ok(isCollapsedAssistantSection("二、详细说明") && isCollapsedAssistantSection("Evidence"), "numbered Chinese and English process headings use the same fold policy");
+const fencedSections = splitAssistantMarkdown("## 结论\n\n```md\n## 取证证据\n代码示例\n```\n\n结论继续");
+ok(fencedSections.length === 1 && fencedSections[0]?.kind === "content", "fold parser ignores matching headings inside fenced code");
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

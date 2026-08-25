@@ -22,7 +22,7 @@ import {
 import { useI18n } from "../../../lib/i18n";
 import { useToast } from "../../../lib/toast";
 import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../../lib/composerKeyboard";
-import { Markdown } from "../../../components/Markdown";
+import { AssistantMarkdown } from "./AssistantMarkdown";
 import {
   assistantApplyMemory,
   assistantCancel,
@@ -372,7 +372,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
                 {entry.kind === "run" ? (
                   <>
                     {entry.prompt ? <div className="assistant-event__prompt"><span>{copy.youSaid}</span><p>{entry.prompt}</p></div> : null}
-                    {entry.run?.summary ? <div className="assistant-event__summary"><Markdown text={entry.run.summary} /></div> : null}
+                    {entry.run?.summary ? <div className="assistant-event__summary"><AssistantMarkdown text={entry.run.summary} /></div> : null}
                   </>
                 ) : (
                   entry.detail && entry.detail !== entry.title ? <p>{entry.detail}</p> : null
@@ -718,7 +718,7 @@ function RunHistory({ snapshot, busy, act, onRun, onAttention, onOpenSession }: 
     const sessionTarget = assistantRunSessionTarget(run, snapshot.assistant);
     const directInput = !run.routine_id ? run.prompt?.trim() : "";
     const result = run.summary || run.error?.message || snapshot.routines.find((item) => item.id === run.routine_id)?.title;
-    return <article key={run.id} className="assistant-history-item"><div><strong>{runStateLabel(run.state, locale)}</strong><time>{formatTimelineTime(new Date(run.started_at || run.created_at), locale)}</time></div>{directInput && <div className="assistant-history-item__prompt"><span>{copy.youSaid}</span><p>{directInput}</p></div>}{result && <div className="assistant-history-item__result"><Markdown text={result} /></div>}{run.state === "retry_wait" && <span className="assistant-history-item__hint">{copy.waitingRetry}</span>}<div>{sessionTarget && onOpenSession && <button className="assistant-text-action" type="button" onClick={() => onOpenSession(...sessionTarget)}><ExternalLink size={13} />{copy.openSession}</button>}{action === "rerun" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void onRun(run.routine_id)}><RefreshCw size={13} />{copy.rerun}</button>}{action === "cancel" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void cancel(run.id)}><X size={13} />{copy.stopRun}</button>}{action === "attention" && <button className="assistant-text-action" type="button" onClick={onAttention}><AlertCircle size={13} />{copy.handleAttention}</button>}</div></article>;
+    return <article key={run.id} className="assistant-history-item"><div><strong>{runStateLabel(run.state, locale)}</strong><time>{formatTimelineTime(new Date(run.started_at || run.created_at), locale)}</time></div>{directInput && <div className="assistant-history-item__prompt"><span>{copy.youSaid}</span><p>{directInput}</p></div>}{result && <div className="assistant-history-item__result"><AssistantMarkdown text={result} /></div>}{run.state === "retry_wait" && <span className="assistant-history-item__hint">{copy.waitingRetry}</span>}<div>{sessionTarget && onOpenSession && <button className="assistant-text-action" type="button" onClick={() => onOpenSession(...sessionTarget)}><ExternalLink size={13} />{copy.openSession}</button>}{action === "rerun" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void onRun(run.routine_id)}><RefreshCw size={13} />{copy.rerun}</button>}{action === "cancel" && <button className="assistant-text-action" type="button" disabled={Boolean(busy)} onClick={() => void cancel(run.id)}><X size={13} />{copy.stopRun}</button>}{action === "attention" && <button className="assistant-text-action" type="button" onClick={onAttention}><AlertCircle size={13} />{copy.handleAttention}</button>}</div></article>;
   })}</div>;
 }
 
