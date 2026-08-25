@@ -9,18 +9,65 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"workground2/desktop/internal/memhttp"
 	"workground2/internal/agent"
 	"workground2/internal/autoresearch"
+	"workground2/internal/config"
 	"workground2/internal/control"
 	"workground2/internal/decision"
 	"workground2/internal/event"
 	"workground2/internal/provider"
 	"workground2/internal/tool"
 )
+
+func TestStartRemoteAPIUsesTestListener(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := os.MkdirAll(config.MemoryUserDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := &App{ctx: ctx}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.startRemoteAPI()
+	}()
+
+	portPath := filepath.Join(config.MemoryUserDir(), remoteAPIPortFile)
+	var port int
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(portPath)
+		if err == nil {
+			port, err = strconv.Atoi(strings.TrimSpace(string(data)))
+			if err == nil && port > 0 {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if port == 0 {
+		t.Fatal("remote API did not publish its in-memory listener port")
+	}
+	conn, err := memhttp.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dial remote API in memory: %v", err)
+	}
+	_ = conn.Close()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("remote API did not stop after context cancellation")
+	}
+}
 
 func TestRemoteDecisionAPI_CreateGetAndLongPoll(t *testing.T) {
 	broker, err := decision.Open("")

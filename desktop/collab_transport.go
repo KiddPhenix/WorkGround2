@@ -71,7 +71,7 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: actualPort, Priority: 1000, ProtocolVersion: protocolVersion}, Status: "connected"})
 		}
 	} else if lanEnabled {
-		listener, err = net.Listen("tcp", net.JoinHostPort(listenHost, strconv.Itoa(input.Port)))
+		listener, err = listenNetwork("tcp", net.JoinHostPort(listenHost, strconv.Itoa(input.Port)))
 		if err != nil {
 			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: collaborationProtocolV1}, Status: "failed", LastError: err.Error(), Retryable: true})
 		} else {

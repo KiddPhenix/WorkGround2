@@ -3,11 +3,12 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"workground2/desktop/internal/memhttp"
 )
 
 func readPending(t *testing.T) (crashReport, bool) {
@@ -95,7 +96,7 @@ func TestFlushPendingCrashSendsAndClears(t *testing.T) {
 	version = "v9.9.9"
 
 	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		w.WriteHeader(http.StatusAccepted)
 	}))

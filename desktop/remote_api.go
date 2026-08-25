@@ -52,7 +52,7 @@ const (
 // startRemoteAPI picks a random free port on 127.0.0.1, starts an HTTP server,
 // and writes the port file. Safe to call from any goroutine.
 func (a *App) startRemoteAPI() {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := listenNetwork("tcp", "127.0.0.1:0")
 	if err != nil {
 		log.Printf("[remote-api] listen: %v", err)
 		return

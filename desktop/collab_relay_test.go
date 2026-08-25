@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"math"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +18,8 @@ import (
 	"workground2/internal/config"
 	"workground2/internal/relayproto"
 	"workground2/internal/relayserver"
+
+	"workground2/desktop/internal/memhttp"
 )
 
 func TestRelayE2EEncryptsAndAuthenticatesHeader(t *testing.T) {
@@ -81,7 +82,7 @@ func TestRelayDiscoveryURLSchemeAndPlaintextMismatch(t *testing.T) {
 		t.Fatalf("wss discovery URL = %v, %v", secure, err)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server := memhttp.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer server.Close()
 	endpoint := "https" + strings.TrimPrefix(server.URL, "http") + "/relay/v1/rooms"
 	var result relayproto.RoomList
@@ -303,7 +304,7 @@ func TestRelayHostBridgeJoinSubmitAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpServer := httptest.NewServer(server.Handler())
+	httpServer := memhttp.NewServer(server.Handler())
 	defer httpServer.Close()
 	defer server.Close()
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/relay/v1/connect"

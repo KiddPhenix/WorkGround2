@@ -3,18 +3,19 @@ package main
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"workground2/internal/control"
+
+	"workground2/desktop/internal/memhttp"
 )
 
 func TestAddOnPanelFlowSkillShareSyncRefreshesSlashSkills(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repo/WorkGround2-plugin.json":
 			w.Header().Set("ETag", `"manifest-v1"`)

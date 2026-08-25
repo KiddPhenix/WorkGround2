@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,6 +25,8 @@ import (
 	"workground2/internal/memory"
 	"workground2/internal/skill"
 	"workground2/internal/unread"
+
+	"workground2/desktop/internal/memhttp"
 )
 
 type semanticIntentSession struct {
@@ -530,7 +531,7 @@ func TestCollaborationJoinRecoversAggregatedLANResumeCollision(t *testing.T) {
 	if _, err := service.Join(context.Background(), collab.JoinInput{RequestID: "occupy", Room: "room-a", Member: identity}); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(collab.NewHandler(service))
+	server := memhttp.NewServer(collab.NewHandler(service))
 	defer server.Close()
 	address := server.Listener.Addr().(*net.TCPAddr)
 
@@ -2022,7 +2023,7 @@ func TestCollaborationRuntimeRestoreActivatesHostWithoutProjectTreeProjection(t 
 			return runtime.snapshot()
 		}())
 	}
-	probe, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", runtime.snapshot().Port), time.Second)
+	probe, err := memhttp.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", runtime.snapshot().Port))
 	if err != nil {
 		t.Fatalf("restored Host listener is unavailable: %v", err)
 	}
@@ -2083,7 +2084,7 @@ func TestRestoreOrBuildTabsRestoresCollaborationHostWithoutPersistedTabs(t *test
 			return runtime.snapshot()
 		}())
 	}
-	probe, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", runtime.snapshot().Port), time.Second)
+	probe, err := memhttp.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", runtime.snapshot().Port))
 	if err != nil {
 		t.Fatalf("empty-tab startup Host listener is unavailable: %v", err)
 	}
@@ -3357,7 +3358,7 @@ func TestCollaborationNonRetryOutboxRemainsUntilManualRetry(t *testing.T) {
 
 func TestHTTPCollaborationPeerStreamDecodesRoomEvent(t *testing.T) {
 	payload, _ := json.Marshal(collab.TimelineItem{ID: "chat-1", Sequence: 1, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: "chat-1", Text: "hello"}})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer cs1.test" {
 			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
 		}

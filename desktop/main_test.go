@@ -6,12 +6,14 @@ import (
 	"testing"
 
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
+	"workground2/desktop/internal/memhttp"
 )
 
 // TestMain isolates user config/state/cache dirs for the whole package. Without
 // this, tests that persist desktop state, sessions, cache, or CLI-style config
 // can leak into the developer's real WorkGround2 directories.
 func TestMain(m *testing.M) {
+	listenNetwork = memhttp.Listen
 	dir, err := os.MkdirTemp("", "WorkGround2-desktop-test")
 	if err != nil {
 		os.Exit(1)

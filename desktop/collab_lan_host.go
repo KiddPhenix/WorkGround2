@@ -111,7 +111,7 @@ func (h *collaborationLANHost) ensureStartedLocked(host string, requestedPort in
 	if h.rooms == nil {
 		h.rooms = make(map[string]collaborationLANRoom)
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(requestedPort)))
+	listener, err := listenNetwork("tcp", net.JoinHostPort(host, strconv.Itoa(requestedPort)))
 	if err != nil {
 		return err
 	}

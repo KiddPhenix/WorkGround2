@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	"workground2/desktop/internal/memhttp"
 )
 
 func TestInstallIDStableAcrossCalls(t *testing.T) {
@@ -29,7 +30,7 @@ func TestInstallIDStableAcrossCalls(t *testing.T) {
 
 func TestPostStartupPing(t *testing.T) {
 	var got startupPing
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(body, &got); err != nil {
 			t.Errorf("body not JSON: %v", err)
@@ -50,7 +51,7 @@ func TestPostStartupPing(t *testing.T) {
 func TestSendStartupPingSkipsDevBuild(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	hits := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits++
 		w.WriteHeader(http.StatusAccepted)
 	}))

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,11 +32,13 @@ import (
 	"workground2/internal/provider"
 	"workground2/internal/skill"
 	"workground2/internal/tool"
+
+	"workground2/desktop/internal/memhttp"
 )
 
-func desktopMCPHTTPServer(t *testing.T) *httptest.Server {
+func desktopMCPHTTPServer(t *testing.T) *memhttp.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID     *int            `json:"id"`
 			Method string          `json:"method"`

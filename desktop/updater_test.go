@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"runtime"
 	"strings"
@@ -20,6 +19,8 @@ import (
 	"time"
 
 	"workground2/desktop/internal/update"
+
+	"workground2/desktop/internal/memhttp"
 )
 
 func TestNormalizeVersion(t *testing.T) {
@@ -260,7 +261,7 @@ func TestDownloadRecoversFromMidStreamReset(t *testing.T) {
 	fastRetry(t)
 	const body = "complete-installer-bytes"
 	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if atomic.AddInt32(&calls, 1) < int32(downloadAttempts) {
 			// Mid-stream reset: promise 100 bytes, send a few, drop the socket —
 			// the client's body read fails with unexpected EOF, exactly the CN-IPv6
@@ -294,7 +295,7 @@ func TestDownloadRecoversFromMidStreamReset(t *testing.T) {
 func TestDownloadGivesUpAfterCap(t *testing.T) {
 	fastRetry(t)
 	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err != nil {
@@ -334,7 +335,7 @@ func TestDownloadResumesWithRange(t *testing.T) {
 	const cut = 200
 	var calls int32
 	rangeCh := make(chan string, 4)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&calls, 1) == 1 {
 			// First attempt: promise the whole file, send a prefix, drop the socket.
 			conn, bw, err := w.(http.Hijacker).Hijack()

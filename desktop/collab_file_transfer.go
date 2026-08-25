@@ -584,7 +584,7 @@ func (c *desktopCollaboration) ensureFileOrigin(conn *collaborationConnection) e
 		return err
 	}
 	bindHost := collaborationFileOriginBindHost(conn)
-	listener, err := net.Listen("tcp", net.JoinHostPort(bindHost, "0"))
+	listener, err := listenNetwork("tcp", net.JoinHostPort(bindHost, "0"))
 	if err != nil {
 		c.mu.Unlock()
 		return fmt.Errorf("listen file origin: %w", err)

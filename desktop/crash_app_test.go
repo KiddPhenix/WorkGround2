@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+
+	"workground2/desktop/internal/memhttp"
 )
 
 func TestScrubUserPaths(t *testing.T) {
@@ -49,7 +50,7 @@ func TestScrubSensitiveText(t *testing.T) {
 
 func TestPostCrashReport(t *testing.T) {
 	var got crashReport
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %s, want POST", r.Method)
 		}
@@ -74,7 +75,7 @@ func TestPostCrashReport(t *testing.T) {
 }
 
 func TestPostCrashReportRejectedStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer srv.Close()

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +17,8 @@ import (
 	"workground2/internal/control"
 	"workground2/internal/hook"
 	"workground2/internal/provider"
+
+	"workground2/desktop/internal/memhttp"
 )
 
 type captureTurnRunner struct {
@@ -266,7 +267,7 @@ func TestFetchProviderModelsFiltersNonChatModels(t *testing.T) {
 	if _, err := config.SetCredential("TEST_PROVIDER_KEY", "test-key"); err != nil {
 		t.Fatalf("SetCredential: %v", err)
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
 			http.NotFound(w, r)
 			return
@@ -308,7 +309,7 @@ func TestFetchProviderModelsUsesSavedCredentialBeforeEnvironment(t *testing.T) {
 	}
 	t.Setenv(keyEnv, "stale-env-key")
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
 			http.NotFound(w, r)
 			return

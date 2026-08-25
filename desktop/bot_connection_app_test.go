@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,6 +12,8 @@ import (
 
 	"workground2/internal/bot"
 	"workground2/internal/config"
+
+	"workground2/desktop/internal/memhttp"
 )
 
 func TestNormalizeBotInstallTarget(t *testing.T) {
@@ -637,7 +638,7 @@ func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 
 func withRewrittenHTTP(t *testing.T, handler http.Handler) {
 	t.Helper()
-	server := httptest.NewServer(handler)
+	server := memhttp.NewServer(handler)
 	target, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)

@@ -10,6 +10,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| Desktop 测试网络隔离 | `done` | `developping/desktop-test-network-isolation+2026-08-25` | `Codex + WorkGround2` | `desktop/internal/memhttp`、`desktop/network.go`、Desktop 网络相关测试 | 默认 Desktop 测试通过 `net.Pipe` 运行 HTTP/WebSocket 与应用监听，随机路径的 `desktop.test.exe` 不再创建 OS 入站监听；静态门禁、相关测试和 `go vet .` 通过，完整套件运行期间防火墙规则保持 376/188 未增长。完整套件末尾仍有既有 Wails 无效上下文失败；未修改或放宽系统防火墙。 |
 | Assistant 删除与管理页关闭区避让 | `done` | `developping/assistant-delete-ui+2026-08-25` | `Codex` | `internal/assistant/store.go`、`desktop/assistant_app.go`、`desktop/frontend/src/custom/features/assistant`、相关测试 | Assistant 概览新增二次确认删除；聚合目录原子移入本地 `.trash`，请求重放可继续取消原 Run，旧请求不会误删同名重建 Assistant，既有 Session 保留。管理页关闭按钮在 Windows 无边框窗口中避开原生标题栏控制区。Assistant 前端 178 项、TypeScript、生产构建、Assistant Store/桌面 API 测试及 vet 通过；未启动程序。截图驱动 GUI 调整，不使用 WorkGround2 Worker。 |
 | Assistant Session 链接导航一致性 | `done` | `developping/assistant-session-navigation+2026-08-25` | `Codex` | `desktop/frontend/src/App.tsx`、`assistant-workspace.test.tsx` | 调整功能：Assistant Run 状态链接改走统一 linked-session 导航队列，按冻结 `session_path` 更新 Active Tab、加载对应历史并适配单窗口布局；成功后才关闭 Assistant，失败保持现场并显式提示。Assistant 174 项、Work 导航契约 41 项、连续导航 15 项、TypeScript、前端生产构建与 Wails 正式构建通过；未启动程序。 |
 | Assistant 与设置窗口拖拽区 | `done` | `developping/window-drag-regions+2026-08-25` | `Codex` | `desktop/frontend/src/custom/features/assistant/assistant.css`、`desktop/frontend/src/styles.css`、相关契约测试 | 调整功能：Assistant 顶栏空白区与全窗口设置保留顶栏可拖动原生窗口；选择器、按钮和设置内容显式退出拖拽区，保持交互命中。Assistant 171 项、设置布局、CSS 门禁、TypeScript、前端生产构建与 Wails 正式构建通过；未启动程序。 |

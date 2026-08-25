@@ -15,7 +15,6 @@ import (
 	"image/gif"
 	"image/png"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +25,8 @@ import (
 	"unicode/utf8"
 
 	"workground2/internal/collab"
+
+	"workground2/desktop/internal/memhttp"
 )
 
 func TestRegisterFileOriginAllowsRelayWithoutLocalHTTPOrigin(t *testing.T) {
@@ -118,7 +119,7 @@ func TestCollaborationSharedFileOriginServesVerifiedChunks(t *testing.T) {
 	if _, err := service.Submit(context.Background(), collab.CommandEnvelope{RequestID: share.FileID + ":offer", Room: "room", MemberID: "owner", Session: owner.ConnectionSession, Command: collab.Command{Type: collab.CommandOfferFile, FileOffer: &collab.OfferFileInput{FileID: share.FileID, Name: share.Name, Size: share.Size, MIME: share.MIME, SHA256: share.SHA256, ManifestHash: share.ManifestHash, ChunkSize: share.ChunkSize, ChunkCount: len(share.ChunkHashes)}}}); err != nil {
 		t.Fatal(err)
 	}
-	host := httptest.NewServer(collab.NewHandler(service))
+	host := memhttp.NewServer(collab.NewHandler(service))
 	defer host.Close()
 	peer := func(member, session string) *httpCollaborationPeer {
 		return &httpCollaborationPeer{baseURL: host.URL, client: &http.Client{Timeout: time.Second}, streamClient: &http.Client{}, room: "room", member: member, session: session}
@@ -922,12 +923,12 @@ func TestAutoReceiveRetryCycleYieldsAndRecovers(t *testing.T) {
 func TestAutomaticFileFetchUsesAuthenticatedRoomProxyOnly(t *testing.T) {
 	offer, scripted := testFileOffer("proxy-only", "proxy.bin", "other", []byte("proxy-data"), 4)
 	var directHits atomic.Int32
-	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	direct := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		directHits.Add(1)
 		_, _ = w.Write([]byte("unexpected direct response"))
 	}))
 	defer direct.Close()
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	proxy := memhttp.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer session" {
 			http.Error(w, "missing authorization", http.StatusUnauthorized)
 			return
