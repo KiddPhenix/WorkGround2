@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	fileencoding "workground2/internal/fileutil/encoding"
@@ -67,5 +68,22 @@ func TestResolveSystemPromptForRootDecodesGB18030(t *testing.T) {
 	}
 	if got != "请始终使用中文回答。" {
 		t.Fatalf("system prompt = %q", got)
+	}
+}
+
+func TestBrowserPolicyCoversNativeFirstNoReload(t *testing.T) {
+	for _, want := range []string{
+		"browser_* tools",
+		"do not launch or use Playwright for covered operations",
+		"Playwright is fallback-only",
+		"unavailable, explicitly fail, or lack a required capability",
+		"same WorkGround2 browser via browser_attach",
+		"Never reload, refresh, or navigate to the same URL merely to observe",
+		"browser_state(refresh=true) only re-observes page state and never reloads the page",
+		"Reload a page only when the user requested it or the page is unusable",
+	} {
+		if !strings.Contains(BrowserPolicy, want) {
+			t.Fatalf("BrowserPolicy missing %q:\n%s", want, BrowserPolicy)
+		}
 	}
 }

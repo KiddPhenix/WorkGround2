@@ -1974,6 +1974,12 @@ const LanguagePolicy = `Reply in the same language the user is using in their mo
 	`whenever they switch. Let this also guide the language you think in. Always keep code, ` +
 	`identifiers, file paths, shell commands, and technical terms in their original form — never translate them.`
 
+// BrowserPolicy is appended to every system prompt, including user-custom
+// prompts, so models prefer the native browser_* tools, attach to the same
+// WorkGround2 browser, and never reload a page merely to observe it. Static
+// English text keeps it part of the cache-stable prefix.
+const BrowserPolicy = `Browser control: use the browser_* tools (browser_open, browser_state, browser_click, ...) for every capability they cover — do not launch or use Playwright for covered operations. Playwright is fallback-only: use it only when the browser_* tools are unavailable, explicitly fail, or lack a required capability, and attach to the same WorkGround2 browser via browser_attach. Never reload, refresh, or navigate to the same URL merely to observe, synchronize, or retry. browser_state(refresh=true) only re-observes page state and never reloads the page. Reload a page only when the user requested it or the page is unusable and state-preserving recovery cannot work.`
+
 // Default returns the built-in default configuration.
 func Default() *Config {
 	return &Config{

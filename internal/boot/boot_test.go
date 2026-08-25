@@ -2610,6 +2610,43 @@ api_key_env = "WorkGround2_TEST_KEY_UNSET"
 	}
 }
 
+func TestBuildAppendsBrowserPolicyToCustomSystemPrompt(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	writeFile(t, dir, "WorkGround2.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "WorkGround2_TEST_KEY_UNSET"
+`)
+
+	ctrl, err := Build(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	sys := systemMessage(ctrl.History())
+	for _, want := range []string{
+		"browser_* tools",
+		"Playwright is fallback-only",
+		"browser_state(refresh=true) only re-observes page state and never reloads the page",
+		"never reloads the page",
+	} {
+		if !strings.Contains(sys, want) {
+			t.Fatalf("browser policy missing %q from custom system prompt:\n%s", want, sys)
+		}
+	}
+}
+
 func systemMessage(msgs []provider.Message) string {
 	for _, m := range msgs {
 		if m.Role == provider.RoleSystem {
@@ -2621,7 +2658,10 @@ func systemMessage(msgs []provider.Message) string {
 
 func stripLanguagePolicy(s string) string {
 	s = strings.TrimSpace(s)
+	// Policies are appended in boot order (UserDecision → Language →
+	// Browser), so strip in reverse to reveal the base prompt.
 	for _, policy := range []string{
+		config.BrowserPolicy,
 		config.LanguagePolicy,
 		config.UserDecisionPolicy,
 	} {
