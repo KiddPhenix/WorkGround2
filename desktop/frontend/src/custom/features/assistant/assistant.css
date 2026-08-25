@@ -516,6 +516,27 @@
 .assistant-attention-item__answer textarea:focus { outline: 2px solid color-mix(in srgb, var(--assistant-orange) 54%, transparent); outline-offset: 1px; border-color: var(--assistant-orange); }
 .assistant-empty-copy { color: #77736e; line-height: 1.7; }
 
+.assistant-plan { display: grid; gap: 26px; }
+.assistant-plan section > h3 { margin: 0 0 12px; color: #ded7cd; font-size: 13px; font-weight: 600; }
+.assistant-plan__list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.assistant-responsibility,
+.assistant-artifact,
+.assistant-opportunity { position: relative; padding: 14px 16px; border: 1px solid #2d3032; border-radius: 8px; background: #17191b; }
+.assistant-responsibility header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.assistant-responsibility header strong { color: #ded7cd; font-size: 13px; }
+.assistant-responsibility header span { color: var(--assistant-orange); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+.assistant-responsibility--done { border-color: #3a4a3a; }
+.assistant-responsibility--blocked { border-color: #4a3c2e; }
+.assistant-responsibility p { margin: 7px 0 0; color: #b7b1a9; font-size: 13px; line-height: 1.6; }
+.assistant-responsibility__meta { color: #8b8680 !important; font-size: 12px !important; }
+.assistant-responsibility__block { color: #caa578 !important; font-size: 12px !important; }
+.assistant-artifact { display: grid; gap: 5px; }
+.assistant-artifact strong { color: #ded7cd; font-size: 13px; }
+.assistant-artifact p { margin: 0; color: #b7b1a9; font-size: 12px; line-height: 1.6; }
+.assistant-artifact__resp { color: #8b8680; font-size: 11px; }
+.assistant-opportunity strong { color: #ded7cd; font-size: 13px; }
+.assistant-opportunity p { margin: 6px 0 0; color: #b7b1a9; font-size: 13px; line-height: 1.6; }
+
 .assistant-manager-backdrop--create { z-index: 14; align-items: center; justify-content: center; padding: 32px; }
 .assistant-create { width: min(560px, 100%); max-height: calc(100% - 20px); overflow: auto; padding: 26px; border: 1px solid #35383b; border-radius: 11px; background: #151719; box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5); }
 .assistant-create > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }

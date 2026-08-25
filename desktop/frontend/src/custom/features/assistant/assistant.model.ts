@@ -1,5 +1,5 @@
 import type { AssistantCopy } from "./assistant.copy";
-import type { AssistantAttentionItem, AssistantMemoryItem, AssistantRoutine, AssistantRun, AssistantSnapshot } from "./assistant.types";
+import type { AssistantAttentionItem, AssistantMemoryItem, AssistantResponsibility, AssistantRoutine, AssistantRun, AssistantSnapshot } from "./assistant.types";
 
 export interface AssistantTimelineEntry {
   id: string;
@@ -43,6 +43,21 @@ export function runStateLabel(state: AssistantRun["state"], locale: string): str
 }
 
 export type AssistantRunAction = "rerun" | "cancel" | "attention" | "none";
+
+export function responsibilityStatusLabel(status: AssistantResponsibility["status"], locale: string): string {
+  const labels: Record<AssistantResponsibility["status"], [string, string]> = {
+    blocked: ["Blocked", "被阻塞"],
+    ready: ["Ready", "就绪"],
+    active: ["Active", "进行中"],
+    done: ["Done", "已完成"],
+    failed: ["Failed", "失败"],
+  };
+  return labels[status][locale === "en" ? 0 : 1];
+}
+
+export function responsibilityLabel(responsibility: AssistantResponsibility): string {
+  return responsibility.alias?.trim() || responsibility.id;
+}
 
 export function runHistoryAction(state: AssistantRun["state"]): AssistantRunAction {
   if (state === "failed" || state === "cancelled") return "rerun";

@@ -58,8 +58,8 @@ type Assistant struct {
 	Policy        Policy    `json:"policy"`
 	MemoryRev     int64     `json:"memory_revision"`
 	Revision      int64     `json:"revision"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	CreatedAt     time.Time `json:"created_at" ts_type:"string"`
+	UpdatedAt     time.Time `json:"updated_at" ts_type:"string"`
 }
 
 type CatchUpPolicy string
@@ -94,7 +94,7 @@ type Schedule struct {
 	Weekday         time.Weekday `json:"weekday,omitempty"`
 	Day             int          `json:"day,omitempty"`
 	Month           time.Month   `json:"month,omitempty"`
-	StartAt         time.Time    `json:"start_at,omitempty"`
+	StartAt         time.Time    `json:"start_at,omitempty" ts_type:"string"`
 	Window          TimeWindow   `json:"window,omitempty"`
 }
 
@@ -106,10 +106,10 @@ type Routine struct {
 	Schedule         Schedule      `json:"schedule"`
 	Enabled          bool          `json:"enabled"`
 	CatchUp          CatchUpPolicy `json:"catch_up"`
-	LastScheduledFor time.Time     `json:"last_scheduled_for,omitempty"`
+	LastScheduledFor time.Time     `json:"last_scheduled_for,omitempty" ts_type:"string"`
 	Revision         int64         `json:"revision"`
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
+	CreatedAt        time.Time     `json:"created_at" ts_type:"string"`
+	UpdatedAt        time.Time     `json:"updated_at" ts_type:"string"`
 }
 
 type TriggerKind string
@@ -139,13 +139,14 @@ type RunError struct {
 	Provider     string    `json:"provider,omitempty"`
 	Retryable    bool      `json:"retryable"`
 	OutcomeKnown bool      `json:"outcome_known"`
-	At           time.Time `json:"at"`
+	At           time.Time `json:"at" ts_type:"string"`
 }
 
 type Run struct {
 	ID                string      `json:"id"`
 	AssistantID       string      `json:"assistant_id"`
 	RoutineID         string      `json:"routine_id,omitempty"`
+	ResponsibilityID  string      `json:"responsibility_id,omitempty"`
 	RequestID         string      `json:"request_id"`
 	OccurrenceKey     string      `json:"occurrence_key,omitempty"`
 	Occurrences       []string    `json:"occurrences,omitempty"`
@@ -164,16 +165,16 @@ type Run struct {
 	ResumeToken       string      `json:"resume_token,omitempty"`
 	LeaseOwner        string      `json:"lease_owner,omitempty"`
 	LeaseFence        int64       `json:"lease_fence"`
-	LeaseUntil        time.Time   `json:"lease_until,omitempty"`
-	ScheduledFor      time.Time   `json:"scheduled_for,omitempty"`
-	RetryAt           time.Time   `json:"retry_at,omitempty"`
-	StartedAt         time.Time   `json:"started_at,omitempty"`
-	FinishedAt        time.Time   `json:"finished_at,omitempty"`
+	LeaseUntil        time.Time   `json:"lease_until,omitempty" ts_type:"string"`
+	ScheduledFor      time.Time   `json:"scheduled_for,omitempty" ts_type:"string"`
+	RetryAt           time.Time   `json:"retry_at,omitempty" ts_type:"string"`
+	StartedAt         time.Time   `json:"started_at,omitempty" ts_type:"string"`
+	FinishedAt        time.Time   `json:"finished_at,omitempty" ts_type:"string"`
 	Summary           string      `json:"summary,omitempty"`
 	Error             *RunError   `json:"error,omitempty"`
 	Revision          int64       `json:"revision"`
-	CreatedAt         time.Time   `json:"created_at"`
-	UpdatedAt         time.Time   `json:"updated_at"`
+	CreatedAt         time.Time   `json:"created_at" ts_type:"string"`
+	UpdatedAt         time.Time   `json:"updated_at" ts_type:"string"`
 }
 
 type MemoryKind string
@@ -194,8 +195,8 @@ type MemoryItem struct {
 	Evidence  string     `json:"evidence,omitempty"`
 	Locked    bool       `json:"locked"`
 	Revision  int64      `json:"revision"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	CreatedAt time.Time  `json:"created_at" ts_type:"string"`
+	UpdatedAt time.Time  `json:"updated_at" ts_type:"string"`
 }
 
 type Memory struct {
@@ -235,8 +236,8 @@ type AttentionItem struct {
 	State       AttentionState `json:"state"`
 	Resolution  string         `json:"resolution,omitempty"`
 	Revision    int64          `json:"revision"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	CreatedAt   time.Time      `json:"created_at" ts_type:"string"`
+	UpdatedAt   time.Time      `json:"updated_at" ts_type:"string"`
 }
 
 type CreateInput struct {

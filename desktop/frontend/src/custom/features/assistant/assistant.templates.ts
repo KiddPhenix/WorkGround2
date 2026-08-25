@@ -48,7 +48,7 @@ interface TemplateText {
 
 const texts: Record<Locale, TemplateText> = {
   zh: {
-    codeName: "代码项目助理",
+    codeName: "代码项目助手",
     codeMission: "持续关注项目健康度和发布准备情况，在发布条件满足时询问我。",
     healthTitle: "项目健康检查",
     healthPrompt: "扫描项目近期修改、测试与构建产物，报告当前健康度和风险点。",
@@ -56,7 +56,7 @@ const texts: Record<Locale, TemplateText> = {
     buildPrompt: "运行测试与构建，记录本次失败原因、已验证步骤和项目特有约束。",
     releaseTitle: "发布准备检查",
     releasePrompt: "检查发布条件是否满足；满足时进入待处理状态并询问是否发布，绝不自行发布。",
-    generalName: "通用助理",
+    generalName: "通用助手",
   },
   en: {
     codeName: "Code project assistant",
@@ -70,7 +70,7 @@ const texts: Record<Locale, TemplateText> = {
     generalName: "General assistant",
   },
   "zh-TW": {
-    codeName: "程式碼專案助理",
+    codeName: "程式碼專案助手",
     codeMission: "持續關注專案健康度與發佈準備情況，在發佈條件滿足時詢問我。",
     healthTitle: "專案健康檢查",
     healthPrompt: "掃描專案近期修改、測試與建置產物，報告目前健康度與風險點。",
@@ -78,7 +78,7 @@ const texts: Record<Locale, TemplateText> = {
     buildPrompt: "執行測試與建置，記錄本次失敗原因、已驗證步驟與專案特有約束。",
     releaseTitle: "發佈準備檢查",
     releasePrompt: "檢查發佈條件是否滿足；滿足時進入待處理狀態並詢問是否發佈，絕不自行發佈。",
-    generalName: "通用助理",
+    generalName: "通用助手",
   },
 };
 

@@ -283,3 +283,10 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 - Keywords: WorkGround2, README, SPEC, AGENTS.md, project memory
 - Source: verified-by-search
 - Updated: 2026-08-20
+
+### 助手模式
+- Location: `internal/assistant`, `desktop/assistant_app.go`, `desktop/assistant_runner.go`, `desktop/frontend/src/custom/features/assistant`, `docs/ASSISTANT_MODE_DESIGN.zh-CN.md`
+- Summary: 长期助手聚合（使命、责任图 Plan、Routine、记忆、Run、Attention）与桌面后台调度；Run 成功后经 `<assistant-progress>` 幂等推进责任、证据与机会。
+- Keywords: AssistantWorkspace, AssistantRuntime, Responsibility, Plan, CompleteRunWithProgress
+- Source: verified-by-search
+- Updated: 2026-08-25

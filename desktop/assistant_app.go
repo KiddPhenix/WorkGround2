@@ -64,7 +64,7 @@ type AssistantCancelRequest struct {
 }
 
 type AssistantDiagnostic struct {
-	At        time.Time `json:"at"`
+	At        time.Time `json:"at" ts_type:"string"`
 	Operation string    `json:"operation"`
 	Message   string    `json:"message"`
 }

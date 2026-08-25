@@ -502,7 +502,7 @@ func TestAssistantOwnedAskBypassesDecisionBrokerAndCancelDoneCannotSucceed(t *te
 	}); err != nil {
 		t.Fatalf("Resolve ask: %v", err)
 	}
-	prompt, grants, err := service.promptFor(result.Runs[0])
+	prompt, grants, _, _, err := service.promptFor(result.Runs[0])
 	if err != nil {
 		t.Fatalf("promptFor: %v", err)
 	}
@@ -665,6 +665,223 @@ func TestAssistantPermissionPolicyKeepsMoveDeleteAndAllMCPAsk(t *testing.T) {
 	allowed, _, err = gate.Check(context.Background(), "mcp__docs__read", nil, true)
 	if err != nil || allowed || approver.calls != 0 {
 		t.Fatalf("network-denied MCP allowed=%v approvals=%d err=%v", allowed, approver.calls, err)
+	}
+}
+
+func TestAssistantPromptForInjectsResponsibilityGraph(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "graph")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	if _, err := store.CompleteRunWithProgress(assistant.CompleteRunInput{
+		RequestID: "seed-graph", RunID: claimed.ID, LeaseOwner: "desktop-test", LeaseFence: claimed.LeaseFence,
+		Progress: assistant.ProgressBlock{
+			PlanRevision: 1,
+			Responsibilities: []assistant.RespDecl{
+				{Alias: "up", Objective: "do up"},
+				{Alias: "down", Objective: "do down", DoneCriteria: "shipped", NextAction: "ship it", DependsOn: []string{"up"}},
+			},
+			Complete: []string{"up"},
+		},
+		Now: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Trigger(assistant.TriggerInput{
+		AssistantID: snapshot.Assistant.ID, RoutineID: snapshot.Routines[0].ID,
+		RequestID: "run-graph-second", Trigger: assistant.TriggerManual, Now: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, _, selected, planRevision, err := service.promptFor(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "down") || !strings.Contains(prompt, "本次负责：down") {
+		t.Fatalf("graph not injected: %q", prompt)
+	}
+	if selected == nil || selected.Alias != "down" || planRevision != 2 {
+		t.Fatalf("selected=%+v planRevision=%d", selected, planRevision)
+	}
+}
+
+func TestAssistantCompleteRunAppliesProgressAndStripsSummary(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "progress")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	block := `<assistant-progress>{"responsibility":"scan","responsibilities":[{"alias":"scan","objective":"scan changes"}],"complete":["scan"]}</assistant-progress>`
+	service.completeRun(*claimed, nil, snapshot.Plan.Revision, assistantTurnResult{
+		Summary:      "Scan complete\n" + block,
+		ProgressText: block,
+	}, "C:/assistant/session.jsonl")
+	got, err := store.Get(snapshot.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runs[0].State != assistant.RunSucceeded {
+		t.Fatalf("run state = %s", got.Runs[0].State)
+	}
+	if strings.Contains(got.Runs[0].Summary, "<assistant-progress>") {
+		t.Fatalf("raw block leaked into summary: %q", got.Runs[0].Summary)
+	}
+	if got.Runs[0].ResponsibilityID == "" {
+		t.Fatalf("run did not reference its responsibility: %+v", got.Runs[0])
+	}
+	if got.Plan.Revision != 2 || len(got.Plan.Responsibilities) != 1 || got.Plan.Responsibilities[0].Status != assistant.RespDone {
+		t.Fatalf("plan = %+v", got.Plan)
+	}
+}
+
+func TestAssistantCompleteRunFailsOnBlockedProgress(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "blocked")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	block := `<assistant-progress>{"responsibilities":[{"alias":"a","objective":"a"},{"alias":"b","objective":"b","depends_on":["a"]}],"complete":["b"]}</assistant-progress>`
+	service.completeRun(*claimed, nil, snapshot.Plan.Revision, assistantTurnResult{Summary: "tried", ProgressText: block}, "C:/assistant/session.jsonl")
+	got, err := store.Get(snapshot.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runs[0].State != assistant.RunRetryWait {
+		t.Fatalf("run state = %s, want retry_wait", got.Runs[0].State)
+	}
+	if got.Runs[0].Error == nil || got.Runs[0].Error.Code != "progress_apply_failed" || !got.Runs[0].Error.Retryable {
+		t.Fatalf("run error = %+v, want retryable progress_apply_failed", got.Runs[0].Error)
+	}
+	if got.Plan.Revision != 1 || len(got.Plan.Responsibilities) != 0 {
+		t.Fatalf("plan mutated on failed patch: %+v", got.Plan)
+	}
+}
+
+func TestAssistantCompleteRunFailsOnMalformedProgress(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "malformed")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	// The trailing valid block must NOT be applied: a malformed block rejects the
+	// whole progress result.
+	service.completeRun(*claimed, nil, snapshot.Plan.Revision, assistantTurnResult{
+		Summary:      "tried",
+		ProgressText: `<assistant-progress>not-json</assistant-progress><assistant-progress>{"complete":["scan"]}</assistant-progress>`,
+	}, "C:/assistant/session.jsonl")
+	got, err := store.Get(snapshot.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runs[0].State != assistant.RunRetryWait {
+		t.Fatalf("run state = %s, want retry_wait", got.Runs[0].State)
+	}
+	if got.Runs[0].Error == nil || got.Runs[0].Error.Code != "progress_parse_failed" || !got.Runs[0].Error.Retryable {
+		t.Fatalf("run error = %+v, want retryable progress_parse_failed", got.Runs[0].Error)
+	}
+	if got.Plan.Revision != 1 || len(got.Plan.Responsibilities) != 0 {
+		t.Fatalf("plan mutated on malformed patch: %+v", got.Plan)
+	}
+}
+
+func TestAssistantCompleteRunRetriesInvalidProgressPatch(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "invalid-patch")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	block := `<assistant-progress>{"complete":["missing-alias"]}</assistant-progress>`
+	service.completeRun(*claimed, nil, snapshot.Plan.Revision, assistantTurnResult{Summary: "tried", ProgressText: block}, "C:/assistant/session.jsonl")
+	got, err := store.Get(snapshot.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runs[0].State != assistant.RunRetryWait {
+		t.Fatalf("run state = %s, want retry_wait", got.Runs[0].State)
+	}
+	if got.Runs[0].Error == nil || got.Runs[0].Error.Code != "progress_apply_failed" || !got.Runs[0].Error.Retryable {
+		t.Fatalf("run error = %+v, want retryable progress_apply_failed", got.Runs[0].Error)
+	}
+	if got.Plan.Revision != 1 || len(got.Plan.Responsibilities) != 0 {
+		t.Fatalf("plan mutated on invalid patch: %+v", got.Plan)
+	}
+}
+
+func TestAssistantCompleteRunRetriesOnStalePlanConflict(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "stale")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	// Advance the plan revision so a later patch against revision 1 is stale.
+	if _, err := store.CompleteRunWithProgress(assistant.CompleteRunInput{
+		RequestID: "seed", RunID: claimed.ID, LeaseOwner: "desktop-test", LeaseFence: claimed.LeaseFence,
+		Progress: assistant.ProgressBlock{PlanRevision: 1, Responsibilities: []assistant.RespDecl{{Alias: "a", Objective: "a"}}},
+		Now:      time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Trigger(assistant.TriggerInput{
+		AssistantID: snapshot.Assistant.ID, RoutineID: snapshot.Routines[0].ID,
+		RequestID: "run-stale-second", Trigger: assistant.TriggerManual, Now: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run2, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok || run2.ID != second.ID {
+		t.Fatalf("Claim second: run=%+v ok=%v err=%v", run2, ok, err)
+	}
+	block := `<assistant-progress>{"responsibilities":[{"alias":"b","objective":"b"}]}</assistant-progress>`
+	service.completeRun(*run2, nil, 1 /* stale */, assistantTurnResult{Summary: "tried", ProgressText: block}, "C:/assistant/session.jsonl")
+	got, err := store.Get(snapshot.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target assistant.Run
+	for _, r := range got.Runs {
+		if r.ID == run2.ID {
+			target = r
+		}
+	}
+	if target.State != assistant.RunRetryWait || target.Error == nil || target.Error.Code != "progress_apply_failed" || !target.Error.Retryable {
+		t.Fatalf("stale conflict not retryable: %+v", target)
+	}
+}
+
+func TestAssistantObserveEventCollectsRawProgressFromTextDeltas(t *testing.T) {
+	service, _ := newAssistantTestRuntime(t, &assistantHostStub{})
+	service.mu.Lock()
+	in := &assistantInFlight{runID: "run-1", tabID: "tab-1", done: make(chan assistantTurnResult, 1)}
+	service.inflight[in.tabID] = in
+	service.mu.Unlock()
+
+	// Raw answer deltas carry the protocol block; the final Message is clean.
+	service.ObserveEvent("tab-1", event.Event{Kind: event.Text, Text: "Scan complete\n"})
+	service.ObserveEvent("tab-1", event.Event{Kind: event.Text, Text: `<assistant-progress>{"complete":["scan"]}</assistant-progress>`})
+	service.ObserveEvent("tab-1", event.Event{Kind: event.Message, Text: "Scan complete"})
+	service.ObserveEvent("tab-1", event.Event{Kind: event.TurnDone})
+
+	result := <-in.done
+	if !strings.Contains(result.ProgressText, "<assistant-progress>") {
+		t.Fatalf("raw protocol was not collected from text deltas: %q", result.ProgressText)
+	}
+	if strings.Contains(result.Summary, "<assistant-progress>") {
+		t.Fatalf("stripped message leaked raw protocol into summary: %q", result.Summary)
 	}
 }
 

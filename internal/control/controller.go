@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/assistant"
 	"workground2/internal/autoresearch"
 	"workground2/internal/billing"
 	"workground2/internal/checkpoint"
@@ -3682,7 +3683,7 @@ func (c *Controller) History() []provider.Message {
 	}
 	msgs := c.executor.Session().Snapshot() // copy — a turn may be appending concurrently
 	for i := range msgs {
-		msgs[i].Content = skill.RedactProtectedContent(msgs[i].Content)
+		msgs[i].Content = skill.RedactProtectedContent(assistant.StripProgressBlocks(msgs[i].Content))
 		msgs[i].ReasoningContent = skill.RedactProtectedContent(msgs[i].ReasoningContent)
 	}
 	return msgs

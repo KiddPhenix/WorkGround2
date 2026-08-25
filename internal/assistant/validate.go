@@ -244,6 +244,11 @@ func validateRun(r Run) error {
 	if r.RoutineID != "" && (r.RoutineRevision < 1 || strings.TrimSpace(r.Prompt) == "") {
 		return errors.New("assistant: routine run requires frozen routine revision and prompt")
 	}
+	if r.ResponsibilityID != "" {
+		if err := validateID("responsibility", r.ResponsibilityID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

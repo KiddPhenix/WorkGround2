@@ -1,6 +1,6 @@
 import { assistantCopy } from "../custom/features/assistant/assistant.copy";
-import { attentionInboxAction, attentionNeedsRebind, attentionRejectResolution, attentionResolution, nextRoutineDate, runHistoryAction, scheduleLabel, timelineEntries } from "../custom/features/assistant/assistant.model";
-import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, completeAssistantRequest, pendingAssistantMutation, pendingAssistantRequest, runAssistantApproval, runAssistantCASMutation, runAssistantMutation, runAssistantOutcome, runAssistantResume } from "../custom/features/assistant/assistant.requests";
+import { attentionInboxAction, attentionNeedsRebind, attentionRejectResolution, attentionResolution, nextRoutineDate, responsibilityLabel, responsibilityStatusLabel, runHistoryAction, scheduleLabel, timelineEntries } from "../custom/features/assistant/assistant.model";
+import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, completeAssistantRequest, pendingAssistantMutation, pendingAssistantRequest, runAssistantApproval, runAssistantCASMutation, runAssistantOutcome, runAssistantResume } from "../custom/features/assistant/assistant.requests";
 import type { AssistantAttentionItem, AssistantRun, AssistantSnapshot } from "../custom/features/assistant/assistant.types";
 import { normalizeAssistantList } from "../custom/features/assistant/assistant.bridge";
 
@@ -53,12 +53,20 @@ const snapshot: AssistantSnapshot = {
   routines: [routine],
   memory: { revision: 1, items: [{ id: "memory-1", kind: "strategy", body: "构建前先停旧进程", source_run: "run-1", locked: false, revision: 1, created_at: new Date(2026, 7, 17, 10, 5).toISOString(), updated_at: new Date(2026, 7, 17, 10, 5).toISOString() }] },
   runs: [{ id: "run-1", assistant_id: "assistant-1", routine_id: "routine-1", request_id: "req", trigger: "scheduled", state: "succeeded", attempt: 1, max_attempts: 3, summary: "测试通过。发布说明待补。", revision: 1, created_at: new Date(2026, 7, 17, 9, 30).toISOString(), updated_at: new Date(2026, 7, 17, 9, 31).toISOString(), started_at: new Date(2026, 7, 17, 9, 30).toISOString() }],
-  attention: [], updated_at: day.toISOString(),
+  attention: [],
+  plan: { revision: 1, responsibilities: [{ id: "resp-1", assistant_id: "assistant-1", alias: "scan", objective: "扫描修改", status: "ready", revision: 1, created_at: day.toISOString(), updated_at: day.toISOString() }] },
+  artifacts: [],
+  opportunities: [],
+  updated_at: day.toISOString(),
 };
 const entries = timelineEntries(snapshot, day, copy);
 ok(entries.some((entry) => entry.kind === "run"), "timeline projects factual run state");
 ok(entries.some((entry) => entry.kind === "memory"), "timeline projects explicit memory");
 ok(entries.some((entry) => entry.kind === "next"), "timeline projects the next routine");
+
+ok(responsibilityStatusLabel("blocked", "zh") === "被阻塞" && responsibilityStatusLabel("blocked", "en") === "Blocked", "responsibility status localizes");
+ok(responsibilityStatusLabel("done", "zh") === "已完成", "done responsibility status is localized");
+ok(responsibilityLabel({ id: "resp-1", alias: "scan" } as AssistantSnapshot["plan"]["responsibilities"][number]) === "scan", "responsibility label prefers the stable alias");
 
 const key = assistantIntentKey("run", "assistant-1", "routine-1");
 const first = pendingAssistantRequest(key);

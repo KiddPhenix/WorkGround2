@@ -44,12 +44,12 @@ await act(async () => {
   await new Promise((resolve) => setTimeout(resolve, 20));
 });
 ok(host.querySelector(".assistant-workspace") !== null, "workspace mounts as a full surface");
-ok(host.textContent?.includes("代码项目助理") ?? false, "workspace renders the selected assistant");
+ok(host.textContent?.includes("代码项目助手") ?? false, "workspace renders the selected assistant");
 ok(host.textContent?.includes("让它继续工作") ?? false, "primary repeat action is visible");
 ok(host.querySelector("#assistant-handoff-input") !== null, "quick handoff input is keyboard accessible");
 ok(host.querySelectorAll(".assistant-event").length >= 2, "timeline renders run and memory events");
 
-const manage = host.querySelector('button[aria-label="管理助理"]') as HTMLButtonElement | null;
+const manage = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;
 await act(async () => { manage?.click(); });
 const workspaceInput = [...host.querySelectorAll("input")].find((input) => input.value === "~/projects/WorkGround2");
 ok(workspaceInput !== undefined, "overview exposes the current workspace path");

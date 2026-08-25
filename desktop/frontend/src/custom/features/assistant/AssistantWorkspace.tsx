@@ -34,7 +34,7 @@ import {
   assistantUpdate,
 } from "./assistant.bridge";
 import { assistantCopy } from "./assistant.copy";
-import { attentionInboxAction, attentionRejectResolution, attentionResolution, formatAssistantDate, formatTimelineTime, runHistoryAction, runStateLabel, scheduleLabel, timelineEntries } from "./assistant.model";
+import { attentionInboxAction, attentionRejectResolution, attentionResolution, formatAssistantDate, formatTimelineTime, responsibilityLabel, responsibilityStatusLabel, runHistoryAction, runStateLabel, scheduleLabel, timelineEntries } from "./assistant.model";
 import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, completeAssistantRequest, pendingAssistantRequest, runAssistantApproval, runAssistantCASMutation, runAssistantMutation, runAssistantOutcome, runAssistantRejection, runAssistantResume } from "./assistant.requests";
 import { assistantTemplate, assistantTemplateContent, templateRoutine, templateRoutines, type AssistantTemplateID } from "./assistant.templates";
 import {
@@ -48,7 +48,7 @@ import {
 } from "./assistant.types";
 import "./assistant.css";
 
-type ManageTab = "overview" | "routines" | "memory" | "history" | "attention";
+type ManageTab = "overview" | "routines" | "memory" | "history" | "attention" | "plan";
 
 interface AssistantWorkspaceProps {
   onOpenSession?: (scope: string, workspaceRoot: string, sessionPath: string) => void;
@@ -353,6 +353,7 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onRun, onO
   const [busy, setBusy] = useState("");
   const tabs: Array<{ id: ManageTab; label: string; icon: typeof Bot }> = [
     { id: "overview", label: copy.overview, icon: Bot },
+    { id: "plan", label: copy.plan, icon: Check },
     { id: "routines", label: copy.routines, icon: CalendarClock },
     { id: "memory", label: copy.memory, icon: Brain },
     { id: "history", label: copy.history, icon: History },
@@ -376,12 +377,74 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onRun, onO
         <nav aria-label={copy.manage}>{tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={tab === id ? "page" : undefined} className={tab === id ? "is-active" : ""} onClick={() => onTab(id)}><Icon size={15} />{label}{id === "attention" && snapshot.attention.some((item) => attentionInboxAction(item, snapshot.runs.find((run) => run.id === item.run_id)) !== "none") && <span className="assistant-nav-dot" />}</button>)}</nav>
         <div className="assistant-manager__content">
           {tab === "overview" && <OverviewEditor snapshot={snapshot} diagnostics={diagnostics} busy={busy} act={act} />}
+          {tab === "plan" && <PlanView snapshot={snapshot} />}
           {tab === "routines" && <RoutineEditor snapshot={snapshot} busy={busy} act={act} onRun={onRun} />}
           {tab === "memory" && <MemoryEditor snapshot={snapshot} busy={busy} act={act} />}
           {tab === "history" && <RunHistory snapshot={snapshot} busy={busy} act={act} onRun={onRun} onAttention={() => onTab("attention")} onOpenSession={onOpenSession} />}
           {tab === "attention" && <AttentionInbox snapshot={snapshot} busy={busy} act={act} onOverview={() => onTab("overview")} />}
         </div>
       </aside>
+    </div>
+  );
+}
+
+function PlanView({ snapshot }: { snapshot: AssistantSnapshot }) {
+  const { locale } = useI18n();
+  const copy = assistantCopy(locale);
+  const responsibilities = snapshot.plan?.responsibilities ?? [];
+  const artifacts = snapshot.artifacts ?? [];
+  const opportunities = snapshot.opportunities ?? [];
+  const aliasById = new Map(responsibilities.map((item) => [item.id, responsibilityLabel(item)]));
+  if (responsibilities.length === 0 && artifacts.length === 0 && opportunities.length === 0) {
+    return <p className="assistant-empty-copy">{copy.planEmpty}</p>;
+  }
+  return (
+    <div className="assistant-plan">
+      {responsibilities.length > 0 && (
+        <section>
+          <h3>{copy.responsibility}</h3>
+          <ul className="assistant-plan__list">
+            {responsibilities.map((responsibility) => (
+              <li key={responsibility.id} className={`assistant-responsibility assistant-responsibility--${responsibility.status}`}>
+                <header><strong>{responsibilityLabel(responsibility)}</strong><span>{responsibilityStatusLabel(responsibility.status, locale)}</span></header>
+                <p>{responsibility.objective}</p>
+                {responsibility.done_criteria?.trim() && <p className="assistant-responsibility__meta">{copy.doneCriteria}：{responsibility.done_criteria}</p>}
+                {responsibility.next_action?.trim() && <p className="assistant-responsibility__meta">{copy.nextAction}：{responsibility.next_action}</p>}
+                {responsibility.depends_on?.length ? <p className="assistant-responsibility__meta">{copy.dependsOn}：{responsibility.depends_on.map((id) => aliasById.get(id) ?? id).join("、")}</p> : null}
+                {responsibility.block_reason?.trim() && <p className="assistant-responsibility__block">{copy.blockReason}：{responsibility.block_reason}</p>}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {artifacts.length > 0 && (
+        <section>
+          <h3>{copy.artifacts}</h3>
+          <ul className="assistant-plan__list">
+            {artifacts.map((artifact) => (
+              <li key={artifact.id} className="assistant-artifact">
+                <strong>{artifact.title}</strong>
+                {artifact.resp_id && <span className="assistant-artifact__resp">{aliasById.get(artifact.resp_id) ?? artifact.resp_id}</span>}
+                {artifact.evidence?.trim() && <p>{artifact.evidence}</p>}
+                {artifact.content?.trim() && <p>{artifact.content}</p>}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {opportunities.length > 0 && (
+        <section>
+          <h3>{copy.opportunities}</h3>
+          <ul className="assistant-plan__list">
+            {opportunities.map((opportunity) => (
+              <li key={opportunity.id} className="assistant-opportunity">
+                <strong>{aliasById.get(opportunity.resp_id ?? "") ?? opportunity.resp_id ?? copy.responsibility}</strong>
+                {opportunity.reason?.trim() && <p>{opportunity.reason}</p>}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   );
 }
@@ -539,7 +602,7 @@ function RunHistory({ snapshot, busy, act, onRun, onAttention, onOpenSession }: 
   if (snapshot.runs.length === 0) return <p className="assistant-empty-copy">{copy.noHistory}</p>;
   const cancel = (runID: string) => {
     const key = assistantIntentKey("cancel", snapshot.assistant.id, runID);
-    return act(`cancel-${runID}`, () => runAssistantMutation(key, (requestId) => assistantCancel({ runId: runID, requestId, reason: "用户从助理工作区停止" })));
+    return act(`cancel-${runID}`, () => runAssistantMutation(key, (requestId) => assistantCancel({ runId: runID, requestId, reason: "用户从助手工作区停止" })));
   };
   return <div className="assistant-history">{[...snapshot.runs].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((run) => {
     const action = runHistoryAction(run.state);

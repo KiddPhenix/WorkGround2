@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"workground2/internal/assistant"
 	"workground2/internal/diff"
 	"workground2/internal/event"
 	"workground2/internal/evidence"
@@ -1868,7 +1869,7 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 				if finalText != "" || display != "" {
 					a.sink.Emit(event.Event{
 						Kind:            event.Message,
-						Text:            StripGoalMarkers(finalText),
+						Text:            assistant.StripProgressBlocks(StripGoalMarkers(finalText)),
 						Reasoning:       display,
 						MemoryCitations: a.memoryCitations(),
 					})

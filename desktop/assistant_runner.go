@@ -130,21 +130,23 @@ func (h appAssistantSessionHost) TrySubmit(tabID, prompt string, policy assistan
 func (h appAssistantSessionHost) Cancel(tabID string) { h.app.CancelTab(tabID) }
 
 type assistantTurnResult struct {
-	Err         error
-	Summary     string
-	Attention   bool
-	Action      string
-	Tool        string
-	Subject     string
-	ResumeToken string
+	Err          error
+	Summary      string
+	ProgressText string
+	Attention    bool
+	Action       string
+	Tool         string
+	Subject      string
+	ResumeToken  string
 }
 
 type assistantInFlight struct {
-	runID   string
-	tabID   string
-	done    chan assistantTurnResult
-	once    sync.Once
-	summary string
+	runID    string
+	tabID    string
+	done     chan assistantTurnResult
+	once     sync.Once
+	summary  string
+	turnText string
 }
 
 func (f *assistantInFlight) complete(result assistantTurnResult) {
@@ -360,7 +362,7 @@ func (r *AssistantRuntime) execute(ctx context.Context, run assistant.Run) {
 	}
 	run = *bound
 
-	prompt, grants, err := r.promptFor(run)
+	prompt, grants, selected, planRevision, err := r.promptFor(run)
 	if err != nil {
 		r.failKnown(run, "prompt_build", err, true)
 		return
@@ -439,10 +441,7 @@ func (r *AssistantRuntime) execute(ctx context.Context, run assistant.Run) {
 				}
 				return
 			}
-			if _, finishErr := r.runner.Finish(run, result.Summary, session.SessionPath, time.Now()); finishErr != nil {
-				r.recordDiagnostic("finish", finishErr)
-				slog.Error("desktop: finish assistant run failed", "run", run.ID, "err", finishErr)
-			}
+			r.completeRun(run, selected, planRevision, result, session.SessionPath)
 			return
 		case <-renew.C:
 			renewed, renewErr := r.runner.Renew(run, time.Now())
@@ -500,19 +499,78 @@ func (r *AssistantRuntime) failKnown(run assistant.Run, code string, err error, 
 	}
 }
 
-func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolGrant, error) {
+// completeRun records a successful turn together with any progress patch the
+// model emitted. Run completion and plan/artifact changes commit atomically; a
+// malformed progress block rejects the whole result and moves the run to an
+// observable, retryable failure instead of silently dropping it.
+func (r *AssistantRuntime) completeRun(run assistant.Run, selected *assistant.Responsibility, planRevision int64, result assistantTurnResult, sessionPath string) {
+	summary := strings.TrimSpace(assistant.StripProgressBlocks(result.Summary))
+	blocks, parseErrs := assistant.ParseProgressBlocks(result.ProgressText)
+	if len(parseErrs) > 0 {
+		for _, perr := range parseErrs {
+			r.recordDiagnostic("progress_parse", perr)
+			slog.Warn("desktop: assistant progress block parse failed", "run", run.ID, "err", perr)
+		}
+		r.failProgress(run, "progress_parse_failed", errors.Join(parseErrs...), true)
+		return
+	}
+	selectedID := ""
+	if selected != nil {
+		selectedID = selected.ID
+	}
+	input := assistant.CompleteRunInput{
+		RequestID:        fmt.Sprintf("progress:%s:%d", run.ID, run.LeaseFence),
+		RunID:            run.ID,
+		LeaseOwner:       run.LeaseOwner,
+		LeaseFence:       run.LeaseFence,
+		Summary:          summary,
+		SessionPath:      sessionPath,
+		ResponsibilityID: selectedID,
+		Now:              time.Now(),
+	}
+	if len(blocks) > 0 {
+		input.Progress = assistant.MergeProgressBlocks(blocks)
+		input.Progress.PlanRevision = planRevision
+	}
+	if _, err := r.store.CompleteRunWithProgress(input); err != nil {
+		r.recordDiagnostic("progress_apply", err)
+		slog.Error("desktop: apply assistant progress failed", "run", run.ID, "err", err)
+		// The next attempt is a fresh model turn and can repair a stale revision,
+		// bad alias or invalid dependency patch. Runner retry limits keep this
+		// bounded while preserving an explicit recovery path.
+		r.failProgress(run, "progress_apply_failed", err, true)
+	}
+}
+
+// failProgress persists a progress parse/apply failure with the run's lease
+// released. Retryable failures return to retry_wait with a bounded delay, so a
+// transient conflict or a malformed block can be recovered on the next attempt
+// without leaving a half-applied plan.
+func (r *AssistantRuntime) failProgress(run assistant.Run, code string, err error, retryable bool) {
+	_, failErr := r.runner.Fail(run, assistant.Failure{
+		Code: code, Message: err.Error(), Retryable: retryable,
+		OutcomeKnown: true, RetryAfter: time.Minute, Now: time.Now(),
+	})
+	if failErr != nil {
+		r.recordDiagnostic(code, failErr)
+		slog.Error("desktop: persist assistant progress failure failed", "run", run.ID, "err", failErr)
+	}
+}
+
+func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolGrant, *assistant.Responsibility, int64, error) {
 	snapshot, err := r.store.Get(run.AssistantID)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, 0, err
 	}
+	selected := selectReadyResponsibility(snapshot.Plan)
 	var b strings.Builder
 	var grants []control.ToolGrant
-	b.WriteString("你正在执行一个长期助理的独立 Run。只处理本次 Routine，遵守冻结的使命和权限；不要修改运行频率或扩大权限。\n\n")
+	b.WriteString("你正在执行一个长期助手的独立 Run。只处理本次 Routine，遵守冻结的使命和权限；不要修改运行频率或扩大权限。\n\n")
 	prompt := strings.TrimSpace(run.Prompt)
 	if prompt == "" {
-		prompt = "继续推进助理使命，检查当前状态并完成最有价值的下一步。"
+		prompt = "继续推进助手使命，检查当前状态并完成最有价值的下一步。"
 	}
-	fmt.Fprintf(&b, "助理使命：\n%s\n\n本次任务：\n%s\n\n", run.Mission, prompt)
+	fmt.Fprintf(&b, "助手使命：\n%s\n\n本次任务：\n%s\n\n", run.Mission, prompt)
 	fmt.Fprintf(&b, "冻结上下文：assistant_revision=%d, scope=%s, workspace_root=%s\n",
 		run.AssistantRevision, run.Scope, run.WorkspaceRoot)
 	fmt.Fprintf(&b, "权限：local_write=%s, network=%s, publish=%s, delete=%s, payment=%s, secrets=%s, private_data=%s\n",
@@ -537,8 +595,105 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 			}
 		}
 	}
+	writePlanContext(&b, snapshot.Plan, selected)
+	if len(snapshot.Plan.Responsibilities) == 0 {
+		b.WriteString("\n当前责任图为空：先根据使命推导一个 2–4 项的小型责任图，为每项写清 objective、done_criteria、next_action 和依赖，选择其中一项 ready 责任开始执行，并用 <assistant-progress> 声明这些责任。")
+	} else {
+		b.WriteString("\n责任图非空时，只推进本次负责的 ready/active 责任，不要重排或扩大图；确需新增责任时才在 <assistant-progress> 中声明。")
+	}
+	writeProgressSchema(&b)
 	b.WriteString("\n完成后给出简短结论、证据和下一步。需要用户决定或权限审批时，明确提出，不要猜测授权。")
-	return b.String(), grants, nil
+	return b.String(), grants, selected, snapshot.Plan.Revision, nil
+}
+
+// writeProgressSchema appends a bounded, concrete example of the
+// <assistant-progress> protocol so the model emits well-formed patches.
+func writeProgressSchema(b *strings.Builder) {
+	b.WriteString(`
+
+<assistant-progress> 块是单个 JSON 对象，字段如下（除 alias/objective 外都可省略）：
+
+{
+  "plan_revision": 3,
+  "responsibility": "code-review",
+  "responsibilities": [
+    {"alias": "fix-tests", "objective": "修复失败用例", "done_criteria": "全部通过", "next_action": "运行 go test", "depends_on": ["scan"]}
+  ],
+  "complete": ["scan"],
+  "active": ["fix-tests"],
+  "artifacts": [{"resp": "scan", "title": "扫描报告", "kind": "report", "content": "…", "evidence": "…"}],
+  "opportunities": [{"resp": "fix-tests", "reason": "下游已就绪"}]
+}
+
+depends_on 用 alias 引用，省略表示不变，[] 表示清空；同一块内可前向引用，禁止自依赖与环。responsibility 填本次实际推进的 alias，complete/active 填 alias 列表。`)
+}
+
+// selectReadyResponsibility deterministically picks the one responsibility a
+// run works on: an already-active one wins, otherwise the first ready one in
+// creation order.
+func selectReadyResponsibility(plan assistant.Plan) *assistant.Responsibility {
+	for i := range plan.Responsibilities {
+		if plan.Responsibilities[i].Status == assistant.RespActive {
+			r := plan.Responsibilities[i]
+			return &r
+		}
+	}
+	for i := range plan.Responsibilities {
+		if plan.Responsibilities[i].Status == assistant.RespReady {
+			r := plan.Responsibilities[i]
+			return &r
+		}
+	}
+	return nil
+}
+
+func writePlanContext(b *strings.Builder, plan assistant.Plan, selected *assistant.Responsibility) {
+	if len(plan.Responsibilities) == 0 {
+		return
+	}
+	b.WriteString("\n当前责任图（按别名引用）：\n")
+	aliasOf := map[string]string{}
+	for _, r := range plan.Responsibilities {
+		if r.Alias != "" {
+			aliasOf[r.ID] = r.Alias
+		}
+	}
+	for _, r := range plan.Responsibilities {
+		label := r.Alias
+		if label == "" {
+			label = r.ID
+		}
+		status := string(r.Status)
+		fmt.Fprintf(b, "- %s [%s] %s", label, status, r.Objective)
+		if strings.TrimSpace(r.DoneCriteria) != "" {
+			fmt.Fprintf(b, "（完成标准：%s）", strings.TrimSpace(r.DoneCriteria))
+		}
+		if strings.TrimSpace(r.NextAction) != "" {
+			fmt.Fprintf(b, "（下一步：%s）", strings.TrimSpace(r.NextAction))
+		}
+		if len(r.DependsOn) > 0 {
+			deps := make([]string, 0, len(r.DependsOn))
+			for _, dep := range r.DependsOn {
+				if a, ok := aliasOf[dep]; ok {
+					deps = append(deps, a)
+				} else {
+					deps = append(deps, dep)
+				}
+			}
+			fmt.Fprintf(b, "（依赖：%s）", strings.Join(deps, ", "))
+		}
+		if strings.TrimSpace(r.BlockReason) != "" {
+			fmt.Fprintf(b, "（阻塞原因：%s）", strings.TrimSpace(r.BlockReason))
+		}
+		b.WriteString("\n")
+	}
+	if selected != nil {
+		label := selected.Alias
+		if label == "" {
+			label = selected.ID
+		}
+		fmt.Fprintf(b, "\n本次负责：%s（%s）。只推进这一项，完成后在 <assistant-progress> 中声明 complete。\n", label, selected.Objective)
+	}
 }
 
 func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
@@ -605,6 +760,15 @@ func (r *AssistantRuntime) ObserveEvent(tabID string, value event.Event) bool {
 		return false
 	}
 	switch value.Kind {
+	case event.Text:
+		// Raw answer deltas carry the <assistant-progress> protocol block. The
+		// final Message is stripped for display, so the runner reconstructs the
+		// raw protocol from these deltas instead.
+		if len(in.turnText) < 1<<20 {
+			in.turnText += value.Text
+		}
+		r.mu.Unlock()
+		return false
 	case event.Message:
 		if strings.TrimSpace(value.Text) != "" {
 			in.summary = strings.TrimSpace(value.Text)
@@ -624,7 +788,7 @@ func (r *AssistantRuntime) ObserveEvent(tabID string, value event.Event) bool {
 			summary += " — " + detail
 		}
 		if summary == "" {
-			summary = "助理执行需要用户审批"
+			summary = "助手执行需要用户审批"
 		}
 		token := strings.TrimSpace(value.Approval.ID)
 		r.mu.Unlock()
@@ -634,7 +798,7 @@ func (r *AssistantRuntime) ObserveEvent(tabID string, value event.Event) bool {
 		})
 		return true
 	case event.AskRequest:
-		summary := "助理执行需要用户输入"
+		summary := "助手执行需要用户输入"
 		if len(value.Ask.Questions) > 0 && strings.TrimSpace(value.Ask.Questions[0].Prompt) != "" {
 			summary = strings.TrimSpace(value.Ask.Questions[0].Prompt)
 		}
@@ -645,10 +809,11 @@ func (r *AssistantRuntime) ObserveEvent(tabID string, value event.Event) bool {
 	case event.TurnDone:
 		summary := in.summary
 		if summary == "" && value.Err == nil {
-			summary = "助理已完成本次运行"
+			summary = "助手已完成本次运行"
 		}
+		progressText := in.turnText
 		r.mu.Unlock()
-		in.complete(assistantTurnResult{Err: value.Err, Summary: summary})
+		in.complete(assistantTurnResult{Err: value.Err, Summary: summary, ProgressText: progressText})
 		return false
 	default:
 		r.mu.Unlock()

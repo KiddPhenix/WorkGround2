@@ -2515,7 +2515,7 @@ function makeMockApp(): AppBindings {
   };
   const mockAssistant: AssistantRecord = {
     id: "assistant-code-project",
-    name: "代码项目助理",
+    name: "代码项目助手",
     description: "持续关注项目健康度和发布准备情况",
     mission: "定期扫描项目修改、测试和构建结果，整理风险；发布条件满足时先询问我是否发布。",
     scope: "workspace",
@@ -2604,12 +2604,25 @@ function makeMockApp(): AppBindings {
       },
     ],
     attention: [],
+    plan: {
+      revision: 2,
+      responsibilities: [
+        { id: "resp-scan", assistant_id: mockAssistant.id, alias: "scan", objective: "扫描修改与构建", done_criteria: "扫描报告已生成", next_action: "跑一次扫描", status: "done", depends_on: [], revision: 1, created_at: assistantISO(9, 30), updated_at: assistantISO(9, 34) },
+        { id: "resp-release", assistant_id: mockAssistant.id, alias: "release-notes", objective: "补齐发布说明", done_criteria: "升级提醒已写入", next_action: "写入升级提醒", status: "ready", depends_on: ["resp-scan"], revision: 1, created_at: assistantISO(9, 30), updated_at: assistantISO(9, 34) },
+      ],
+    },
+    artifacts: [
+      { id: "artifact-scan", assistant_id: mockAssistant.id, resp_id: "resp-scan", run_id: "run-scan", title: "扫描报告", kind: "report", content: "测试通过", evidence: "CI 日志", revision: 1, created_at: assistantISO(9, 34) },
+    ],
+    opportunities: [
+      { id: "opp-release", assistant_id: mockAssistant.id, resp_id: "resp-release", run_id: "run-scan", reason: "发布说明可补齐", revision: 1, created_at: assistantISO(9, 34) },
+    ],
     updated_at: assistantISO(10, 6),
   }];
   const cloneAssistant = <T,>(value: T): T => structuredClone(value);
   const findAssistantSnapshot = (id: string): AssistantSnapshot => {
     const snapshot = mockAssistantSnapshots.find((item) => item.assistant.id === id);
-    if (!snapshot) throw new Error("找不到助理");
+    if (!snapshot) throw new Error("找不到助手");
     return snapshot;
   };
   const touchAssistantSnapshot = (snapshot: AssistantSnapshot) => {
@@ -4860,7 +4873,7 @@ function makeMockApp(): AppBindings {
       return cloneAssistant({
         items: mockAssistantSnapshots.map((item) => item.assistant),
         diagnostics: widgetScenario === "assistant-diagnostic"
-          ? [{ at: new Date().toISOString(), operation: "list", message: "一个助理快照损坏，已跳过；健康助理仍可使用。" }]
+          ? [{ at: new Date().toISOString(), operation: "list", message: "一个助手快照损坏，已跳过；健康助手仍可使用。" }]
           : [],
       });
     },
@@ -4887,6 +4900,9 @@ function makeMockApp(): AppBindings {
         memory: { revision: 0, items: [] },
         runs: [],
         attention: [],
+        plan: { revision: 1, responsibilities: [] },
+        artifacts: [],
+        opportunities: [],
         updated_at: now,
       };
       mockAssistantSnapshots.push(snapshot);

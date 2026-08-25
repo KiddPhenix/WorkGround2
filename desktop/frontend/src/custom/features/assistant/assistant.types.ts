@@ -132,6 +132,51 @@ export interface AssistantAttentionItem {
   updated_at: string;
 }
 
+export type AssistantResponsibilityStatus = "blocked" | "ready" | "active" | "done" | "failed";
+
+export interface AssistantResponsibility {
+  id: string;
+  assistant_id: string;
+  alias?: string;
+  objective: string;
+  done_criteria?: string;
+  next_action?: string;
+  status: AssistantResponsibilityStatus;
+  depends_on?: string[];
+  block_reason?: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssistantArtifact {
+  id: string;
+  assistant_id: string;
+  resp_id?: string;
+  run_id?: string;
+  title: string;
+  kind?: string;
+  content?: string;
+  evidence?: string;
+  revision: number;
+  created_at: string;
+}
+
+export interface AssistantOpportunity {
+  id: string;
+  assistant_id: string;
+  resp_id?: string;
+  run_id?: string;
+  reason?: string;
+  revision: number;
+  created_at: string;
+}
+
+export interface AssistantPlan {
+  revision: number;
+  responsibilities: AssistantResponsibility[];
+}
+
 export interface AssistantSnapshot {
   revision: number;
   assistant: AssistantRecord;
@@ -139,6 +184,9 @@ export interface AssistantSnapshot {
   memory: AssistantMemory;
   runs: AssistantRun[];
   attention: AssistantAttentionItem[];
+  plan: AssistantPlan;
+  artifacts: AssistantArtifact[];
+  opportunities: AssistantOpportunity[];
   updated_at: string;
 }
 

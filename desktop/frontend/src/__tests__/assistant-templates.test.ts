@@ -9,7 +9,6 @@ function ok(value: boolean, label: string) {
 
 console.log("\nassistant templates");
 const zh = assistantTemplateContent("zh");
-const en = assistantTemplateContent("en");
 const code = assistantTemplate("code", "zh");
 const general = assistantTemplate("general", "zh");
 const promo = assistantTemplate("promo", "zh");

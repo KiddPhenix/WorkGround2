@@ -850,10 +850,10 @@ func (a *App) HeartbeatSaveTasks(tasks []HeartbeatTask) error {
 		}
 		fingerprint, fpErr := heartbeatTaskFingerprint(task, now)
 		if fpErr != nil || fingerprint != receipt.Fingerprint {
-			return fmt.Errorf("heartbeat task %q 已转换为助理，内容不可再编辑", task.ID)
+			return fmt.Errorf("heartbeat task %q 已转换为助手，内容不可再编辑", task.ID)
 		}
 		if task.Enabled {
-			return fmt.Errorf("heartbeat task %q 已转换为助理，必须保持停用", task.ID)
+			return fmt.Errorf("heartbeat task %q 已转换为助手，必须保持停用", task.ID)
 		}
 	}
 	return a.heartbeat.ReplaceTasks(tasks)

@@ -44,17 +44,17 @@ ok(promo?.disabled === true, "promotion template is not selectable");
 await act(async () => { clickText("代码项目")?.click(); });
 ok(host.textContent?.includes("权限摘要") ?? false, "code template shows a permission summary");
 ok(host.textContent?.includes("自动允许") ?? false, "code template discloses auto-allow local writes");
-const createButton = clickText("创建助理");
+const createButton = clickText("创建助手");
 ok(createButton?.disabled === true, "create is blocked until the permission is explicitly confirmed");
 const confirmCheck = host.querySelector(".assistant-create__confirm input") as HTMLInputElement | null;
 ok(confirmCheck !== null, "code template renders an explicit permission confirmation checkbox");
 await act(async () => { confirmCheck?.click(); });
-ok(clickText("创建助理")?.disabled === false, "confirming the permission enables creation");
+ok(clickText("创建助手")?.disabled === false, "confirming the permission enables creation");
 
 // Select general template → requires a routine, no confirmation gate.
 await act(async () => { clickText("选择模板")?.click(); });
 await act(async () => { clickText("通用")?.click(); });
-ok(clickText("创建助理")?.disabled === true, "general template is blocked until a routine is filled");
+ok(clickText("创建助手")?.disabled === true, "general template is blocked until a routine is filled");
 ok(host.textContent?.includes("例行任务名称") ?? false, "general template exposes a routine form");
 
 await act(async () => { root.unmount(); });

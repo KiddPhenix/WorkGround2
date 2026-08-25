@@ -24,21 +24,24 @@ var storeGates sync.Map
 // assistant aggregate. Callers receive deep copies, so mutating a result never
 // changes Store state without a subsequent CAS operation.
 type Snapshot struct {
-	Revision  int64            `json:"revision"`
-	Assistant Assistant        `json:"assistant"`
-	Routines  []Routine        `json:"routines"`
-	Memory    Memory           `json:"memory"`
-	Runs      []Run            `json:"runs"`
-	Attention []AttentionItem  `json:"attention"`
-	Receipts  []RequestReceipt `json:"receipts"`
-	UpdatedAt time.Time        `json:"updated_at"`
+	Revision      int64            `json:"revision"`
+	Assistant     Assistant        `json:"assistant"`
+	Routines      []Routine        `json:"routines"`
+	Memory        Memory           `json:"memory"`
+	Runs          []Run            `json:"runs"`
+	Attention     []AttentionItem  `json:"attention"`
+	Plan          Plan             `json:"plan"`
+	Artifacts     []Artifact       `json:"artifacts"`
+	Opportunities []Opportunity    `json:"opportunities"`
+	Receipts      []RequestReceipt `json:"receipts"`
+	UpdatedAt     time.Time        `json:"updated_at" ts_type:"string"`
 }
 
 type RequestReceipt struct {
 	RequestID   string    `json:"request_id"`
 	Operation   string    `json:"operation"`
 	Fingerprint string    `json:"fingerprint"`
-	CreatedAt   time.Time `json:"created_at"`
+	CreatedAt   time.Time `json:"created_at" ts_type:"string"`
 }
 
 type requestReceipt struct {
@@ -49,16 +52,19 @@ type requestReceipt struct {
 }
 
 type aggregate struct {
-	Version     int                       `json:"version"`
-	Revision    int64                     `json:"revision"`
-	Assistant   Assistant                 `json:"assistant"`
-	Routines    []Routine                 `json:"routines"`
-	Memory      Memory                    `json:"memory"`
-	Runs        []Run                     `json:"runs"`
-	Attention   []AttentionItem           `json:"attention"`
-	Requests    map[string]requestReceipt `json:"requests"`
-	Occurrences map[string]string         `json:"occurrences"`
-	UpdatedAt   time.Time                 `json:"updated_at"`
+	Version       int                       `json:"version"`
+	Revision      int64                     `json:"revision"`
+	Assistant     Assistant                 `json:"assistant"`
+	Routines      []Routine                 `json:"routines"`
+	Memory        Memory                    `json:"memory"`
+	Runs          []Run                     `json:"runs"`
+	Attention     []AttentionItem           `json:"attention"`
+	Plan          Plan                      `json:"plan"`
+	Artifacts     []Artifact                `json:"artifacts"`
+	Opportunities []Opportunity             `json:"opportunities"`
+	Requests      map[string]requestReceipt `json:"requests"`
+	Occurrences   map[string]string         `json:"occurrences"`
+	UpdatedAt     time.Time                 `json:"updated_at"`
 }
 
 type storeGate struct {
@@ -211,6 +217,7 @@ func (s *Store) Create(in CreateInput) (Snapshot, error) {
 	agg := &aggregate{
 		Version: aggregateVersion, Revision: 1, Assistant: a, Routines: routines,
 		Memory: Memory{Revision: 1, Items: []MemoryItem{}}, Runs: []Run{}, Attention: []AttentionItem{},
+		Plan: emptyPlan(), Artifacts: []Artifact{}, Opportunities: []Opportunity{},
 		Requests: map[string]requestReceipt{}, Occurrences: map[string]string{}, UpdatedAt: now,
 	}
 	result := snapshotOf(agg)
@@ -1405,6 +1412,20 @@ func (s *Store) read(assistantID string) (*aggregate, error) {
 	if agg.Occurrences == nil {
 		agg.Occurrences = map[string]string{}
 	}
+	// Old aggregates predate the plan. Lazily normalize them to an empty plan so
+	// they remain readable and writable without a migration.
+	if agg.Plan.Revision == 0 {
+		agg.Plan = emptyPlan()
+	}
+	if agg.Plan.Responsibilities == nil {
+		agg.Plan.Responsibilities = []Responsibility{}
+	}
+	if agg.Artifacts == nil {
+		agg.Artifacts = []Artifact{}
+	}
+	if agg.Opportunities == nil {
+		agg.Opportunities = []Opportunity{}
+	}
 	if err := validateAggregate(&agg); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrCorrupt, assistantID, err)
 	}
@@ -1529,8 +1550,29 @@ func snapshotOf(agg *aggregate) Snapshot {
 	return Snapshot{
 		Revision: agg.Revision, Assistant: agg.Assistant, Routines: agg.Routines,
 		Memory: agg.Memory, Runs: agg.Runs, Attention: agg.Attention,
+		Plan: clonePlan(agg.Plan), Artifacts: clone(agg.Artifacts), Opportunities: clone(agg.Opportunities),
 		Receipts: receipts, UpdatedAt: agg.UpdatedAt,
 	}
+}
+
+// clonePlan deep-copies a plan so its responsibility dependency slices are never
+// shared with the store.
+func clonePlan(p Plan) Plan {
+	p.Responsibilities = cloneRespSlice(p.Responsibilities)
+	return p
+}
+
+func cloneRespSlice(in []Responsibility) []Responsibility {
+	out := make([]Responsibility, len(in))
+	for i := range in {
+		out[i] = copyResp(in[i])
+	}
+	return out
+}
+
+func copyResp(in Responsibility) Responsibility {
+	in.DependsOn = clone(in.DependsOn)
+	return in
 }
 
 func touch(agg *aggregate, now time.Time) {
@@ -1778,6 +1820,9 @@ func validateAggregate(agg *aggregate) error {
 			return fmt.Errorf("duplicate attention %s", item.ID)
 		}
 		attentionIDs[item.ID] = true
+	}
+	if err := validatePlan(agg); err != nil {
+		return err
 	}
 	for requestID, receipt := range agg.Requests {
 		if err := validateRequestID(requestID); err != nil {

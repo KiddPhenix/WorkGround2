@@ -407,7 +407,7 @@ func (a *App) HeartbeatListConversions() ([]HeartbeatConversionStatus, error) {
 		case receipt.Fingerprint != fingerprint:
 			status.State = HeartbeatConvConflict
 			status.AssistantID = receipt.AssistantID
-			status.Reason = "Heartbeat 任务内容已变更，无法复用已转换的助理"
+			status.Reason = "Heartbeat 任务内容已变更，无法复用已转换的助手"
 		case receipt.State == HeartbeatConversionActivated && task.Enabled:
 			status.State = HeartbeatConvConflict
 			status.AssistantID = receipt.AssistantID
@@ -480,7 +480,7 @@ func (a *App) convertHeartbeatTask(taskID string) (HeartbeatConversionResult, er
 				TaskID:       task.ID,
 				State:        HeartbeatConvConflict,
 				AssistantID:  receipt.AssistantID,
-				Reason:       "Heartbeat 任务内容已变更，无法复用已转换的助理；请先处理旧任务再重新转换。",
+				Reason:       "Heartbeat 任务内容已变更，无法复用已转换的助手；请先处理旧任务再重新转换。",
 				ApprovalMode: normalizeHeartbeatApprovalMode(task.ApprovalMode),
 			}, nil
 		}
@@ -490,7 +490,7 @@ func (a *App) convertHeartbeatTask(taskID string) (HeartbeatConversionResult, er
 					TaskID:       task.ID,
 					State:        HeartbeatConvConflict,
 					AssistantID:  receipt.AssistantID,
-					Reason:       "旧 Heartbeat 任务已被重新启用，与新助理同时运行会产生重复执行；请先停用旧任务。",
+					Reason:       "旧 Heartbeat 任务已被重新启用，与新助手同时运行会产生重复执行；请先停用旧任务。",
 					ApprovalMode: normalizeHeartbeatApprovalMode(task.ApprovalMode),
 				}, nil
 			}
@@ -535,7 +535,7 @@ func (a *App) convertHeartbeatTask(taskID string) (HeartbeatConversionResult, er
 				TaskID:       task.ID,
 				State:        HeartbeatConvConflict,
 				AssistantID:  mappedAssistant.ID,
-				Reason:       fmt.Sprintf("无法创建转换后的助理：%v", err),
+				Reason:       fmt.Sprintf("无法创建转换后的助手：%v", err),
 				ApprovalMode: normalizeHeartbeatApprovalMode(task.ApprovalMode),
 			}, nil
 		}

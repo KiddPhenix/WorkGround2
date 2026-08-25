@@ -51,9 +51,9 @@ const status = (partial: Partial<HeartbeatConversionStatus>): HeartbeatConversio
 
 // 1. convertible + yolo risk
 await render({ conversion: status({ state: "convertible", approvalMode: "yolo" }) });
-ok(host.textContent?.includes("转换为助理") ?? false, "convertible task exposes a convert action");
+ok(host.textContent?.includes("转换为助手") ?? false, "convertible task exposes a convert action");
 ok(host.textContent?.includes("YOLO") ?? false, "empty/yolo source surfaces an explicit risk warning");
-const convertButton = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("转换为助理")) as HTMLButtonElement | undefined;
+const convertButton = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("转换为助手")) as HTMLButtonElement | undefined;
 await act(async () => { convertButton?.click(); });
 ok(convertClicks === 1, "convert action is interactive");
 
@@ -63,17 +63,17 @@ ok(host.textContent?.includes("YOLO") ?? false, "auto source surfaces the same l
 
 // 2. converted → open assistant with its id
 await render({ conversion: status({ state: "converted", assistantId: "assistant-abc", assistantName: "代码项目助理" }) });
-ok(host.textContent?.includes("已转换为助理") ?? false, "converted task shows completion");
+ok(host.textContent?.includes("已转换为助手") ?? false, "converted task shows completion");
 ok(host.textContent?.includes("代码项目助理") ?? false, "converted task shows the assistant name");
-const openButton = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("打开助理工作区")) as HTMLButtonElement | undefined;
+const openButton = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("打开助手工作区")) as HTMLButtonElement | undefined;
 await act(async () => { openButton?.click(); });
 ok(openClicks === 1, "converted task can open the assistant workspace");
 ok(openedAssistantID === "assistant-abc", "opening the assistant passes its id for target selection");
 
 // 3. conflict / unmappable → reason, no convert action
 await render({ conversion: status({ state: "conflict", reason: "任务内容已变更" }) });
-ok(host.textContent?.includes("无法复用已转换的助理") ?? false, "conflict is surfaced explicitly");
-ok(![...host.querySelectorAll("button")].some((button) => button.textContent?.includes("转换为助理")), "conflict does not offer a duplicate convert action");
+ok(host.textContent?.includes("无法复用已转换的助手") ?? false, "conflict is surfaced explicitly");
+ok(![...host.querySelectorAll("button")].some((button) => button.textContent?.includes("转换为助手")), "conflict does not offer a duplicate convert action");
 
 await render({ conversion: status({ state: "unmappable", reason: "无法无损转换" }) });
 ok(host.textContent?.includes("无法无损转换") ?? false, "unmappable schedule is surfaced explicitly");
