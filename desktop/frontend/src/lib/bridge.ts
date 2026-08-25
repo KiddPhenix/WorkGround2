@@ -12,6 +12,8 @@ import type { WailsWorkBindings } from "../work/wailsAdapter";
 import type {
   AssistantAttentionItem,
   AssistantCancelInput,
+  AssistantChannel,
+  AssistantChannelInput,
   AssistantCreateInput,
   AssistantDeleteInput,
   AssistantMemory,
@@ -532,6 +534,7 @@ export interface AppBindings extends WailsWorkBindings {
   AssistantUpdate(input: AssistantUpdateInput): Promise<AssistantRecord>;
   AssistantPutRoutine(input: AssistantRoutineInput): Promise<AssistantRoutine>;
   AssistantApplyMemory(input: AssistantMemoryInput): Promise<AssistantMemory>;
+  AssistantPutChannel(input: AssistantChannelInput): Promise<AssistantChannel>;
   AssistantRunNow(input: AssistantRunNowInput): Promise<AssistantRun>;
   AssistantSubmitInput(input: AssistantSubmitInputInput): Promise<AssistantRun>;
   AssistantResolveAttention(input: AssistantResolveAttentionInput): Promise<AssistantAttentionItem>;
@@ -2714,6 +2717,9 @@ function makeMockApp(): AppBindings {
     opportunities: [
       { id: "opp-release", assistant_id: mockAssistant.id, resp_id: "resp-release", run_id: "run-scan", reason: "发布说明可补齐", revision: 1, created_at: assistantISO(9, 34) },
     ],
+    channels: [],
+    channel_actions: [],
+    channel_metrics: [],
     updated_at: assistantISO(10, 6),
   }];
   const cloneAssistant = <T,>(value: T): T => structuredClone(value);
@@ -5097,6 +5103,9 @@ function makeMockApp(): AppBindings {
         plan: { revision: 1, responsibilities: [] },
         artifacts: [],
         opportunities: [],
+        channels: [],
+        channel_actions: [],
+        channel_metrics: [],
         updated_at: now,
       };
       mockAssistantSnapshots.push(snapshot);
@@ -5144,6 +5153,22 @@ function makeMockApp(): AppBindings {
       snapshot.assistant.memory_revision = snapshot.memory.revision;
       touchAssistantSnapshot(snapshot);
       return cloneAssistant(snapshot.memory);
+    },
+    async AssistantPutChannel(input: AssistantChannelInput) {
+      const snapshot = findAssistantSnapshot(input.channel.assistant_id);
+      const index = snapshot.channels.findIndex((item) => item.id === input.channel.id);
+      const now = new Date().toISOString();
+      const channel: AssistantChannel = {
+        ...input.channel,
+        credential_key: input.channel.credential_key || `ASSISTANT_CHANNEL_${input.channel.id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`,
+        revision: index >= 0 ? snapshot.channels[index].revision + 1 : 1,
+        created_at: index >= 0 ? snapshot.channels[index].created_at : now,
+        updated_at: now,
+      };
+      if (index >= 0) snapshot.channels[index] = channel;
+      else snapshot.channels.push(channel);
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(channel);
     },
     async AssistantRunNow(input: AssistantRunNowInput) {
       const snapshot = findAssistantSnapshot(input.assistantId);

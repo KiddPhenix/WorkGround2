@@ -2,6 +2,8 @@ import { app } from "../../../lib/bridge";
 import type {
   AssistantAttentionItem,
   AssistantCancelInput,
+  AssistantChannel,
+  AssistantChannelInput,
   AssistantCreateInput,
   AssistantDeleteInput,
   AssistantMemory,
@@ -55,6 +57,10 @@ export function assistantPutRoutine(input: AssistantRoutineInput): Promise<Assis
 
 export function assistantApplyMemory(input: AssistantMemoryInput): Promise<AssistantMemory> {
   return app.AssistantApplyMemory(input) as Promise<AssistantMemory>;
+}
+
+export function assistantPutChannel(input: AssistantChannelInput): Promise<AssistantChannel> {
+  return app.AssistantPutChannel(input) as Promise<AssistantChannel>;
 }
 
 export function assistantRunNow(input: AssistantRunNowInput): Promise<AssistantRun> {

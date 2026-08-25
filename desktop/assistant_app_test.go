@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"workground2/internal/assistant"
+	"workground2/internal/config"
 )
 
 func TestAssistantAPICreateAndRunNowAreIdempotent(t *testing.T) {
@@ -199,6 +200,38 @@ func TestNewAssistantRuntimeUsesRequestedStoreRoot(t *testing.T) {
 	}
 	if matches, err := filepath.Glob(filepath.Join(root, created.Assistant.ID, "*.json")); err != nil || len(matches) == 0 {
 		t.Fatalf("configured store root has no assistant snapshot: matches=%v err=%v", matches, err)
+	}
+}
+
+func TestAssistantPutChannelStoresCredentialOutsideAggregate(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := filepath.Join(t.TempDir(), "assistants")
+	service, err := NewAssistantRuntime(NewApp(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.host = &assistantHostStub{}
+	app := &App{assistant: service}
+	created, err := app.AssistantCreate(AssistantCreateRequest{RequestID: "channel-create", Assistant: assistant.Assistant{Name: "Promo", Mission: "promote"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := app.AssistantPutChannel(AssistantPutChannelRequest{RequestID: "channel-put", Channel: assistant.ChannelBinding{ID: "channel-discourse", AssistantID: created.Assistant.ID, Name: "Forum", Kind: assistant.ChannelDiscourse, BaseURL: "https://community.example.com", Username: "bot", CredentialKey: "MALICIOUS_SHARED_KEY", CollectIntervalSeconds: 3600, Enabled: true}, APIKey: "secret-api-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel.CredentialKey == "" || config.ResolveCredential(channel.CredentialKey).Value != "secret-api-key" {
+		t.Fatalf("credential key=%q", channel.CredentialKey)
+	}
+	if channel.CredentialKey == "MALICIOUS_SHARED_KEY" {
+		t.Fatal("frontend selected the persisted credential key")
+	}
+	data, err := os.ReadFile(filepath.Join(root, created.Assistant.ID, "aggregate.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "secret-api-key") {
+		t.Fatal("aggregate leaked channel API key")
 	}
 }
 

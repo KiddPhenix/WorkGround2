@@ -52,9 +52,9 @@ await act(async () => {
   root.render(<LocaleProvider><ToastProvider><CreateAssistantDialog onClose={() => undefined} onCreated={() => undefined} /></ToastProvider></LocaleProvider>);
 });
 ok(clickText("代码项目") !== undefined && clickText("通用") !== undefined, "create dialog shows code and general templates");
-ok(clickText("推广") !== undefined, "create dialog shows the promotion phase-4 preview");
+ok(clickText("推广") !== undefined, "create dialog shows the phase-4 promotion template");
 const promo = clickText("推广");
-ok(promo?.disabled === true, "promotion template is not selectable");
+ok(promo?.disabled === false, "promotion template is selectable");
 
 // Select code template → learn-first initial task + permission summary + confirmation gate.
 await act(async () => { clickText("代码项目")?.click(); });

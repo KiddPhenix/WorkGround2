@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"workground2/internal/assistant"
+	"workground2/internal/config"
 )
 
 // AssistantCreateRequest is the typed Wails input for creating one durable
@@ -45,6 +48,13 @@ type AssistantApplyMemoryRequest struct {
 	RequestID        string                `json:"requestId"`
 	ExpectedRevision int64                 `json:"expectedRevision"`
 	Patch            assistant.MemoryPatch `json:"patch"`
+}
+
+type AssistantPutChannelRequest struct {
+	RequestID        string                   `json:"requestId"`
+	ExpectedRevision int64                    `json:"expectedRevision"`
+	Channel          assistant.ChannelBinding `json:"channel"`
+	APIKey           string                   `json:"apiKey,omitempty"`
 }
 
 type AssistantRunNowRequest struct {
@@ -238,6 +248,66 @@ func (a *App) AssistantApplyMemory(req AssistantApplyMemoryRequest) (assistant.M
 		return assistant.Memory{}, err
 	}
 	return service.store.ApplyMemory(req.AssistantID, req.RequestID, req.ExpectedRevision, req.Patch, time.Now())
+}
+
+func (a *App) AssistantPutChannel(req AssistantPutChannelRequest) (assistant.ChannelBinding, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.ChannelBinding{}, err
+	}
+	req.Channel.ID = strings.TrimSpace(req.Channel.ID)
+	req.Channel.AssistantID = strings.TrimSpace(req.Channel.AssistantID)
+	if req.Channel.ID == "" {
+		req.Channel.ID = assistant.StableID("channel", req.Channel.AssistantID+"/"+req.RequestID)
+	}
+	if req.Channel.Kind == "" {
+		req.Channel.Kind = assistant.ChannelDiscourse
+	}
+	if req.Channel.CollectIntervalSeconds == 0 {
+		req.Channel.CollectIntervalSeconds = 3600
+	}
+	// Credential references are host-owned. Never let the frontend select an
+	// arbitrary environment key; edits retain the existing reference and new
+	// channels receive a deterministic private key.
+	req.Channel.CredentialKey = ""
+	snapshot, err := service.store.Get(req.Channel.AssistantID)
+	if err != nil {
+		return assistant.ChannelBinding{}, err
+	}
+	for _, existing := range snapshot.Channels {
+		if existing.ID == req.Channel.ID {
+			req.Channel.CredentialKey = existing.CredentialKey
+			break
+		}
+	}
+	if req.Channel.CredentialKey == "" {
+		req.Channel.CredentialKey = assistantChannelCredentialKey(req.Channel.AssistantID, req.Channel.ID)
+	}
+	key := req.Channel.CredentialKey
+	apiKey := strings.TrimSpace(req.APIKey)
+	previous := config.ResolveCredential(key)
+	if apiKey == "" && strings.TrimSpace(previous.Value) == "" {
+		return assistant.ChannelBinding{}, errors.New("assistant: Discourse API key is required")
+	}
+	if apiKey != "" {
+		if _, err := config.SetCredential(key, apiKey); err != nil {
+			return assistant.ChannelBinding{}, err
+		}
+	}
+	result, err := service.store.PutChannel(assistant.PutChannelInput{RequestID: req.RequestID, ExpectedRevision: req.ExpectedRevision, Channel: req.Channel, Now: time.Now()})
+	if err != nil && apiKey != "" {
+		if previous.Value != "" {
+			_, _ = config.SetCredential(key, previous.Value)
+		} else {
+			_ = config.RemoveCredential(key)
+		}
+	}
+	return result, err
+}
+
+func assistantChannelCredentialKey(assistantID, channelID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(assistantID) + "/" + strings.TrimSpace(channelID)))
+	return "ASSISTANT_CHANNEL_" + strings.ToUpper(hex.EncodeToString(sum[:12])) + "_API_KEY"
 }
 
 func (a *App) AssistantRunNow(req AssistantRunNowRequest) (assistant.Run, error) {

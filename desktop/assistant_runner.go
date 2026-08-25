@@ -16,9 +16,13 @@ import (
 
 	"workground2/internal/agent"
 	"workground2/internal/assistant"
+	"workground2/internal/assistantchannel"
+	"workground2/internal/config"
 	"workground2/internal/control"
 	"workground2/internal/event"
+	"workground2/internal/netclient"
 	"workground2/internal/permission"
+	"workground2/internal/tool"
 )
 
 const (
@@ -346,10 +350,13 @@ func (f *assistantInFlight) complete(result assistantTurnResult) {
 // runs in inactive Desktop sessions. The Store lease remains the authority;
 // this map only correlates Controller events while this process is alive.
 type AssistantRuntime struct {
-	store     *assistant.Store
-	scheduler *assistant.Scheduler
-	runner    *assistant.Runner
-	host      assistantSessionHost
+	store       *assistant.Store
+	scheduler   *assistant.Scheduler
+	runner      *assistant.Runner
+	channels    *assistantchannel.Service
+	leader      *assistant.LeaderElector
+	leaderLease assistant.LeaderLease
+	host        assistantSessionHost
 
 	mu       sync.Mutex
 	inflight map[string]*assistantInFlight // tab ID -> run event correlation
@@ -382,8 +389,25 @@ func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
+	leader, err := assistant.NewLeaderElector(root, owner, 90*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	httpClient, err := netclient.NewHTTPClient(cfg.NetworkProxySpec(), netclient.TransportOptions{})
+	if err != nil {
+		return nil, err
+	}
+	channels, err := assistantchannel.New(store, func(key string) string { return config.ResolveCredential(key).Value }, assistantchannel.NewDiscourse(httpClient))
+	if err != nil {
+		return nil, err
+	}
 	return &AssistantRuntime{
 		store: store, scheduler: scheduler, runner: runner,
+		channels: channels, leader: leader,
 		host: appAssistantSessionHost{app: app}, inflight: map[string]*assistantInFlight{},
 		byRun: map[string]*assistantInFlight{}, tick: assistantTickInterval,
 		wake: make(chan struct{}, 1),
@@ -432,6 +456,12 @@ func (r *AssistantRuntime) Stop() {
 		<-done
 	}
 	r.wg.Wait()
+	if r.leader != nil && r.leaderLease.Fence != "" {
+		if err := r.leader.Release(r.leaderLease); err != nil && !errors.Is(err, assistant.ErrLeaderLost) {
+			r.recordDiagnostic("leader_release", err)
+		}
+		r.leaderLease = assistant.LeaderLease{}
+	}
 }
 
 func (r *AssistantRuntime) loop(ctx context.Context) {
@@ -470,6 +500,18 @@ func (r *AssistantRuntime) Wake() {
 
 func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 	now := time.Now()
+	if r.leader != nil {
+		lease, leader, err := r.leader.Acquire(now)
+		if err != nil {
+			r.recordDiagnostic("leader", err)
+			return
+		}
+		if !leader {
+			r.leaderLease = assistant.LeaderLease{}
+			return
+		}
+		r.leaderLease = lease
+	}
 	if err := r.resumeAutoMemoryApprovals(now); err != nil {
 		r.recordDiagnostic("memory_approval_recovery", err)
 		slog.Warn("desktop: assistant memory approval recovery had failures", "err", err)
@@ -477,6 +519,11 @@ func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 	if result, err := r.scheduler.Tick(now); err != nil {
 		r.recordDiagnostic("schedule", err)
 		slog.Error("desktop: assistant schedule tick failed", "err", err, "failures", len(result.Failures))
+	}
+	if r.channels != nil {
+		if _, err := r.channels.CollectDue(ctx); err != nil {
+			r.recordDiagnostic("channel_collect", err)
+		}
 	}
 	for {
 		acquired, err := r.runner.Acquire(time.Now())
@@ -499,6 +546,23 @@ func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 			r.execute(ctx, run)
 		}()
 	}
+}
+
+func (r *AssistantRuntime) Tools(assistantID, executionID string) []tool.Tool {
+	if r == nil {
+		return nil
+	}
+	return assistantchannel.Tools(r.channels, assistantID, executionID)
+}
+
+func (a *App) assistantToolsForTab(tab *WorkspaceTab) []tool.Tool {
+	if a == nil || tab == nil || tab.sessionKind != agent.SessionKindAssistant || a.assistant == nil {
+		return nil
+	}
+	// The Controller is assembled before a Run is claimed. Its durable session
+	// identity still gives outbound intents a stable retry scope without
+	// deduplicating identical content across unrelated Assistant sessions.
+	return a.assistant.Tools(tab.assistantID, tab.SessionID)
 }
 
 func (r *AssistantRuntime) resumeAutoMemoryApprovals(now time.Time) error {
@@ -1053,6 +1117,7 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 			fmt.Fprintf(&b, "- [%s] %s\n", item.Kind, item.Body)
 		}
 	}
+	writeChannelContext(&b, snapshot)
 	for _, item := range snapshot.Attention {
 		if item.RunID == run.ID && item.State == assistant.AttentionApproved && item.ResumeToken == run.ResumeToken {
 			switch {
@@ -1075,6 +1140,28 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 	writeProgressSchema(&b)
 	b.WriteString("\n完成后给出简短结论、证据和下一步。对权限内可恢复的操作直接执行，不要请求确认；只有命中显式审批边界或确实需要用户拥有的决定时才提出，不要猜测授权。")
 	return b.String(), grants, selected, snapshot.Plan.Revision, nil
+}
+
+func writeChannelContext(b *strings.Builder, snapshot assistant.Snapshot) {
+	if len(snapshot.Channels) == 0 {
+		return
+	}
+	b.WriteString("\n已配置社区渠道（外发必须调用渠道工具并逐次审批）：\n")
+	for _, channel := range snapshot.Channels {
+		fmt.Fprintf(b, "- %s id=%s kind=%s enabled=%t base=%s\n", channel.Name, channel.ID, channel.Kind, channel.Enabled, channel.BaseURL)
+	}
+	if len(snapshot.ChannelMetrics) == 0 {
+		return
+	}
+	b.WriteString("\n最近推广效果（渠道权威观测；比较增量后用 metrics/strategy 记忆记录结论）：\n")
+	start := len(snapshot.ChannelMetrics) - 10
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(snapshot.ChannelMetrics); i++ {
+		metric := snapshot.ChannelMetrics[i]
+		fmt.Fprintf(b, "- channel=%s topic=%d views=%d(+%d) likes=%d(+%d) replies=%d(+%d) at=%s\n", metric.ChannelID, metric.TopicID, metric.Views, metric.ViewsDelta, metric.Likes, metric.LikesDelta, metric.Replies, metric.ReplyDelta, metric.CollectedAt.UTC().Format(time.RFC3339))
+	}
 }
 
 // writeProgressSchema appends a bounded, concrete example of the
@@ -1176,9 +1263,11 @@ func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
 	networkTools := []string{
 		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll",
 		"browser_tab", "browser_close", "browser_click", "browser_type", "browser_upload", "browser_attach",
+		"assistant_channel_metrics", "assistant_channel_publish", "assistant_channel_reply",
 	}
 	networkAllow := []string{
 		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll", "browser_tab", "browser_close",
+		"assistant_channel_metrics",
 	}
 	allow := make([]string, 0, len(safeLocalWrites)+len(networkAllow)+4)
 	deny := make([]string, 0, len(localAll)+len(networkTools))
@@ -1192,6 +1281,7 @@ func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
 	ask := []string{
 		"delete_range", "delete_symbol",
 		"browser_click", "browser_type", "browser_upload", "browser_attach",
+		"assistant_channel_publish", "assistant_channel_reply",
 		"mcp__*",
 	}
 	switch policy.LocalWrite {

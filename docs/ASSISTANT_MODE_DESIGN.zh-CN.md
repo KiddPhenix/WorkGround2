@@ -395,13 +395,15 @@ type Opportunity struct {
 
 ### 阶段 4：推广闭环与常驻宿主
 
-- 提供类型化 `ChannelBinding`、外发 `ChannelAction`、效果 `MetricSnapshot` 和连接器注册表；首个真实连接器为 Discourse，支持创建主题、回复和读取主题浏览/点赞/回复指标。
+状态：已完成（2026-08-26）。
+
+- 提供类型化 `ChannelBinding`、外发 `ChannelAction`、效果 `ChannelMetric` 和连接器注册表；首个真实连接器为 Discourse，支持创建主题、回复和读取主题浏览/点赞/回复指标。
 - Assistant 聚合只保存稳定凭据引用，API Key 写入 WorkGround2 凭据存储；缺少或失效凭据显式进入诊断/待处理，不在日志、Prompt、Run 摘要和聚合文件回显秘密。
 - 发布/回复工具始终逐次审批。外发前保存 request 指纹与 `executing` receipt；同请求同意图返回原结果，不同意图冲突。网络结果不明时标记 `unknown` 并停止自动重试，人工对账后才能继续。
 - 成功外发进入自动采集队列。采集器按 `next_collect_at` 轮询公开指标，原子追加快照并计算相邻增量；失败使用有界退避且可观察，重复 tick 不重复写入同一采集窗口。
 - 最新渠道、动作与指标快照进入 Assistant 动态上下文。推广 Routine 必须比较效果、用 `metrics`/`strategy` 显式记忆记录结论，再提出下一轮内容；模型输出不能直接改指标权威数据。
-- Desktop 与 `WorkGround2 assistant daemon` 使用同一个可续租 leader lease。只有 leader 调度/领取/采集；follower 保持可观察并周期竞争，lease 过期可接管。Run fence lease 继续作为第二道并发保护。
-- daemon 使用与 Desktop 相同的 Assistant Store、Controller、权限和恢复规则，可由 Windows 服务、systemd、容器或云主机常驻；部署位置不产生第二套云端状态源。
+- Desktop 与 `WorkGround2 assistant daemon` 使用同一个可续租 leader lease。只有 leader 调度/领取/采集；follower 保持可观察并周期竞争，lease 过期可接管。Run fence lease 继续作为第二道并发保护；Assistant Store 的每个聚合读改写再使用跨进程 OS 文件锁，允许 follower UI 与 leader 安全地并发保存配置。
+- daemon 使用与 Desktop 相同的 Assistant Store、Controller、权限和恢复规则，可通过 `WorkGround2 assistant daemon` 作为本机后台进程或系统服务常驻；`--once` 可执行一次调度/采集/运行检查，不产生第二套状态源。
 
 ## 11. 风险与约束
 

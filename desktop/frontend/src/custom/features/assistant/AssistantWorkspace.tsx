@@ -11,6 +11,7 @@ import {
   ExternalLink,
   FolderOpen,
   History,
+  Megaphone,
   Pause,
   Play,
   Plus,
@@ -33,6 +34,7 @@ import {
   assistantGet,
   assistantList,
   assistantPickWorkspace,
+  assistantPutChannel,
   assistantPutRoutine,
   assistantResolveAttention,
   assistantResume,
@@ -47,6 +49,7 @@ import { assistantTemplate, assistantTemplateContent, templateRoutine, templateR
 import {
   assistantEntityID,
   type AssistantAccess,
+  type AssistantChannel,
   type AssistantMemoryKind,
   type AssistantDiagnostic,
   type AssistantPolicy,
@@ -58,7 +61,7 @@ import {
 } from "./assistant.types";
 import "./assistant.css";
 
-type ManageTab = "overview" | "routines" | "memory" | "history" | "attention" | "plan";
+type ManageTab = "overview" | "routines" | "memory" | "channels" | "history" | "attention" | "plan";
 
 export interface AssistantSessionTarget {
   scope: "global" | "project";
@@ -443,6 +446,7 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted,
     { id: "plan", label: copy.plan, icon: Check },
     { id: "routines", label: copy.routines, icon: CalendarClock },
     { id: "memory", label: copy.memory, icon: Brain },
+    { id: "channels", label: copy.channels, icon: Megaphone },
     { id: "history", label: copy.history, icon: History },
     { id: "attention", label: copy.attention, icon: AlertCircle },
   ];
@@ -486,6 +490,7 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted,
           {tab === "plan" && <PlanView snapshot={snapshot} />}
           {tab === "routines" && <RoutineEditor snapshot={snapshot} busy={busy} act={act} onRun={onRun} />}
           {tab === "memory" && <MemoryEditor snapshot={snapshot} busy={busy} act={act} />}
+          {tab === "channels" && <ChannelEditor snapshot={snapshot} busy={busy} act={act} />}
           {tab === "history" && <RunHistory snapshot={snapshot} busy={busy} act={act} onRun={onRun} onAttention={() => onTab("attention")} onOpenSession={onOpenSession} />}
           {tab === "attention" && <AttentionInbox snapshot={snapshot} busy={busy} act={act} onOverview={() => onTab("overview")} />}
         </div>
@@ -757,6 +762,48 @@ function MemoryEditor({ snapshot, busy, act }: { snapshot: AssistantSnapshot; bu
   );
 }
 
+function emptyChannel(assistantID: string): AssistantChannel {
+  const now = new Date().toISOString();
+  return { id: assistantEntityID("channel"), assistant_id: assistantID, name: "Discourse", kind: "discourse", base_url: "", username: "", credential_key: "", category_id: 0, collect_interval_seconds: 3600, enabled: true, revision: 0, created_at: now, updated_at: now };
+}
+
+function ChannelEditor({ snapshot, busy, act }: { snapshot: AssistantSnapshot; busy: string; act: Act }) {
+  const { locale } = useI18n();
+  const copy = assistantCopy(locale);
+  const [selected, setSelected] = useState(snapshot.channels[0]?.id ?? "");
+  const [creating, setCreating] = useState(snapshot.channels.length === 0);
+  const source = creating ? undefined : (snapshot.channels.find((item) => item.id === selected) ?? snapshot.channels[0]);
+  const [draft, setDraft] = useState<AssistantChannel>(() => source ? { ...source } : emptyChannel(snapshot.assistant.id));
+  const [apiKey, setAPIKey] = useState("");
+  useEffect(() => { setDraft(source ? { ...source } : emptyChannel(snapshot.assistant.id)); setAPIKey(""); }, [source?.id, source?.revision, snapshot.assistant.id, creating]);
+  const save = async () => {
+    const intent = { ...draft, base_url: draft.base_url.trim().replace(/\/+$/, ""), username: draft.username.trim(), name: draft.name.trim(), category_id: Number(draft.category_id || 0), collect_interval_seconds: Math.max(1, Math.round(draft.collect_interval_seconds / 3600)) * 3600 };
+    const key = assistantMutationKey("channel", snapshot.assistant.id, draft.id, { ...intent, apiKeySet: Boolean(apiKey.trim()) });
+    const saved = await act(`channel-${draft.id}`, () => runAssistantCASMutation(key, draft.revision, ({ requestId, expectedRevision }) => assistantPutChannel({ requestId, expectedRevision, channel: intent, apiKey: apiKey.trim() || undefined })));
+    if (saved) { setSelected(draft.id); setCreating(false); setAPIKey(""); }
+    return saved;
+  };
+  const actions = snapshot.channel_actions.filter((item) => item.channel_id === draft.id).slice().reverse().slice(0, 10);
+  const metrics = snapshot.channel_metrics.filter((item) => item.channel_id === draft.id).slice().reverse().slice(0, 10);
+  return (
+    <form className="assistant-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+      {snapshot.channels.length > 0 && <label>{copy.channels}<select value={source?.id ?? ""} onChange={(event) => { setCreating(false); setSelected(event.target.value); }}>{snapshot.channels.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+      {snapshot.channels.length > 0 && !creating && <button className="assistant-text-action" type="button" onClick={() => setCreating(true)}><Plus size={13} />{copy.addChannel}</button>}
+      {snapshot.channels.length === 0 && <p className="assistant-empty-copy">{copy.noChannels}</p>}
+      <label>{copy.channelName}<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} required /></label>
+      <label>{copy.channelBaseURL}<input type="url" value={draft.base_url} onChange={(event) => setDraft({ ...draft, base_url: event.target.value })} placeholder="https://community.example.com" required /></label>
+      <label>{copy.channelUsername}<input value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} required /></label>
+      <label>{copy.channelAPIKey}<input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setAPIKey(event.target.value)} required={draft.revision === 0} /><small>{copy.channelAPIKeyHint}</small></label>
+      <label>{copy.channelCategory}<input type="number" min={0} value={draft.category_id ?? 0} onChange={(event) => setDraft({ ...draft, category_id: Number(event.target.value) })} /></label>
+      <label>{copy.channelCollectHours}<input type="number" min={1} max={168} value={Math.max(1, Math.round(draft.collect_interval_seconds / 3600))} onChange={(event) => setDraft({ ...draft, collect_interval_seconds: Number(event.target.value) * 3600 })} /></label>
+      <label className="assistant-check"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />{copy.enabled}</label>
+      <div className="assistant-form__actions"><button className="assistant-button assistant-button--accent" type="submit" disabled={Boolean(busy) || !draft.name.trim() || !draft.base_url.trim() || !draft.username.trim() || (draft.revision === 0 && !apiKey.trim())}>{draft.revision === 0 ? copy.addChannel : copy.save}</button></div>
+      {actions.length > 0 && <section className="assistant-channel-ledger"><h3>{copy.channelActions}</h3>{actions.map((item) => <article key={item.id}><strong>{item.title || item.kind}</strong><span>{item.state}</span>{item.url && <a href={item.url} target="_blank" rel="noreferrer">{item.url}</a>}{item.error && <small>{item.error}</small>}</article>)}</section>}
+      {metrics.length > 0 && <section className="assistant-channel-ledger"><h3>{copy.channelMetrics}</h3>{metrics.map((item) => <article key={item.id}><strong>Topic {item.topic_id}</strong><span>👁 {item.views} (+{item.views_delta}) · ♥ {item.likes} (+{item.likes_delta}) · ↩ {item.replies} (+{item.reply_delta})</span><time>{new Date(item.collected_at).toLocaleString()}</time></article>)}</section>}
+    </form>
+  );
+}
+
 function RunHistory({ snapshot, busy, act, onRun, onAttention, onOpenSession }: { snapshot: AssistantSnapshot; busy: string; act: Act; onRun: (id?: string) => Promise<void>; onAttention: () => void; onOpenSession?: AssistantWorkspaceProps["onOpenSession"] }) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
@@ -950,7 +997,7 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
 
   const routinesFor = (): AssistantRoutine[] => {
     if (!template) return [];
-    if (template.id === "code") return templateRoutines(identity.assistantID, template, identity.createdAt);
+    if (template.id === "code" || template.id === "promo") return templateRoutines(identity.assistantID, template, identity.createdAt);
     if (template.id === "general") {
       return [templateRoutine(identity.assistantID, identity.routineID, routineTitle.trim(), routinePrompt.trim(), generalRoutineSchedule(), identity.createdAt)];
     }
@@ -998,7 +1045,7 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
     { label: copy.policyPublish, access: accessLabel(creationPolicy.publish) },
     { label: copy.policyHighRisk, access: accessLabel(creationPolicy.delete) },
   ] : [];
-  const needsConfirmation = template?.id === "code" || learnFirst;
+  const needsConfirmation = template?.id === "code" || template?.id === "promo" || learnFirst;
   const generalRoutineValid = template?.id !== "general" || (routineTitle.trim() !== "" && routinePrompt.trim() !== "");
 
   return (
@@ -1060,7 +1107,7 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
               )}
             </div>
 
-            {template && template.id === "code" && (
+            {template && (template.id === "code" || template.id === "promo") && (
               <div className="assistant-create__routines">
                 <span className="assistant-create__routines-label">{copy.routinePreview}</span>
                 {template.routines.map((routine) => (

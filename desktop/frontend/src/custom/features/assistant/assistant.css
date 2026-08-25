@@ -129,6 +129,30 @@
   gap: 10px;
 }
 
+.assistant-channel-ledger {
+  display: grid;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+}
+
+.assistant-channel-ledger article {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  gap: 4px 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.assistant-channel-ledger article a,
+.assistant-channel-ledger article small,
+.assistant-channel-ledger article time {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+  color: var(--text-muted, #8f8f98);
+}
+
 .assistant-picker {
   max-width: 330px;
   padding: 0 24px 0 0;

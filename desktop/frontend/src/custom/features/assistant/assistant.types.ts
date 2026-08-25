@@ -175,6 +175,57 @@ export interface AssistantOpportunity {
   created_at: string;
 }
 
+export interface AssistantChannel {
+  id: string;
+  assistant_id: string;
+  name: string;
+  kind: "discourse";
+  base_url: string;
+  username: string;
+  credential_key: string;
+  category_id?: number;
+  collect_interval_seconds: number;
+  enabled: boolean;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssistantChannelAction {
+  id: string;
+  assistant_id: string;
+  channel_id: string;
+  request_id: string;
+  kind: "create_topic" | "reply_topic";
+  title?: string;
+  body: string;
+  external_topic_id?: number;
+  external_post_id?: number;
+  url?: string;
+  state: "executing" | "succeeded" | "failed" | "unknown";
+  error?: string;
+  collect_error?: string;
+  next_collect_at?: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssistantChannelMetric {
+  id: string;
+  assistant_id: string;
+  channel_id: string;
+  action_id: string;
+  topic_id: number;
+  views: number;
+  likes: number;
+  replies: number;
+  views_delta: number;
+  likes_delta: number;
+  reply_delta: number;
+  collected_at: string;
+}
+
 export interface AssistantPlan {
   revision: number;
   responsibilities: AssistantResponsibility[];
@@ -190,6 +241,9 @@ export interface AssistantSnapshot {
   plan: AssistantPlan;
   artifacts: AssistantArtifact[];
   opportunities: AssistantOpportunity[];
+  channels: AssistantChannel[];
+  channel_actions: AssistantChannelAction[];
+  channel_metrics: AssistantChannelMetric[];
   updated_at: string;
 }
 
@@ -234,6 +288,13 @@ export interface AssistantMemoryInput {
   requestId: string;
   expectedRevision: number;
   patch: AssistantMemoryPatch;
+}
+
+export interface AssistantChannelInput {
+  requestId: string;
+  expectedRevision: number;
+  channel: AssistantChannel;
+  apiKey?: string;
 }
 
 export interface AssistantRunNowInput {
