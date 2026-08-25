@@ -115,7 +115,7 @@ ok(pressHandoffKey("Enter", { altKey: true }) === false, "Alt+Enter never sends"
 ok(pressHandoffKey("Enter", { metaKey: true }) === true, "Meta+Enter sends in Ctrl+Enter mode on macOS");
 ok(pressHandoffKey("Enter", { ctrlKey: true }) === true, "Ctrl+Enter sends in Ctrl+Enter mode");
 
-// ── Run heading stays short; summary renders as Markdown ──────────────
+// ── Run heading identifies the work; summary renders as Markdown ─────
 const runEvents = [...host.querySelectorAll(".assistant-event--run")];
 ok(runEvents.length >= 2, "timeline shows multiple run events");
 ok(
@@ -123,9 +123,9 @@ ok(
     const heading = event.querySelector("h2")?.textContent ?? "";
     return !heading.includes("测试都通过了") && !heading.includes("构建脚本前置检查");
   }),
-  "run h2 never promotes summary prose into the heading",
+  "run h2 uses work identity rather than result summary prose",
 );
-ok(runEvents.every((event) => event.querySelector("h2")?.textContent === "本次运行已完成"), "completed run h2 uses the short state title");
+ok(runEvents.every((event) => event.querySelector("h2")?.textContent === "发布准备检查"), "routine run h2 shows the actual routine name");
 ok(runEvents.every((event) => event.querySelector(".assistant-event__summary .md") !== null), "every run summary renders through the markdown container");
 ok(runEvents.some((event) => event.querySelector(".assistant-event__summary .md")?.textContent?.includes("测试都通过了")), "full run summary is preserved inside the markdown body");
 const nonRunEvents = [...host.querySelectorAll(".assistant-event--memory, .assistant-event--next")];
@@ -170,6 +170,7 @@ const submittedSnapshot = await assistantGet("assistant-code-project");
 const submittedRun = submittedSnapshot.runs.find((run) => run.prompt === "排查构建失败" && !run.routine_id);
 ok(submittedRun !== undefined, "direct input is durably visible as a frozen non-routine Run after refresh");
 ok(!submittedSnapshot.routines.some((routine) => routine.id.startsWith("adhoc-")), "direct input does not create or overwrite an adhoc Routine");
+ok([...host.querySelectorAll(".assistant-event--run h2")].some((heading) => heading.textContent === "排查构建失败"), "direct-input run h2 shows the actual user content");
 ok(host.querySelector(".assistant-event__prompt")?.textContent?.includes("排查构建失败") ?? false, "timeline keeps the submitted original text separate from the result");
 
 const manage = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;

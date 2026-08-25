@@ -318,6 +318,7 @@
   font-weight: 400;
   line-height: 1.55;
   letter-spacing: 0.035em;
+  overflow-wrap: anywhere;
 }
 
 .assistant-event--run:first-of-type .assistant-event__body h2 {

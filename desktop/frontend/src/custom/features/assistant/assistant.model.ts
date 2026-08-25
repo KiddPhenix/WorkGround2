@@ -45,11 +45,26 @@ export function runStateLabel(state: AssistantRun["state"], locale: string): str
   return labels[state][locale === "en" ? 0 : 1];
 }
 
-// Short, stable timeline heading for a run — carries the state semantics
-// without ever promoting the summary prose into a large title.
-export function runTitleLabel(state: AssistantRun["state"], locale: string): string {
-  const label = runStateLabel(state, locale);
-  return locale === "en" ? `Run ${label.toLowerCase()}` : `本次运行${label}`;
+const runTitleMaxChars = 40;
+
+function compactRunTitle(value?: string): string {
+  const normalized = value?.replace(/\s+/g, " ").trim() ?? "";
+  const chars = Array.from(normalized);
+  return chars.length > runTitleMaxChars ? `${chars.slice(0, runTitleMaxChars).join("")}…` : normalized;
+}
+
+// The timeline heading identifies what the run is doing. State belongs to the
+// adjacent badge; the full prompt/result remain independently traceable below.
+export function runContentTitle(run: AssistantRun, routine: AssistantRoutine | undefined, locale: string): string {
+  if (!run.routine_id) {
+    const directInput = compactRunTitle(run.prompt);
+    if (directInput) return directInput;
+  }
+  const routineTitle = compactRunTitle(routine?.title);
+  if (routineTitle) return routineTitle;
+  const frozenTask = compactRunTitle(run.prompt);
+  if (frozenTask) return frozenTask;
+  return locale === "en" ? "Continue assistant mission" : "继续推进助手使命";
 }
 
 export type AssistantRunAction = "rerun" | "cancel" | "attention" | "none";
@@ -147,18 +162,21 @@ export function nextRoutineDate(routine: AssistantRoutine, now: Date): Date | nu
 export function timelineEntries(snapshot: AssistantSnapshot, day: Date, locale: string, copy: AssistantCopy): AssistantTimelineEntry[] {
   const sameDay = (date: Date) => date.getFullYear() === day.getFullYear() && date.getMonth() === day.getMonth() && date.getDate() === day.getDate();
   const entries: AssistantTimelineEntry[] = [];
+  const routines = new Map(snapshot.routines.map((routine) => [routine.id, routine]));
   for (const run of snapshot.runs) {
     const at = validDate(run.started_at) ?? validDate(run.scheduled_for) ?? validDate(run.created_at);
     if (!at || !sameDay(at)) continue;
     const prompt = !run.routine_id && run.prompt?.trim() ? run.prompt : undefined;
+    const routine = run.routine_id ? routines.get(run.routine_id) : undefined;
     entries.push({
       id: run.id,
       at,
       kind: "run",
-      title: runTitleLabel(run.state, locale),
+      title: runContentTitle(run, routine, locale),
       detail: run.summary,
       prompt,
       run,
+      routine,
     });
   }
   for (const memory of snapshot.memory.items) {

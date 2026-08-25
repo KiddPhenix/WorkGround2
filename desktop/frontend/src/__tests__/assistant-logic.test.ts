@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { assistantCopy } from "../custom/features/assistant/assistant.copy";
-import { attentionInboxAction, attentionNeedsRebind, attentionRejectResolution, attentionResolution, nextRoutineDate, responsibilityLabel, responsibilityStatusLabel, runHistoryAction, runTitleLabel, scheduleLabel, timelineEntries } from "../custom/features/assistant/assistant.model";
+import { attentionInboxAction, attentionNeedsRebind, attentionRejectResolution, attentionResolution, nextRoutineDate, responsibilityLabel, responsibilityStatusLabel, runContentTitle, runHistoryAction, scheduleLabel, timelineEntries } from "../custom/features/assistant/assistant.model";
 import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, completeAssistantRequest, pendingAssistantMutation, pendingAssistantRequest, runAssistantApproval, runAssistantCASMutation, runAssistantOutcome, runAssistantResume } from "../custom/features/assistant/assistant.requests";
 import type { AssistantAttentionItem, AssistantRun, AssistantSnapshot } from "../custom/features/assistant/assistant.types";
 import { normalizeAssistantList } from "../custom/features/assistant/assistant.bridge";
@@ -70,12 +70,14 @@ ok(entries.some((entry) => entry.kind === "next"), "timeline projects the next r
 ok(entries.every((entry, index) => index === 0 || entries[index - 1].at.getTime() >= entry.at.getTime()), "timeline orders every entry newest first");
 ok(entries.map((entry) => entry.kind).join(",") === "next,memory,run", "timeline keeps future, recent, and older entries in descending order");
 const runEntry = entries.find((entry) => entry.kind === "run")!;
-ok(runEntry.title === "本次运行已完成", "run timeline title is a short state label, not summary prose");
+ok(runEntry.title === "发布检查", "routine run timeline title identifies the actual routine");
 ok(runEntry.detail === "测试通过。发布说明待补。" && runEntry.title !== runEntry.detail, "run summary is preserved as detail, not promoted to the title");
 ok(runEntry.prompt === undefined, "routine run entry never exposes its routine prompt as direct input");
-ok(runTitleLabel("succeeded", "zh") === "本次运行已完成", "zh run title reads as a completed run");
-ok(runTitleLabel("succeeded", "en") === "Run completed", "en run title localizes");
-ok(runTitleLabel("failed", "zh") === "本次运行失败", "failed run title carries its state");
+ok(runContentTitle({ ...snapshot.runs[0], routine_id: undefined, prompt: "  第一行\n第二行指导  " }, undefined, "zh") === "第一行 第二行指导", "direct-input title uses normalized user content");
+ok(runContentTitle({ ...snapshot.runs[0], routine_id: undefined, prompt: "" }, undefined, "zh") === "继续推进助手使命", "continue-mission run has an explicit intent title");
+ok(runContentTitle({ ...snapshot.runs[0], routine_id: "missing", prompt: "冻结的例行任务内容" }, undefined, "en") === "冻结的例行任务内容", "missing routine falls back to its frozen task");
+const longTitle = runContentTitle({ ...snapshot.runs[0], routine_id: undefined, prompt: "长".repeat(50) }, undefined, "zh");
+ok(Array.from(longTitle).length === 41 && longTitle.endsWith("…"), "long run title is Unicode-safe and bounded");
 const tiedEntries = timelineEntries({
   ...snapshot,
   routines: [],
@@ -86,6 +88,7 @@ ok(tiedEntries.map((entry) => entry.id).join(",") === "run-a,run-b", "timeline u
 
 const directRun: AssistantRun = { id: "run-direct", assistant_id: "assistant-1", request_id: "req-direct", trigger: "manual", state: "succeeded", attempt: 1, max_attempts: 3, prompt: "第一行\n第二行批评", summary: "已记录", revision: 1, created_at: day.toISOString(), updated_at: day.toISOString(), started_at: day.toISOString() };
 const directEntry = timelineEntries({ ...snapshot, routines: [], memory: { revision: 1, items: [] }, runs: [directRun] }, day, "zh", copy).find((entry) => entry.id === "run-direct")!;
+ok(directEntry.title === "第一行 第二行批评", "direct-input run title exposes its actual content");
 ok(directEntry.prompt === "第一行\n第二行批评", "direct-input run exposes its full original prompt");
 ok(directEntry.detail === "已记录" && directEntry.prompt !== directEntry.detail, "direct-input run keeps its result summary independent from the prompt");
 
