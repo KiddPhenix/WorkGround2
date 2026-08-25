@@ -274,6 +274,7 @@ type Opportunity struct {
 
 - 硬性能力从冻结的 Run mission + prompt 确定性派生（`assistant.RequiredCapabilities`）。命名 URL/域名或明确要求在线检查网站的任务派生 `live_web`。
 - Assistant Session 不使用 coding Session 的三工具 Anchored Bootstrap；首轮直接暴露完整工具目录，因此浏览器配置启用且使用默认 full token profile 时，`browser_*` 工具从第一次模型请求即可见。
+- 每个 Assistant Run 使用 `ToolApprovalAuto`：权限策略允许的可恢复操作直接执行，fallback 尽量自动放行；显式 Ask/Deny 规则与高风险业务边界继续请求人工确认或拒绝，不升级为 YOLO。
 - `live_web` 只由成功的实时网页/浏览器工具结果满足（browser open/navigate/state 或 web fetch/search 等）；只 dispatch 或失败结果不算。
 - 接受 TurnDone 为成功前，先校验必需能力证据；缺失证据通过 `Failure{code:"evidence_missing"}` 进入可重试、可观察的恢复状态，绝不记为成功 Run。网络 deny、工具不可用、模型跳过必需工具同理。
 - 责任图全部 done 且无 ready/active 时，提示开启新的 2–4 项责任周期；旧 done 项保留为历史，不重开、不修改。

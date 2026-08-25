@@ -39,6 +39,13 @@ func TestAssistantSystemPromptNeverSilentlyLocalInspection(t *testing.T) {
 	}
 }
 
+func TestAssistantSystemPromptPrefersAutonomousExecution(t *testing.T) {
+	got := assistantSystemPrompt("")
+	if !strings.Contains(got, "Use allowed, reversible tools without") || !strings.Contains(got, "decision that genuinely belongs to them") {
+		t.Fatalf("assistant prompt missing autonomous execution rule:\n%s", got)
+	}
+}
+
 func TestAssistantSkipsCodingOnlyAnchoredBootstrap(t *testing.T) {
 	if shouldUseAnchoredBootstrap(true, true, agent.SessionKindAssistant) {
 		t.Fatal("Assistant first turn must expose the full tool catalog")

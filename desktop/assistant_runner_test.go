@@ -107,7 +107,7 @@ func (h *assistantHostStub) TrySubmit(tabID, prompt string, policy assistant.Pol
 		release()
 		return false, err
 	}
-	h.controller.SetToolApprovalMode(control.ToolApprovalAsk)
+	h.controller.SetToolApprovalMode(control.ToolApprovalAuto)
 	h.controller.SetPermissionPolicy(buildAssistantPermissionPolicy(policy))
 	if runtime != nil {
 		go func() {
@@ -312,8 +312,8 @@ func TestAssistantTrySubmitAppliesPolicyToReconciledController(t *testing.T) {
 		t.Fatalf("TrySubmit accepted=%v claimed=%v", accepted, claimed)
 	}
 	assertTabRebuiltToPinnedWorkspace(t, fixture)
-	if got := fixture.tab.Ctrl.ToolApprovalMode(); got != control.ToolApprovalAsk {
-		t.Fatalf("reconciled controller mode=%q, want ask", got)
+	if got := fixture.tab.Ctrl.ToolApprovalMode(); got != control.ToolApprovalAuto {
+		t.Fatalf("reconciled controller mode=%q, want auto", got)
 	}
 	fixture.tab.Ctrl.Cancel()
 	waitNotRunning(t, fixture.tab.Ctrl)

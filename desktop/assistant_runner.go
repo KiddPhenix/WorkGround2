@@ -210,7 +210,7 @@ func (h appAssistantSessionHost) TrySubmit(tabID, prompt string, policy assistan
 	if !claim() {
 		return false, nil
 	}
-	if !ctrl.TrySubmitUserTurnWithPolicy(prompt, prompt, buildAssistantPermissionPolicy(policy), control.ToolApprovalAsk, grants...) {
+	if !ctrl.TrySubmitUserTurnWithPolicy(prompt, prompt, buildAssistantPermissionPolicy(policy), control.ToolApprovalAuto, grants...) {
 		release()
 		return false, nil
 	}
@@ -739,7 +739,7 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 		b.WriteString("\n责任图非空时，只推进本次负责的 ready/active 责任，不要重排或扩大图；确需新增责任时才在 <assistant-progress> 中声明。")
 	}
 	writeProgressSchema(&b)
-	b.WriteString("\n完成后给出简短结论、证据和下一步。需要用户决定或权限审批时，明确提出，不要猜测授权。")
+	b.WriteString("\n完成后给出简短结论、证据和下一步。对权限内可恢复的操作直接执行，不要请求确认；只有命中显式审批边界或确实需要用户拥有的决定时才提出，不要猜测授权。")
 	return b.String(), grants, selected, snapshot.Plan.Revision, nil
 }
 
