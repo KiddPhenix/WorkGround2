@@ -11,6 +11,15 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 
 ## Entries
 
+### 浏览器原生优先策略（Browser Native-First Policy）
+- Status: `done`
+- Location: `internal/config/config.go`（BrowserPolicy 常量）, `internal/boot/boot.go`（system prompt 追加）, `internal/tool/browser/tools.go`（browser_open/state/attach 描述与 schema）, `internal/tool/builtin/bash.go`（bash 描述与 schema）, `docs/BROWSER_CONTROL_DESIGN.zh-CN.md`, `docs/TOOL_CONTRACT.md`
+- Summary: 模型系统提示与工具描述统一要求浏览器操作优先使用内置 `browser_*` 工具，Playwright 仅作 fallback 且必须 attach 同一 WG2 浏览器；`browser_state(refresh=true)` 只重观察快照、绝不重载页面，禁止仅为观察/同步/重试而 reload/navigate 同 URL。
+- Keywords: BrowserPolicy, browser_*, Playwright fallback, browser_attach, browser_state, no reload, 页面不重载
+- Source: verified-by-search
+- Updated: 2026-08-25
+- 验收：`go test ./internal/config/ ./internal/boot/ ./internal/tool/browser/ ./internal/tool/builtin/ -count=1` 全绿；`go vet` 与 `git diff --check` 通过；改动文件见 Location 与 `internal/boot/boot_test.go`、`internal/config/system_prompt_test.go`、`internal/tool/browser/priority_test.go`、`internal/tool/builtin/bash_schema_test.go`、`docs/TOOL_CONTRACT.zh-CN.md`。
+
 ### 日常 / Daily Routine
 - Location: `desktop/daily_routine.go`, `desktop/daily_routine_test.go`, `desktop/app.go`, `desktop/widget_icon_mode.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/__tests__/desktop-icon-mode.test.ts`
 - Summary: Workspace 级日常模板支持从 Session 对话/工具记录严格提炼、本地原子持久化与损坏恢复；Workspace 图标可列出、执行、改名和幂等删除，执行通过可确认的普通 user-turn 链路创建并恢复 Session。前后端 requestId、迟到结果、busy、renderer 重启和 workspace 切换均有隔离与安全重试。

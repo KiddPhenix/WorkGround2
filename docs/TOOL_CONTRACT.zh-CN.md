@@ -53,10 +53,10 @@ go test ./internal/tool -run TestBuiltinToolContractDocumentation
 
 | 工具 | Read-only | 合约 |
 | --- | --- | --- |
-| `browser_open` | false | 幂等打开当前会话浏览器，可选导航到 HTTP/HTTPS URL。 |
-| `browser_attach` | true | 返回当前会话的回环 CDP endpoint，供 Playwright `chromium.connectOverCDP()` 使用。必须先 `browser_open`；绝不启动第二个浏览器。任何 Playwright 写操作后必须调用 `browser_state(refresh=true)`。 |
-| `browser_navigate` | false | 导航当前标签页，要求稳定的 `request_id`。`allow_leave=true` 时接受 `beforeunload` 对话框并离开页面；默认留在页面并返回 `dialog_blocked`。 |
-| `browser_state` | true | 返回页面文本、标签页、`revision` 和带编号交互元素；不返回截图或表单值。 |
+| `browser_open` | false | 幂等打开当前会话浏览器，可选导航到 HTTP/HTTPS URL。浏览器交互优先使用 `browser_*` 工具而非 Playwright；禁止仅为观察、同步或重试而 reload / refresh / navigate 到相同 URL。 |
+| `browser_attach` | true | 返回当前会话的回环 CDP endpoint，供 Playwright `chromium.connectOverCDP()` 使用。Playwright 仅作 fallback：只在 `browser_*` 工具不可用、明确失败或缺少所需能力时使用，并附加到同一个 WG2 浏览器。必须先 `browser_open`；绝不启动第二个浏览器。任何 Playwright 写操作后必须调用 `browser_state(refresh=true)`。 |
+| `browser_navigate` | false | 导航当前标签页，要求稳定的 `request_id`。`allow_leave=true` 时接受 `beforeunload` 对话框并离开页面；默认留在页面并返回 `dialog_blocked`。禁止仅为观察状态而重新导航到当前 URL。 |
+| `browser_state` | true | 返回页面文本、标签页、`revision` 和带编号交互元素；不返回截图或表单值。`refresh=true` 只重新观察状态，绝不重载页面。 |
 | `browser_click` | false | 按指定 `revision` 和元素编号点击，陈旧 revision 显式失败。`allow_leave=true` 时接受点击触发的 `beforeunload` 对话框；默认留在页面并返回 `dialog_blocked`。 |
 | `browser_type` | false | 向可编辑元素输入普通文本；password 输入在 `allow_password_input=false` 时拒绝，file 输入始终拒绝。 |
 | `browser_scroll` | false | 按 revision 滚动视口或指定元素。 |

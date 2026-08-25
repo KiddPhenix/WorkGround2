@@ -58,10 +58,10 @@ user across controllers, tasks, settings rebuilds and app restarts:
 
 | Tool | Read-only | Contract |
 | --- | --- | --- |
-| `browser_open` | false | Idempotently open the session browser, optionally navigating to an HTTP/HTTPS URL. |
-| `browser_attach` | true | Return the loopback CDP endpoint of the current session for Playwright's `chromium.connectOverCDP()`. Requires `browser_open` first; never starts a second browser. After any Playwright write, call `browser_state(refresh=true)`. |
-| `browser_navigate` | false | Navigate the active tab. Requires a stable `request_id`. `allow_leave=true` accepts a `beforeunload` dialog and leaves; default stays on the page and returns `dialog_blocked`. |
-| `browser_state` | true | Return page text, tabs, `revision`, and indexed interactive elements. No screenshots or form values. |
+| `browser_open` | false | Idempotently open the session browser, optionally navigating to an HTTP/HTTPS URL. Prefer `browser_*` tools over Playwright; never reload, refresh, or navigate to the same URL merely to observe, synchronize, or retry. |
+| `browser_attach` | true | Return the loopback CDP endpoint of the current session for Playwright's `chromium.connectOverCDP()`. Playwright is fallback-only — use it only when `browser_*` tools are unavailable, explicitly fail, or lack a required capability, attaching to this same WG2 browser. Requires `browser_open` first; never starts a second browser. After any Playwright write, call `browser_state(refresh=true)`. |
+| `browser_navigate` | false | Navigate the active tab. Requires a stable `request_id`. `allow_leave=true` accepts a `beforeunload` dialog and leaves; default stays on the page and returns `dialog_blocked`. Do not re-navigate to the current URL merely to observe state. |
+| `browser_state` | true | Return page text, tabs, `revision`, and indexed interactive elements. No screenshots or form values. `refresh=true` only re-observes state and never reloads the page. |
 | `browser_click` | false | Click an element from the exact supplied `revision` and index. `allow_leave=true` accepts a `beforeunload` dialog the click triggers; default stays and returns `dialog_blocked`. |
 | `browser_type` | false | Type ordinary, non-sensitive text into an editable indexed element. Password inputs are allowed unless `allow_password_input=false`; file inputs are rejected. |
 | `browser_scroll` | false | Scroll the viewport or an indexed element under the supplied revision. |
