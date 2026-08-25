@@ -255,6 +255,28 @@ ok(networkOption("自动允许")?.getAttribute("aria-pressed") === "true", "new 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8");
 const assistantCssSource = readFileSync(resolve(testDir, "../custom/features/assistant/assistant.css"), "utf8");
+const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
+const controllerSource = readFileSync(resolve(testDir, "../lib/useController.ts"), "utf8");
+const assistantNavigationBlock = appSource.match(/const handleNavigateToAssistantSession = useCallback\([\s\S]*?\n  \}, \[enqueueNavigation\]\);/)?.[0] ?? "";
+ok(
+  assistantNavigationBlock.includes('kind: "linked-session"') &&
+    assistantNavigationBlock.includes('topicId: ""') &&
+    assistantNavigationBlock.includes("sessionPath,") &&
+    assistantNavigationBlock.includes("onOpened: () => setAssistantOpen(false)"),
+  "assistant session links use the serialized linked-session navigation queue and close only after success",
+);
+ok(
+  appSource.includes("onOpenSession={handleNavigateToAssistantSession}") &&
+    !appSource.includes('void app.OpenLinkedSession(scope, workspaceRoot, "", sessionPath)'),
+  "assistant workspace no longer bypasses frontend tab activation and history hydration",
+);
+const linkedSessionControllerBlock = controllerSource.match(/const openLinkedSession = useCallback\([\s\S]*?\n  \}, \[[^\]]*\]\);/)?.[0] ?? "";
+ok(
+  linkedSessionControllerBlock.includes("setActiveTabId(meta.id)") &&
+    linkedSessionControllerBlock.includes("confirmBackendActiveTab(meta.id)") &&
+    linkedSessionControllerBlock.includes("sessionPath: meta.sessionPath"),
+  "linked-session navigation activates the returned tab and hydrates the exact returned session path",
+);
 ok(
   stylesSource.includes(".app--workbench .assistant-workspace,\n.app--workbench .work-session-host,"),
   "assistant surface joins the shared workbench plate selector",
