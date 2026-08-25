@@ -127,7 +127,7 @@ function useAssistantData(focusAssistantID?: string) {
     try {
       const next = await assistantGet(selectedID);
       if (generation.current !== gen) return;
-      setSnapshot((current) => !current || next.revision >= current.revision ? next : current);
+      setSnapshot((current) => !current || next.revision > current.revision ? next : current);
       setAssistants((items) => items.map((item) => item.id === next.assistant.id ? next.assistant : item));
       setError("");
     } catch (cause) {
@@ -455,7 +455,7 @@ type Act = (key: string, action: () => Promise<unknown>) => Promise<boolean>;
 
 const ALWAYS_ASK_POLICY: ReadonlySet<keyof AssistantPolicy> = new Set(["publish", "delete", "payment", "secrets", "private_data"]);
 
-function OverviewEditor({ snapshot, diagnostics, busy, act }: { snapshot: AssistantSnapshot; diagnostics: AssistantDiagnostic[]; busy: string; act: Act }) {
+export function OverviewEditor({ snapshot, diagnostics, busy, act }: { snapshot: AssistantSnapshot; diagnostics: AssistantDiagnostic[]; busy: string; act: Act }) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
   const [name, setName] = useState(snapshot.assistant.name);
@@ -469,7 +469,7 @@ function OverviewEditor({ snapshot, diagnostics, busy, act }: { snapshot: Assist
     setScope(snapshot.assistant.scope);
     setWorkspace(snapshot.assistant.workspace_root ?? "");
     setPolicy(snapshot.assistant.policy);
-  }, [snapshot.assistant]);
+  }, [snapshot.assistant.id, snapshot.assistant.revision]);
   const policyRows: Array<{ key: keyof AssistantPolicy; label: string }> = [
     { key: "local_write", label: copy.policyLocalWrite },
     { key: "network", label: copy.policyNetwork },

@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { AssistantSidebarEntry, AssistantWorkspace, AttentionInbox } from "../custom/features/assistant/AssistantWorkspace";
+import { AssistantSidebarEntry, AssistantWorkspace, AttentionInbox, OverviewEditor } from "../custom/features/assistant/AssistantWorkspace";
 import { assistantGet } from "../custom/features/assistant/assistant.bridge";
 import type { AssistantSnapshot } from "../custom/features/assistant/assistant.types";
 import { LocaleProvider } from "../lib/i18n";
@@ -94,6 +94,32 @@ ok(
     saved.assistant.policy.private_data === "approve",
   "saving the policy keeps every other field intact",
 );
+
+// A polling refresh may return a new object for the same authoritative
+// Assistant revision. It must not overwrite an unsaved local draft.
+const renderOverview = async (snapshot: AssistantSnapshot) => {
+  await act(async () => {
+    root.render(<LocaleProvider><ToastProvider><OverviewEditor snapshot={snapshot} diagnostics={[]} busy="" act={async (_key, action) => { await action(); return true; }} /></ToastProvider></LocaleProvider>);
+  });
+};
+await renderOverview(saved);
+const overviewNetworkGroup = () => [...host.querySelectorAll(".assistant-policy__options")].find((el) => el.getAttribute("aria-label") === "网络") as HTMLElement | undefined;
+const networkOption = (label: string) => [...(overviewNetworkGroup()?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.trim() === label) as HTMLButtonElement | undefined;
+await act(async () => { networkOption("拒绝")?.click(); });
+await renderOverview({ ...saved, assistant: { ...saved.assistant, policy: { ...saved.assistant.policy } } });
+ok(networkOption("拒绝")?.getAttribute("aria-pressed") === "true", "same-revision refresh preserves an unsaved policy draft");
+
+const newerSnapshot: AssistantSnapshot = {
+  ...saved,
+  revision: saved.revision + 1,
+  assistant: {
+    ...saved.assistant,
+    revision: saved.assistant.revision + 1,
+    policy: { ...saved.assistant.policy, network: "allow" },
+  },
+};
+await renderOverview(newerSnapshot);
+ok(networkOption("自动允许")?.getAttribute("aria-pressed") === "true", "new Assistant revision refreshes the policy draft from authority");
 
 // ── Background CSS contract ───────────────────────────────────
 const testDir = dirname(fileURLToPath(import.meta.url));
