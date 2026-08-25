@@ -20,6 +20,10 @@ const (
 	SessionKindNormal        SessionKind = "normal"
 	SessionKindWork          SessionKind = "work"
 	SessionKindCollaboration SessionKind = "collaboration"
+	// SessionKindAssistant marks a long-running Assistant execution session.
+	// boot.Build uses an Assistant-specific stable system prompt for it instead
+	// of the coding-agent prompt used by normal sessions.
+	SessionKindAssistant SessionKind = "assistant"
 )
 
 // BranchMeta is the small sidecar record that turns flat session files into a
@@ -82,13 +86,16 @@ type BranchMeta struct {
 	Turns        int               `json:"turns,omitempty"`
 	Preview      string            `json:"preview,omitempty"`
 	InFlightTurn *InFlightTurnMeta `json:"in_flight_turn,omitempty"`
-	// SessionKind classifies this session as normal, work, or collaboration.
-	// Old data without this field defaults to "normal".
+	// SessionKind classifies this session as normal, work, collaboration, or
+	// assistant. Old data without this field defaults to "normal".
 	SessionKind SessionKind `json:"session_kind,omitempty"`
 	// WorkID is the primary Work ID bound to this session (only set when SessionKind == "work").
 	WorkID string `json:"work_id,omitempty"`
 	// WorkRequestID is the idempotency key that created this Work Session.
 	WorkRequestID string `json:"work_request_id,omitempty"`
+	// AssistantID is the durable Assistant identity bound to this session (only
+	// set when SessionKind == "assistant").
+	AssistantID string `json:"assistant_id,omitempty"`
 }
 
 // BranchMetaCountsVersion is stamped into BranchMeta.SchemaVersion whenever a
@@ -246,6 +253,9 @@ func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta) {
 	}
 	if next.WorkRequestID == "" {
 		next.WorkRequestID = existing.WorkRequestID
+	}
+	if next.AssistantID == "" {
+		next.AssistantID = existing.AssistantID
 	}
 	if existing.Revision > next.Revision {
 		next.Revision = existing.Revision

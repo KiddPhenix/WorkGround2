@@ -1229,3 +1229,77 @@
   color: var(--fg-faint);
   letter-spacing: normal;
 }
+
+/* ── heartbeat → assistant conversion ────────────────────────── */
+
+.heartbeat-card__convert {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px 10px;
+}
+
+.heartbeat-convert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.heartbeat-convert__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.12s, color 0.12s;
+}
+
+.heartbeat-convert__btn:hover:not(:disabled) {
+  border-color: var(--accent, #7c6cf0);
+  color: var(--accent, #7c6cf0);
+}
+
+.heartbeat-convert__btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.heartbeat-convert__risk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-basis: 100%;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--warning, #e0a63c);
+}
+
+.heartbeat-convert__reason {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--fg-faint);
+}
+
+.heartbeat-convert--done {
+  color: var(--success, #4caf50);
+}
+
+.heartbeat-convert--warning {
+  color: var(--warning, #e0a63c);
+}
+
+.heartbeat-convert--error {
+  color: var(--danger, #e5484d);
+}
+
+.heartbeat-convert--pending {
+  color: var(--fg-faint);
+}

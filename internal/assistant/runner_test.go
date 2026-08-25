@@ -48,6 +48,12 @@ func TestRunnerForwardsLeaseFence(t *testing.T) {
 	if store.finish.LeaseFence != 9 || store.finish.Summary != "done" {
 		t.Fatalf("finish input=%#v", store.finish)
 	}
+	if _, err := runner.RequireAttention(run, "attention-1", AttentionActionRebindWorkspace, "workspace moved", "", "resume-1", now); err != nil {
+		t.Fatal(err)
+	}
+	if store.attention.LeaseFence != 9 || store.attention.LeaseOwner != "desktop-1" || store.attention.SessionPath != "" {
+		t.Fatalf("attention input=%#v", store.attention)
+	}
 }
 
 type runnerFake struct {
@@ -59,6 +65,7 @@ type runnerFake struct {
 	fence     int64
 	finish    FinishInput
 	fail      FailInput
+	attention RequireAttentionInput
 }
 
 func (f *runnerFake) Recover(time.Time) ([]Run, error) {
@@ -76,6 +83,13 @@ func (f *runnerFake) Claim(string, time.Time, time.Duration) (*Run, bool, error)
 func (f *runnerFake) Renew(_ string, owner string, fence int64, _ time.Time, _ time.Duration) (*Run, error) {
 	f.owner, f.fence = owner, fence
 	return &Run{LeaseOwner: owner, LeaseFence: fence}, nil
+}
+func (f *runnerFake) BindSession(input BindSessionInput) (*Run, error) {
+	return &Run{ID: input.RunID, State: RunRunning, SessionPath: input.SessionPath, LeaseFence: input.LeaseFence}, nil
+}
+func (f *runnerFake) RequireAttention(input RequireAttentionInput) (*Run, error) {
+	f.attention = input
+	return &Run{ID: input.RunID, State: RunWaitingAttention}, nil
 }
 func (f *runnerFake) Finish(input FinishInput) (*Run, error) {
 	f.finish = input

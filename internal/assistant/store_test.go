@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -38,6 +39,36 @@ func TestStoreCreateIsDurablyIdempotentAndRejectsFingerprintConflict(t *testing.
 	}
 	if got.Assistant.Mission != "keep the project healthy" || len(got.Receipts) != 1 {
 		t.Fatalf("conflicting retry mutated aggregate: %+v", got)
+	}
+}
+
+func TestStoreCreateAtomicallyQueuesInitialPrompt(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "assistants")
+	store := testStore(t, root)
+	in := testCreateInput("helper-learn", "create-learn-1")
+	in.InitialPrompt = "  先学习一下再干  "
+	created, err := store.Create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Runs) != 1 {
+		t.Fatalf("initial runs = %d, want 1", len(created.Runs))
+	}
+	run := created.Runs[0]
+	if run.Prompt != "先学习一下再干" || run.State != RunQueued || run.Trigger != TriggerManual {
+		t.Fatalf("initial run = %+v", run)
+	}
+	if run.AssistantRevision != created.Assistant.Revision || run.Policy != created.Assistant.Policy || run.Mission != created.Assistant.Mission {
+		t.Fatalf("initial run did not freeze created assistant: run=%+v assistant=%+v", run, created.Assistant)
+	}
+
+	replay, err := testStore(t, root).Create(in)
+	if err != nil || len(replay.Runs) != 1 || replay.Runs[0].ID != run.ID {
+		t.Fatalf("replay duplicated or changed initial run: %+v err=%v", replay.Runs, err)
+	}
+	in.InitialPrompt = "换一个首个任务"
+	if _, err := store.Create(in); !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("changed initial prompt error = %v, want ErrIdempotency", err)
 	}
 }
 
@@ -118,6 +149,76 @@ func TestStoreOccurrenceIsUniqueAndCoalescesLatest(t *testing.T) {
 	snapshot, _ := store.Get("helper-a")
 	if len(snapshot.Runs) != 1 {
 		t.Fatalf("runs = %d, want one coalesced run", len(snapshot.Runs))
+	}
+}
+
+func TestStoreTriggerDirectPromptIdempotentConflictAndLimits(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+
+	first, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "direct-1", Prompt: "  以后不要静默吞错  ",
+		Trigger: TriggerManual, MaxAttempts: 3, Now: testEpoch,
+	})
+	if err != nil {
+		t.Fatalf("Trigger direct: %v", err)
+	}
+	if first.RoutineID != "" || first.Prompt != "以后不要静默吞错" {
+		t.Fatalf("direct run froze wrong context: routine=%q prompt=%q", first.RoutineID, first.Prompt)
+	}
+
+	replay, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "direct-1", Prompt: "以后不要静默吞错",
+		Trigger: TriggerManual, MaxAttempts: 3, Now: testEpoch.Add(time.Minute),
+	})
+	if err != nil || replay.ID != first.ID || replay.Revision != first.Revision {
+		t.Fatalf("direct replay drifted: %+v err=%v want run %s", replay, err, first.ID)
+	}
+
+	if _, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "direct-1", Prompt: "改成别的原文",
+		Trigger: TriggerManual, MaxAttempts: 3, Now: testEpoch.Add(2 * time.Minute),
+	}); !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("same request id with different prompt error = %v, want ErrIdempotency", err)
+	}
+
+	if _, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RoutineID: "routine-a", Prompt: "任务",
+		RequestID: "direct-both", Trigger: TriggerManual, Now: testEpoch,
+	}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("routine + direct prompt error = %v, want explicit rejection", err)
+	}
+
+	// An empty direct prompt is indistinguishable from the continue-mission
+	// intent at the Store boundary; the Desktop API rejects empty input before
+	// reaching Trigger. Verify that a blank prompt therefore stays a valid
+	// continue-mission run rather than a rejected direct prompt.
+	if _, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "direct-blank", Prompt: "   \n  ",
+		Trigger: TriggerManual, Now: testEpoch,
+	}); err != nil {
+		t.Fatalf("blank direct prompt error = %v, want continue-mission run", err)
+	}
+
+	tooLong := strings.Repeat("长", maxDirectPromptBytes+1)
+	if _, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "direct-long", Prompt: tooLong,
+		Trigger: TriggerManual, Now: testEpoch,
+	}); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized direct prompt error = %v, want byte limit rejection", err)
+	}
+
+	// Continue-mission intent (no routine, no prompt) stays valid and distinct.
+	continued, err := store.Trigger(TriggerInput{
+		AssistantID: "helper-a", RequestID: "continue-1", Trigger: TriggerManual, Now: testEpoch,
+	})
+	if err != nil || continued.RoutineID != "" || continued.Prompt != "" {
+		t.Fatalf("continue-mission run = %+v err=%v", continued, err)
+	}
+
+	snapshot, _ := store.Get("helper-a")
+	if len(snapshot.Routines) != 1 {
+		t.Fatalf("direct prompt created/overwrote routines: %+v", snapshot.Routines)
 	}
 }
 
@@ -280,6 +381,42 @@ func TestStoreFinishAndFailAreIdempotent(t *testing.T) {
 	})
 }
 
+func TestStoreBindSessionIsFencedAndIdempotent(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-bind")
+	run, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", run, ok, err)
+	}
+	in := BindSessionInput{
+		RequestID: "bind-session-1", RunID: run.ID, LeaseOwner: "worker-a",
+		LeaseFence: run.LeaseFence, SessionPath: "sessions/run-1.json", Now: testEpoch.Add(time.Second),
+	}
+	first, err := store.BindSession(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.State != RunRunning || first.SessionPath != in.SessionPath {
+		t.Fatalf("bound run=%+v", first)
+	}
+	in.Now = testEpoch.Add(2 * time.Second)
+	replay, err := store.BindSession(in)
+	if err != nil || replay.Revision != first.Revision || replay.SessionPath != first.SessionPath {
+		t.Fatalf("BindSession replay=%+v err=%v", replay, err)
+	}
+	in.SessionPath = "sessions/different.json"
+	if _, err := store.BindSession(in); !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("BindSession fingerprint conflict=%v", err)
+	}
+	if _, err := store.BindSession(BindSessionInput{
+		RequestID: "bind-session-stale", RunID: run.ID, LeaseOwner: "worker-a",
+		LeaseFence: run.LeaseFence - 1, SessionPath: "sessions/stale.json", Now: testEpoch.Add(3 * time.Second),
+	}); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("BindSession stale fence=%v", err)
+	}
+}
+
 func TestStoreRejectsRequestIDWhitespace(t *testing.T) {
 	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
 	in := testCreateInput("helper-a", " create-1")
@@ -375,14 +512,21 @@ func TestStoreRoutineEditPreservesSchedulingCursor(t *testing.T) {
 
 func TestStoreQueuedRunFreezesExecutionInputs(t *testing.T) {
 	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
-	created := mustCreate(t, store, "helper-a")
+	in := testCreateInput("helper-a", "create-helper-a")
+	in.Assistant.Scope = ScopeWorkspace
+	in.Assistant.WorkspaceRoot = filepath.Join(t.TempDir(), "workspace-a")
+	created, err := store.Create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	queued := mustTrigger(t, store, "manual-frozen")
-	if queued.RoutineRevision != created.Routines[0].Revision || queued.Prompt != created.Routines[0].Prompt || queued.Mission != created.Assistant.Mission || queued.Policy != created.Assistant.Policy {
+	if queued.AssistantRevision != created.Assistant.Revision || queued.Scope != created.Assistant.Scope || queued.WorkspaceRoot != created.Assistant.WorkspaceRoot || queued.RoutineRevision != created.Routines[0].Revision || queued.Prompt != created.Routines[0].Prompt || queued.Mission != created.Assistant.Mission || queued.Policy != created.Assistant.Policy {
 		t.Fatalf("run did not freeze creation inputs: %+v", queued)
 	}
 
 	desired := created.Assistant
 	desired.Mission = "new mission"
+	desired.WorkspaceRoot = filepath.Join(t.TempDir(), "workspace-b")
 	desired.Policy.Network = AccessAllow
 	if _, err := store.UpdateAssistant("assistant-edit-frozen", desired, desired.Revision, testEpoch.Add(time.Minute)); err != nil {
 		t.Fatal(err)
@@ -398,8 +542,28 @@ func TestStoreQueuedRunFreezesExecutionInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := snapshot.Runs[0]
-	if got.RoutineRevision != queued.RoutineRevision || got.Prompt != queued.Prompt || got.Mission != queued.Mission || got.Policy != queued.Policy {
+	if got.AssistantRevision != queued.AssistantRevision || got.Scope != queued.Scope || got.WorkspaceRoot != queued.WorkspaceRoot || got.RoutineRevision != queued.RoutineRevision || got.Prompt != queued.Prompt || got.Mission != queued.Mission || got.Policy != queued.Policy {
 		t.Fatalf("queued run inputs changed after edits: before=%+v after=%+v", queued, got)
+	}
+}
+
+func TestStoreRejectsLegacyRunWithoutFrozenAssistantContext(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "assistants")
+	store := testStore(t, root)
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-legacy")
+	path := filepath.Join(root, "helper-a", "aggregate.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Replace(string(data), `"assistant_revision": 1,`, ``, 1)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Get("helper-a")
+	if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "migrate or recreate") {
+		t.Fatalf("legacy run error=%v, want explicit migration corruption", err)
 	}
 }
 
@@ -442,6 +606,199 @@ func TestStoreClaimRecoversExpiredLeaseBeforeSelectingWork(t *testing.T) {
 	}
 }
 
+func TestStoreRequestApprovalAllowsPreSubmitWithoutSession(t *testing.T) {
+	for _, action := range []string{"rebind_workspace", "cancel_recreate"} {
+		t.Run(action, func(t *testing.T) {
+			store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+			mustCreate(t, store, "helper-a")
+			mustTrigger(t, store, "manual-"+action)
+			running, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+			if err != nil || !ok {
+				t.Fatalf("Claim: run=%+v ok=%v err=%v", running, ok, err)
+			}
+			approval := ApprovalInput{
+				RequestID: "approval-" + action, RunID: running.ID, LeaseOwner: "worker-a", LeaseFence: running.LeaseFence,
+				Action: action, Summary: "workspace configuration needs attention", ResumeToken: "resume-" + action, Now: testEpoch.Add(time.Second),
+			}
+			waiting, err := store.RequestApproval(approval)
+			if err != nil || waiting.State != RunWaitingApproval || waiting.SessionPath != "" {
+				t.Fatalf("RequestApproval: run=%+v err=%v", waiting, err)
+			}
+			approval.Now = testEpoch.Add(2 * time.Second)
+			replayed, err := store.RequestApproval(approval)
+			if err != nil || replayed.Revision != waiting.Revision {
+				t.Fatalf("RequestApproval replay: run=%+v err=%v", replayed, err)
+			}
+			snapshot, err := store.Get("helper-a")
+			if err != nil || len(snapshot.Attention) != 1 {
+				t.Fatalf("approval replay duplicated attention: attention=%+v err=%v", snapshot.Attention, err)
+			}
+		})
+	}
+}
+
+func TestStoreRequestApprovalRequiresSessionAfterSubmit(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-publish")
+	running, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", running, ok, err)
+	}
+	approval := ApprovalInput{
+		RequestID: "approval-publish", RunID: running.ID, LeaseOwner: "worker-a", LeaseFence: running.LeaseFence,
+		Action: "publish", Summary: "publish release", ResumeToken: "resume-publish", Now: testEpoch.Add(time.Second),
+	}
+	if _, err := store.RequestApproval(approval); err == nil {
+		t.Fatal("RequestApproval accepted an empty session path for a submitted action")
+	}
+	approval.RequestID = "approval-rebind-no-token"
+	approval.Action = "rebind_workspace"
+	approval.ResumeToken = ""
+	if _, err := store.RequestApproval(approval); err == nil {
+		t.Fatal("RequestApproval accepted a pre-submit action without a resume token")
+	}
+}
+
+func TestStoreRequireAttentionIsIdempotent(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-config-attention")
+	running, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", running, ok, err)
+	}
+	in := RequireAttentionInput{
+		RequestID: "config-attention-1", RunID: running.ID, LeaseOwner: "worker-a", LeaseFence: running.LeaseFence,
+		Action: AttentionActionRebindWorkspace, Summary: "workspace is unavailable", ResumeToken: "resume-config-1", Now: testEpoch.Add(time.Second),
+	}
+	waiting, err := store.RequireAttention(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waiting.State != RunWaitingAttention || waiting.LeaseOwner != "" || !waiting.LeaseUntil.IsZero() {
+		t.Fatalf("attention run retained state or lease: %+v", waiting)
+	}
+	if waiting.Error == nil || waiting.Error.Code != "config_attention" || !waiting.Error.OutcomeKnown || waiting.Error.Retryable {
+		t.Fatalf("attention run error=%+v", waiting.Error)
+	}
+	snapshot, err := store.Get("helper-a")
+	if err != nil || len(snapshot.Attention) != 1 {
+		t.Fatalf("attention items=%+v err=%v", snapshot.Attention, err)
+	}
+	item := snapshot.Attention[0]
+	if item.Action != AttentionActionRebindWorkspace || item.ResumeToken != in.ResumeToken || item.State != AttentionOpen {
+		t.Fatalf("attention item=%+v", item)
+	}
+	in.Now = testEpoch.Add(2 * time.Second)
+	replayed, err := store.RequireAttention(in)
+	if err != nil || replayed.Revision != waiting.Revision {
+		t.Fatalf("RequireAttention replay: run=%+v err=%v", replayed, err)
+	}
+	snapshot, _ = store.Get("helper-a")
+	if len(snapshot.Attention) != 1 {
+		t.Fatalf("replay duplicated attention: %+v", snapshot.Attention)
+	}
+	in.Summary = "a different blocker"
+	if _, err := store.RequireAttention(in); !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("RequireAttention fingerprint conflict=%v, want ErrIdempotency", err)
+	}
+}
+
+func TestStoreRequireAttentionRejectsStaleFence(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-stale-attention")
+	running, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", running, ok, err)
+	}
+	_, err = store.RequireAttention(RequireAttentionInput{
+		RequestID: "stale-attention", RunID: running.ID, LeaseOwner: "worker-a", LeaseFence: running.LeaseFence + 1,
+		Action: AttentionActionRebindWorkspace, Summary: "workspace moved", ResumeToken: "resume-stale", Now: testEpoch.Add(time.Second),
+	})
+	if !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("RequireAttention stale fence=%v, want ErrLeaseLost", err)
+	}
+	snapshot, err := store.Get("helper-a")
+	if err != nil || snapshot.Runs[0].State != RunRunning || len(snapshot.Attention) != 0 {
+		t.Fatalf("stale request mutated aggregate: snapshot=%+v err=%v", snapshot, err)
+	}
+}
+
+func TestStoreRequireAttentionResolutionRules(t *testing.T) {
+	for _, state := range []AttentionState{AttentionRejected, AttentionCancelled} {
+		t.Run(string(state), func(t *testing.T) {
+			store, run, item := requireAttentionFixture(t, AttentionActionRebindWorkspace, "")
+			resolved, err := store.ResolveAttention(ResolveAttentionInput{
+				RequestID: "resolve-" + string(state), AssistantID: "helper-a", AttentionID: item.ID,
+				ExpectedRevision: item.Revision, State: state, Resolution: "configuration declined", Now: testEpoch.Add(2 * time.Second),
+			})
+			if err != nil || resolved.State != state {
+				t.Fatalf("ResolveAttention: item=%+v err=%v", resolved, err)
+			}
+			snapshot, _ := store.Get("helper-a")
+			if snapshot.Runs[0].ID != run.ID || snapshot.Runs[0].State != RunCancelled {
+				t.Fatalf("resolved config attention run=%+v", snapshot.Runs[0])
+			}
+		})
+	}
+
+	t.Run("approved rebind cannot resume", func(t *testing.T) {
+		store, run, item := requireAttentionFixture(t, AttentionActionRebindWorkspace, "sessions/config")
+		if _, err := store.ResolveAttention(ResolveAttentionInput{
+			RequestID: "resolve-rebind", AssistantID: "helper-a", AttentionID: item.ID,
+			ExpectedRevision: item.Revision, State: AttentionApproved, Resolution: "workspace rebound", Now: testEpoch.Add(2 * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Resume(ResumeInput{RequestID: "resume-rebind", RunID: run.ID, Now: testEpoch.Add(3 * time.Second)}); !errors.Is(err, ErrTransition) {
+			t.Fatalf("Resume rebind attention=%v, want ErrTransition", err)
+		}
+		snapshot, _ := store.Get("helper-a")
+		if snapshot.Runs[0].State != RunWaitingAttention {
+			t.Fatalf("non-resumable attention changed run state: %+v", snapshot.Runs[0])
+		}
+	})
+
+	t.Run("approved resumable action queues run", func(t *testing.T) {
+		store, run, item := requireAttentionFixture(t, "refresh_credentials", "sessions/config")
+		if _, err := store.ResolveAttention(ResolveAttentionInput{
+			RequestID: "resolve-credentials", AssistantID: "helper-a", AttentionID: item.ID,
+			ExpectedRevision: item.Revision, State: AttentionApproved, Resolution: "credentials refreshed", Now: testEpoch.Add(2 * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		queued, err := store.Resume(ResumeInput{RequestID: "resume-credentials", RunID: run.ID, Now: testEpoch.Add(3 * time.Second)})
+		if err != nil || queued.State != RunQueued || queued.Error != nil {
+			t.Fatalf("Resume config attention: run=%+v err=%v", queued, err)
+		}
+	})
+}
+
+func requireAttentionFixture(t *testing.T, action, sessionPath string) (*Store, *Run, AttentionItem) {
+	t.Helper()
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-"+action)
+	running, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", running, ok, err)
+	}
+	waiting, err := store.RequireAttention(RequireAttentionInput{
+		RequestID: "attention-" + action, RunID: running.ID, LeaseOwner: "worker-a", LeaseFence: running.LeaseFence,
+		Action: action, Summary: "configuration requires attention", SessionPath: sessionPath, ResumeToken: "resume-" + action, Now: testEpoch.Add(time.Second),
+	})
+	if err != nil || waiting.State != RunWaitingAttention {
+		t.Fatalf("RequireAttention: run=%+v err=%v", waiting, err)
+	}
+	snapshot, err := store.Get("helper-a")
+	if err != nil || len(snapshot.Attention) != 1 {
+		t.Fatalf("Get attention: items=%+v err=%v", snapshot.Attention, err)
+	}
+	return store, waiting, snapshot.Attention[0]
+}
+
 func TestStoreApprovalResolveResumeAndCancelAreIdempotent(t *testing.T) {
 	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
 	mustCreate(t, store, "helper-a")
@@ -452,7 +809,8 @@ func TestStoreApprovalResolveResumeAndCancelAreIdempotent(t *testing.T) {
 	}
 	approval := ApprovalInput{
 		RequestID: "approval-1", RunID: running.ID, LeaseOwner: "worker-a", LeaseFence: running.LeaseFence,
-		Action: "publish", Summary: "publish release", SessionPath: "sessions/release", ResumeToken: "resume-1", Now: testEpoch.Add(time.Second),
+		Action: "approve_tool", Summary: "publish release", Tool: "publish_release", Subject: "release:v1",
+		SessionPath: "sessions/release", ResumeToken: "resume-1", Now: testEpoch.Add(time.Second),
 	}
 	waiting, err := store.RequestApproval(approval)
 	if err != nil || waiting.State != RunWaitingApproval {
@@ -463,14 +821,17 @@ func TestStoreApprovalResolveResumeAndCancelAreIdempotent(t *testing.T) {
 	if err != nil || replayedApproval.Revision != waiting.Revision {
 		t.Fatalf("RequestApproval replay: run=%+v err=%v", replayedApproval, err)
 	}
-	approval.Action = "delete"
+	approval.Subject = "release:v2"
 	if _, err := store.RequestApproval(approval); !errors.Is(err, ErrIdempotency) {
 		t.Fatalf("RequestApproval fingerprint conflict = %v, want ErrIdempotency", err)
 	}
-	approval.Action = "publish"
+	approval.Subject = "release:v1"
 	snapshot, _ := store.Get("helper-a")
 	if len(snapshot.Attention) != 1 || snapshot.Attention[0].State != AttentionOpen {
 		t.Fatalf("attention after request = %+v", snapshot.Attention)
+	}
+	if snapshot.Attention[0].Tool != approval.Tool || snapshot.Attention[0].Subject != approval.Subject {
+		t.Fatalf("approval tool grant did not round trip: %+v", snapshot.Attention[0])
 	}
 	attention := snapshot.Attention[0]
 	resolve := ResolveAttentionInput{
@@ -509,6 +870,101 @@ func TestStoreApprovalResolveResumeAndCancelAreIdempotent(t *testing.T) {
 	final, _ := store.Get("helper-a")
 	if final.Runs[0].State != RunCancelled || final.Attention[0].State != AttentionApproved {
 		t.Fatalf("approval lifecycle did not close cleanly: run=%+v attention=%+v", final.Runs[0], final.Attention[0])
+	}
+}
+
+func TestStoreResumeUsesOnlyCurrentAttentionToken(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-repeat-approval")
+	running, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim A: run=%+v ok=%v err=%v", running, ok, err)
+	}
+
+	approveAndResume := func(label string, run *Run, offset time.Duration) *Run {
+		t.Helper()
+		token := "resume-" + label
+		waiting, err := store.RequestApproval(ApprovalInput{
+			RequestID: "approval-" + label, RunID: run.ID, LeaseOwner: run.LeaseOwner, LeaseFence: run.LeaseFence,
+			Action: "approve_tool", Summary: "approve " + label, Tool: "publish_release", Subject: "release:" + label,
+			SessionPath: "sessions/" + label, ResumeToken: token, Now: testEpoch.Add(offset),
+		})
+		if err != nil || waiting.State != RunWaitingApproval {
+			t.Fatalf("RequestApproval %s: run=%+v err=%v", label, waiting, err)
+		}
+		snapshot, err := store.Get("helper-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var current AttentionItem
+		for _, item := range snapshot.Attention {
+			if item.ResumeToken == token {
+				current = item
+				break
+			}
+		}
+		if current.ID == "" {
+			t.Fatalf("current attention %s not found: %+v", label, snapshot.Attention)
+		}
+		if _, err := store.ResolveAttention(ResolveAttentionInput{
+			RequestID: "resolve-" + label, AssistantID: "helper-a", AttentionID: current.ID,
+			ExpectedRevision: current.Revision, State: AttentionApproved, Resolution: "approved " + label, Now: testEpoch.Add(offset + time.Second),
+		}); err != nil {
+			t.Fatalf("ResolveAttention %s: %v", label, err)
+		}
+		queued, err := store.Resume(ResumeInput{RequestID: "resume-request-" + label, RunID: run.ID, Now: testEpoch.Add(offset + 2*time.Second)})
+		if err != nil || queued.State != RunQueued {
+			t.Fatalf("Resume %s: run=%+v err=%v", label, queued, err)
+		}
+		return queued
+	}
+
+	approveAndResume("a", running, time.Second)
+	running, ok, err = store.Claim("worker-b", testEpoch.Add(4*time.Second), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim B: run=%+v ok=%v err=%v", running, ok, err)
+	}
+	approveAndResume("b", running, 5*time.Second)
+
+	snapshot, err := store.Get("helper-a")
+	if err != nil || len(snapshot.Attention) != 2 {
+		t.Fatalf("final attention history=%+v err=%v", snapshot.Attention, err)
+	}
+	if snapshot.Attention[0].State != AttentionApproved || snapshot.Attention[1].State != AttentionApproved {
+		t.Fatalf("historical attention was not terminal: %+v", snapshot.Attention)
+	}
+
+	running, ok, err = store.Claim("worker-c", testEpoch.Add(10*time.Second), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim after B: run=%+v ok=%v err=%v", running, ok, err)
+	}
+	if _, err := store.Recover(testEpoch.Add(70 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = store.Get("helper-a")
+	if err != nil || len(snapshot.Attention) != 3 {
+		t.Fatalf("outcome attention history=%+v err=%v", snapshot.Attention, err)
+	}
+	recovered := snapshot.Runs[0]
+	var outcome AttentionItem
+	for _, item := range snapshot.Attention {
+		if item.ResumeToken == recovered.ResumeToken {
+			outcome = item
+		}
+	}
+	if outcome.ID == "" || outcome.Action != "verify_run_outcome" || outcome.ResumeToken == "resume-a" || outcome.ResumeToken == "resume-b" {
+		t.Fatalf("outcome recovery did not install a distinct current token: run=%+v attention=%+v", recovered, outcome)
+	}
+	if _, err := store.ResolveAttention(ResolveAttentionInput{
+		RequestID: "resolve-outcome-after-approvals", AssistantID: "helper-a", AttentionID: outcome.ID,
+		ExpectedRevision: outcome.Revision, State: AttentionApproved, Resolution: "retry_acknowledged", Now: testEpoch.Add(71 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := store.Resume(ResumeInput{RequestID: "resume-outcome-after-approvals", RunID: recovered.ID, Now: testEpoch.Add(72 * time.Second)})
+	if err != nil || queued.State != RunQueued {
+		t.Fatalf("Resume outcome after historical approvals: run=%+v err=%v", queued, err)
 	}
 }
 

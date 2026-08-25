@@ -58,8 +58,8 @@ type Assistant struct {
 	Policy        Policy    `json:"policy"`
 	MemoryRev     int64     `json:"memory_revision"`
 	Revision      int64     `json:"revision"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	CreatedAt     time.Time `json:"created_at" ts_type:"string"`
+	UpdatedAt     time.Time `json:"updated_at" ts_type:"string"`
 }
 
 type CatchUpPolicy string
@@ -94,7 +94,7 @@ type Schedule struct {
 	Weekday         time.Weekday `json:"weekday,omitempty"`
 	Day             int          `json:"day,omitempty"`
 	Month           time.Month   `json:"month,omitempty"`
-	StartAt         time.Time    `json:"start_at,omitempty"`
+	StartAt         time.Time    `json:"start_at,omitempty" ts_type:"string"`
 	Window          TimeWindow   `json:"window,omitempty"`
 }
 
@@ -106,10 +106,10 @@ type Routine struct {
 	Schedule         Schedule      `json:"schedule"`
 	Enabled          bool          `json:"enabled"`
 	CatchUp          CatchUpPolicy `json:"catch_up"`
-	LastScheduledFor time.Time     `json:"last_scheduled_for,omitempty"`
+	LastScheduledFor time.Time     `json:"last_scheduled_for,omitempty" ts_type:"string"`
 	Revision         int64         `json:"revision"`
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
+	CreatedAt        time.Time     `json:"created_at" ts_type:"string"`
+	UpdatedAt        time.Time     `json:"updated_at" ts_type:"string"`
 }
 
 type TriggerKind string
@@ -139,38 +139,42 @@ type RunError struct {
 	Provider     string    `json:"provider,omitempty"`
 	Retryable    bool      `json:"retryable"`
 	OutcomeKnown bool      `json:"outcome_known"`
-	At           time.Time `json:"at"`
+	At           time.Time `json:"at" ts_type:"string"`
 }
 
 type Run struct {
-	ID              string      `json:"id"`
-	AssistantID     string      `json:"assistant_id"`
-	RoutineID       string      `json:"routine_id,omitempty"`
-	RequestID       string      `json:"request_id"`
-	OccurrenceKey   string      `json:"occurrence_key,omitempty"`
-	Occurrences     []string    `json:"occurrences,omitempty"`
-	Trigger         TriggerKind `json:"trigger"`
-	RoutineRevision int64       `json:"routine_revision,omitempty"`
-	Prompt          string      `json:"prompt,omitempty"`
-	Mission         string      `json:"mission"`
-	Policy          Policy      `json:"policy"`
-	State           RunState    `json:"state"`
-	Attempt         int         `json:"attempt"`
-	MaxAttempts     int         `json:"max_attempts"`
-	SessionPath     string      `json:"session_path,omitempty"`
-	ResumeToken     string      `json:"resume_token,omitempty"`
-	LeaseOwner      string      `json:"lease_owner,omitempty"`
-	LeaseFence      int64       `json:"lease_fence"`
-	LeaseUntil      time.Time   `json:"lease_until,omitempty"`
-	ScheduledFor    time.Time   `json:"scheduled_for,omitempty"`
-	RetryAt         time.Time   `json:"retry_at,omitempty"`
-	StartedAt       time.Time   `json:"started_at,omitempty"`
-	FinishedAt      time.Time   `json:"finished_at,omitempty"`
-	Summary         string      `json:"summary,omitempty"`
-	Error           *RunError   `json:"error,omitempty"`
-	Revision        int64       `json:"revision"`
-	CreatedAt       time.Time   `json:"created_at"`
-	UpdatedAt       time.Time   `json:"updated_at"`
+	ID                string      `json:"id"`
+	AssistantID       string      `json:"assistant_id"`
+	RoutineID         string      `json:"routine_id,omitempty"`
+	ResponsibilityID  string      `json:"responsibility_id,omitempty"`
+	RequestID         string      `json:"request_id"`
+	OccurrenceKey     string      `json:"occurrence_key,omitempty"`
+	Occurrences       []string    `json:"occurrences,omitempty"`
+	Trigger           TriggerKind `json:"trigger"`
+	AssistantRevision int64       `json:"assistant_revision"`
+	Scope             Scope       `json:"scope"`
+	WorkspaceRoot     string      `json:"workspace_root,omitempty"`
+	RoutineRevision   int64       `json:"routine_revision,omitempty"`
+	Prompt            string      `json:"prompt,omitempty"`
+	Mission           string      `json:"mission"`
+	Policy            Policy      `json:"policy"`
+	State             RunState    `json:"state"`
+	Attempt           int         `json:"attempt"`
+	MaxAttempts       int         `json:"max_attempts"`
+	SessionPath       string      `json:"session_path,omitempty"`
+	ResumeToken       string      `json:"resume_token,omitempty"`
+	LeaseOwner        string      `json:"lease_owner,omitempty"`
+	LeaseFence        int64       `json:"lease_fence"`
+	LeaseUntil        time.Time   `json:"lease_until,omitempty" ts_type:"string"`
+	ScheduledFor      time.Time   `json:"scheduled_for,omitempty" ts_type:"string"`
+	RetryAt           time.Time   `json:"retry_at,omitempty" ts_type:"string"`
+	StartedAt         time.Time   `json:"started_at,omitempty" ts_type:"string"`
+	FinishedAt        time.Time   `json:"finished_at,omitempty" ts_type:"string"`
+	Summary           string      `json:"summary,omitempty"`
+	Error             *RunError   `json:"error,omitempty"`
+	Revision          int64       `json:"revision"`
+	CreatedAt         time.Time   `json:"created_at" ts_type:"string"`
+	UpdatedAt         time.Time   `json:"updated_at" ts_type:"string"`
 }
 
 type MemoryKind string
@@ -191,8 +195,8 @@ type MemoryItem struct {
 	Evidence  string     `json:"evidence,omitempty"`
 	Locked    bool       `json:"locked"`
 	Revision  int64      `json:"revision"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	CreatedAt time.Time  `json:"created_at" ts_type:"string"`
+	UpdatedAt time.Time  `json:"updated_at" ts_type:"string"`
 }
 
 type Memory struct {
@@ -214,6 +218,11 @@ const (
 	AttentionCancelled AttentionState = "cancelled"
 )
 
+const (
+	AttentionActionRebindWorkspace = "rebind_workspace"
+	AttentionActionCancelRecreate  = "cancel_recreate"
+)
+
 type AttentionItem struct {
 	ID          string         `json:"id"`
 	AssistantID string         `json:"assistant_id"`
@@ -221,19 +230,22 @@ type AttentionItem struct {
 	RequestID   string         `json:"request_id"`
 	Action      string         `json:"action"`
 	Summary     string         `json:"summary"`
+	Tool        string         `json:"tool,omitempty"`
+	Subject     string         `json:"subject,omitempty"`
 	ResumeToken string         `json:"resume_token,omitempty"`
 	State       AttentionState `json:"state"`
 	Resolution  string         `json:"resolution,omitempty"`
 	Revision    int64          `json:"revision"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	CreatedAt   time.Time      `json:"created_at" ts_type:"string"`
+	UpdatedAt   time.Time      `json:"updated_at" ts_type:"string"`
 }
 
 type CreateInput struct {
-	RequestID string
-	Assistant Assistant
-	Routines  []Routine
-	Now       time.Time
+	RequestID     string
+	Assistant     Assistant
+	Routines      []Routine
+	InitialPrompt string
+	Now           time.Time
 }
 
 type RoutineInput struct {
@@ -244,8 +256,12 @@ type RoutineInput struct {
 }
 
 type TriggerInput struct {
-	AssistantID  string
-	RoutineID    string
+	AssistantID string
+	RoutineID   string
+	// Prompt carries the original direct user input for a manual, non-routine
+	// run ("对助手说"). It must be empty for routine runs and for the
+	// "continue mission" intent, which passes neither routine nor prompt.
+	Prompt       string
 	RequestID    string
 	Trigger      TriggerKind
 	ScheduledFor time.Time
@@ -281,6 +297,15 @@ type FailInput struct {
 	Failure    Failure
 }
 
+type BindSessionInput struct {
+	RequestID   string
+	RunID       string
+	LeaseOwner  string
+	LeaseFence  int64
+	SessionPath string
+	Now         time.Time
+}
+
 type CancelInput struct {
 	RequestID string
 	RunID     string
@@ -289,6 +314,20 @@ type CancelInput struct {
 }
 
 type ApprovalInput struct {
+	RequestID   string
+	RunID       string
+	LeaseOwner  string
+	LeaseFence  int64
+	Action      string
+	Summary     string
+	Tool        string
+	Subject     string
+	SessionPath string
+	ResumeToken string
+	Now         time.Time
+}
+
+type RequireAttentionInput struct {
 	RequestID   string
 	RunID       string
 	LeaseOwner  string

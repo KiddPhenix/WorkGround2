@@ -20,7 +20,7 @@ import (
 // — approval, unlike the goal FSM, blocks on user input and has side effects, so
 // only the bookkeeping is extracted, not the orchestration.
 type approvalManager struct {
-	// policy is the immutable base permission policy, captured at construction.
+	// policy is the current base permission policy.
 	// Used to decide whether a tool call would auto-approve under the writer
 	// fallback (autoApprovalWouldAllowLocked); the Controller keeps its own copy
 	// for building the executor gate.
@@ -33,6 +33,7 @@ type approvalManager struct {
 	asks         map[string]pendingAsk
 	granted      map[string]bool
 	actionGrants map[actionSessionGrantKey]bool
+	oneShot      map[ToolGrant]bool
 	nextID       int
 	// toolApprovalMode is the runtime approval posture: "ask" prompts, "auto"
 	// lets the policy auto-approve the writer fallback while preserving ask/deny
@@ -62,8 +63,50 @@ func newApprovalManager(policy permission.Policy, mode string, timeout time.Dura
 		asks:             map[string]pendingAsk{},
 		granted:          map[string]bool{},
 		actionGrants:     map[actionSessionGrantKey]bool{},
+		oneShot:          map[ToolGrant]bool{},
 		toolApprovalMode: mode,
 		approvalTimeout:  timeout,
+	}
+}
+
+func (a *approvalManager) setPolicy(policy permission.Policy) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.setPolicyLocked(policy)
+}
+
+func (a *approvalManager) setPolicyLocked(policy permission.Policy) {
+	a.policy = clonePermissionPolicy(policy)
+	clear(a.granted)
+	clear(a.actionGrants)
+	clear(a.oneShot)
+	for id, pending := range a.approvals {
+		pending.autoDrain = !pending.fresh && a.autoApprovalWouldAllowLocked(pending.tool, pending.subject)
+		a.approvals[id] = pending
+	}
+}
+
+// configure installs the base policy and runtime posture as one approval-state
+// mutation. The Controller serializes it with turn reservation under c.mu.
+func (a *approvalManager) configure(policy permission.Policy, mode string, grants []ToolGrant) []chan approvalReply {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.toolApprovalMode = mode
+	a.setPolicyLocked(policy)
+	for _, grant := range grants {
+		grant.Tool = strings.TrimSpace(grant.Tool)
+		grant.Subject = strings.TrimSpace(grant.Subject)
+		if grant.Tool != "" {
+			a.oneShot[grant] = true
+		}
+	}
+	switch mode {
+	case ToolApprovalAuto:
+		return a.drainLocked(false)
+	case ToolApprovalYolo:
+		return a.drainLocked(true)
+	default:
+		return nil
 	}
 }
 
@@ -73,7 +116,7 @@ func newApprovalManager(policy permission.Policy, mode string, timeout time.Dura
 func (a *approvalManager) preApproved(tool, subject string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.bypassAllowsLocked(tool) || a.sessionGrantAllowsLocked(tool, subject)
+	return a.bypassAllowsLocked(tool) || a.oneShot[exactToolGrant(tool, subject)] || a.sessionGrantAllowsLocked(tool, subject)
 }
 
 // preApprovedForDecision reports whether a prompt can be skipped for a decision
@@ -82,6 +125,11 @@ func (a *approvalManager) preApproved(tool, subject string) bool {
 func (a *approvalManager) preApprovedForDecision(tool, subject string, fresh bool, action *actionSessionGrantKey) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	grant := exactToolGrant(tool, subject)
+	if a.oneShot[grant] {
+		delete(a.oneShot, grant)
+		return true
+	}
 	if action != nil {
 		if fresh {
 			return a.actionGrants[*action]
@@ -92,6 +140,10 @@ func (a *approvalManager) preApprovedForDecision(tool, subject string, fresh boo
 		return a.sessionGrantAllowsLocked(tool, subject)
 	}
 	return a.bypassAllowsLocked(tool) || a.sessionGrantAllowsLocked(tool, subject)
+}
+
+func exactToolGrant(tool, subject string) ToolGrant {
+	return ToolGrant{Tool: strings.TrimSpace(tool), Subject: strings.TrimSpace(subject)}
 }
 
 // register allocates an approval ID, records the pending prompt, and returns the

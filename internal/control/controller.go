@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/assistant"
 	"workground2/internal/autoresearch"
 	"workground2/internal/billing"
 	"workground2/internal/checkpoint"
@@ -162,6 +163,10 @@ type Controller struct {
 	// (requestApproval/Ask emit events + fire hooks + rebuild the executor gate).
 	// See approval.go.
 	approval approvalManager
+	// permissionGate is installed on executor once and swaps its inner policy
+	// atomically, avoiding races with tool calls during runtime policy changes.
+	permissionGate      *runtimePermissionGate
+	interactiveApproval bool
 
 	// pinnedMemos owns the session-scoped pinned-memory store (a list of
 	// transcript excerpts the user wants the model to remember). It is
@@ -533,6 +538,7 @@ func New(opts Options) *Controller {
 		actionRootCancel:           actionRootCancel,
 		actionRuns:                 make(map[string]map[uint64]context.CancelFunc),
 	}
+	c.permissionGate = newRuntimePermissionGate(permission.NewGate(clonePermissionPolicy(opts.Policy), nil))
 	if !nilutil.IsNil(opts.Work) {
 		if binder, ok := opts.Work.(interface{ SetPermissionChecker(work.PermissionChecker) }); ok {
 			binder.SetPermissionChecker(c)
@@ -552,6 +558,7 @@ func New(opts Options) *Controller {
 	cmdsInit := opts.Commands
 	c.commands.Store(&cmdsInit)
 	if c.executor != nil {
+		c.executor.SetGate(c.permissionGate)
 		c.executor.SetPreEditHook(func(ch diff.Change) {
 			c.checkpoints.snapshot(ch)
 		})
@@ -672,16 +679,29 @@ func (c *Controller) runGuarded(body func(ctx context.Context) error) {
 // the controller. Callers that must not silently drop input use its boolean;
 // legacy fire-and-forget entry points keep using runGuarded.
 func (c *Controller) tryRunGuarded(body func(ctx context.Context) error) bool {
+	return c.tryRunGuardedWithSetup(body, nil)
+}
+
+// tryRunGuardedWithSetup reserves a turn and applies setup while holding the
+// same controller lock. setup must not lock c.mu itself.
+func (c *Controller) tryRunGuardedWithSetup(body func(ctx context.Context) error, setup func() []chan approvalReply) bool {
 	c.mu.Lock()
 	if c.running {
 		c.mu.Unlock()
 		return false
+	}
+	var pending []chan approvalReply
+	if setup != nil {
+		pending = setup()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
 	c.running = true
 	c.canceling = false
 	c.mu.Unlock()
+	for _, reply := range pending {
+		reply <- approvalReply{allow: true}
+	}
 	c.updateTaskMemory(taskMemoryPatch{
 		current: stringPtr("执行中"), currentSource: stringPtr("runtime"),
 		nextStep: stringPtr(""), nextStepSource: stringPtr(""),
@@ -909,15 +929,32 @@ func (c *Controller) SubmitEditedDisplay(display, input, original string) {
 // commands. It still resolves references, so callers can submit trusted
 // user-authored prompt text without expanding the command surface.
 func (c *Controller) SubmitUserTurn(input, display string) {
-	c.runRefTurn(input, display)
+	c.TrySubmitUserTurn(input, display)
 }
 
-// TrySubmitUserTurn uses the same reference-aware user-turn pipeline as
-// SubmitUserTurn while returning whether the turn was atomically accepted.
-// false means busy; no user input was queued or written.
+// TrySubmitUserTurn atomically reserves the foreground turn slot and starts a
+// normal user turn. It returns false without side effects when another turn is
+// already active.
 func (c *Controller) TrySubmitUserTurn(input, display string) bool {
 	return c.tryRunGuarded(func(ctx context.Context) error {
 		return c.runRefTurnWithResolverSync(ctx, input, input, display, "", c.ResolveRefs)
+	})
+}
+
+// TrySubmitUserTurnWithPolicy atomically installs the turn's permission policy
+// and approval posture while reserving the foreground slot. A busy controller
+// returns false without changing policy, mode, grants, or the active gate.
+func (c *Controller) TrySubmitUserTurnWithPolicy(input, display string, policy permission.Policy, toolMode string, grants ...ToolGrant) bool {
+	policy = clonePermissionPolicy(policy)
+	toolMode = normalizeToolApprovalMode(toolMode)
+	grants = append([]ToolGrant(nil), grants...)
+	return c.tryRunGuardedWithSetup(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(ctx, input, input, display, "", c.ResolveRefs)
+	}, func() []chan approvalReply {
+		pending := c.approval.configure(policy, toolMode, grants)
+		c.policy = policy
+		c.refreshInteractiveGateLocked(toolMode)
+		return pending
 	})
 }
 
@@ -1662,8 +1699,11 @@ func (c *Controller) ApprovePending(allow bool) {
 // silent gate and a nil asker from setup.
 func (c *Controller) EnableInteractiveApproval() {
 	trustGate := planModeReadOnlyTrustApprover{c}
+	c.mu.Lock()
+	c.interactiveApproval = true
+	c.refreshInteractiveGateLocked(c.approval.mode())
+	c.mu.Unlock()
 	if c.executor != nil {
-		c.executor.SetGate(c.newInteractiveGate())
 		c.executor.SetPlanModeReadOnlyTrustGate(trustGate)
 		c.executor.SetAsker(c)
 	}
@@ -1735,8 +1775,14 @@ func plannerUserDecisionAnswer(question event.AskQuestion, answers []event.AskAn
 }
 
 func (c *Controller) newInteractiveGate() *permission.Gate {
-	policy := c.policy
+	c.mu.Lock()
+	policy := clonePermissionPolicy(c.policy)
 	mode := c.approval.mode()
+	c.mu.Unlock()
+	return c.buildInteractiveGate(policy, mode)
+}
+
+func (c *Controller) buildInteractiveGate(policy permission.Policy, mode string) *permission.Gate {
 	switch mode {
 	case ToolApprovalAuto, ToolApprovalYolo:
 		policy.Mode = permission.Allow
@@ -1756,10 +1802,31 @@ func (c *Controller) newInteractiveGate() *permission.Gate {
 	return gate
 }
 
-func (c *Controller) refreshInteractiveGate() {
-	if c.executor != nil {
-		c.executor.SetGate(c.newInteractiveGate())
+// refreshInteractiveGateLocked refreshes the stable executor gate while c.mu
+// is held, using the supplied approval mode from the same state transition.
+func (c *Controller) refreshInteractiveGateLocked(mode string) {
+	gate := c.permissionGate
+	if gate == nil {
+		return
 	}
+	policy := clonePermissionPolicy(c.policy)
+	if c.interactiveApproval {
+		gate.update(c.buildInteractiveGate(policy, mode))
+		return
+	}
+	gate.update(permission.NewGate(policy, nil))
+}
+
+// SetPermissionPolicy atomically replaces the runtime base policy. Existing
+// session grants are cleared before the executor observes the new gate, so an
+// earlier allow cannot bypass a new ask or deny rule.
+func (c *Controller) SetPermissionPolicy(policy permission.Policy) {
+	policy = clonePermissionPolicy(policy)
+	c.mu.Lock()
+	c.approval.setPolicy(policy)
+	c.policy = policy
+	c.refreshInteractiveGateLocked(c.approval.mode())
+	c.mu.Unlock()
 }
 
 // Steer queues mid-turn guidance without interrupting the in-flight request.
@@ -3678,7 +3745,7 @@ func (c *Controller) History() []provider.Message {
 	}
 	msgs := c.executor.Session().Snapshot() // copy — a turn may be appending concurrently
 	for i := range msgs {
-		msgs[i].Content = skill.RedactProtectedContent(msgs[i].Content)
+		msgs[i].Content = skill.RedactProtectedContent(assistant.StripProgressBlocks(msgs[i].Content))
 		msgs[i].ReasoningContent = skill.RedactProtectedContent(msgs[i].ReasoningContent)
 	}
 	return msgs
@@ -4300,8 +4367,11 @@ func (c *Controller) Jobs() []jobs.View {
 // SetToolApprovalMode changes the runtime approval posture for permission-gated
 // tools. It does not answer business asks or plan approval.
 func (c *Controller) SetToolApprovalMode(mode string) {
-	pending := c.approval.setMode(normalizeToolApprovalMode(mode))
-	c.refreshInteractiveGate()
+	mode = normalizeToolApprovalMode(mode)
+	c.mu.Lock()
+	pending := c.approval.setMode(mode)
+	c.refreshInteractiveGateLocked(mode)
+	c.mu.Unlock()
 	for _, reply := range pending {
 		reply <- approvalReply{allow: true}
 	}

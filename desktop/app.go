@@ -237,7 +237,11 @@ type App struct {
 	skillRootsMu    sync.Mutex
 	skillRootsCache skillRootsCache
 
-	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
+	heartbeat    *HeartbeatEngine  // scheduled heartbeat tasks; nil until startup
+	assistant    *AssistantRuntime // long-lived assistant scheduler and background runner
+	assistantErr error             // explicit startup failure surfaced by bound APIs
+
+	conversionMu sync.Mutex // serializes heartbeat→assistant conversions and their journal
 
 	externalSessionGCRunning atomic.Bool
 
@@ -549,6 +553,15 @@ func (a *App) startup(ctx context.Context) {
 
 	a.heartbeat = newHeartbeatEngine(a)
 	a.heartbeat.Start()
+
+	assistantRoot := filepath.Join(config.MemoryUserDir(), "assistants")
+	if service, err := NewAssistantRuntime(a, assistantRoot); err != nil {
+		a.assistantErr = err
+		slog.Error("desktop: assistant runtime unavailable", "err", err)
+	} else {
+		a.assistant = service
+		a.assistant.Start()
+	}
 
 	a.goSafe("startSessionWatcher", a.startSessionWatcher)
 	a.goSafe("startRemoteAPI", a.startRemoteAPI)
@@ -901,6 +914,9 @@ func (a *App) shutdown(context.Context) {
 	a.closeCollaborations()
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
+	}
+	if a.assistant != nil {
+		a.assistant.Stop()
 	}
 	a.stopBotRuntime()
 	a.stopTray()
@@ -2094,6 +2110,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 		SessionDir:               tabSessionDir(tab),
 		EffortOverride:           cloneStringPtr(tab.effort),
 		TokenMode:                currentTabTokenMode(tab),
+		SessionKind:              tab.sessionKind,
 		SharedHost:               sharedHost,
 		SessionRefs:              a.sessionRefs,
 		SessionRefsErr:           a.sessionRefsErr,
@@ -8095,6 +8112,7 @@ func (a *App) applyModelForTabLocked(tab *WorkspaceTab, name string) error {
 		SessionDir:               tabSessionDir(tab),
 		EffortOverride:           cloneStringPtr(effortOverride),
 		TokenMode:                currentTabTokenMode(tab),
+		SessionKind:              tab.sessionKind,
 		SharedHost:               sharedHost,
 		SessionRefs:              a.sessionRefs,
 		SessionRefsErr:           a.sessionRefsErr,
@@ -8223,6 +8241,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		SessionDir:               tabSessionDir(tab),
 		EffortOverride:           &effort,
 		TokenMode:                currentTabTokenMode(tab),
+		SessionKind:              tab.sessionKind,
 		SharedHost:               sharedHost,
 		SessionRefs:              a.sessionRefs,
 		SessionRefsErr:           a.sessionRefsErr,
@@ -8323,6 +8342,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 		SessionDir:               tabSessionDir(tab),
 		EffortOverride:           cloneStringPtr(tab.effort),
 		TokenMode:                mode,
+		SessionKind:              tab.sessionKind,
 		SharedHost:               sharedHost,
 		SessionRefs:              a.sessionRefs,
 		SessionRefsErr:           a.sessionRefsErr,

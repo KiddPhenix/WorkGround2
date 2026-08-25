@@ -112,6 +112,7 @@ type DesktopConfig struct {
 	HoverStatusDelayMs      *int                           `toml:"hover_status_delay_ms"`      // icon widget read-only preview delay; nil defaults to 1200
 	WidgetShowDelegation    *bool                          `toml:"widget_show_delegation"`     // show the 委托 icon; nil defaults to hidden
 	WidgetShowExternalTools *bool                          `toml:"widget_show_external_tools"` // show the external AI tool (DSH) icon; nil defaults to hidden
+	WidgetShowAssistant     *bool                          `toml:"widget_show_assistant"`      // show the 助手 icon; nil defaults to shown
 	SessionBackground       DesktopSessionBackgroundConfig `toml:"session_background"`         // desktop Session background image pool and rotation
 }
 
@@ -651,6 +652,16 @@ func (c *Config) DesktopWidgetShowExternalTools() bool {
 		return false
 	}
 	return *c.Desktop.WidgetShowExternalTools
+}
+
+// DesktopWidgetShowAssistant reports whether the 助手 icon is shown in the
+// icon widget. Missing and new-install configurations default to true, so the
+// entry is visible until the user opts out in Settings > Widget.
+func (c *Config) DesktopWidgetShowAssistant() bool {
+	if c == nil || c.Desktop.WidgetShowAssistant == nil {
+		return true
+	}
+	return *c.Desktop.WidgetShowAssistant
 }
 
 // LSPConfig governs the optional Language Server Protocol tools (lsp_definition,

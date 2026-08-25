@@ -12,6 +12,7 @@ var (
 	ErrIdempotency = errors.New("assistant: request id reused with different input")
 	ErrLeaseLost   = errors.New("assistant: run lease lost")
 	ErrTransition  = errors.New("assistant: invalid run state transition")
+	ErrBlocked     = errors.New("assistant: dependency not satisfied")
 	ErrCorrupt     = errors.New("assistant: corrupt aggregate")
 )
 

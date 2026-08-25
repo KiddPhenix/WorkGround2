@@ -17,3 +17,22 @@ export interface HeartbeatTask {
   timeWindowEnd?: string;   // "HH:MM" — interval tasks only run before this time
   notifyChannels?: boolean; // true = push to bot channels; false/nil = skip
 }
+
+export type HeartbeatConversionState = "convertible" | "converted" | "conflict" | "unmappable" | "in_progress";
+
+export interface HeartbeatConversionStatus {
+  taskId: string;
+  state: HeartbeatConversionState;
+  assistantId?: string;
+  assistantName?: string;
+  reason?: string;
+  approvalMode?: "ask" | "auto" | "yolo";
+}
+export interface HeartbeatConversionResult {
+  taskId: string;
+  state: HeartbeatConversionState;
+  assistantId?: string;
+  assistantName?: string;
+  reason?: string;
+  approvalMode?: "ask" | "auto" | "yolo";
+}

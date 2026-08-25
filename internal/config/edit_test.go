@@ -1855,6 +1855,40 @@ func TestSetDesktopWidgetShowDelegationAndExternalTools(t *testing.T) {
 	}
 }
 
+func TestSetDesktopWidgetShowAssistant(t *testing.T) {
+	cfg := Default()
+	if !cfg.DesktopWidgetShowAssistant() {
+		t.Fatal("default DesktopWidgetShowAssistant should be true")
+	}
+	if err := cfg.SetDesktopWidgetShowAssistant(false); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DesktopWidgetShowAssistant() {
+		t.Fatal("DesktopWidgetShowAssistant should be false after SetDesktopWidgetShowAssistant(false)")
+	}
+	rendered := RenderTOMLForScope(cfg, RenderScopeUser)
+	if !strings.Contains(rendered, "widget_show_assistant = false") {
+		t.Fatalf("rendered user config missing widget_show_assistant = false:\n%s", rendered)
+	}
+	var got Config
+	if _, err := toml.Decode(rendered, &got); err != nil {
+		t.Fatalf("rendered TOML does not parse: %v\n---\n%s", err, rendered)
+	}
+	if got.DesktopWidgetShowAssistant() {
+		t.Fatal("DesktopWidgetShowAssistant after round trip should be false")
+	}
+	// Re-enabling persists true and is idempotent.
+	if err := got.SetDesktopWidgetShowAssistant(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := got.SetDesktopWidgetShowAssistant(true); err != nil {
+		t.Fatal(err)
+	}
+	if !got.DesktopWidgetShowAssistant() {
+		t.Fatal("DesktopWidgetShowAssistant should be true after re-enable")
+	}
+}
+
 func TestDesktopWidgetDefaultsNilConfig(t *testing.T) {
 	var cfg *Config
 	if !cfg.DesktopWidgetEnabled() {
@@ -1871,6 +1905,9 @@ func TestDesktopWidgetDefaultsNilConfig(t *testing.T) {
 	}
 	if cfg.DesktopWidgetShowExternalTools() {
 		t.Fatal("nil config DesktopWidgetShowExternalTools should default to false")
+	}
+	if !cfg.DesktopWidgetShowAssistant() {
+		t.Fatal("nil config DesktopWidgetShowAssistant should default to true")
 	}
 }
 

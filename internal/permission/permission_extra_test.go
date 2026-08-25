@@ -309,6 +309,40 @@ func TestRuleCoversString(t *testing.T) {
 	}
 }
 
+func TestToolNameTrailingPrefixRules(t *testing.T) {
+	p := New("allow", nil, []string{"mcp__*"}, nil)
+	if got := p.DecideSubject("mcp__github__create_issue", false, ""); got != Ask {
+		t.Fatalf("MCP prefix decision=%v, want Ask", got)
+	}
+	if got := p.DecideSubject("mcp__", false, ""); got != Ask {
+		t.Fatalf("exact prefix decision=%v, want Ask", got)
+	}
+	if got := p.DecideSubject("mcp_tool", false, ""); got != Allow {
+		t.Fatalf("non-matching tool decision=%v, want fallback Allow", got)
+	}
+	if RuleMatchesString("mcp*tool", "mcp_any_tool", "") {
+		t.Fatal("non-trailing tool wildcard was treated as a glob")
+	}
+}
+
+func TestToolNamePrefixCoverage(t *testing.T) {
+	cases := []struct {
+		existing, candidate string
+		want                bool
+	}{
+		{"mcp__*", "mcp__github__create_issue", true},
+		{"mcp__*", "mcp__github__*", true},
+		{"mcp__github__*", "mcp__*", false},
+		{"mcp__*", "web_search", false},
+		{"mcp__github__create_issue", "mcp__github__*", false},
+	}
+	for _, tc := range cases {
+		if got := RuleCoversString(tc.existing, tc.candidate); got != tc.want {
+			t.Errorf("RuleCoversString(%q, %q)=%v, want %v", tc.existing, tc.candidate, got, tc.want)
+		}
+	}
+}
+
 func TestFileMutationRuleMatchesMutationToolsByPath(t *testing.T) {
 	p := New("ask", []string{"Edit(src/app.go)"}, nil, nil)
 

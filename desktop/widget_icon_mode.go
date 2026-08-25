@@ -963,7 +963,7 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	unreadState := a.UnreadState()
 	projectTree := a.ListProjectTree()
 	spaces := desktopIconWorkspaces(projectTree, desktopIconActiveWorkspace(sources), a.iconWidgetState.WorkspaceSlots)
-	style, hover, showDelegation, showExternalTools := a.desktopIconPreferences()
+	style, hover, showDelegation, showExternalTools, showAssistant := a.desktopIconPreferences()
 	roomPresentations := a.desktopRoomNoticePresentations()
 	roomRefs := a.desktopIconRoomRefs(projectTree)
 	roomPins, roomPinsErr := a.GetDesktopRoomPins()
@@ -989,7 +989,7 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 		snapshot = buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomPresentations, roomRefs, subagentCounts, sessionPresentations, pinnedRooms, delegations, roomDescriptors)
 		appendExternalRunIcons(&snapshot, external, a.iconWidgetState.Positions, a.iconWidgetState.DismissedExternalRuns)
 	}
-	filterDesktopIconVisibility(&snapshot, showDelegation, showExternalTools)
+	filterDesktopIconVisibility(&snapshot, showDelegation, showExternalTools, showAssistant)
 	snapshot.Style = style
 	if recoveryErr != nil {
 		snapshot.Error = firstNonEmpty(snapshot.Error, recoveryErr.Error())
@@ -1080,13 +1080,14 @@ func appendExternalRunIcons(snapshot *DesktopIconSnapshot, external ExternalRunS
 	snapshot.Revision = desktopIconSnapshotRevision(*snapshot)
 }
 
-// filterDesktopIconVisibility removes the 委托 and external AI tool (DSH) icons
-// from the projection when the matching widget settings are off. It only hides
-// the icon entries: running delegations and external tasks keep running and their
-// state stays intact. Both switches are independent, and the snapshot revision
-// is recomputed so the frontend sees the change on the next poll.
-func filterDesktopIconVisibility(snapshot *DesktopIconSnapshot, showDelegation, showExternalTools bool) {
-	if snapshot == nil || (showDelegation && showExternalTools) {
+// filterDesktopIconVisibility removes the 委托, external AI tool (DSH) and 助手
+// icons from the projection when the matching widget settings are off. It only
+// hides the icon entries: running delegations, external tasks and the Assistant
+// keep running and their state stays intact. All switches are independent, and
+// the snapshot revision is recomputed so the frontend sees the change on the
+// next poll.
+func filterDesktopIconVisibility(snapshot *DesktopIconSnapshot, showDelegation, showExternalTools, showAssistant bool) {
+	if snapshot == nil || (showDelegation && showExternalTools && showAssistant) {
 		return
 	}
 	items := snapshot.Items[:0]
@@ -1095,6 +1096,9 @@ func filterDesktopIconVisibility(snapshot *DesktopIconSnapshot, showDelegation, 
 			continue
 		}
 		if !showExternalTools && (item.ID == "fixed:dsh" || item.Kind == "external") {
+			continue
+		}
+		if !showAssistant && item.ID == "fixed:assistant" {
 			continue
 		}
 		items = append(items, item)
@@ -1760,12 +1764,12 @@ func (a *App) recoverDesktopIconActionsLocked() error {
 	return recoveryErr
 }
 
-func (a *App) desktopIconPreferences() (style string, hover int, showDelegation, showExternalTools bool) {
+func (a *App) desktopIconPreferences() (style string, hover int, showDelegation, showExternalTools, showAssistant bool) {
 	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
-		return "icons", 1200, false, false
+		return "icons", 1200, false, false, true
 	}
-	return cfg.DesktopWidgetStyle(), cfg.DesktopHoverStatusDelayMs(), cfg.DesktopWidgetShowDelegation(), cfg.DesktopWidgetShowExternalTools()
+	return cfg.DesktopWidgetStyle(), cfg.DesktopHoverStatusDelayMs(), cfg.DesktopWidgetShowDelegation(), cfg.DesktopWidgetShowExternalTools(), cfg.DesktopWidgetShowAssistant()
 }
 
 // DesktopIconSearch searches the durable session index plus the complete
@@ -2280,14 +2284,14 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 	}
 
 	// The fixed bottom bar is the declared order of the stable source ids:
-	// 新建 → 工作区 → Rooms → 委托 → 搜索. Position.Order is derived from
+	// 新建 → 工作区 → Rooms → 助手 → 委托 → 搜索. Position.Order is derived from
 	// this slice index, never from map iteration, so the bar order is a Go
 	// contract.
 	if delegations != nil {
 		delegatedRunning = len(snapshot.Delegations)
 	}
 	fixed := []struct{ id, title, icon string }{
-		{"new", "新建", "plus"}, {"workspace", "工作区", "workspace"}, {"rooms", "Rooms", "rooms"}, {"delegate", "委托", "users"}, {"search", "搜索", "search"},
+		{"new", "新建", "plus"}, {"workspace", "工作区", "workspace"}, {"rooms", "Rooms", "rooms"}, {"assistant", "助手", "bot"}, {"delegate", "委托", "users"}, {"search", "搜索", "search"},
 	}
 	for i, entry := range fixed {
 		status, count := "idle", 0

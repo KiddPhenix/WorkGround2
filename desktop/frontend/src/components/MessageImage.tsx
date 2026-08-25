@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlertCircle, ImageOff, LoaderCircle, RefreshCw, X } from "lucide-react";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
@@ -31,20 +32,21 @@ const MessageImageFrame = memo(function MessageImageFrame({
   }, [open]);
 
   return (
-    <figure className="message-image">
+    <span className="message-image">
       <button type="button" className="message-image__preview" onClick={() => setOpen(true)} aria-label={t("artifact.imagePreview")}>
         <img src={url} alt={alt} loading="lazy" draggable={false} onError={onError} />
       </button>
-      {caption && <figcaption className="message-image__caption">{caption}</figcaption>}
-      {open && (
+      {caption && <span className="message-image__caption">{caption}</span>}
+      {open && createPortal(
         <div className="message-image__overlay" role="dialog" aria-modal="true" aria-label={t("artifact.imagePreview")} onClick={() => setOpen(false)} onKeyDown={(event) => event.key === "Escape" && setOpen(false)}>
           <button ref={closeRef} type="button" className="message-image__close" onClick={() => setOpen(false)} aria-label={t("artifact.closePreview")}>
             <X size={20} aria-hidden="true" />
           </button>
           <img src={url} alt={alt} onClick={(event) => event.stopPropagation()} />
-        </div>
+        </div>,
+        document.body,
       )}
-    </figure>
+    </span>
   );
 });
 

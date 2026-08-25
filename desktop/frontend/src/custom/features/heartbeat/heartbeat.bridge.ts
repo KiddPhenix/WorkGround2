@@ -3,7 +3,7 @@
 // so that heartbeat-specific calls are scoped to this feature.
 
 import { app } from "../../../lib/bridge";
-import type { HeartbeatTask } from "./heartbeat.types";
+import type { HeartbeatConversionResult, HeartbeatConversionStatus, HeartbeatTask } from "./heartbeat.types";
 
 export function heartbeatListTasks(): Promise<HeartbeatTask[]> {
   return app.HeartbeatReloadTasks().then((v) => (v ?? []) as HeartbeatTask[]);
@@ -19,4 +19,12 @@ export function heartbeatTriggerNow(id: string): Promise<void> {
 
 export function heartbeatGenerateID(): Promise<string> {
   return app.HeartbeatGenerateID();
+}
+
+export function heartbeatListConversions(): Promise<HeartbeatConversionStatus[]> {
+  return app.HeartbeatListConversions().then((v) => (v ?? []) as HeartbeatConversionStatus[]);
+}
+
+export function heartbeatConvertToAssistant(id: string): Promise<HeartbeatConversionResult> {
+  return app.HeartbeatConvertToAssistant(id) as Promise<HeartbeatConversionResult>;
 }

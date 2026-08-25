@@ -294,7 +294,7 @@ export function SettingsPanel({
                     />
                   </SettingsPageShell>
                 )}
-                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} widgetShowDelegation={s.widgetShowDelegation} widgetShowExternalTools={s.widgetShowExternalTools} hoverStatusDelayMs={s.hoverStatusDelayMs ?? 1200} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
+                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} widgetShowDelegation={s.widgetShowDelegation} widgetShowExternalTools={s.widgetShowExternalTools} widgetShowAssistant={s.widgetShowAssistant} hoverStatusDelayMs={s.hoverStatusDelayMs ?? 1200} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
                 {tab === "global" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GlobalSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
                 {tab === "about" && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}>
@@ -6564,6 +6564,7 @@ export function WidgetSection({
   widgetAlwaysOnTop,
   widgetShowDelegation,
   widgetShowExternalTools,
+  widgetShowAssistant,
 	hoverStatusDelayMs,
   settingsBusy,
   applySettings,
@@ -6572,6 +6573,7 @@ export function WidgetSection({
   widgetAlwaysOnTop: boolean;
   widgetShowDelegation: boolean;
   widgetShowExternalTools: boolean;
+  widgetShowAssistant: boolean;
 	hoverStatusDelayMs: number;
   settingsBusy: boolean;
   applySettings: (fn: () => Promise<void>) => Promise<void>;
@@ -6624,6 +6626,17 @@ export function WidgetSection({
           value={widgetShowExternalTools}
           disabled={settingsBusy}
           onChange={(show) => void applySettings(() => app.SetDesktopWidgetShowExternalTools(show))}
+        />
+      </SettingsField>
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("settings.widget.showAssistantLabel")}
+        hint={t("settings.widget.showAssistantHint")}
+      >
+        <ToggleSegment
+          value={widgetShowAssistant}
+          disabled={settingsBusy}
+          onChange={(show) => void applySettings(() => app.SetDesktopWidgetShowAssistant(show))}
         />
       </SettingsField>
     </SettingsSection>

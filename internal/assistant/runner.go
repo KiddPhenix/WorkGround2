@@ -12,6 +12,8 @@ type RunnerStore interface {
 	RetryDue(time.Time) ([]Run, error)
 	Claim(owner string, now time.Time, ttl time.Duration) (*Run, bool, error)
 	Renew(runID, owner string, fence int64, now time.Time, ttl time.Duration) (*Run, error)
+	BindSession(BindSessionInput) (*Run, error)
+	RequireAttention(RequireAttentionInput) (*Run, error)
 	Finish(FinishInput) (*Run, error)
 	Fail(FailInput) (*Run, error)
 }
@@ -85,6 +87,20 @@ func appendDiagnostic(diagnostics *[]string, err error) {
 
 func (r *Runner) Renew(run Run, now time.Time) (*Run, error) {
 	return r.store.Renew(run.ID, r.owner, run.LeaseFence, utcNow(now), r.ttl)
+}
+
+func (r *Runner) BindSession(run Run, requestID, sessionPath string, now time.Time) (*Run, error) {
+	return r.store.BindSession(BindSessionInput{
+		RequestID: requestID, RunID: run.ID, LeaseOwner: r.owner,
+		LeaseFence: run.LeaseFence, SessionPath: sessionPath, Now: utcNow(now),
+	})
+}
+
+func (r *Runner) RequireAttention(run Run, requestID, action, summary, sessionPath, resumeToken string, now time.Time) (*Run, error) {
+	return r.store.RequireAttention(RequireAttentionInput{
+		RequestID: requestID, RunID: run.ID, LeaseOwner: r.owner, LeaseFence: run.LeaseFence,
+		Action: action, Summary: summary, SessionPath: sessionPath, ResumeToken: resumeToken, Now: utcNow(now),
+	})
 }
 
 func (r *Runner) Finish(run Run, summary, sessionPath string, now time.Time) (*Run, error) {

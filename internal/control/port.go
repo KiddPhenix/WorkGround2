@@ -14,10 +14,18 @@ import (
 	"workground2/internal/hook"
 	"workground2/internal/jobs"
 	"workground2/internal/memory"
+	"workground2/internal/permission"
 	"workground2/internal/plugin"
 	"workground2/internal/provider"
 	"workground2/internal/skill"
 )
+
+// ToolGrant allows one exact tool and subject pair for the next accepted turn.
+// It is runtime-only and is cleared by the following configured submission.
+type ToolGrant struct {
+	Tool    string
+	Subject string
+}
 
 // This file defines the driving port: the typed, segregated interface surface
 // that frontends (cli, desktop, bot, acp, serve) consume instead of coupling to
@@ -52,6 +60,8 @@ type TurnControl interface {
 	SubmitEditedDisplay(display, input, original string)
 	SubmitHTTP(input string)
 	SubmitUserTurn(input, display string)
+	TrySubmitUserTurn(input, display string) bool
+	TrySubmitUserTurnWithPolicy(input, display string, policy permission.Policy, toolMode string, grants ...ToolGrant) bool
 	SubmitWorkChat(display, userText, contextBlock string)
 	Send(input string)
 	SendWithRaw(input, raw string)
@@ -87,6 +97,7 @@ type Approvals interface {
 	Bypass() bool
 	SetBypass(on bool)
 	SetMode(plan, autoApproveTools bool)
+	SetPermissionPolicy(permission.Policy)
 }
 
 // Goals covers the active-goal FSM and plan mode.
