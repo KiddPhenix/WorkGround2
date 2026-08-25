@@ -3,6 +3,7 @@ import type {
   AssistantAttentionItem,
   AssistantCancelInput,
   AssistantCreateInput,
+  AssistantDeleteInput,
   AssistantMemory,
   AssistantMemoryInput,
   AssistantRecord,
@@ -42,6 +43,10 @@ export function assistantCreate(input: AssistantCreateInput): Promise<AssistantS
 
 export function assistantUpdate(input: AssistantUpdateInput): Promise<AssistantRecord> {
   return app.AssistantUpdate(input) as Promise<AssistantRecord>;
+}
+
+export function assistantDelete(input: AssistantDeleteInput): Promise<void> {
+  return app.AssistantDelete(input);
 }
 
 export function assistantPutRoutine(input: AssistantRoutineInput): Promise<AssistantRoutine> {

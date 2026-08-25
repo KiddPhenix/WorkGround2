@@ -24,6 +24,12 @@ type AssistantUpdateRequest struct {
 	Assistant        assistant.Assistant `json:"assistant"`
 }
 
+type AssistantDeleteRequest struct {
+	AssistantID      string `json:"assistantId"`
+	RequestID        string `json:"requestId"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+}
+
 type AssistantPutRoutineRequest struct {
 	RequestID        string            `json:"requestId"`
 	ExpectedRevision int64             `json:"expectedRevision"`
@@ -187,6 +193,22 @@ func (a *App) AssistantUpdate(req AssistantUpdateRequest) (assistant.Assistant, 
 		return assistant.Assistant{}, err
 	}
 	return service.store.UpdateAssistant(req.RequestID, req.Assistant, req.ExpectedRevision, time.Now())
+}
+
+func (a *App) AssistantDelete(req AssistantDeleteRequest) error {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return err
+	}
+	runIDs, err := service.store.Delete(req.RequestID, req.AssistantID, req.ExpectedRevision)
+	if err != nil {
+		return err
+	}
+	for _, runID := range runIDs {
+		service.CancelRun(runID)
+	}
+	service.Wake()
+	return nil
 }
 
 func (a *App) AssistantPutRoutine(req AssistantPutRoutineRequest) (assistant.Routine, error) {

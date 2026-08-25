@@ -264,6 +264,118 @@ func (s *Store) Get(assistantID string) (Snapshot, error) {
 	return clone(snapshotOf(agg)), nil
 }
 
+// Delete atomically removes an Assistant aggregate from the active store by
+// moving its directory into a local trash area. The request-derived destination
+// makes response-loss retries safe: an exact replay succeeds without touching a
+// newly recreated Assistant that happens to reuse the same ID.
+func (s *Store) Delete(requestID, assistantID string, expectedRevision int64) ([]string, error) {
+	if err := validateRequestID(requestID); err != nil {
+		return nil, err
+	}
+	if err := validateID("assistant", assistantID); err != nil {
+		return nil, err
+	}
+	if expectedRevision <= 0 {
+		return nil, errors.New("assistant: delete expected revision must be positive")
+	}
+
+	s.gate.root.Lock()
+	defer s.gate.root.Unlock()
+	unlock := s.lockAssistant(assistantID)
+	defer unlock()
+
+	destination, replay, err := s.deleteDestination(assistantID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if replay {
+		return deletedRunIDs(destination, assistantID)
+	}
+	agg, err := s.read(assistantID)
+	if err != nil {
+		return nil, err
+	}
+	if agg.Revision != expectedRevision {
+		return nil, conflict("assistant aggregate", assistantID, expectedRevision, agg.Revision)
+	}
+	sourcePath, err := s.aggregatePath(assistantID, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Rename(filepath.Dir(sourcePath), destination); err != nil {
+		return nil, fmt.Errorf("assistant: move %s to trash: %w", assistantID, err)
+	}
+	runIDs := make([]string, 0, len(agg.Runs))
+	for _, run := range agg.Runs {
+		runIDs = append(runIDs, run.ID)
+	}
+	return runIDs, nil
+}
+
+func (s *Store) deleteDestination(assistantID, requestID string) (string, bool, error) {
+	trashRoot := filepath.Join(s.root, ".trash")
+	assistantTrash := filepath.Join(trashRoot, assistantID)
+	for _, dir := range []string{trashRoot, assistantTrash} {
+		info, err := os.Lstat(dir)
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				return "", false, fmt.Errorf("assistant: create trash directory: %w", err)
+			}
+			continue
+		}
+		if err != nil {
+			return "", false, fmt.Errorf("assistant: inspect trash directory: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", false, fmt.Errorf("assistant: unsafe trash directory %q", dir)
+		}
+	}
+	digest := sha256.Sum256([]byte(requestID))
+	destination := filepath.Join(assistantTrash, hex.EncodeToString(digest[:]))
+	rel, err := filepath.Rel(s.root, destination)
+	if err != nil || !filepath.IsLocal(rel) || rel == "." {
+		return "", false, fmt.Errorf("assistant: unsafe delete destination for %q", assistantID)
+	}
+	info, err := os.Lstat(destination)
+	if os.IsNotExist(err) {
+		return destination, false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("assistant: inspect delete destination: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", false, fmt.Errorf("assistant: unsafe delete receipt for %q", assistantID)
+	}
+	return destination, true, nil
+}
+
+func deletedRunIDs(destination, assistantID string) ([]string, error) {
+	path := filepath.Join(destination, "aggregate.json")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("assistant: inspect deleted %s aggregate: %w", assistantID, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("assistant: unsafe deleted aggregate for %q", assistantID)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("assistant: read deleted %s aggregate: %w", assistantID, err)
+	}
+	var agg aggregate
+	if err := json.Unmarshal(data, &agg); err != nil {
+		return nil, fmt.Errorf("assistant: parse deleted %s aggregate: %w", assistantID, err)
+	}
+	if agg.Version != aggregateVersion || agg.Assistant.ID != assistantID {
+		return nil, fmt.Errorf("assistant: invalid deleted %s aggregate identity or version", assistantID)
+	}
+	runIDs := make([]string, 0, len(agg.Runs))
+	for _, run := range agg.Runs {
+		runIDs = append(runIDs, run.ID)
+	}
+	return runIDs, nil
+}
+
 func (s *Store) List() ([]Assistant, error) {
 	s.gate.root.Lock()
 	defer s.gate.root.Unlock()

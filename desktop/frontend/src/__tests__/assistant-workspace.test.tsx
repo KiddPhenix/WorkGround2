@@ -229,9 +229,9 @@ ok(
 
 // A polling refresh may return a new object for the same authoritative
 // Assistant revision. It must not overwrite an unsaved local draft.
-const renderOverview = async (snapshot: AssistantSnapshot) => {
+const renderOverview = async (snapshot: AssistantSnapshot, onDelete = async () => undefined) => {
   await act(async () => {
-    root.render(<LocaleProvider><ToastProvider><OverviewEditor snapshot={snapshot} diagnostics={[]} busy="" act={async (_key, action) => { await action(); return true; }} /></ToastProvider></LocaleProvider>);
+    root.render(<LocaleProvider><ToastProvider><OverviewEditor snapshot={snapshot} diagnostics={[]} busy="" act={async (_key, action) => { await action(); return true; }} onDelete={onDelete} /></ToastProvider></LocaleProvider>);
   });
 };
 await renderOverview(saved);
@@ -252,6 +252,17 @@ const newerSnapshot: AssistantSnapshot = {
 };
 await renderOverview(newerSnapshot);
 ok(networkOption("自动允许")?.getAttribute("aria-pressed") === "true", "new Assistant revision refreshes the policy draft from authority");
+
+// ── Delete Assistant requires an explicit second action ──────
+let deleteCalls = 0;
+await renderOverview(newerSnapshot, async () => { deleteCalls += 1; });
+const deleteButton = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "删除助手") as HTMLButtonElement | undefined;
+ok(deleteButton !== undefined, "overview exposes a delete Assistant action");
+await act(async () => { deleteButton?.click(); });
+ok(deleteCalls === 0 && host.textContent?.includes("确认删除"), "delete Assistant requires an explicit inline confirmation");
+const confirmDeleteButton = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "确认删除") as HTMLButtonElement | undefined;
+await act(async () => { confirmDeleteButton?.click(); });
+ok(deleteCalls === 1, "confirmed delete delegates exactly once");
 
 // ── Background CSS contract ───────────────────────────────────
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -298,6 +309,10 @@ ok(
   assistantCssSource.includes("background: rgba(19, 21, 25, 0.82);") &&
     assistantCssSource.includes("backdrop-filter: blur(16px) saturate(0.96);"),
   "management drawer uses a readable translucent material",
+);
+ok(
+  /\.app--windows-frameless \.assistant-manager > header \{[^}]*padding-right:\s*calc\(var\(--windows-window-controls-safe\) \+ 14px\);/s.test(assistantCssSource),
+  "management drawer close action reserves the native Windows caption-control safe area",
 );
 const assistantTopbarBlock = assistantCssSource.match(/\.assistant-workspace__topbar \{[\s\S]*?\n\}/)?.[0] ?? "";
 ok(

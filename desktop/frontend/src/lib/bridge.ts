@@ -13,6 +13,7 @@ import type {
   AssistantAttentionItem,
   AssistantCancelInput,
   AssistantCreateInput,
+  AssistantDeleteInput,
   AssistantMemory,
   AssistantMemoryInput,
   AssistantListResult,
@@ -527,6 +528,7 @@ export interface AppBindings extends WailsWorkBindings {
   AssistantList(): Promise<AssistantListResult>;
   AssistantGet(assistantId: string): Promise<AssistantSnapshot>;
   AssistantCreate(input: AssistantCreateInput): Promise<AssistantSnapshot>;
+  AssistantDelete(input: AssistantDeleteInput): Promise<void>;
   AssistantUpdate(input: AssistantUpdateInput): Promise<AssistantRecord>;
   AssistantPutRoutine(input: AssistantRoutineInput): Promise<AssistantRoutine>;
   AssistantApplyMemory(input: AssistantMemoryInput): Promise<AssistantMemory>;
@@ -5097,6 +5099,10 @@ function makeMockApp(): AppBindings {
       };
       mockAssistantSnapshots.push(snapshot);
       return cloneAssistant(snapshot);
+    },
+    async AssistantDelete(input: AssistantDeleteInput) {
+      const index = mockAssistantSnapshots.findIndex((item) => item.assistant.id === input.assistantId);
+      if (index >= 0) mockAssistantSnapshots.splice(index, 1);
     },
     async AssistantUpdate(input: AssistantUpdateInput) {
       const snapshot = findAssistantSnapshot(input.assistant.id);

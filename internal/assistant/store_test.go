@@ -94,6 +94,59 @@ func TestStoreUpdateAssistantCASAndIdempotentRetry(t *testing.T) {
 	}
 }
 
+func TestStoreDeleteMovesAggregateToTrashAndReplaysSafely(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "assistants")
+	store := testStore(t, root)
+	in := testCreateInput("helper-delete", "create-helper-delete")
+	in.InitialPrompt = "queued work"
+	created, err := store.Create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Delete("delete-1", created.Assistant.ID, created.Revision+1); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale delete error = %v, want ErrConflict", err)
+	}
+	if _, err := store.Get(created.Assistant.ID); err != nil {
+		t.Fatalf("stale delete removed aggregate: %v", err)
+	}
+
+	runIDs, err := store.Delete("delete-1", created.Assistant.ID, created.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runIDs) != 1 || runIDs[0] != created.Runs[0].ID {
+		t.Fatalf("deleted run IDs = %v, want %s", runIDs, created.Runs[0].ID)
+	}
+	if _, err := store.Get(created.Assistant.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted aggregate error = %v, want ErrNotFound", err)
+	}
+	listed, err := store.List()
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("list after delete = %+v err=%v", listed, err)
+	}
+	replayedRunIDs, err := store.Delete("delete-1", created.Assistant.ID, created.Revision)
+	if err != nil {
+		t.Fatalf("delete replay: %v", err)
+	}
+	if len(replayedRunIDs) != 1 || replayedRunIDs[0] != created.Runs[0].ID {
+		t.Fatalf("delete replay run IDs = %v, want %s", replayedRunIDs, created.Runs[0].ID)
+	}
+
+	recreated, err := store.Create(testCreateInput(created.Assistant.ID, "create-after-delete"))
+	if err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	if _, err := store.Delete("delete-1", recreated.Assistant.ID, recreated.Revision); err != nil {
+		t.Fatalf("old delete replay after recreate: %v", err)
+	}
+	if _, err := store.Get(recreated.Assistant.ID); err != nil {
+		t.Fatalf("old delete replay removed recreated aggregate: %v", err)
+	}
+	if _, err := store.Delete("delete-2", recreated.Assistant.ID, recreated.Revision); err != nil {
+		t.Fatalf("new delete intent: %v", err)
+	}
+}
+
 func TestStoreApplyMemoryCASAndLockedItems(t *testing.T) {
 	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
 	created := mustCreate(t, store, "helper-a")
