@@ -408,6 +408,27 @@
 .assistant-run-state--waiting_attention { color: #e98975; border-color: #5f3832; }
 .assistant-run-state--succeeded { color: #63ba8d; border-color: #2f5943; }
 
+button.assistant-run-state {
+  min-height: 24px;
+  padding: 3px 7px;
+  font-family: inherit;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+button.assistant-run-state:hover,
+button.assistant-run-state:focus-visible {
+  outline: none;
+  border-color: currentColor;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+button.assistant-run-state:focus-visible {
+  box-shadow: 0 0 0 2px rgba(255, 160, 108, 0.45);
+}
+
 .assistant-text-action {
   display: inline-flex;
   align-items: center;

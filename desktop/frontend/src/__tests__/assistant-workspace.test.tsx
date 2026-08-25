@@ -129,6 +129,32 @@ ok(runEvents.some((event) => event.querySelector(".assistant-event__summary .md"
 const nonRunEvents = [...host.querySelectorAll(".assistant-event--memory, .assistant-event--next")];
 ok(nonRunEvents.length >= 1 && nonRunEvents.every((event) => event.querySelector(".md") === null), "memory and next events stay plain text");
 
+// ── Timeline run state: a bound session opens the coding-agent session ──
+let openedSession: { scope: string; workspaceRoot: string; sessionPath: string } | null = null;
+await act(async () => {
+  root.render(
+    <LocaleProvider><ToastProvider>
+      <AssistantWorkspace onOpenSession={(scope, workspaceRoot, sessionPath) => { openedSession = { scope, workspaceRoot, sessionPath }; }} />
+    </ToastProvider></LocaleProvider>,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+});
+const boundButton = host.querySelector(".assistant-event--run button.assistant-run-state") as HTMLButtonElement | null;
+ok(boundButton !== null, "bound run state renders as an openable button");
+ok(boundButton?.classList.contains("assistant-run-state--link") === true, "bound run state is marked as a navigation link");
+ok(boundButton?.getAttribute("aria-label") === "已完成，打开会话", "bound run state exposes an open-session label");
+ok(boundButton?.querySelector("button") === null, "run state button contains no nested button");
+await act(async () => { boundButton?.click(); });
+ok(openedSession !== null, "clicking the bound run state opens the coding-agent session");
+ok(
+  openedSession?.scope === "project" &&
+    openedSession?.workspaceRoot === "~/projects/WorkGround2" &&
+    openedSession?.sessionPath === "/mock/sessions/assistant-scan.jsonl",
+  "bound run state maps Assistant workspace scope to the Desktop project scope and preserves the path",
+);
+const unboundBadge = [...host.querySelectorAll(".assistant-event--run .assistant-run-state")].find((element) => element.tagName !== "BUTTON");
+ok(unboundBadge !== undefined && unboundBadge.tagName === "SPAN", "unbound run keeps a non-interactive badge");
+
 // ── Handoff submit keeps the queued notice and clears the draft ──
 setHandoffValue("排查构建失败");
 const handoffForm = host.querySelector(".assistant-handoff") as HTMLFormElement | null;
