@@ -76,3 +76,11 @@ export function assistantResume(input: AssistantResumeInput): Promise<AssistantR
 export function assistantCancel(input: AssistantCancelInput): Promise<AssistantRun> {
   return app.AssistantCancel(input) as Promise<AssistantRun>;
 }
+
+export function assistantPickWorkspace(defaultDir = ""): Promise<string> {
+  return app.PickAssistantWorkspace(defaultDir) as Promise<string>;
+}
+
+export function assistantCreateWorkspace(parentDir: string, name: string): Promise<string> {
+  return app.CreateAssistantWorkspace(parentDir, name) as Promise<string>;
+}

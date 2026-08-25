@@ -3,8 +3,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"workground2/internal/assistant"
 )
@@ -313,4 +317,69 @@ func (a *App) AssistantCancel(req AssistantCancelRequest) (assistant.Run, error)
 	}
 	service.CancelRun(req.RunID)
 	return *run, nil
+}
+
+// PickAssistantWorkspace opens a native directory chooser for the create dialog
+// and returns the picked path ("" with no error when cancelled). It only returns
+// a path — it never registers a workspace, switches tabs, or creates an
+// assistant. defaultDir seeds the chooser from the field's current input.
+func (a *App) PickAssistantWorkspace(defaultDir string) (string, error) {
+	if a.ctx == nil {
+		return "", nil
+	}
+	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:            "Choose assistant workspace",
+		DefaultDirectory: dialogDefaultDirectory(defaultDir),
+	})
+	if err != nil || dir == "" {
+		return "", err
+	}
+	return filepath.Clean(dir), nil
+}
+
+// CreateAssistantWorkspace creates a single directory under parentDir and
+// returns its clean absolute path. It rejects empty values, absolute names,
+// "." / "..", and path separators so the name cannot escape the parent.
+// Creating an already-existing directory is an idempotent success; an existing
+// file at the target fails explicitly.
+func (a *App) CreateAssistantWorkspace(parentDir, name string) (string, error) {
+	parentDir = strings.TrimSpace(parentDir)
+	name = strings.TrimSpace(name)
+	if parentDir == "" {
+		return "", errors.New("assistant: workspace parent directory must not be empty")
+	}
+	if name == "" {
+		return "", errors.New("assistant: workspace name must not be empty")
+	}
+	if name == "." || name == ".." {
+		return "", errors.New(`assistant: workspace name must not be "." or ".."`)
+	}
+	if filepath.IsAbs(name) {
+		return "", errors.New("assistant: workspace name must not be an absolute path")
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return "", errors.New("assistant: workspace name must not contain path separators")
+	}
+	parent, err := filepath.Abs(parentDir)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(parent, name)
+	if filepath.Dir(target) != parent {
+		return "", errors.New("assistant: workspace path escapes parent directory")
+	}
+	info, statErr := os.Stat(target)
+	if statErr == nil {
+		if info.IsDir() {
+			return filepath.Clean(target), nil
+		}
+		return "", fmt.Errorf("assistant: workspace path already exists as a file: %s", target)
+	}
+	if !errors.Is(statErr, os.ErrNotExist) {
+		return "", statErr
+	}
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Clean(target), nil
 }

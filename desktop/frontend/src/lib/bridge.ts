@@ -537,6 +537,8 @@ export interface AppBindings extends WailsWorkBindings {
   AssistantResolveAttention(input: AssistantResolveAttentionInput): Promise<AssistantAttentionItem>;
   AssistantResume(input: AssistantResumeInput): Promise<AssistantRun>;
   AssistantCancel(input: AssistantCancelInput): Promise<AssistantRun>;
+  PickAssistantWorkspace(defaultDir: string): Promise<string>;
+  CreateAssistantWorkspace(parentDir: string, name: string): Promise<string>;
   Submit(input: string): Promise<void>;
   SubmitToTab(tabID: string, input: string): Promise<void>;
   SubmitDisplay(display: string, input: string): Promise<void>;
@@ -5247,6 +5249,19 @@ function makeMockApp(): AppBindings {
       run.revision += 1;
       touchAssistantSnapshot(snapshot);
       return cloneAssistant(run);
+    },
+    async PickAssistantWorkspace(defaultDir: string) {
+      return defaultDir?.trim() || "~/projects/assistant-workspace";
+    },
+    async CreateAssistantWorkspace(parentDir: string, name: string) {
+      const parent = parentDir?.trim();
+      const dirName = name?.trim();
+      if (!parent) throw new Error("assistant: workspace parent directory must not be empty");
+      if (!dirName) throw new Error("assistant: workspace name must not be empty");
+      if (dirName === "." || dirName === ".." || /[\\/]/.test(dirName) || /^[A-Za-z]:/.test(dirName)) {
+        throw new Error("assistant: invalid workspace name");
+      }
+      return `${parent.replace(/[\\/]+$/, "")}/${dirName}`;
     },
     async SetTrayLocale(_locale: "en" | "zh" | "zh-TW") {},
     async SetAutoApproveTools(on: boolean) {

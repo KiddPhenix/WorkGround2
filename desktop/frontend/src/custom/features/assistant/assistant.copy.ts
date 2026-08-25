@@ -94,6 +94,12 @@ const zh = {
   create: "创建助手",
   createName: "例如：代码项目助手",
   createMission: "例如：持续关注项目健康度，在发布条件满足时询问我。",
+  workspacePick: "选择",
+  workspaceNew: "新建",
+  workspaceNewParent: "父目录",
+  workspaceNewName: "目录名",
+  workspaceNewNamePlaceholder: "例如：my-project",
+  workspaceNewCreate: "创建",
   error: "操作失败，请重试。",
   saved: "已保存",
   resolveNote: "由桌面端处理",
@@ -158,8 +164,14 @@ const en: typeof zh = {
   noMemory: "No explicit memory yet. The assistant won't treat guesses as facts.", noHistory: "No run history yet.", noAttention: "Nothing needs your attention.",
   approve: "Approve", continueRun: "Continue run", reject: "Reject", answer: "Answer", answerPlaceholder: "Enter a clear answer for the assistant…", confirmRetry: "Confirm retry", markSucceeded: "Mark succeeded", markFailed: "Mark failed", cancel: "Cancel", retryRun: "Retry", rerun: "Run again", waitingRetry: "The system will retry on schedule, or you can cancel this run.", handleAttention: "Review", changeProject: "Change project", cancelOldRun: "Cancel old run", rebindWarning: "This run froze the previous project path. Save the new path, then run again; approving this run would still use the old path.", stopRun: "Stop", openSession: "Open session", createTitle: "Create an ongoing assistant",
   createBody: "Give it a clear mission, then choose how often it should wake up.", create: "Create assistant", createName: "e.g. Code project assistant",
-  createMission: "e.g. Track project health and ask before publishing when ready.", error: "That didn't work. Please retry.", saved: "Saved", resolveNote: "Resolved from Desktop", rejectNote: "The user declined to answer",
-  templates: "Choose a template", templateCode: "Code project", templateGeneral: "General", templatePromo: "Promotion",
+  createMission: "e.g. Track project health and ask before publishing when ready.",
+  workspacePick: "Choose",
+  workspaceNew: "New",
+  workspaceNewParent: "Parent folder",
+  workspaceNewName: "Folder name",
+  workspaceNewNamePlaceholder: "e.g. my-project",
+  workspaceNewCreate: "Create",
+  error: "That didn't work. Please retry.", saved: "Saved", resolveNote: "Resolved from Desktop", rejectNote: "The user declined to answer", templates: "Choose a template", templateCode: "Code project", templateGeneral: "General", templatePromo: "Promotion",
   templateCodeDesc: "Project health, test/build, release readiness; publishing always asks first.", templateGeneralDesc: "Mission and routines are yours to fill; read-only by default.",
   templatePromoDesc: "External channels and effect collection are a phase-4 capability.", phase4Preview: "Phase 4 preview", routinePreview: "It will create these routines",
   permissionTitle: "Permissions", permissionConfirm: "I understand and confirm these permissions",
@@ -178,7 +190,7 @@ const en: typeof zh = {
   artifacts: "Artifacts & evidence", opportunities: "Opportunities & proposals", noArtifacts: "No artifacts or evidence yet.", noOpportunities: "No opportunities or proposals yet.",
 };
 
-const zhTW: typeof zh = { ...zh, entry: "助手", newAssistant: "新增助手", memory: "明確記憶", history: "執行記錄", attention: "待處理", save: "儲存", sendShortcut: "傳送" };
+const zhTW: typeof zh = { ...zh, entry: "助手", newAssistant: "新增助手", memory: "明確記憶", history: "執行記錄", attention: "待處理", save: "儲存", sendShortcut: "傳送", workspacePick: "選擇", workspaceNew: "新增", workspaceNewParent: "父資料夾", workspaceNewName: "資料夾名稱", workspaceNewNamePlaceholder: "例如：my-project", workspaceNewCreate: "建立" };
 
 export type AssistantCopy = typeof zh;
 
