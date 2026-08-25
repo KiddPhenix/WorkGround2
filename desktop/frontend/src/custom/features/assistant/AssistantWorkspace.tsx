@@ -39,8 +39,10 @@ import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, complete
 import { assistantTemplate, assistantTemplateContent, templateRoutine, templateRoutines, type AssistantTemplateID } from "./assistant.templates";
 import {
   assistantEntityID,
+  type AssistantAccess,
   type AssistantMemoryKind,
   type AssistantDiagnostic,
+  type AssistantPolicy,
   type AssistantRecord,
   type AssistantRoutine,
   type AssistantScheduleKind,
@@ -451,6 +453,8 @@ function PlanView({ snapshot }: { snapshot: AssistantSnapshot }) {
 
 type Act = (key: string, action: () => Promise<unknown>) => Promise<boolean>;
 
+const ALWAYS_ASK_POLICY: ReadonlySet<keyof AssistantPolicy> = new Set(["publish", "delete", "payment", "secrets", "private_data"]);
+
 function OverviewEditor({ snapshot, diagnostics, busy, act }: { snapshot: AssistantSnapshot; diagnostics: AssistantDiagnostic[]; busy: string; act: Act }) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
@@ -458,14 +462,31 @@ function OverviewEditor({ snapshot, diagnostics, busy, act }: { snapshot: Assist
   const [mission, setMission] = useState(snapshot.assistant.mission);
   const [scope, setScope] = useState(snapshot.assistant.scope);
   const [workspace, setWorkspace] = useState(snapshot.assistant.workspace_root ?? "");
+  const [policy, setPolicy] = useState<AssistantPolicy>(snapshot.assistant.policy);
   useEffect(() => {
     setName(snapshot.assistant.name);
     setMission(snapshot.assistant.mission);
     setScope(snapshot.assistant.scope);
     setWorkspace(snapshot.assistant.workspace_root ?? "");
+    setPolicy(snapshot.assistant.policy);
   }, [snapshot.assistant]);
+  const policyRows: Array<{ key: keyof AssistantPolicy; label: string }> = [
+    { key: "local_write", label: copy.policyLocalWrite },
+    { key: "network", label: copy.policyNetwork },
+    { key: "publish", label: copy.policyPublish },
+    { key: "delete", label: copy.policyDelete },
+    { key: "payment", label: copy.policyPayment },
+    { key: "secrets", label: copy.policySecrets },
+    { key: "private_data", label: copy.policyPrivateData },
+  ];
+  const accessLabel = (field: keyof AssistantPolicy, value: AssistantAccess): string => {
+    if (value === "allow") return ALWAYS_ASK_POLICY.has(field) ? copy.accessAllowAsk : copy.accessAllow;
+    if (value === "deny") return copy.accessDeny;
+    return copy.accessApprove;
+  };
+  const setAccess = (field: keyof AssistantPolicy, value: AssistantAccess) => setPolicy((current) => ({ ...current, [field]: value }));
   const save = () => {
-    const intent = { name: name.trim(), mission: mission.trim(), scope, workspace_root: scope === "workspace" ? workspace.trim() : undefined };
+    const intent = { name: name.trim(), mission: mission.trim(), scope, workspace_root: scope === "workspace" ? workspace.trim() : undefined, policy };
     const key = assistantMutationKey("update", snapshot.assistant.id, snapshot.assistant.id, intent);
     return act("overview", () => runAssistantCASMutation(key, snapshot.assistant.revision, ({ requestId, expectedRevision }) => assistantUpdate({
       requestId,
@@ -493,6 +514,29 @@ function OverviewEditor({ snapshot, diagnostics, busy, act }: { snapshot: Assist
       }}><option value="global">{copy.scopeGlobal}</option><option value="workspace">{copy.scopeWorkspace}</option></select></label>
       {scope === "workspace" && <label>{copy.workspace}<input value={workspace} onChange={(event) => setWorkspace(event.target.value)} required /></label>}
       <p className="assistant-form__hint"><AlertCircle size={13} />{copy.workspaceFreezeHint}</p>
+      <section className="assistant-policy" aria-label={copy.permissionTitle}>
+        <h3>{copy.permissionTitle}</h3>
+        {policyRows.map((row) => (
+          <div className="assistant-policy__row" key={row.key}>
+            <span>{row.label}</span>
+            <div className="assistant-policy__options" role="group" aria-label={row.label}>
+              {(["deny", "approve", "allow"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`assistant-policy__option${policy[row.key] === value ? " is-active" : ""}${value === "allow" && ALWAYS_ASK_POLICY.has(row.key) ? " is-always-ask" : ""}`}
+                  aria-pressed={policy[row.key] === value}
+                  onClick={() => setAccess(row.key, value)}
+                >
+                  {accessLabel(row.key, value)}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        <p className="assistant-form__hint"><AlertCircle size={13} />{copy.policyAskNote}</p>
+        <p className="assistant-form__hint"><Clock3 size={13} />{copy.policyFreezeHint}</p>
+      </section>
       {diagnostics.length > 0 && <div className="assistant-diagnostic-list" role="status"><strong>{copy.diagnosticTitle}</strong>{diagnostics.map((item, index) => <p key={`${item.at}-${index}`}><span>{item.operation}</span>{item.message}</p>)}</div>}
       <div className="assistant-form__actions">
         <button className="assistant-button" type="button" disabled={Boolean(busy)} onClick={() => void changeLifecycle()}>

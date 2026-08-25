@@ -1,7 +1,11 @@
 import { JSDOM } from "jsdom";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { AssistantSidebarEntry, AssistantWorkspace, AttentionInbox } from "../custom/features/assistant/AssistantWorkspace";
+import { assistantGet } from "../custom/features/assistant/assistant.bridge";
 import type { AssistantSnapshot } from "../custom/features/assistant/assistant.types";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
@@ -55,6 +59,62 @@ const workspaceInput = [...host.querySelectorAll("input")].find((input) => input
 ok(workspaceInput !== undefined, "overview exposes the current workspace path");
 ok(!workspaceInput?.hasAttribute("readonly"), "workspace path is editable for future runs");
 ok(host.textContent?.includes("已经排队的运行保留创建时的工作区") ?? false, "overview explains frozen context for queued runs");
+
+// ── Policy editor ─────────────────────────────────────────────
+const policyRows = host.querySelectorAll(".assistant-policy__row");
+ok(policyRows.length === 7, "overview exposes all seven policy fields");
+ok(
+  ["本地写入", "网络", "对外发布", "删除", "付费", "凭据", "私有数据"].every((label) =>
+    [...policyRows].some((row) => row.querySelector(":scope > span")?.textContent === label),
+  ),
+  "policy fields use their Chinese labels",
+);
+ok(host.textContent?.includes("始终逐次审批") ?? false, "high-risk policy copy clarifies per-action approval");
+ok(host.textContent?.includes("排队中和运行中的运行保留旧权限快照") ?? false, "overview explains the frozen policy boundary for queued and running runs");
+
+const networkGroup = [...host.querySelectorAll(".assistant-policy__options")].find((el) => el.getAttribute("aria-label") === "网络") as HTMLElement | undefined;
+const approveOption = [...(networkGroup?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.trim() === "逐次审批") as HTMLButtonElement | undefined;
+ok(approveOption !== undefined && approveOption.getAttribute("aria-pressed") === "false", "network policy offers a per-action approval option");
+await act(async () => { approveOption?.click(); });
+const saveButton = [...host.querySelectorAll(".assistant-button")].find((button) => button.textContent?.trim() === "保存") as HTMLButtonElement | undefined;
+ok(saveButton !== undefined && !saveButton.disabled, "policy save is available after an edit");
+const overviewForm = host.querySelector(".assistant-form") as HTMLFormElement | null;
+await act(async () => {
+  overviewForm?.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+const saved = await assistantGet("assistant-code-project");
+ok(saved.assistant.policy.network === "approve", "saving network=approve persists the new policy value");
+ok(
+  saved.assistant.policy.local_write === "allow" &&
+    saved.assistant.policy.publish === "approve" &&
+    saved.assistant.policy.delete === "approve" &&
+    saved.assistant.policy.payment === "approve" &&
+    saved.assistant.policy.secrets === "approve" &&
+    saved.assistant.policy.private_data === "approve",
+  "saving the policy keeps every other field intact",
+);
+
+// ── Background CSS contract ───────────────────────────────────
+const testDir = dirname(fileURLToPath(import.meta.url));
+const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8");
+const assistantCssSource = readFileSync(resolve(testDir, "../custom/features/assistant/assistant.css"), "utf8");
+ok(
+  stylesSource.includes(".app--workbench .assistant-workspace,\n.app--workbench .work-session-host,"),
+  "assistant surface joins the shared workbench plate selector",
+);
+const assistantPlateBlock = stylesSource.match(/\.app--workbench \.assistant-workspace \{[\s\S]*?\n\}/)?.[0] ?? "";
+ok(
+  assistantPlateBlock.includes("--assistant-bg: transparent;") &&
+    assistantPlateBlock.includes("background: rgba(11, 12, 17, 0.58);") &&
+    assistantPlateBlock.includes("backdrop-filter: blur(3px);"),
+  "assistant surface uses the Session translucent plate (rgba + blur) with a transparent topbar",
+);
+ok(
+  assistantCssSource.includes("background: rgba(19, 21, 25, 0.82);") &&
+    assistantCssSource.includes("backdrop-filter: blur(16px) saturate(0.96);"),
+  "management drawer uses a readable translucent material",
+);
 
 const attentionSnapshot: AssistantSnapshot = {
   revision: 1,

@@ -43082,6 +43082,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--workbench .workspace-sidebar,
 .app--workbench .session-workspace,
+.app--workbench .assistant-workspace,
 .app--workbench .work-session-host,
 .app--workbench .collab-surface {
   border: 1px solid rgba(214, 218, 228, 0.21);
@@ -43104,6 +43105,15 @@ body > .mermaid-diagram--fullscreen {
   --session-heading-surface: rgba(17, 18, 24, 0.43);
   grid-column: 2;
   height: 100%;
+  background: rgba(11, 12, 17, 0.58);
+  backdrop-filter: blur(3px);
+}
+
+/* Assistant shares the Session plate: a translucent wallpaper surface instead
+   of an opaque console. The topbar drops its opaque --assistant-bg so the
+   shared backdrop stays visible through the whole surface. */
+.app--workbench .assistant-workspace {
+  --assistant-bg: transparent;
   background: rgba(11, 12, 17, 0.58);
   backdrop-filter: blur(3px);
 }
