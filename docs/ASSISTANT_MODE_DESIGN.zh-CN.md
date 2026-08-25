@@ -172,6 +172,9 @@ queued -> running -> succeeded
 | 网络查询 | 使用 Assistant 配置 |
 | 对外发帖、回复、私信 | 必须审批 |
 | 删除、付费、凭据、隐私数据 | 必须逐次审批 |
+| Assistant 记忆读取/写入（`memory` / `remember` / `forget`） | 自动允许 |
+
+内建记忆工具 `memory`（只读检索）、`remember`、`forget` 在 Assistant Session 中始终自动执行：它们写入的是 Assistant 绑定项目的受控、版本化 memory store，而不是任意文件写入，因此即使 `local_write=deny/approve` 也保持允许，不再生成 `approve_tool:remember` / `approve_tool:forget` 人工待办。工具调用与结果事件、失败显式暴露和现有 memory queue 行为保持不变，`bash`、删除、发布/MCP 等既有敏感边界仍按上表审批或拒绝。
 
 MCP 工具在阶段 2 统一视为外部边界：`network=deny` 时拒绝，其余网络策略下逐次审批。即使工具声明 `readOnly`，该声明也不能证明它不会把项目内容发送到外部服务；后续只有在引入可信 MCP 能力元数据后，才可对明确的本地只读工具放宽。
 

@@ -974,8 +974,13 @@ func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
 	networkAllow := []string{
 		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll", "browser_tab", "browser_close",
 	}
-	allow := make([]string, 0, len(safeLocalWrites)+len(networkAllow))
+	allow := make([]string, 0, len(safeLocalWrites)+len(networkAllow)+3)
 	deny := make([]string, 0, len(localAll)+len(networkTools))
+	// Assistant memory tools always auto-execute. remember/forget write to the
+	// assistant's bound project memory store (a controlled, versioned store),
+	// not arbitrary files, so they stay Allow even when LocalWrite is
+	// deny/approve; memory is read-only and matches the same intent explicitly.
+	allow = append(allow, "memory", "remember", "forget")
 	if policy.LocalWrite == assistant.AccessAllow {
 		allow = append(allow, safeLocalWrites...)
 	} else if policy.LocalWrite == assistant.AccessDeny {

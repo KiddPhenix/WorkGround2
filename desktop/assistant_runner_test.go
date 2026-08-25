@@ -713,6 +713,44 @@ func TestAssistantPermissionPolicyKeepsMoveDeleteAndAllMCPAsk(t *testing.T) {
 	}
 }
 
+func TestAssistantPermissionMemoryToolsAutoExecute(t *testing.T) {
+	// memory/remember/forget auto-execute regardless of LocalWrite and never
+	// request an approver, because they write to the assistant's bound project
+	// memory store rather than arbitrary files.
+	for _, lw := range []assistant.Access{assistant.AccessDeny, assistant.AccessApprove, assistant.AccessAllow} {
+		policy := assistant.DefaultPolicy()
+		policy.LocalWrite = lw
+		approver := &permissionApproverStub{}
+		gate := permission.NewGate(buildAssistantPermissionPolicy(policy), approver)
+		for _, toolName := range []string{"memory", "remember", "forget"} {
+			allowed, _, err := gate.Check(context.Background(), toolName, json.RawMessage(`{"name":"x"}`), toolName == "memory")
+			if err != nil || !allowed {
+				t.Fatalf("local=%s %s allowed=%v err=%v, want auto-allow", lw, toolName, allowed, err)
+			}
+		}
+		if approver.calls != 0 {
+			t.Fatalf("local=%s memory tools requested approval %d times, want 0", lw, approver.calls)
+		}
+	}
+
+	// Sensitive boundaries still require approval even with memory tools
+	// auto-allowed and LocalWrite/Network set to Allow.
+	policy := assistant.DefaultPolicy()
+	policy.LocalWrite = assistant.AccessAllow
+	policy.Network = assistant.AccessAllow
+	approver := &permissionApproverStub{}
+	gate := permission.NewGate(buildAssistantPermissionPolicy(policy), approver)
+	for _, toolName := range []string{"bash", "delete_range", "mcp__forum__publish"} {
+		allowed, _, err := gate.Check(context.Background(), toolName, json.RawMessage(`{"command":"rm -rf build"}`), false)
+		if err != nil || allowed {
+			t.Fatalf("%s allowed=%v err=%v, want declined", toolName, allowed, err)
+		}
+	}
+	if approver.calls != 3 {
+		t.Fatalf("sensitive tool approvals=%d, want 3", approver.calls)
+	}
+}
+
 func TestAssistantPromptForInjectsResponsibilityGraph(t *testing.T) {
 	host := &assistantHostStub{}
 	service, store := newAssistantTestRuntime(t, host)
