@@ -1183,6 +1183,7 @@ func (a *App) rebuild() error {
 		SessionDir:               tabSessionDir(tab),
 		EffortOverride:           cloneStringPtr(tab.effort),
 		TokenMode:                currentTabTokenMode(tab),
+		SessionKind:              tab.sessionKind,
 		SharedHost:               sharedHost,
 		SessionRefs:              a.sessionRefs,
 		SessionRefsErr:           a.sessionRefsErr,

@@ -45,6 +45,7 @@ type assistantHostStub struct {
 	busy         bool
 	approval     *event.Approval
 	ask          *event.Ask
+	toolResults  []event.Tool
 	block        <-chan struct{}
 	cancelDone   bool
 	prepared     assistant.Run
@@ -99,6 +100,7 @@ func (h *assistantHostStub) TrySubmit(tabID, prompt string, policy assistant.Pol
 	runtime := h.runtime
 	approval := h.approval
 	ask := h.ask
+	toolResults := append([]event.Tool(nil), h.toolResults...)
 	block := h.block
 	h.mu.Unlock()
 	if err != nil || busy {
@@ -119,6 +121,9 @@ func (h *assistantHostStub) TrySubmit(tabID, prompt string, policy assistant.Pol
 			if ask != nil {
 				runtime.ObserveEvent(tabID, event.Event{Kind: event.AskRequest, Ask: *ask})
 				return
+			}
+			for _, result := range toolResults {
+				runtime.ObserveEvent(tabID, event.Event{Kind: event.ToolResult, Tool: result})
 			}
 			runtime.ObserveEvent(tabID, event.Event{Kind: event.Message, Text: "Scan complete"})
 			runtime.ObserveEvent(tabID, event.Event{Kind: event.TurnDone})
@@ -162,16 +167,20 @@ func newAssistantTestRuntime(t *testing.T, host *assistantHostStub) (*AssistantR
 }
 
 func createAssistantRun(t *testing.T, store *assistant.Store, requestID string) (assistant.Snapshot, assistant.Run) {
+	return createAssistantRunWithTask(t, store, requestID, "Keep the project healthy", "Scan now")
+}
+
+func createAssistantRunWithTask(t *testing.T, store *assistant.Store, requestID, mission, prompt string) (assistant.Snapshot, assistant.Run) {
 	t.Helper()
 	now := time.Now()
 	snapshot, err := store.Create(assistant.CreateInput{
 		RequestID: "create-" + requestID,
 		Assistant: assistant.Assistant{
-			ID: "helper-" + requestID, Name: "Helper", Mission: "Keep the project healthy",
+			ID: "helper-" + requestID, Name: "Helper", Mission: mission,
 			Scope: assistant.ScopeGlobal, Lifecycle: assistant.LifecycleActive, Policy: assistant.DefaultPolicy(),
 		},
 		Routines: []assistant.Routine{{
-			ID: "routine-" + requestID, Title: "Scan", Prompt: "Scan now", Enabled: true,
+			ID: "routine-" + requestID, Title: "Scan", Prompt: prompt, Enabled: true,
 			CatchUp: assistant.CatchUpCoalesceLatest, Schedule: assistant.Schedule{Kind: assistant.ScheduleManual},
 		}},
 		Now: now,
@@ -187,6 +196,42 @@ func createAssistantRun(t *testing.T, store *assistant.Store, requestID string) 
 		t.Fatalf("Trigger: %v", err)
 	}
 	return snapshot, run
+}
+
+func TestAssistantRuntimeRejectsMissingLiveWebEvidence(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, run := createAssistantRunWithTask(t, store, "web-missing", "观察 NGA", "查看 bbs.nga.cn 最新内容")
+	service.Start()
+	defer service.Stop()
+
+	failed := waitAssistantRunState(t, store, snapshot.Assistant.ID, run.ID, assistant.RunRetryWait)
+	if failed.Error == nil || failed.Error.Code != "evidence_missing" || !failed.Error.Retryable {
+		t.Fatalf("missing live_web evidence was not explicit and retryable: %+v", failed.Error)
+	}
+}
+
+func TestAssistantRuntimeAcceptsSuccessfulLiveWebResult(t *testing.T) {
+	host := &assistantHostStub{toolResults: []event.Tool{{Name: "browser_state", Output: "NGA live page"}}}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, run := createAssistantRunWithTask(t, store, "web-success", "观察 NGA", "查看 bbs.nga.cn 最新内容")
+	service.Start()
+	defer service.Stop()
+
+	waitAssistantRunState(t, store, snapshot.Assistant.ID, run.ID, assistant.RunSucceeded)
+}
+
+func TestAssistantRuntimeRejectsFailedLiveWebResult(t *testing.T) {
+	host := &assistantHostStub{toolResults: []event.Tool{{Name: "web_fetch", Err: "network denied"}}}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, run := createAssistantRunWithTask(t, store, "web-failed", "观察 NGA", "查看 bbs.nga.cn 最新内容")
+	service.Start()
+	defer service.Stop()
+
+	failed := waitAssistantRunState(t, store, snapshot.Assistant.ID, run.ID, assistant.RunRetryWait)
+	if failed.Error == nil || failed.Error.Code != "evidence_missing" {
+		t.Fatalf("failed live tool result incorrectly satisfied evidence: %+v", failed.Error)
+	}
 }
 
 func TestAssistantRuntimeBindsBeforeSubmitAndDoesNotChangeActiveTab(t *testing.T) {

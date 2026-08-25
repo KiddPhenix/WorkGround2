@@ -115,9 +115,10 @@ type WorkspaceTab struct {
 	toolApprovalMode  string
 	disabledMCP       map[string]ServerView
 	mcpOrder          []string
-	sessionKind       agent.SessionKind // "normal", "work", or "collaboration"
+	sessionKind       agent.SessionKind // "normal", "work", "collaboration", or "assistant"
 	workID            string            // bound Work ID (only when sessionKind == "work")
 	workRequestID     string            // idempotency key that created the Work Session
+	assistantID       string            // bound Assistant ID (only when sessionKind == "assistant")
 	createRequestID   string            // idempotency key that created an ordinary blank session
 }
 
@@ -3001,6 +3002,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 		SessionDir:               sessionDir,
 		EffortOverride:           cloneStringPtr(tab.effort),
 		TokenMode:                currentTabTokenMode(tab),
+		SessionKind:              tab.sessionKind,
 		SharedHost:               sharedHost,
 		SessionRefs:              a.sessionRefs,
 		SessionRefsErr:           a.sessionRefsErr,
@@ -3248,6 +3250,7 @@ func (a *App) applySessionBindingToTab(tab *WorkspaceTab, binding sessionBinding
 		tab.sessionKind = meta.SessionKind
 		tab.workID = meta.WorkID
 		tab.workRequestID = meta.WorkRequestID
+		tab.assistantID = meta.AssistantID
 		a.mu.Unlock()
 		// Historical recovery branches may lack Work identity in their
 		// own meta; walk the parent chain to find it from ancestors.
@@ -5487,6 +5490,7 @@ func (a *App) tabSessionRecoveryMeta(tab *WorkspaceTab) func(control.SessionReco
 		sessionKind := tab.sessionKind
 		workID := tab.workID
 		workRequestID := tab.workRequestID
+		assistantID := tab.assistantID
 		a.mu.RUnlock()
 		if ctrl != nil {
 			if tab.autoAgentActive.Load() {
@@ -5522,6 +5526,7 @@ func (a *App) tabSessionRecoveryMeta(tab *WorkspaceTab) func(control.SessionReco
 			SessionKind:      sessionKind,
 			WorkID:           workID,
 			WorkRequestID:    workRequestID,
+			AssistantID:      assistantID,
 		}
 	}
 }

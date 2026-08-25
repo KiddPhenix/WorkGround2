@@ -653,6 +653,9 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 				opts.BranchMeta.WorkRequestID = parentMeta.WorkRequestID
 			}
 		}
+		if opts.BranchMeta.SessionKind == SessionKindAssistant && opts.BranchMeta.AssistantID == "" {
+			opts.BranchMeta.AssistantID = parentMeta.AssistantID
+		}
 		if parentMeta.Recovered {
 			parentDepth = parentMeta.RecoveryDepth
 			if parentDepth <= 0 {

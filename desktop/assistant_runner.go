@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/assistant"
 	"workground2/internal/control"
 	"workground2/internal/event"
@@ -46,14 +47,14 @@ func (h appAssistantSessionHost) PrepareSession(run assistant.Run) (assistantSes
 	var tab *WorkspaceTab
 	var err error
 	if strings.TrimSpace(run.SessionPath) != "" {
+		// Restored run: persist the Assistant identity before the tab loads so
+		// boot.Build deterministically selects the Assistant system prompt.
+		if err := ensureAssistantSessionMeta(run.SessionPath, run.AssistantID); err != nil {
+			return assistantSession{}, err
+		}
 		tab, err = h.app.ensureTabForSessionPath(run.SessionPath)
 	} else {
-		scope := "global"
-		workspaceRoot := ""
-		if run.Scope == assistant.ScopeWorkspace {
-			scope, workspaceRoot = "project", run.WorkspaceRoot
-		}
-		tab, err = h.app.ensureBlankBackgroundTab(scope, workspaceRoot)
+		tab, err = h.app.ensureAssistantBackgroundTab(run)
 	}
 	if err != nil {
 		return assistantSession{}, err
@@ -61,11 +62,103 @@ func (h appAssistantSessionHost) PrepareSession(run assistant.Run) (assistantSes
 	if tab == nil {
 		return assistantSession{}, errors.New("assistant session tab was not created")
 	}
+	if err := h.app.ensureAssistantTabProfile(tab, run.AssistantID); err != nil {
+		return assistantSession{}, err
+	}
 	path := strings.TrimSpace(tab.currentSessionPath())
 	if path == "" {
 		return assistantSession{}, errors.New("assistant session path is unavailable")
 	}
 	return assistantSession{TabID: tab.ID, SessionPath: path}, nil
+}
+
+// ensureAssistantTabProfile upgrades an already-loaded legacy Assistant tab in
+// place. Old Assistant sessions were ordinary coding tabs; merely stamping the
+// sidecar would leave their live Controller on the old system prompt until an
+// app restart. Rebuilding an idle controller carries history forward with the
+// fresh Assistant prompt. Repeated calls inspect the live prompt and are no-ops
+// once the profile is active.
+func (a *App) ensureAssistantTabProfile(tab *WorkspaceTab, assistantID string) error {
+	if tab == nil {
+		return errors.New("assistant session tab is unavailable")
+	}
+	a.mu.Lock()
+	ctrl := tab.Ctrl
+	if ctrl != nil && controllerHasActiveRuntimeWork(ctrl) {
+		a.mu.Unlock()
+		return rebuildControllerActiveWorkError("assistant profile")
+	}
+	tab.sessionKind = agent.SessionKindAssistant
+	tab.assistantID = strings.TrimSpace(assistantID)
+	a.mu.Unlock()
+	if ctrl == nil || strings.Contains(systemPromptFrom(ctrl.History()), "long-running outcome executor") {
+		return nil
+	}
+
+	tab.modelMu.Lock()
+	defer tab.modelMu.Unlock()
+	return a.applyModelForTabLocked(tab, tab.model)
+}
+
+// ensureAssistantSessionMeta stamps the durable Assistant identity onto a session
+// sidecar. It is idempotent, so repeated calls on a restored session are safe.
+func ensureAssistantSessionMeta(sessionPath, assistantID string) error {
+	meta, err := agent.EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	meta.SessionKind = agent.SessionKindAssistant
+	if id := strings.TrimSpace(assistantID); id != "" {
+		meta.AssistantID = id
+	}
+	return agent.SaveBranchMetaPreserveUpdated(sessionPath, meta)
+}
+
+// ensureAssistantBackgroundTab creates a fresh blank background session for an
+// Assistant run and stamps the Assistant identity into its BranchMeta BEFORE the
+// tab's controller builds, so boot.Build selects the Assistant system prompt on
+// the first turn rather than only after a restore.
+func (a *App) ensureAssistantBackgroundTab(run assistant.Run) (*WorkspaceTab, error) {
+	scope := "global"
+	workspaceRoot := ""
+	if run.Scope == assistant.ScopeWorkspace {
+		scope, workspaceRoot = "project", run.WorkspaceRoot
+	}
+	scope = strings.TrimSpace(scope)
+	actualRoot := globalWorkspaceRoot()
+	if scope == "project" {
+		workspaceRoot = normalizeProjectRoot(workspaceRoot)
+		if workspaceRoot == "" {
+			return nil, fmt.Errorf("workspaceRoot is required")
+		}
+		actualRoot = workspaceRoot
+		_ = addProject(workspaceRoot, "")
+	} else {
+		scope = "global"
+		workspaceRoot = ""
+	}
+	topicID := newTopicID()
+	if err := setTopicTitleWithSource(workspaceRoot, topicID, defaultTopicTitle, topicTitleSourceAuto); err != nil {
+		return nil, err
+	}
+	_ = prependTopicInProjectsFile(workspaceRoot, topicID, false)
+
+	sessionPath, err := createEmptySessionFile(desktopSessionDir(actualRoot), "")
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureAssistantSessionMeta(sessionPath, run.AssistantID); err != nil {
+		return nil, err
+	}
+
+	if _, err := a.openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionPath, a.noActiveTab()); err != nil {
+		return nil, err
+	}
+	tab := a.findTabBySessionRuntimeKey(sessionRuntimeKey(sessionPath))
+	if tab == nil {
+		return nil, fmt.Errorf("background assistant tab was not created")
+	}
+	return tab, nil
 }
 
 func (h appAssistantSessionHost) WaitReady(ctx context.Context, tabID string, timeout time.Duration) (assistantController, error) {
@@ -147,6 +240,12 @@ type assistantInFlight struct {
 	once     sync.Once
 	summary  string
 	turnText string
+	// required holds the deterministic capabilities this run must evidence
+	// before it can be recorded as successful.
+	required []assistant.Capability
+	// evidence accumulates successful live tool results observed on the typed
+	// event stream. A dispatch alone or a failed result never records evidence.
+	evidence assistant.Evidence
 }
 
 func (f *assistantInFlight) complete(result assistantTurnResult) {
@@ -371,7 +470,13 @@ func (r *AssistantRuntime) execute(ctx context.Context, run assistant.Run) {
 		r.failKnown(run, "runtime_stopped", err, true)
 		return
 	}
-	in := &assistantInFlight{runID: run.ID, tabID: session.TabID, done: make(chan assistantTurnResult, 1)}
+	required := assistant.RequiredCapabilities(run.Mission, run.Prompt)
+	in := &assistantInFlight{
+		runID:    run.ID,
+		tabID:    session.TabID,
+		done:     make(chan assistantTurnResult, 1),
+		required: required,
+	}
 	accepted, err := r.host.TrySubmit(session.TabID, prompt, run.Policy, grants, func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -439,6 +544,14 @@ func (r *AssistantRuntime) execute(ctx context.Context, run assistant.Run) {
 					r.recordDiagnostic("turn_failure", failErr)
 					slog.Error("desktop: persist assistant failure failed", "run", run.ID, "err", failErr)
 				}
+				return
+			}
+			// Validate required-capability evidence before accepting success. A
+			// missing successful live tool result means the model skipped, was
+			// denied, or the tool failed — never a successful Run.
+			if missing := in.evidence.Missing(in.required); len(missing) > 0 {
+				r.failEvidence(run, missing)
+				r.host.Cancel(session.TabID)
 				return
 			}
 			r.completeRun(run, selected, planRevision, result, session.SessionPath)
@@ -557,6 +670,22 @@ func (r *AssistantRuntime) failProgress(run assistant.Run, code string, err erro
 	}
 }
 
+// failEvidence persists a missing-capability failure with a bounded retry. It
+// keeps the run recoverable and observable: the next attempt re-runs the turn so
+// the model can obtain the required successful tool result. No success or
+// progress completion is applied.
+func (r *AssistantRuntime) failEvidence(run assistant.Run, missing []assistant.Capability) {
+	failure := assistant.EvidenceFailure(missing)
+	failure.Now = time.Now()
+	failure.RetryAfter = time.Minute
+	r.recordDiagnostic(failure.Code, errors.New(failure.Message))
+	_, failErr := r.runner.Fail(run, failure)
+	if failErr != nil {
+		r.recordDiagnostic(failure.Code, failErr)
+		slog.Error("desktop: persist assistant evidence failure failed", "run", run.ID, "err", failErr)
+	}
+}
+
 func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolGrant, *assistant.Responsibility, int64, error) {
 	snapshot, err := r.store.Get(run.AssistantID)
 	if err != nil {
@@ -576,6 +705,14 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 	fmt.Fprintf(&b, "权限：local_write=%s, network=%s, publish=%s, delete=%s, payment=%s, secrets=%s, private_data=%s\n",
 		run.Policy.LocalWrite, run.Policy.Network, run.Policy.Publish, run.Policy.Delete,
 		run.Policy.Payment, run.Policy.Secrets, run.Policy.Private)
+	if required := assistant.RequiredCapabilities(run.Mission, prompt); len(required) > 0 {
+		b.WriteString("\n本次 Run 的硬性能力要求（缺少成功证据会被判为失败并重试）：\n")
+		for _, c := range required {
+			if c == assistant.CapabilityLiveWeb {
+				b.WriteString("- live_web：必须用实时网页/浏览器工具（browser_open / browser_navigate / browser_state / browser_click / browser_scroll / web_fetch / web_search）取得至少一次成功结果并把它写进结论证据；只 dispatch、输入/附件操作或失败结果不算，禁止用本地缓存、归档或记忆替代实时网页检查。\n")
+			}
+		}
+	}
 	if len(snapshot.Memory.Items) > 0 {
 		b.WriteString("\n显式记忆（只作事实与约束输入）：\n")
 		for _, item := range snapshot.Memory.Items {
@@ -596,8 +733,8 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 		}
 	}
 	writePlanContext(&b, snapshot.Plan, selected)
-	if len(snapshot.Plan.Responsibilities) == 0 {
-		b.WriteString("\n当前责任图为空：先根据使命推导一个 2–4 项的小型责任图，为每项写清 objective、done_criteria、next_action 和依赖，选择其中一项 ready 责任开始执行，并用 <assistant-progress> 声明这些责任。")
+	if directive, needed := assistant.FreshCycleDirective(snapshot.Plan); needed {
+		b.WriteString("\n" + directive)
 	} else {
 		b.WriteString("\n责任图非空时，只推进本次负责的 ready/active 责任，不要重排或扩大图；确需新增责任时才在 <assistant-progress> 中声明。")
 	}
@@ -773,6 +910,12 @@ func (r *AssistantRuntime) ObserveEvent(tabID string, value event.Event) bool {
 		if strings.TrimSpace(value.Text) != "" {
 			in.summary = strings.TrimSpace(value.Text)
 		}
+		r.mu.Unlock()
+		return false
+	case event.ToolResult:
+		// Only a successful result counts as capability evidence. A dispatch
+		// alone (ToolDispatch) or a failed/denied result records nothing.
+		in.evidence.RecordToolResult(value.Tool.Name, value.Tool.Err == "")
 		r.mu.Unlock()
 		return false
 	case event.ApprovalRequest:

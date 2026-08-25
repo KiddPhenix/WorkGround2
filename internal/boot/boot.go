@@ -196,6 +196,43 @@ func workTaskSystemPrompt(hostPrompt string) string {
 	return WorkTaskSystemPrompt + "\n\n# Workspace policies and context\n" + hostPrompt
 }
 
+// AssistantSystemPrompt is the stable system prompt used by Assistant execution
+// sessions. It defines a long-running outcome executor — distinct from the
+// coding-agent prompt used by normal, work, and collaboration sessions.
+const AssistantSystemPrompt = `You are a long-running outcome executor driving one Run of a persistent Assistant.
+You are NOT a coding assistant and NOT a conversational agent; you execute a
+frozen mission and the current routine, then leave verifiable evidence.
+
+Core rules:
+- Use every required capability and tool for this run. Never answer from "common
+  knowledge" when a required capability mandates active use of the matching
+  tool. If a required capability is blocked or unavailable, say so explicitly:
+  state the capability, why it is blocked, and do not fabricate a substitute.
+- Never silently replace requested live website inspection with local cache,
+  archive, or memory. If the task requires live web (live_web), you must obtain
+  a successful result from an appropriate live web/browser tool (for example
+  browser open/navigate/state or web fetch/search). A tool dispatch alone or a
+  failed result does not satisfy it.
+- Leave verifiable evidence: cite what you did, which tool produced which result,
+  and the concrete outcome. The host validates required-capability evidence
+  against your successful tool results before recording the run as successful.
+- Preserve the frozen mission and policy. Do not modify the assistant's running
+  frequency, scope, or permissions; do not grant yourself new capabilities.
+- When you cannot deliver (missing capability, insufficient input, contradictory
+  requirements), signal failure clearly: what is missing, why it blocks, and
+  whether retrying could help. Do not claim success without objective evidence.
+- Your final response is the delivery record. Missing objective evidence returns
+  the run to a recoverable, observable failure state.`
+
+func assistantSystemPrompt(hostPrompt string) string {
+	hostPrompt = strings.TrimSpace(hostPrompt)
+	hostPrompt = strings.TrimSpace(strings.Replace(hostPrompt, config.DefaultSystemPrompt, "", 1))
+	if hostPrompt == "" {
+		return AssistantSystemPrompt
+	}
+	return AssistantSystemPrompt + "\n\n# Workspace policies and context\n" + hostPrompt
+}
+
 // ErrUnknownModel is returned by Build when the configured model can't be
 // resolved to a provider — e.g. a default_model left over from a renamed or
 // removed provider. Callers can detect it (errors.Is) to re-run setup.
@@ -314,6 +351,11 @@ type Options struct {
 	// for unsaved editor buffers and foreground client terminals.
 	FileOverlay    builtin.FileOverlay
 	TerminalRunner builtin.TerminalRunner
+	// SessionKind selects the stable system prompt for this session. Empty or
+	// agent.SessionKindNormal keeps the coding-agent prompt; assistant uses the
+	// long-running outcome executor prompt. Work and collaboration retain their
+	// existing behavior.
+	SessionKind agent.SessionKind
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a
@@ -432,6 +474,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// false) still keeps those. Applied once, into the cache-stable prefix.
 	if st, ok := outputstyle.Resolve(cfg.Agent.OutputStyle, outputstyle.Dirs()); ok {
 		sysPrompt = outputstyle.Apply(sysPrompt, st)
+	}
+	// Assistant sessions swap the coding-agent role for the long-running outcome
+	// executor role while keeping any user-supplied policy/context. Normal, work,
+	// and collaboration sessions keep the coding-agent prompt unchanged.
+	if opts.SessionKind == agent.SessionKindAssistant {
+		sysPrompt = assistantSystemPrompt(sysPrompt)
 	}
 	sysPrompt += "\n\n" + config.UserDecisionPolicy
 	sysPrompt += "\n\n" + config.LanguagePolicy

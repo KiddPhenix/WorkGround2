@@ -268,6 +268,15 @@ type Opportunity struct {
 
 阶段 1 的 Runner 提供接口和可恢复状态；Desktop Session 执行适配在阶段 2 接通。
 
+### 6.1 Assistant 执行档案（profile）
+
+每次 Assistant Run 使用独立的 `SessionKind=assistant` 会话身份，持久化在会话 sidecar 的 `SessionKind` 与 `AssistantID`，随保存/重载存活；`boot.Build` 据此使用专门的 Assistant 稳定 system prompt（长期 outcome executor）。普通 / Work / Collaboration 会话保持原有 coding-agent 行为。
+
+- 硬性能力从冻结的 Run mission + prompt 确定性派生（`assistant.RequiredCapabilities`）。命名 URL/域名或明确要求在线检查网站的任务派生 `live_web`。
+- `live_web` 只由成功的实时网页/浏览器工具结果满足（browser open/navigate/state 或 web fetch/search 等）；只 dispatch 或失败结果不算。
+- 接受 TurnDone 为成功前，先校验必需能力证据；缺失证据通过 `Failure{code:"evidence_missing"}` 进入可重试、可观察的恢复状态，绝不记为成功 Run。网络 deny、工具不可用、模型跳过必需工具同理。
+- 责任图全部 done 且无 ready/active 时，提示开启新的 2–4 项责任周期；旧 done 项保留为历史，不重开、不修改。
+
 ## 7. Desktop UI
 
 ### 7.1 参考图视觉语言
