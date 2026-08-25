@@ -1026,30 +1026,37 @@ func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
 	networkAllow := []string{
 		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll", "browser_tab", "browser_close",
 	}
-	allow := make([]string, 0, len(safeLocalWrites)+len(networkAllow)+3)
+	allow := make([]string, 0, len(safeLocalWrites)+len(networkAllow)+4)
 	deny := make([]string, 0, len(localAll)+len(networkTools))
 	// Assistant memory tools always auto-execute. remember/forget write to the
 	// assistant's bound project memory store (a controlled, versioned store),
 	// not arbitrary files, so they stay Allow even when LocalWrite is
 	// deny/approve; memory is read-only and matches the same intent explicitly.
 	allow = append(allow, "memory", "remember", "forget")
-	if policy.LocalWrite == assistant.AccessAllow {
+	// Ask has precedence over Allow. These cover destructive local operations
+	// and browser actions that can publish or disclose data.
+	ask := []string{
+		"delete_range", "delete_symbol",
+		"browser_click", "browser_type", "browser_upload", "browser_attach",
+		"mcp__*",
+	}
+	switch policy.LocalWrite {
+	case assistant.AccessAllow:
+		// bash is a full shell: when the user allows local writes it executes
+		// without a per-command whitelist (read-only and build/test commands
+		// alike), mirroring the file writer auto-execute behaviour.
 		allow = append(allow, safeLocalWrites...)
-	} else if policy.LocalWrite == assistant.AccessDeny {
+		allow = append(allow, "bash")
+	case assistant.AccessDeny:
 		deny = append(deny, localAll...)
+	case assistant.AccessApprove:
+		ask = append(ask, "bash")
 	}
 	if policy.Network == assistant.AccessAllow {
 		allow = append(allow, networkAllow...)
 	} else if policy.Network == assistant.AccessDeny {
 		deny = append(deny, networkTools...)
 		deny = append(deny, "mcp__*")
-	}
-	// Ask has precedence over Allow. These cover destructive local operations,
-	// shell escape hatches and browser actions that can publish or disclose data.
-	ask := []string{
-		"bash", "delete_range", "delete_symbol",
-		"browser_click", "browser_type", "browser_upload", "browser_attach",
-		"mcp__*",
 	}
 	if policy.Network == assistant.AccessApprove {
 		ask = append(ask, networkTools...)

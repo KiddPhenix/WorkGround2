@@ -633,12 +633,37 @@ func TestAssistantPermissionPolicyDeniesWithoutApprovalAndKeepsSensitiveAsk(t *t
 	policy.LocalWrite = assistant.AccessAllow
 	approver = &permissionApproverStub{}
 	gate = permission.NewGate(buildAssistantPermissionPolicy(policy), approver)
-	allowed, _, err = gate.Check(context.Background(), "bash", json.RawMessage(`{"command":"echo publish"}`), false)
-	if err != nil || allowed {
-		t.Fatalf("sensitive bash result: allowed=%v err=%v", allowed, err)
+	allowed, _, err = gate.Check(context.Background(), "bash", json.RawMessage(`{"command":"go build ./..."}`), false)
+	if err != nil || !allowed || approver.calls != 0 {
+		t.Fatalf("allowed bash result: allowed=%v calls=%d err=%v", allowed, approver.calls, err)
 	}
-	if approver.calls != 1 {
-		t.Fatalf("sensitive action approval calls = %d, want 1", approver.calls)
+	allowed, _, err = gate.Check(context.Background(), "delete_range", json.RawMessage(`{"path":"a.txt"}`), false)
+	if err != nil || allowed || approver.calls != 1 {
+		t.Fatalf("sensitive delete result: allowed=%v calls=%d err=%v", allowed, approver.calls, err)
+	}
+}
+
+func TestAssistantPermissionPolicyBashThreeStates(t *testing.T) {
+	for _, tc := range []struct {
+		access        assistant.Access
+		wantAllowed   bool
+		wantApprovals int
+	}{
+		{assistant.AccessDeny, false, 0},
+		{assistant.AccessApprove, false, 1},
+		{assistant.AccessAllow, true, 0},
+	} {
+		policy := assistant.DefaultPolicy()
+		policy.LocalWrite = tc.access
+		approver := &permissionApproverStub{}
+		gate := permission.NewGate(buildAssistantPermissionPolicy(policy), approver)
+		// A normal build/test command exercises the no-whitelist path; read-only
+		// commands share the same decision because bash is gated by LocalWrite,
+		// not command content.
+		allowed, _, err := gate.Check(context.Background(), "bash", json.RawMessage(`{"command":"go test ./..."}`), false)
+		if err != nil || allowed != tc.wantAllowed || approver.calls != tc.wantApprovals {
+			t.Fatalf("local=%s allowed=%v approvals=%d err=%v", tc.access, allowed, approver.calls, err)
+		}
 	}
 }
 
@@ -734,20 +759,22 @@ func TestAssistantPermissionMemoryToolsAutoExecute(t *testing.T) {
 	}
 
 	// Sensitive boundaries still require approval even with memory tools
-	// auto-allowed and LocalWrite/Network set to Allow.
+	// auto-allowed and LocalWrite/Network set to Allow. bash is no longer in
+	// this set: LocalWrite=Allow auto-executes it, so only destructive file
+	// ops and MCP publishing remain Ask here.
 	policy := assistant.DefaultPolicy()
 	policy.LocalWrite = assistant.AccessAllow
 	policy.Network = assistant.AccessAllow
 	approver := &permissionApproverStub{}
 	gate := permission.NewGate(buildAssistantPermissionPolicy(policy), approver)
-	for _, toolName := range []string{"bash", "delete_range", "mcp__forum__publish"} {
+	for _, toolName := range []string{"delete_range", "mcp__forum__publish"} {
 		allowed, _, err := gate.Check(context.Background(), toolName, json.RawMessage(`{"command":"rm -rf build"}`), false)
 		if err != nil || allowed {
 			t.Fatalf("%s allowed=%v err=%v, want declined", toolName, allowed, err)
 		}
 	}
-	if approver.calls != 3 {
-		t.Fatalf("sensitive tool approvals=%d, want 3", approver.calls)
+	if approver.calls != 2 {
+		t.Fatalf("sensitive tool approvals=%d, want 2", approver.calls)
 	}
 }
 
