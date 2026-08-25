@@ -2414,6 +2414,8 @@ export const zh: Record<DictKey, string> = {
   "settings.widget.showDelegationHint": "在小组件图标栏显示“委托”入口；不影响正在运行的委托。",
   "settings.widget.showExternalToolsLabel": "显示外部 AI 工具",
   "settings.widget.showExternalToolsHint": "在小组件图标栏显示 DSH 入口；不影响正在运行的外部任务。",
+  "settings.widget.showAssistantLabel": "显示助手",
+  "settings.widget.showAssistantHint": "在小组件图标栏显示“助手”入口；不影响后台运行的 Assistant。",
   "settings.widget.skinLabel": "小组件皮肤",
   "settings.widget.skinHint": "选择设备外壳，消息和操作方式保持一致。",
   "settings.widget.skinClassic": "经典通信",

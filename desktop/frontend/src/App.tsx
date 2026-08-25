@@ -1086,7 +1086,7 @@ function linkedSessionOwnerWorkID(sessionSource: string | undefined): string {
   return sessionSource?.match(/^work:([^/]+)(?:\/|$)/)?.[1]?.trim() ?? "";
 }
 
-function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWidgetMode, onDismissWindow, collabDialogSignal = 0 }: { widgetEnabled: boolean; widgetActive: boolean; ownerDecisionEnabled: boolean; onEnterWidgetMode: () => void | Promise<void>; onDismissWindow: () => void | Promise<void>; collabDialogSignal?: number }) {
+function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWidgetMode, onDismissWindow, collabDialogSignal = 0, assistantOpenSignal = 0 }: { widgetEnabled: boolean; widgetActive: boolean; ownerDecisionEnabled: boolean; onEnterWidgetMode: () => void | Promise<void>; onDismissWindow: () => void | Promise<void>; collabDialogSignal?: number; assistantOpenSignal?: number }) {
   const {
     state,
     activeTabId,
@@ -3487,6 +3487,20 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     }
   }, [collabDialogSignal, openCollaborationDialog]);
 
+  // The Assistant widget entry exits widget mode first and then bumps the root
+  // App's monotonic signal. A ref remembers the last applied signal so the
+  // Assistant home opens exactly once per request: never on initial mount (0)
+  // and never again when unrelated state recreates this callback.
+  const appliedAssistantOpenSignal = useRef(0);
+  useEffect(() => {
+    if (assistantOpenSignal > 0 && assistantOpenSignal !== appliedAssistantOpenSignal.current) {
+      appliedAssistantOpenSignal.current = assistantOpenSignal;
+      closeTransientOverlays();
+      setAssistantFocusID("");
+      setAssistantOpen(true);
+    }
+  }, [assistantOpenSignal, closeTransientOverlays]);
+
   const finishCollaborationConnect = useCallback(async () => {
     await refreshProjectsAndTabs();
     setCollaborationDialog(null);
@@ -5360,6 +5374,8 @@ export default function App() {
   // widget mode first and bumps this counter only on a successful exit, so
   // MainApp opens the Host/Join Room form exactly once per request.
   const [collabDialogSignal, setCollabDialogSignal] = useState(0);
+  // MainApp opens the Assistant home exactly once per widget request.
+  const [assistantOpenSignal, setAssistantOpenSignal] = useState(0);
   const { showToast } = useToast();
   const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetMode, () => {
     useLayoutStore.getState().setSidebarCollapsed(true);
@@ -5418,6 +5434,23 @@ export default function App() {
       useOverlayStore.getState().setSettingsTarget("general");
     } finally {
       widgetSettingsRequest.current = false;
+    }
+  }, [widgetCoordinator]);
+
+  // Assistant from the widget fixed entry exits widget mode first and only then
+  // bumps the monotonic signal that opens the Assistant home; a failed exit must
+  // never open Assistant from the still-hidden widget window. The ref guards the
+  // async exit round-trip so a fast double-click cannot bump the signal twice,
+  // and the promise rejection surfaces in the widget's own visible error toast.
+  const widgetAssistantRequest = useRef(false);
+  const openWidgetAssistant = useCallback(async () => {
+    if (widgetAssistantRequest.current) return;
+    widgetAssistantRequest.current = true;
+    try {
+      await widgetCoordinator.exit();
+      setAssistantOpenSignal((count) => count + 1);
+    } finally {
+      widgetAssistantRequest.current = false;
     }
   }, [widgetCoordinator]);
 
@@ -5482,8 +5515,8 @@ export default function App() {
 
   return (
 	<>
-	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} onDismissWindow={dismissMainWindow} collabDialogSignal={collabDialogSignal} />
-	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} />}
+	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} onDismissWindow={dismissMainWindow} collabDialogSignal={collabDialogSignal} assistantOpenSignal={assistantOpenSignal} />
+	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} onOpenAssistant={openWidgetAssistant} />}
 	</>
   );
 }

@@ -499,6 +499,13 @@ func (c *Config) SetDesktopWidgetShowExternalTools(show bool) error {
 	return nil
 }
 
+// SetDesktopWidgetShowAssistant sets whether the 助手 icon is shown in the
+// icon widget. It is presentation-only and never affects the running Assistant.
+func (c *Config) SetDesktopWidgetShowAssistant(show bool) error {
+	c.Desktop.WidgetShowAssistant = &show
+	return nil
+}
+
 // SetShowReasoning sets the CLI's default verbose-reasoning preference. When
 // true, thinking text is shown in the chat TUI on startup; when false (the
 // default), it stays collapsed until the user toggles it with Ctrl+O or

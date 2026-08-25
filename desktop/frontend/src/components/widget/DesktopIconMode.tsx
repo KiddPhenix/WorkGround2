@@ -282,6 +282,7 @@ function itemGlyph(item: DesktopIconItem, agentViewModel?: AgentIconViewModel) {
   if (item.kind === "task") return agentViewModel ? <AgentIcon viewModel={agentViewModel} /> : <Bot />;
   if (item.kind === "external" || item.sourceId === "dsh") return <SquareTerminal />;
   if (item.kind === "workspace") return <WorkspaceMatteIcon icon={isWorkspaceMatteIcon(item.icon) ? item.icon : "folder"} className="desktop-icon__matte" />;
+  if (item.sourceId === "assistant") return <Bot aria-hidden="true" />;
   const fixedIcon: Record<string, WorkspaceMatteIconKey> = {
     new: "new",
     workspace: "folder",
@@ -1301,7 +1302,7 @@ function pinnedIcon(row: { pinned: boolean }) {
   return row.pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />;
 }
 
-export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenMain }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void> }) {
+export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenMain, onOpenAssistant }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void>; onOpenAssistant: () => Promise<void> }) {
 	const t = useT();
   const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], delegations: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
   const [desktopZoom, setDesktopZoom] = useState(1);
@@ -1723,6 +1724,12 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		else if (item.kind === "fixed" && item.sourceId === "dsh") {
 			setActiveID(item.id);
 		}
+		else if (item.kind === "fixed" && item.sourceId === "assistant") {
+			// Single click exits the widget and opens the Assistant home through
+			// the root App; it never opens a generic popup and never runs the
+			// generic fixed action.
+			void openAssistant();
+		}
     else setActiveID((current) => current === item.id ? "" : item.id);
     setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); setQuickOpen(false);
   };
@@ -1990,6 +1997,23 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		} catch (cause) {
 			// A failed exit stays in the widget; the toolbar stays open (like
 			// open main) so the same 设置 click is a safe retry.
+			setQuickError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			exitRequest.current = false;
+			setExiting(false);
+		}
+	};
+	// Opening Assistant from its fixed entry exits widget mode through the root
+	// App first, then opens the Assistant home. A failed exit stays in the
+	// widget with the error visible, so the same 助手 click is a safe retry; the
+	// shared guard keeps a fast double-click from double-exiting/double-opening.
+	const openAssistant = async () => {
+		if (exitRequest.current) return;
+		exitRequest.current = true;
+		setExiting(true);
+		try {
+			await onOpenAssistant();
+		} catch (cause) {
 			setQuickError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
 			exitRequest.current = false;

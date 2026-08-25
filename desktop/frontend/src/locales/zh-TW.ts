@@ -2499,6 +2499,8 @@ export const zhTW: Record<DictKey, string> = {
   "settings.widget.showDelegationHint": "在小組件圖示欄顯示「委託」入口；不影響正在執行的委託。",
   "settings.widget.showExternalToolsLabel": "顯示外部 AI 工具",
   "settings.widget.showExternalToolsHint": "在小組件圖示欄顯示 DSH 入口；不影響正在執行的外部任務。",
+  "settings.widget.showAssistantLabel": "顯示助手",
+  "settings.widget.showAssistantHint": "在小組件圖示欄顯示「助手」入口；不影響背景執行的 Assistant。",
   "settings.widget.skinLabel": "小組件外觀",
   "settings.widget.skinHint": "選擇設備外殼，訊息和操作方式保持一致。",
   "settings.widget.skinClassic": "經典通訊",

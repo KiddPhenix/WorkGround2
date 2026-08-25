@@ -819,6 +819,7 @@ export interface AppBindings extends WailsWorkBindings {
   SetDesktopWidgetAlwaysOnTop(on: boolean): Promise<void>;
   SetDesktopWidgetShowDelegation(show: boolean): Promise<void>;
   SetDesktopWidgetShowExternalTools(show: boolean): Promise<void>;
+  SetDesktopWidgetShowAssistant(show: boolean): Promise<void>;
   SetDesktopWidgetSkin(skin: string): Promise<void>;
   SetDesktopWidgetStyle(style: string): Promise<void>;
   SetDesktopHoverStatusDelayMs(delay: number): Promise<void>;
@@ -1525,7 +1526,9 @@ function makeMockApp(): AppBindings {
 			{ id: "task:tab-wg2", kind: "task", sourceId: "tab-wg2", title: "桌面图标模式", subtitle: "WorkGround2", status: widgetScenario === "widget-running" ? "running" : "thinking", unreadCount: 0, runtimeStatus: { phase: widgetScenario === "widget-running" ? "Running" : "Thinking", summary: widgetScenario === "widget-running" ? "read_file 执行中" : "正在核对真实状态投影", elapsedMs: 84_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 0 }, revision: `task-${widgetRevision}`, notifications: [] },
 			{ id: "external:run-dsh-demo", kind: "external", sourceId: "run-dsh-demo", title: "DSH · WorkGround2", subtitle: "WorkGround2", status: "running", unreadCount: 0, runtimeStatus: { phase: "tool", summary: "DSH 正在执行", elapsedMs: 18_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 1 }, revision: `dsh-${widgetRevision}`, notifications: [], actions: ["cancel"] },
 			...(desktopWorkspaceSlots > 0 ? [{ id: "workspace:~/projects/WorkGround2", kind: "workspace", sourceId: "~/projects/WorkGround2", title: "WorkGround2", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "workspace", order: 0 }, revision: "workspace", notifications: [] } satisfies DesktopIconItem] : []),
-			...(["new", "delegate", "search"] as const).map((id, order) => ({ id: `fixed:${id}`, kind: "fixed" as const, sourceId: id, title: { new: "新建", delegate: "委托", search: "搜索" }[id], icon: id, status: "idle" as const, unreadCount: 0, position: { row: "bottom" as const, zone: "fixed" as const, order }, revision: `fixed-${id}`, notifications: [] })),
+			...(["new", "assistant", "delegate", "search"] as const)
+				.filter((id) => id !== "assistant" || settings.widgetShowAssistant)
+				.map((id, order) => ({ id: `fixed:${id}`, kind: "fixed" as const, sourceId: id, title: { new: "新建", assistant: "助手", delegate: "委托", search: "搜索" }[id], icon: id === "assistant" ? "bot" : id, status: "idle" as const, unreadCount: 0, position: { row: "bottom" as const, zone: "fixed" as const, order }, revision: `fixed-${id}`, notifications: [] })),
 			{ id: "fixed:dsh", kind: "fixed", sourceId: "dsh", title: "DSH", subtitle: "0.1.0-rc.8 · 快速启动", icon: "terminal", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "fixed", order: 3 }, revision: "fixed-dsh", notifications: [], actions: ["launch"] },
 		],
 	});
@@ -2063,6 +2066,7 @@ function makeMockApp(): AppBindings {
 		widgetStyle: "icons",
     widgetShowDelegation: false,
     widgetShowExternalTools: false,
+    widgetShowAssistant: true,
 		hoverStatusDelayMs: 1200,
     ownerDecisionEnabled: false, // master kill switch for the 主人决策 feature (default off)
     memoryCompilerEnabled: true,
@@ -4994,6 +4998,9 @@ function makeMockApp(): AppBindings {
         },
         async SetDesktopWidgetShowExternalTools(show: boolean) {
           settings.widgetShowExternalTools = show;
+        },
+        async SetDesktopWidgetShowAssistant(show: boolean) {
+          settings.widgetShowAssistant = show;
         },
         async SetDesktopWidgetSkin(skin: string) {
           settings.widgetSkin = skin;

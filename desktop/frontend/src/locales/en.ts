@@ -2413,6 +2413,8 @@ export const en = {
   "settings.widget.showDelegationHint": "Show the Delegations entry in the widget icon bar. Running delegations are not affected.",
   "settings.widget.showExternalToolsLabel": "Show external AI tools",
   "settings.widget.showExternalToolsHint": "Show the DSH entry in the widget icon bar. Running external tasks are not affected.",
+  "settings.widget.showAssistantLabel": "Show Assistant",
+  "settings.widget.showAssistantHint": "Show the Assistant entry in the widget icon bar. The running Assistant is not affected.",
   "settings.widget.skinLabel": "Widget skin",
   "settings.widget.skinHint": "Choose a device shell. Messages and controls stay consistent.",
   "settings.widget.skinClassic": "Classic",

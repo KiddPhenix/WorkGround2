@@ -781,8 +781,8 @@ assert.match(css, /button:focus-visible[\s\S]*outline: 2px solid #70dfe8/, "acti
 assert.match(css, /button:disabled\s*\{\s*opacity: \.55/, "disabled buttons stay visibly disabled");
 
 // --- workspace management: the fixed workspace icon between 新建 and Rooms ---
-// The backend fixed bar is the declared Go contract: 新建 → 工作区 → Rooms → 委托 → 搜索.
-assert.match(backend, /\{"new", "新建", "plus"\},\s*\{"workspace", "工作区", "workspace"\},\s*\{"rooms", "Rooms", "rooms"\},\s*\{"delegate", "委托", "users"\},\s*\{"search", "搜索", "search"\}/, "backend fixed bar order is 新建 → 工作区 → Rooms → 委托 → 搜索 by declaration");
+// The backend fixed bar is the declared Go contract: 新建 → 工作区 → Rooms → 助手 → 委托 → 搜索.
+assert.match(backend, /\{"new", "新建", "plus"\},\s*\{"workspace", "工作区", "workspace"\},\s*\{"rooms", "Rooms", "rooms"\},\s*\{"assistant", "助手", "bot"\},\s*\{"delegate", "委托", "users"\},\s*\{"search", "搜索", "search"\}/, "backend fixed bar order is 新建 → 工作区 → Rooms → 助手 → 委托 → 搜索 by declaration");
 assert.match(component, /function DelegationPanel\([\s\S]*正在运行的委托[\s\S]*当前没有运行中的委托/, "delegate fixed entry renders a running-list panel with an explicit empty state");
 assert.match(component, /error && <p role="alert" className="desktop-icon-popup__delegation-error">委托扫描失败：[\s\S]*列表保留已读取结果，将自动重试/, "delegate panel exposes partial scan failures and automatic retry state inline");
 assert.match(component, /active\.sourceId === "delegate"[\s\S]*items=\{snapshot\.delegations \|\| \[\]\}[\s\S]*run\(active, "open_delegation", \[item\.id\]\)/, "delegate list opens the exact typed snapshot item through the idempotent backend action");
@@ -1429,6 +1429,7 @@ assert.equal(
 {
   const mode = readFileSync(resolve(testDir, "../components/widget/DesktopIconMode.tsx"), "utf8");
   assert.match(mode, /if \(item\.kind === "task"\) return agentViewModel \? <AgentIcon viewModel=\{agentViewModel\} \/> : <Bot \/>;/, "task branch renders AgentIcon for real tasks, Bot for QuickStart");
+  assert.match(mode, /if \(item\.sourceId === "assistant"\) return <Bot aria-hidden="true" \/>;/, "the assistant fixed entry renders the Bot glyph with an explicit aria-hidden marker");
   assert.match(mode, /if \(item\.kind === "person"\) return agentViewModel \? <AgentIcon viewModel=\{agentViewModel\} \/> : <Users \/>;/, "resolved personal IM rows render the corresponding session AgentIcon with a safe Users fallback");
   assert.match(mode, /!agentIcon && \(item\.status === "running" \|\| item\.status === "thinking"\)/, "old running/thinking motion corners are suppressed for Agent Icon items");
   assert.match(mode, /!agentIcon && statusGlyph\(item\)/, "old status glyph overlay is suppressed for Agent Icon items");

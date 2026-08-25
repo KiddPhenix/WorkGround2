@@ -52,6 +52,7 @@ func TestExternalRunIconsExposeOnlyDeclaredCapabilities(t *testing.T) {
 func TestFilterDesktopIconVisibility(t *testing.T) {
 	base := []DesktopIconItem{
 		{ID: "fixed:new", Kind: "fixed", SourceID: "new", Title: "新建"},
+		{ID: "fixed:assistant", Kind: "fixed", SourceID: "assistant", Title: "助手"},
 		{ID: "fixed:delegate", Kind: "fixed", SourceID: "delegate", Title: "委托"},
 		{ID: "fixed:dsh", Kind: "fixed", SourceID: "dsh", Title: "DSH"},
 		{ID: "external:run-1", Kind: "external", SourceID: "run-1", Title: "DSH 任务"},
@@ -66,26 +67,32 @@ func TestFilterDesktopIconVisibility(t *testing.T) {
 	has := func(s DesktopIconSnapshot, id string) bool { return findDesktopIconItem(s.Items, id) != nil }
 
 	cases := []struct {
-		name               string
-		showDelegation     bool
-		showExternalTools  bool
-		wantDelegateHidden bool
-		wantExternalHidden bool
+		name                string
+		showDelegation      bool
+		showExternalTools   bool
+		showAssistant       bool
+		wantDelegateHidden  bool
+		wantExternalHidden  bool
+		wantAssistantHidden bool
 	}{
-		{"default both hidden", false, false, true, true},
-		{"delegation only", true, false, false, true},
-		{"external only", false, true, true, false},
-		{"both shown", true, true, false, false},
+		{"default both hidden assistant shown", false, false, true, true, true, false},
+		{"delegation only", true, false, true, false, true, false},
+		{"external only", false, true, true, true, false, false},
+		{"assistant hidden", true, true, false, false, false, true},
+		{"all shown", true, true, true, false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newSnapshot()
-			filterDesktopIconVisibility(&s, tc.showDelegation, tc.showExternalTools)
+			filterDesktopIconVisibility(&s, tc.showDelegation, tc.showExternalTools, tc.showAssistant)
 			if got := !has(s, "fixed:delegate"); got != tc.wantDelegateHidden {
 				t.Fatalf("delegate hidden = %v, want %v", got, tc.wantDelegateHidden)
 			}
 			if got := !has(s, "fixed:dsh") && !has(s, "external:run-1"); got != tc.wantExternalHidden {
 				t.Fatalf("external icons hidden = %v, want %v", got, tc.wantExternalHidden)
+			}
+			if got := !has(s, "fixed:assistant"); got != tc.wantAssistantHidden {
+				t.Fatalf("assistant hidden = %v, want %v", got, tc.wantAssistantHidden)
 			}
 			if !has(s, "fixed:new") || !has(s, "task:task-1") {
 				t.Fatal("unrelated icons must always survive")
@@ -185,15 +192,15 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 	if workspace == nil || workspace.Position.Row != "bottom" || workspace.Position.Zone != "workspace" || workspace.Icon != "python" {
 		t.Fatalf("workspace projection = %#v", workspace)
 	}
-	for _, id := range []string{"fixed:new", "fixed:workspace", "fixed:rooms", "fixed:delegate", "fixed:search"} {
+	for _, id := range []string{"fixed:new", "fixed:workspace", "fixed:rooms", "fixed:assistant", "fixed:delegate", "fixed:search"} {
 		item := findDesktopIconItem(snapshot.Items, id)
 		if item == nil || item.Position.Row != "bottom" || item.Position.Zone != "fixed" {
 			t.Fatalf("fixed item %s = %#v", id, item)
 		}
 	}
-	// The fixed bottom bar order is a Go contract: 新建 → 工作区 → Rooms → 委托 → 搜索.
+	// The fixed bottom bar order is a Go contract: 新建 → 工作区 → Rooms → 助手 → 委托 → 搜索.
 	// Order comes from the declared slice index, never map iteration.
-	wantOrder := []string{"new", "workspace", "rooms", "delegate", "search"}
+	wantOrder := []string{"new", "workspace", "rooms", "assistant", "delegate", "search"}
 	for order, sourceID := range wantOrder {
 		item := findDesktopIconItem(snapshot.Items, "fixed:"+sourceID)
 		if item == nil || item.SourceID != sourceID || item.Position.Order != order {
@@ -804,11 +811,12 @@ func TestDesktopIconRoomsFixedItemContract(t *testing.T) {
 	if rooms.ActivityCount != 0 || rooms.UnreadCount != 0 {
 		t.Fatalf("rooms fixed item must stay idle without badges: %#v", rooms)
 	}
-	// The rooms icon sits between 工作区 and 委托 in the fixed bar.
+	// The rooms icon sits between 工作区 and 助手 in the fixed bar; 助手 precedes 委托.
 	workspace := findDesktopIconItem(snapshot.Items, "fixed:workspace")
+	assistant := findDesktopIconItem(snapshot.Items, "fixed:assistant")
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
-	if workspace == nil || delegate == nil || workspace.Position.Order+1 != rooms.Position.Order || rooms.Position.Order+1 != delegate.Position.Order {
-		t.Fatalf("fixed bar order around rooms = workspace %#v rooms %#v delegate %#v", workspace, rooms, delegate)
+	if workspace == nil || assistant == nil || delegate == nil || workspace.Position.Order+1 != rooms.Position.Order || rooms.Position.Order+1 != assistant.Position.Order || assistant.Position.Order+1 != delegate.Position.Order {
+		t.Fatalf("fixed bar order around rooms = workspace %#v rooms %#v assistant %#v delegate %#v", workspace, rooms, assistant, delegate)
 	}
 }
 
