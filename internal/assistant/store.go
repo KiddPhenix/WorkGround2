@@ -24,17 +24,20 @@ var storeGates sync.Map
 // assistant aggregate. Callers receive deep copies, so mutating a result never
 // changes Store state without a subsequent CAS operation.
 type Snapshot struct {
-	Revision      int64            `json:"revision"`
-	Assistant     Assistant        `json:"assistant"`
-	Routines      []Routine        `json:"routines"`
-	Memory        Memory           `json:"memory"`
-	Runs          []Run            `json:"runs"`
-	Attention     []AttentionItem  `json:"attention"`
-	Plan          Plan             `json:"plan"`
-	Artifacts     []Artifact       `json:"artifacts"`
-	Opportunities []Opportunity    `json:"opportunities"`
-	Receipts      []RequestReceipt `json:"receipts"`
-	UpdatedAt     time.Time        `json:"updated_at" ts_type:"string"`
+	Revision       int64            `json:"revision"`
+	Assistant      Assistant        `json:"assistant"`
+	Routines       []Routine        `json:"routines"`
+	Memory         Memory           `json:"memory"`
+	Runs           []Run            `json:"runs"`
+	Attention      []AttentionItem  `json:"attention"`
+	Plan           Plan             `json:"plan"`
+	Artifacts      []Artifact       `json:"artifacts"`
+	Opportunities  []Opportunity    `json:"opportunities"`
+	Channels       []ChannelBinding `json:"channels"`
+	ChannelActions []ChannelAction  `json:"channel_actions"`
+	ChannelMetrics []ChannelMetric  `json:"channel_metrics"`
+	Receipts       []RequestReceipt `json:"receipts"`
+	UpdatedAt      time.Time        `json:"updated_at" ts_type:"string"`
 }
 
 type RequestReceipt struct {
@@ -52,19 +55,22 @@ type requestReceipt struct {
 }
 
 type aggregate struct {
-	Version       int                       `json:"version"`
-	Revision      int64                     `json:"revision"`
-	Assistant     Assistant                 `json:"assistant"`
-	Routines      []Routine                 `json:"routines"`
-	Memory        Memory                    `json:"memory"`
-	Runs          []Run                     `json:"runs"`
-	Attention     []AttentionItem           `json:"attention"`
-	Plan          Plan                      `json:"plan"`
-	Artifacts     []Artifact                `json:"artifacts"`
-	Opportunities []Opportunity             `json:"opportunities"`
-	Requests      map[string]requestReceipt `json:"requests"`
-	Occurrences   map[string]string         `json:"occurrences"`
-	UpdatedAt     time.Time                 `json:"updated_at"`
+	Version        int                       `json:"version"`
+	Revision       int64                     `json:"revision"`
+	Assistant      Assistant                 `json:"assistant"`
+	Routines       []Routine                 `json:"routines"`
+	Memory         Memory                    `json:"memory"`
+	Runs           []Run                     `json:"runs"`
+	Attention      []AttentionItem           `json:"attention"`
+	Plan           Plan                      `json:"plan"`
+	Artifacts      []Artifact                `json:"artifacts"`
+	Opportunities  []Opportunity             `json:"opportunities"`
+	Channels       []ChannelBinding          `json:"channels"`
+	ChannelActions []ChannelAction           `json:"channel_actions"`
+	ChannelMetrics []ChannelMetric           `json:"channel_metrics"`
+	Requests       map[string]requestReceipt `json:"requests"`
+	Occurrences    map[string]string         `json:"occurrences"`
+	UpdatedAt      time.Time                 `json:"updated_at"`
 }
 
 type storeGate struct {
@@ -147,11 +153,24 @@ func isVolumeRoot(path string) bool {
 	return rest == ""
 }
 
-func (s *Store) lockAssistant(id string) func() {
+func (s *Store) lockAssistant(id string) (func(), error) {
 	value, _ := s.gate.assistants.LoadOrStore(id, &sync.Mutex{})
 	mu := value.(*sync.Mutex)
 	mu.Lock()
-	return mu.Unlock
+	lockRoot := filepath.Join(s.root, ".locks")
+	if err := os.MkdirAll(lockRoot, 0o700); err != nil {
+		mu.Unlock()
+		return nil, fmt.Errorf("assistant: create store lock root: %w", err)
+	}
+	unlockFile, err := lockStoreFile(filepath.Join(lockRoot, id+".lock"), 5*time.Second)
+	if err != nil {
+		mu.Unlock()
+		return nil, err
+	}
+	return func() {
+		unlockFile()
+		mu.Unlock()
+	}, nil
 }
 
 func (s *Store) Create(in CreateInput) (Snapshot, error) {
@@ -179,7 +198,10 @@ func (s *Store) Create(in CreateInput) (Snapshot, error) {
 
 	s.gate.root.Lock()
 	defer s.gate.root.Unlock()
-	unlock := s.lockAssistant(in.Assistant.ID)
+	unlock, err := s.lockAssistant(in.Assistant.ID)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	defer unlock()
 
 	current, err := s.read(in.Assistant.ID)
@@ -225,6 +247,7 @@ func (s *Store) Create(in CreateInput) (Snapshot, error) {
 		Version: aggregateVersion, Revision: 1, Assistant: a, Routines: routines,
 		Memory: Memory{Revision: 1, Items: []MemoryItem{}}, Runs: []Run{}, Attention: []AttentionItem{},
 		Plan: emptyPlan(), Artifacts: []Artifact{}, Opportunities: []Opportunity{},
+		Channels: []ChannelBinding{}, ChannelActions: []ChannelAction{}, ChannelMetrics: []ChannelMetric{},
 		Requests: map[string]requestReceipt{}, Occurrences: map[string]string{}, UpdatedAt: now,
 	}
 	if in.InitialPrompt != "" {
@@ -255,7 +278,10 @@ func (s *Store) Get(assistantID string) (Snapshot, error) {
 	if err := validateID("assistant", assistantID); err != nil {
 		return Snapshot{}, err
 	}
-	unlock := s.lockAssistant(assistantID)
+	unlock, err := s.lockAssistant(assistantID)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	defer unlock()
 	agg, err := s.read(assistantID)
 	if err != nil {
@@ -281,7 +307,10 @@ func (s *Store) Delete(requestID, assistantID string, expectedRevision int64) ([
 
 	s.gate.root.Lock()
 	defer s.gate.root.Unlock()
-	unlock := s.lockAssistant(assistantID)
+	unlock, err := s.lockAssistant(assistantID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 
 	destination, replay, err := s.deleteDestination(assistantID, requestID)
@@ -392,7 +421,11 @@ func (s *Store) List() ([]Assistant, error) {
 		if !entry.IsDir() || validateID("assistant", entry.Name()) != nil {
 			continue
 		}
-		unlock := s.lockAssistant(entry.Name())
+		unlock, lockErr := s.lockAssistant(entry.Name())
+		if lockErr != nil {
+			issues = append(issues, lockErr)
+			continue
+		}
 		agg, readErr := s.read(entry.Name())
 		unlock()
 		if readErr != nil {
@@ -421,6 +454,310 @@ func (s *Store) Routines(assistantID string) ([]Routine, error) {
 	return clone(snapshot.Routines), nil
 }
 
+func (s *Store) PutChannel(in PutChannelInput) (ChannelBinding, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return ChannelBinding{}, err
+	}
+	if err := validateID("assistant", in.Channel.AssistantID); err != nil {
+		return ChannelBinding{}, err
+	}
+	fp, err := inputFingerprint(struct {
+		Channel  ChannelBinding
+		Expected int64
+	}{channelIntent(in.Channel), in.ExpectedRevision})
+	if err != nil {
+		return ChannelBinding{}, err
+	}
+	unlock, err := s.lockAssistant(in.Channel.AssistantID)
+	if err != nil {
+		return ChannelBinding{}, err
+	}
+	defer unlock()
+	agg, err := s.read(in.Channel.AssistantID)
+	if err != nil {
+		return ChannelBinding{}, err
+	}
+	if result, ok, receiptErr := receiptResult[ChannelBinding](agg, in.RequestID, "put_channel", fp); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	idx := channelIndex(agg, in.Channel.ID)
+	if idx < 0 && in.ExpectedRevision != 0 {
+		return ChannelBinding{}, conflict("channel", in.Channel.ID, in.ExpectedRevision, 0)
+	}
+	if idx >= 0 && agg.Channels[idx].Revision != in.ExpectedRevision {
+		return ChannelBinding{}, conflict("channel", in.Channel.ID, in.ExpectedRevision, agg.Channels[idx].Revision)
+	}
+	now := storeNow(in.Now)
+	value := in.Channel
+	if idx < 0 {
+		value.Revision, value.CreatedAt = 1, now
+	} else {
+		value.Revision, value.CreatedAt = agg.Channels[idx].Revision+1, agg.Channels[idx].CreatedAt
+	}
+	value.UpdatedAt = now
+	if err := validateChannel(value); err != nil {
+		return ChannelBinding{}, err
+	}
+	if idx < 0 {
+		agg.Channels = append(agg.Channels, value)
+	} else {
+		agg.Channels[idx] = value
+	}
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "put_channel", fp, value, now); err != nil {
+		return ChannelBinding{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return ChannelBinding{}, err
+	}
+	return clone(value), nil
+}
+
+func (s *Store) BeginChannelAction(in BeginChannelActionInput) (ChannelAction, bool, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return ChannelAction{}, false, err
+	}
+	if err := validateID("assistant", in.AssistantID); err != nil {
+		return ChannelAction{}, false, err
+	}
+	intent := struct {
+		ChannelID, RunID string
+		Kind             ChannelActionKind
+		Title, Body      string
+		TargetTopicID    int
+	}{strings.TrimSpace(in.ChannelID), strings.TrimSpace(in.RunID), in.Kind, strings.TrimSpace(in.Title), strings.TrimSpace(in.Body), in.TargetTopicID}
+	fp, err := inputFingerprint(intent)
+	if err != nil {
+		return ChannelAction{}, false, err
+	}
+	unlock, err := s.lockAssistant(in.AssistantID)
+	if err != nil {
+		return ChannelAction{}, false, err
+	}
+	defer unlock()
+	agg, err := s.read(in.AssistantID)
+	if err != nil {
+		return ChannelAction{}, false, err
+	}
+	if receipt, exists := agg.Requests[in.RequestID]; exists {
+		if receipt.Operation != "begin_channel_action" || receipt.Fingerprint != fp {
+			return ChannelAction{}, false, &IdempotencyError{RequestID: in.RequestID, Operation: "begin_channel_action"}
+		}
+		for _, action := range agg.ChannelActions {
+			if action.RequestID == in.RequestID {
+				return clone(action), false, nil
+			}
+		}
+		return ChannelAction{}, false, fmt.Errorf("assistant: channel action receipt %q has no action: %w", in.RequestID, ErrCorrupt)
+	}
+	ci := channelIndex(agg, intent.ChannelID)
+	if ci < 0 {
+		return ChannelAction{}, false, ErrNotFound
+	}
+	if !agg.Channels[ci].Enabled {
+		return ChannelAction{}, false, errors.New("assistant: channel is disabled")
+	}
+	now := storeNow(in.Now)
+	action := ChannelAction{ID: StableID("channel-action", in.AssistantID+"/"+in.RequestID), AssistantID: in.AssistantID, ChannelID: intent.ChannelID, RunID: intent.RunID, RequestID: in.RequestID, Fingerprint: fp, Kind: intent.Kind, Title: intent.Title, Body: intent.Body, TargetTopicID: intent.TargetTopicID, State: ChannelActionExecuting, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	if err := validateChannelAction(action); err != nil {
+		return ChannelAction{}, false, err
+	}
+	agg.ChannelActions = append(agg.ChannelActions, action)
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "begin_channel_action", fp, action, now); err != nil {
+		return ChannelAction{}, false, err
+	}
+	if err := s.write(agg); err != nil {
+		return ChannelAction{}, false, err
+	}
+	return clone(action), true, nil
+}
+
+func (s *Store) FinishChannelAction(in FinishChannelActionInput) (ChannelAction, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return ChannelAction{}, err
+	}
+	if in.State != ChannelActionSucceeded && in.State != ChannelActionFailed && in.State != ChannelActionUnknown {
+		return ChannelAction{}, errors.New("assistant: channel action finish state must be succeeded, failed, or unknown")
+	}
+	fp, err := inputFingerprint(struct {
+		ActionID        string
+		Expected        int64
+		State           ChannelActionState
+		TopicID, PostID int
+		URL, Error      string
+	}{in.ActionID, in.ExpectedRevision, in.State, in.ExternalTopicID, in.ExternalPostID, strings.TrimSpace(in.URL), strings.TrimSpace(in.Error)})
+	if err != nil {
+		return ChannelAction{}, err
+	}
+	unlock, err := s.lockAssistant(in.AssistantID)
+	if err != nil {
+		return ChannelAction{}, err
+	}
+	defer unlock()
+	agg, err := s.read(in.AssistantID)
+	if err != nil {
+		return ChannelAction{}, err
+	}
+	if result, ok, receiptErr := receiptResult[ChannelAction](agg, in.RequestID, "finish_channel_action", fp); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	idx := channelActionIndex(agg, in.ActionID)
+	if idx < 0 {
+		return ChannelAction{}, ErrNotFound
+	}
+	action := &agg.ChannelActions[idx]
+	if action.Revision != in.ExpectedRevision {
+		return ChannelAction{}, conflict("channel action", in.ActionID, in.ExpectedRevision, action.Revision)
+	}
+	if action.State != ChannelActionExecuting {
+		return ChannelAction{}, fmt.Errorf("assistant: channel action %s is %s: %w", action.ID, action.State, ErrTransition)
+	}
+	now := storeNow(in.Now)
+	action.State, action.ExternalTopicID, action.ExternalPostID, action.URL, action.Error = in.State, in.ExternalTopicID, in.ExternalPostID, strings.TrimSpace(in.URL), strings.TrimSpace(in.Error)
+	if action.State == ChannelActionSucceeded {
+		action.NextCollectAt = now.Add(5 * time.Minute)
+	}
+	action.Revision++
+	action.UpdatedAt = now
+	result := clone(*action)
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "finish_channel_action", fp, result, now); err != nil {
+		return ChannelAction{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return ChannelAction{}, err
+	}
+	return result, nil
+}
+
+func (s *Store) RecordChannelMetric(in RecordChannelMetricInput) (ChannelMetric, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return ChannelMetric{}, err
+	}
+	fp, err := inputFingerprint(struct {
+		ActionID, WindowKey   string
+		Views, Likes, Replies int64
+	}{in.ActionID, in.WindowKey, in.Views, in.Likes, in.Replies})
+	if err != nil {
+		return ChannelMetric{}, err
+	}
+	unlock, err := s.lockAssistant(in.AssistantID)
+	if err != nil {
+		return ChannelMetric{}, err
+	}
+	defer unlock()
+	agg, err := s.read(in.AssistantID)
+	if err != nil {
+		return ChannelMetric{}, err
+	}
+	if result, ok, receiptErr := receiptResult[ChannelMetric](agg, in.RequestID, "record_channel_metric", fp); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	idx := channelActionIndex(agg, in.ActionID)
+	if idx < 0 {
+		return ChannelMetric{}, ErrNotFound
+	}
+	action := &agg.ChannelActions[idx]
+	if action.State != ChannelActionSucceeded || action.ExternalTopicID < 1 {
+		return ChannelMetric{}, errors.New("assistant: only a succeeded topic action can collect metrics")
+	}
+	now := storeNow(in.Now)
+	metric := ChannelMetric{ID: StableID("channel-metric", action.ID+"/"+in.WindowKey), AssistantID: in.AssistantID, ChannelID: action.ChannelID, ActionID: action.ID, TopicID: action.ExternalTopicID, WindowKey: in.WindowKey, Views: in.Views, Likes: in.Likes, Replies: in.Replies, CollectedAt: now}
+	for i := len(agg.ChannelMetrics) - 1; i >= 0; i-- {
+		prev := agg.ChannelMetrics[i]
+		if prev.ActionID == action.ID {
+			metric.ViewsDelta, metric.LikesDelta, metric.ReplyDelta = max64(0, metric.Views-prev.Views), max64(0, metric.Likes-prev.Likes), max64(0, metric.Replies-prev.Replies)
+			break
+		}
+	}
+	if err := validateChannelMetric(metric); err != nil {
+		return ChannelMetric{}, err
+	}
+	agg.ChannelMetrics = append(agg.ChannelMetrics, metric)
+	interval := int64(3600)
+	if ci := channelIndex(agg, action.ChannelID); ci >= 0 {
+		interval = agg.Channels[ci].CollectIntervalSeconds
+	}
+	action.NextCollectAt, action.CollectFailures, action.CollectError = now.Add(time.Duration(interval)*time.Second), 0, ""
+	action.Revision++
+	action.UpdatedAt = now
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "record_channel_metric", fp, metric, now); err != nil {
+		return ChannelMetric{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return ChannelMetric{}, err
+	}
+	return clone(metric), nil
+}
+
+func (s *Store) DeferChannelCollect(assistantID, actionID, requestID, message string, now time.Time) (ChannelAction, error) {
+	if err := validateRequestID(requestID); err != nil {
+		return ChannelAction{}, err
+	}
+	fp, err := inputFingerprint(struct{ ActionID, Message string }{actionID, strings.TrimSpace(message)})
+	if err != nil {
+		return ChannelAction{}, err
+	}
+	unlock, err := s.lockAssistant(assistantID)
+	if err != nil {
+		return ChannelAction{}, err
+	}
+	defer unlock()
+	agg, err := s.read(assistantID)
+	if err != nil {
+		return ChannelAction{}, err
+	}
+	if result, ok, receiptErr := receiptResult[ChannelAction](agg, requestID, "defer_channel_collect", fp); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	idx := channelActionIndex(agg, actionID)
+	if idx < 0 {
+		return ChannelAction{}, ErrNotFound
+	}
+	action := &agg.ChannelActions[idx]
+	at := storeNow(now)
+	action.CollectFailures++
+	action.CollectError = strings.TrimSpace(message)
+	delay := time.Duration(1<<minInt(action.CollectFailures, 6)) * 5 * time.Minute
+	action.NextCollectAt = at.Add(delay)
+	action.Revision++
+	action.UpdatedAt = at
+	result := clone(*action)
+	touch(agg, at)
+	if err := putReceipt(agg, requestID, "defer_channel_collect", fp, result, at); err != nil {
+		return ChannelAction{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return ChannelAction{}, err
+	}
+	return result, nil
+}
+
+func (s *Store) DueChannelCollects(now time.Time) ([]ChannelCollectJob, error) {
+	assistants, listErr := s.List()
+	jobs := []ChannelCollectJob{}
+	at := storeNow(now)
+	for _, record := range assistants {
+		snapshot, err := s.Get(record.ID)
+		if err != nil {
+			return nil, err
+		}
+		channels := map[string]ChannelBinding{}
+		for _, c := range snapshot.Channels {
+			channels[c.ID] = c
+		}
+		for _, action := range snapshot.ChannelActions {
+			c, ok := channels[action.ChannelID]
+			if ok && c.Enabled && action.State == ChannelActionSucceeded && action.ExternalTopicID > 0 && !action.NextCollectAt.IsZero() && !action.NextCollectAt.After(at) {
+				jobs = append(jobs, ChannelCollectJob{Assistant: snapshot.Assistant, Channel: c, Action: action})
+			}
+		}
+	}
+	return jobs, listErr
+}
+
 func (s *Store) UpdateAssistant(requestID string, desired Assistant, expectedRevision int64, now time.Time) (Assistant, error) {
 	if err := validateRequestID(requestID); err != nil {
 		return Assistant{}, err
@@ -435,7 +772,10 @@ func (s *Store) UpdateAssistant(requestID string, desired Assistant, expectedRev
 	if err != nil {
 		return Assistant{}, err
 	}
-	unlock := s.lockAssistant(desired.ID)
+	unlock, err := s.lockAssistant(desired.ID)
+	if err != nil {
+		return Assistant{}, err
+	}
 	defer unlock()
 	agg, err := s.read(desired.ID)
 	if err != nil {
@@ -480,7 +820,10 @@ func (s *Store) PutRoutine(in RoutineInput) (Routine, error) {
 	if err != nil {
 		return Routine{}, err
 	}
-	unlock := s.lockAssistant(in.Routine.AssistantID)
+	unlock, err := s.lockAssistant(in.Routine.AssistantID)
+	if err != nil {
+		return Routine{}, err
+	}
 	defer unlock()
 	agg, err := s.read(in.Routine.AssistantID)
 	if err != nil {
@@ -546,7 +889,10 @@ func (s *Store) AdvanceRoutine(assistantID, routineID, requestID string, expecte
 	if err != nil {
 		return nil, err
 	}
-	unlock := s.lockAssistant(assistantID)
+	unlock, err := s.lockAssistant(assistantID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	agg, err := s.read(assistantID)
 	if err != nil {
@@ -595,7 +941,10 @@ func (s *Store) ApplyMemory(assistantID, requestID string, expectedRevision int6
 	if err != nil {
 		return Memory{}, err
 	}
-	unlock := s.lockAssistant(assistantID)
+	unlock, err := s.lockAssistant(assistantID)
+	if err != nil {
+		return Memory{}, err
+	}
 	defer unlock()
 	agg, err := s.read(assistantID)
 	if err != nil {
@@ -676,7 +1025,10 @@ func (s *Store) trigger(in TriggerInput, occurrence bool) (Run, error) {
 	if err != nil {
 		return Run{}, err
 	}
-	unlock := s.lockAssistant(in.AssistantID)
+	unlock, err := s.lockAssistant(in.AssistantID)
+	if err != nil {
+		return Run{}, err
+	}
 	defer unlock()
 	agg, err := s.read(in.AssistantID)
 	if err != nil {
@@ -790,7 +1142,11 @@ func (s *Store) Claim(owner string, now time.Time, lease time.Duration) (*Run, b
 		if !entry.IsDir() || validateID("assistant", assistantID) != nil {
 			continue
 		}
-		unlock := s.lockAssistant(assistantID)
+		unlock, lockErr := s.lockAssistant(assistantID)
+		if lockErr != nil {
+			issues = append(issues, lockErr)
+			continue
+		}
 		agg, readErr := s.read(assistantID)
 		if readErr != nil {
 			unlock()
@@ -975,7 +1331,10 @@ func (s *Store) withRunLeaseRequest(runID, owner string, fence int64, requestID,
 	if err != nil {
 		return nil, err
 	}
-	unlock := s.lockAssistant(assistantID)
+	unlock, err := s.lockAssistant(assistantID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	agg, err := s.read(assistantID)
 	if err != nil {
@@ -1166,7 +1525,10 @@ func (s *Store) ResolveAttention(in ResolveAttentionInput) (*AttentionItem, erro
 	if err != nil {
 		return nil, err
 	}
-	unlock := s.lockAssistant(in.AssistantID)
+	unlock, err := s.lockAssistant(in.AssistantID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	agg, err := s.read(in.AssistantID)
 	if err != nil {
@@ -1311,7 +1673,10 @@ func (s *Store) mutateRun(runID, requestID, operation, fingerprint string, now t
 	if err != nil {
 		return nil, err
 	}
-	unlock := s.lockAssistant(assistantID)
+	unlock, err := s.lockAssistant(assistantID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	agg, err := s.read(assistantID)
 	if err != nil {
@@ -1348,7 +1713,10 @@ func (s *Store) withRunLease(runID, owner string, fence int64, now time.Time, mu
 	if err != nil {
 		return nil, err
 	}
-	unlock := s.lockAssistant(assistantID)
+	unlock, err := s.lockAssistant(assistantID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	agg, err := s.read(assistantID)
 	if err != nil {
@@ -1381,7 +1749,15 @@ func (s *Store) withRunLease(runID, owner string, fence int64, now time.Time, mu
 func (s *Store) runOwner(runID string) (string, error) {
 	assistants, listErr := s.List()
 	for _, assistant := range assistants {
-		unlock := s.lockAssistant(assistant.ID)
+		unlock, lockErr := s.lockAssistant(assistant.ID)
+		if lockErr != nil {
+			if listErr == nil {
+				listErr = lockErr
+			} else {
+				listErr = errors.Join(listErr, lockErr)
+			}
+			continue
+		}
 		agg, readErr := s.read(assistant.ID)
 		unlock()
 		if readErr != nil {
@@ -1434,7 +1810,15 @@ func (s *Store) scanRuns(now time.Time, mutate func(*Run, time.Time) (bool, erro
 	assistants, listErr := s.List()
 	changed := make([]Run, 0)
 	for _, a := range assistants {
-		unlock := s.lockAssistant(a.ID)
+		unlock, lockErr := s.lockAssistant(a.ID)
+		if lockErr != nil {
+			if listErr == nil {
+				listErr = lockErr
+			} else {
+				listErr = errors.Join(listErr, lockErr)
+			}
+			continue
+		}
 		agg, readErr := s.read(a.ID)
 		if readErr != nil {
 			unlock()
@@ -1572,6 +1956,15 @@ func (s *Store) read(assistantID string) (*aggregate, error) {
 	if agg.Opportunities == nil {
 		agg.Opportunities = []Opportunity{}
 	}
+	if agg.Channels == nil {
+		agg.Channels = []ChannelBinding{}
+	}
+	if agg.ChannelActions == nil {
+		agg.ChannelActions = []ChannelAction{}
+	}
+	if agg.ChannelMetrics == nil {
+		agg.ChannelMetrics = []ChannelMetric{}
+	}
 	if err := validateAggregate(&agg); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrCorrupt, assistantID, err)
 	}
@@ -1687,6 +2080,12 @@ func memoryIntent(patch MemoryPatch) MemoryPatch {
 	return patch
 }
 
+func channelIntent(value ChannelBinding) ChannelBinding {
+	value.Revision = 0
+	value.CreatedAt, value.UpdatedAt = time.Time{}, time.Time{}
+	return value
+}
+
 func snapshotOf(agg *aggregate) Snapshot {
 	receipts := make([]RequestReceipt, 0, len(agg.Requests))
 	for id, receipt := range agg.Requests {
@@ -1697,6 +2096,7 @@ func snapshotOf(agg *aggregate) Snapshot {
 		Revision: agg.Revision, Assistant: agg.Assistant, Routines: agg.Routines,
 		Memory: agg.Memory, Runs: agg.Runs, Attention: agg.Attention,
 		Plan: clonePlan(agg.Plan), Artifacts: clone(agg.Artifacts), Opportunities: clone(agg.Opportunities),
+		Channels: clone(agg.Channels), ChannelActions: clone(agg.ChannelActions), ChannelMetrics: clone(agg.ChannelMetrics),
 		Receipts: receipts, UpdatedAt: agg.UpdatedAt,
 	}
 }
@@ -1744,6 +2144,35 @@ func routineIndex(agg *aggregate, id string) int {
 		}
 	}
 	return -1
+}
+
+func channelIndex(agg *aggregate, id string) int {
+	for i := range agg.Channels {
+		if agg.Channels[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+func channelActionIndex(agg *aggregate, id string) int {
+	for i := range agg.ChannelActions {
+		if agg.ChannelActions[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func runIndex(agg *aggregate, id string) int {
@@ -1969,6 +2398,36 @@ func validateAggregate(agg *aggregate) error {
 	}
 	if err := validatePlan(agg); err != nil {
 		return err
+	}
+	channelIDs := map[string]bool{}
+	for _, channel := range agg.Channels {
+		if err := validateChannel(channel); err != nil {
+			return err
+		}
+		if channel.AssistantID != agg.Assistant.ID || channelIDs[channel.ID] {
+			return fmt.Errorf("assistant: invalid or duplicate channel %s", channel.ID)
+		}
+		channelIDs[channel.ID] = true
+	}
+	actionIDs := map[string]bool{}
+	for _, action := range agg.ChannelActions {
+		if err := validateChannelAction(action); err != nil {
+			return err
+		}
+		if action.AssistantID != agg.Assistant.ID || !channelIDs[action.ChannelID] || actionIDs[action.ID] {
+			return fmt.Errorf("assistant: invalid channel action %s", action.ID)
+		}
+		actionIDs[action.ID] = true
+	}
+	metricIDs := map[string]bool{}
+	for _, metric := range agg.ChannelMetrics {
+		if err := validateChannelMetric(metric); err != nil {
+			return err
+		}
+		if metric.AssistantID != agg.Assistant.ID || !channelIDs[metric.ChannelID] || !actionIDs[metric.ActionID] || metricIDs[metric.ID] {
+			return fmt.Errorf("assistant: invalid channel metric %s", metric.ID)
+		}
+		metricIDs[metric.ID] = true
 	}
 	for requestID, receipt := range agg.Requests {
 		if err := validateRequestID(requestID); err != nil {

@@ -205,6 +205,26 @@ func TestTrySubmitUserTurnWithPolicyInstallsGateBeforeRun(t *testing.T) {
 	}
 }
 
+func TestRunWithPolicyInstallsGateBeforeSynchronousRun(t *testing.T) {
+	result := make(chan permissionCheckResult, 1)
+	var c *Controller
+	runner := permissionCheckingRunner{
+		result: result,
+		check: func() (bool, error) {
+			allow, _, err := c.permissionGate.Check(context.Background(), "write_file", json.RawMessage(`{"path":"release.txt"}`), false)
+			return allow, err
+		},
+	}
+	c = New(Options{Runner: runner, Policy: permission.New("allow", nil, nil, nil)})
+	if err := c.RunWithPolicy(context.Background(), "assistant turn", permission.New("allow", nil, nil, []string{"write_file"}), ToolApprovalAsk); err != nil {
+		t.Fatal(err)
+	}
+	got := <-result
+	if got.err != nil || got.allow {
+		t.Fatalf("runner observed gate result allow=%v err=%v, want deny", got.allow, got.err)
+	}
+}
+
 func TestTrySubmitUserTurnWithPolicyRespectsExplicitMemoryAllow(t *testing.T) {
 	for _, toolName := range []string{"remember", "forget"} {
 		t.Run(toolName, func(t *testing.T) {

@@ -1562,6 +1562,23 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 	return c.runner.Run(ctx, input)
 }
 
+// RunWithPolicy is the synchronous headless counterpart of
+// TrySubmitUserTurnWithPolicy. It is intended for a fresh Controller owned by a
+// daemon run; interactive frontends should keep using the guarded async API.
+func (c *Controller) RunWithPolicy(ctx context.Context, input string, policy permission.Policy, toolMode string, grants ...ToolGrant) error {
+	policy = clonePermissionPolicy(policy)
+	toolMode = normalizeToolApprovalMode(toolMode)
+	c.mu.Lock()
+	pending := c.approval.configure(policy, toolMode, append([]ToolGrant(nil), grants...))
+	c.policy = policy
+	c.refreshInteractiveGateLocked(toolMode)
+	c.mu.Unlock()
+	for _, reply := range pending {
+		reply <- approvalReply{allow: true}
+	}
+	return c.Run(ctx, input)
+}
+
 // Cancel aborts the in-flight turn and every currently executing Block Action
 // owned by this Controller. Each Action still has its own request context, so
 // caller cancellation of one Action does not affect another.

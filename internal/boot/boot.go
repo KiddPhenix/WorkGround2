@@ -368,6 +368,10 @@ type Options struct {
 	// long-running outcome executor prompt. Work and collaboration retain their
 	// existing behavior.
 	SessionKind agent.SessionKind
+	// ExtraTools are host-owned, session-scoped tools. Assistant Desktop and
+	// daemon hosts use this for audited channel adapters without registering
+	// process-global built-ins.
+	ExtraTools []tool.Tool
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a
@@ -600,6 +604,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	readPathResolver := builtin.NewPathResolver()
 	addBuiltins(reg, enabledBuiltins, cfg.WriteRootsForRoot(root), bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, cfg.ForbidReadRootsForRoot(root), readPathResolver, opts.FileOverlay, opts.TerminalRunner, config.EffectiveVision(entry))
+	for _, extra := range opts.ExtraTools {
+		if extra != nil {
+			reg.Add(extra)
+		}
+	}
 
 	// DSH Bundles run out-of-process, but remain session-owned: each Controller
 	// gets one Cordis Agent per enabled Bundle and closes it with the session.

@@ -53,7 +53,10 @@ func (s *Store) CompleteRunWithProgress(in CompleteRunInput) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	unlock := s.lockAssistant(assistantID)
+	unlock, err := s.lockAssistant(assistantID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	agg, err := s.read(assistantID)
 	if err != nil {

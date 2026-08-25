@@ -14,6 +14,7 @@ var (
 	ErrTransition  = errors.New("assistant: invalid run state transition")
 	ErrBlocked     = errors.New("assistant: dependency not satisfied")
 	ErrCorrupt     = errors.New("assistant: corrupt aggregate")
+	ErrStoreBusy   = errors.New("assistant: store is busy; retry the operation")
 )
 
 type ConflictError struct {
