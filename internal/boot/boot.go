@@ -435,6 +435,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	sysPrompt += "\n\n" + config.UserDecisionPolicy
 	sysPrompt += "\n\n" + config.LanguagePolicy
+	sysPrompt += "\n\n" + config.BrowserPolicy
 	if tokenEconomy {
 		sysPrompt += "\n\n" + tokenEconomyPrompt
 	}

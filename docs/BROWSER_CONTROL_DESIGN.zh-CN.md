@@ -59,6 +59,13 @@ browser_open
 4. 写操作完成后重新观察页面，发布新快照并返回新 revision 摘要。
 5. 页面在动作前发生变化时，旧 revision 被拒绝，模型重新调用 `browser_state`。
 
+模型策略（模型可见的系统提示与工具描述统一执行，见 `config.BrowserPolicy`）：
+
+- 浏览器操作优先使用内置 `browser_*` 工具覆盖的能力，不为已覆盖操作启动或使用 Playwright。
+- Playwright 仅作 fallback：仅当 `browser_*` 工具不可用、明确失败或缺少所需能力时使用，且必须通过 `browser_attach` 附加到同一个 WorkGround2 浏览器。
+- 禁止仅为观察、同步或重试而 reload / refresh / navigate 到相同 URL；`browser_state(refresh=true)` 只重新观察页面状态，绝不重载页面。
+- 仅在用户明确要求，或页面已不可用且无法通过状态保留方式恢复时，才真正 reload 页面。
+
 ## 4. 总体架构
 
 ```text

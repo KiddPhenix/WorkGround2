@@ -35,8 +35,9 @@ func (t *openTool) ReadOnly() bool     { return false }
 func (t *openTool) PlanModeSafe() bool { return false }
 
 func (t *openTool) Description() string {
-	return "Open or reuse the preferred WorkGround2 native browser-use session for the current agent. " +
+	return "Open or reuse the preferred built-in WorkGround2 browser_* session for the current agent. " +
 		"Use the browser_* tools first when available; use Playwright only as a fallback when the native tools are unavailable, lack a required capability, or explicitly fail. " +
+		"Never reload, refresh, or navigate to the same URL merely to observe, synchronize, or retry; browser_state(refresh=true) only re-observes state and never reloads the page. " +
 		"Returns the session ID, page revision, and browser info. " +
 		"The underlying browser is shared across controllers, tasks and app restarts; use browser_attach when Playwright must operate that same running browser."
 }
@@ -135,6 +136,7 @@ func (t *stateTool) PlanModeSafe() bool { return true }
 func (t *stateTool) Description() string {
 	return "Get the current page state: URL, title, text content, and indexed interactive elements. " +
 		"Use this before any click/type/scroll action to get fresh element indices. " +
+		"refresh=true only re-observes the page state and never reloads the page. " +
 		"Returns a revision number that must be passed to write actions."
 }
 
@@ -143,7 +145,7 @@ func (t *stateTool) Schema() json.RawMessage {
 "type":"object",
 "additionalProperties":false,
 "properties":{
-  "refresh":{"type":"boolean","description":"Force a fresh observation. Default true. Ignored when revision is set."},
+  "refresh":{"type":"boolean","description":"Force a fresh observation. Default true. Ignored when revision is set. Re-observes state only; never reloads the page."},
   "max_chars":{"type":"integer","description":"Max text characters, 1000-60000. Default uses config (20000).","minimum":1000,"maximum":60000},
   "revision":{"type":"integer","description":"Serve from the snapshot with this revision instead of observing. Returns stale_state if the revision no longer matches (the page changed); re-request browser_state to get the new revision.","minimum":1},
   "element_start":{"type":"integer","description":"Return only elements with index >= element_start, preserving their original indices. Use the previous response's next_element_index to page through a large element list.","minimum":1}
@@ -496,7 +498,9 @@ func (t *attachTool) PlanModeSafe() bool { return true }
 
 func (t *attachTool) Description() string {
 	return "Return the loopback CDP endpoint of the current WorkGround2 browser session, usable with Playwright's " +
-		"chromium.connectOverCDP(). Requires browser_open first; it never starts a second browser. " +
+		"chromium.connectOverCDP(). Playwright is fallback-only: use browser_* tools first and reach for Playwright " +
+		"only when they are unavailable, explicitly fail, or lack a required capability; attach to this same WorkGround2 browser. " +
+		"Requires browser_open first; it never starts a second browser. " +
 		"After any Playwright write action you must call browser_state(refresh=true) to invalidate the old revision " +
 		"and obtain fresh element indices; CDP invalidation still applies. The endpoint never exposes PID, profile path or credentials."
 }
