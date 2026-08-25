@@ -175,7 +175,7 @@ queued -> running -> succeeded
 | Assistant 记忆读取/写入（`memory` / `remember` / `forget`） | 自动允许 |
 | 项目 Skill 安装（`install_source`） | 仅 `local_write=allow` 且 `network=allow` 时自动允许；任一拒绝则拒绝，其余逐次审批 |
 
-内建记忆工具 `memory`（只读检索）、`remember`、`forget` 在 Assistant Session 中始终自动执行：它们写入的是 Assistant 绑定项目的受控、版本化 memory store，而不是任意文件写入，因此即使 `local_write=deny/approve` 也保持允许，不再生成 `approve_tool:remember` / `approve_tool:forget` 人工待办。Controller 只在当前 turn 的冻结 Policy 没有显式 Allow 时为普通交互 Session 补记忆 Ask 规则，不能再覆盖 Assistant 的显式 Allow；普通 Session 的默认审批保持不变。工具调用与结果事件、失败显式暴露和现有 memory queue 行为保持不变。
+内建记忆工具 `memory`（只读检索）、`remember`、`forget` 在 Assistant Session 中始终自动执行：它们写入的是 Assistant 绑定项目的受控、版本化 memory store，而不是任意文件写入，因此即使 `local_write=deny/approve` 也保持允许，不再生成 `approve_tool:remember` / `approve_tool:forget` 人工待办。Controller 只在当前 turn 的冻结 Policy 没有显式 Allow 时为普通交互 Session 补记忆 Ask 规则，不能再覆盖 Assistant 的显式 Allow；普通 Session 的默认审批保持不变。Runtime 启动及每次调度还会幂等批准并恢复旧版本遗留的记忆工具待办，响应丢失后可安全重放，发布等敏感审批不会被自动处理。工具调用与结果事件、失败显式暴露和现有 memory queue 行为保持不变。
 
 `bash` 是一个完整 shell，权限跟随 `local_write` 三态：`allow` 时自动执行（含只读命令与普通构建/测试命令，不做命令内容白名单），`deny` 时拒绝且不触发审批，`approve` 时保持逐次审批。删除（`delete_range` / `delete_symbol`）、发布/MCP、`move_file`、browser 写动作等既有敏感边界仍按上表审批或拒绝。
 
