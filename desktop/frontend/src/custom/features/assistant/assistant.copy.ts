@@ -22,6 +22,7 @@ const zh = {
   changeTime: "改成别的时间",
   taskPlaceholder: "交代给它一件事…",
   send: "交代",
+  sendShortcut: "发送",
   overview: "概览",
   routines: "例行任务",
   memory: "显式记忆",
@@ -137,7 +138,7 @@ const en: typeof zh = {
   emptyTitle: "Give ongoing work an assistant that stays with it", emptyBody: "It runs on its own rhythm and keeps explicit memory and an auditable history.",
   awake: "Awake", paused: "Paused", archived: "Archived", continueWork: "Let it continue", queued: "Handed off. The assistant will continue in the background.",
   manage: "Manage assistant", close: "Close", today: "Today", timelineEmpty: "No runs today. Hand off a task or let it continue.", learned: "I remembered", next: "Next",
-  changeTime: "Change time", taskPlaceholder: "Hand it a task…", send: "Hand off", overview: "Overview", routines: "Routines", memory: "Explicit memory",
+  changeTime: "Change time", taskPlaceholder: "Hand it a task…", send: "Hand off", sendShortcut: "Send", overview: "Overview", routines: "Routines", memory: "Explicit memory",
   history: "Run history", attention: "Attention", name: "Name", mission: "Long-term mission", workspace: "Workspace", scope: "Scope", scopeGlobal: "Global", scopeWorkspace: "Project workspace", save: "Save", pause: "Pause", resume: "Wake",
   workspaceFreezeHint: "Queued runs keep their frozen workspace. New runs use the updated path after saving.", partialWarning: "Some assistant data couldn't be read. Healthy assistants are still available.", viewDetails: "View details", diagnosticTitle: "Read diagnostics",
   routineTitle: "Routine name", routinePrompt: "What to do on each run", frequency: "Run frequency", manual: "Manual only", interval: "Fixed interval", daily: "Daily",
@@ -163,7 +164,7 @@ const en: typeof zh = {
   artifacts: "Artifacts & evidence", opportunities: "Opportunities & proposals", noArtifacts: "No artifacts or evidence yet.", noOpportunities: "No opportunities or proposals yet.",
 };
 
-const zhTW: typeof zh = { ...zh, entry: "助手", newAssistant: "新增助手", memory: "明確記憶", history: "執行記錄", attention: "待處理", save: "儲存" };
+const zhTW: typeof zh = { ...zh, entry: "助手", newAssistant: "新增助手", memory: "明確記憶", history: "執行記錄", attention: "待處理", save: "儲存", sendShortcut: "傳送" };
 
 export type AssistantCopy = typeof zh;
 

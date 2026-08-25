@@ -425,57 +425,93 @@
 .assistant-text-action:focus-visible { outline: none; color: #ffa06c; text-decoration: underline; }
 
 .assistant-handoff-zone {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  flex: 0 0 auto;
   max-width: 940px;
-  margin-bottom: 40px;
-  padding: 4px 0 16px;
-  background: rgba(11, 12, 17, 0.88);
+  margin: 0 clamp(72px, 10vw, 150px) 0 92px;
+  padding: 10px 12px 8px;
+  border: 1px solid #2b2e31;
+  border-radius: 10px;
+  background: rgba(22, 24, 28, 0.72);
   backdrop-filter: blur(12px);
-  border-bottom: 1px solid #242729;
+}
+
+.assistant-handoff-zone:focus-within {
+  border-color: #9f67d0;
+  box-shadow: 0 0 0 2px rgba(159, 103, 208, 0.16);
 }
 
 .assistant-handoff {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 36px;
-  align-items: center;
-  max-width: 940px;
-  min-height: 72px;
-  color: #877c70;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
 }
 
-.assistant-handoff input {
-  width: 100%;
+.assistant-handoff textarea {
+  flex: 1;
   min-width: 0;
+  max-height: 120px;
+  padding: 6px 2px;
   border: 0;
   outline: 0;
+  resize: none;
   color: #e7dfd4;
   background: transparent;
-  font-family: Georgia, "Songti SC", "SimSun", serif;
-  font-size: 18px;
+  font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-y: auto;
 }
 
-.assistant-handoff input::placeholder { color: #6f685f; }
-.assistant-handoff button { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 0; border-radius: 7px; color: var(--assistant-orange); background: transparent; cursor: pointer; }
+.assistant-handoff textarea::placeholder { color: #6f685f; }
+.assistant-handoff textarea:focus-visible { outline: none; }
+.assistant-handoff button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 2px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--assistant-orange);
+  background: transparent;
+  cursor: pointer;
+}
 .assistant-handoff button:hover:not(:disabled), .assistant-handoff button:focus-visible { outline: none; background: #24201d; }
 .assistant-handoff button:disabled { opacity: 0.25; cursor: not-allowed; }
 
-.assistant-notice {
+.assistant-handoff__meta {
   display: flex;
   align-items: center;
-  gap: 7px;
-  max-width: 940px;
-  margin-top: 10px;
-  padding: 9px 12px;
-  border: 1px solid #2d493a;
-  border-radius: 7px;
+  gap: 10px;
+  min-height: 18px;
+  margin-top: 4px;
+}
+.assistant-handoff__hint { color: #6f6a64; font-size: 11px; }
+.assistant-handoff__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
   color: #7fc89f;
-  background: #15231c;
   font-size: 12px;
 }
-
-.assistant-notice button { margin-left: auto; border: 0; color: inherit; background: transparent; cursor: pointer; }
+.assistant-handoff__status button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.assistant-handoff__status button:hover,
+.assistant-handoff__status button:focus-visible { outline: none; background: rgba(127, 200, 159, 0.16); }
 
 .assistant-manager-backdrop {
   position: absolute;
@@ -633,6 +669,7 @@
   .assistant-continue { margin-left: 54px; }
   .assistant-diagnostic { max-width: calc(100% - 108px); margin-left: 54px; }
   .assistant-workspace__scroll { padding: 62px 64px 36px 54px; }
+  .assistant-handoff-zone { margin: 0 64px 0 54px; }
   .assistant-day { margin-left: 20px; }
 }
 
@@ -642,6 +679,7 @@
   .assistant-continue { margin-left: 56px; }
   .assistant-diagnostic { max-width: calc(100% - 80px); margin-left: 56px; }
   .assistant-workspace__scroll { padding: 46px 24px 28px; }
+  .assistant-handoff-zone { margin: 0 24px 8px; }
   .assistant-day { margin: 0 0 42px 0; }
   .assistant-event { grid-template-columns: 56px 28px minmax(0, 1fr); }
   .assistant-timeline::before { left: 69px; }

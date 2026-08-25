@@ -4312,7 +4312,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
             {workbenchSidebarRestoreControl}
 
             {showAssistantSurface ? (
-              <AssistantWorkspace focusAssistantID={assistantFocusID} onOpenSession={(scope, workspaceRoot, sessionPath) => {
+              <AssistantWorkspace focusAssistantID={assistantFocusID} composerSubmitKey={composerSubmitKey} onOpenSession={(scope, workspaceRoot, sessionPath) => {
                 setAssistantOpen(false);
                 void app.OpenLinkedSession(scope, workspaceRoot, "", sessionPath)
                   .then(() => refreshProjectsAndTabs())

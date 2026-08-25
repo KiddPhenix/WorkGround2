@@ -53,17 +53,65 @@ ok(host.textContent?.includes("让它继续工作") ?? false, "primary repeat ac
 ok(host.querySelector("#assistant-handoff-input") !== null, "quick handoff input is keyboard accessible");
 ok(host.querySelectorAll(".assistant-event").length >= 2, "timeline renders run and memory events");
 
-// ── Handoff placement: top, single, sticky zone ────────────────────────
+// ── Handoff dock: a real top dock outside and before the scrolling timeline ──
 const scrollBox = host.querySelector(".assistant-workspace__scroll");
-const handoffInput = scrollBox?.querySelector("#assistant-handoff-input") ?? null;
-const handoffZone = scrollBox?.querySelector(".assistant-handoff-zone") ?? null;
+const handoffZone = host.querySelector(".assistant-handoff-zone");
+const handoffInput = host.querySelector("#assistant-handoff-input") as HTMLTextAreaElement | null;
 const dayHeading = scrollBox?.querySelector(".assistant-day") ?? null;
 const timelineBox = scrollBox?.querySelector(".assistant-timeline") ?? null;
 ok(host.querySelectorAll("#assistant-handoff-input").length === 1, "handoff input appears exactly once in the DOM");
+ok(handoffInput?.tagName === "TEXTAREA", "handoff uses a multiline textarea instead of a single-line input");
+ok(handoffZone !== null && handoffInput !== null && handoffZone === handoffInput.closest(".assistant-handoff-zone"), "handoff input lives inside the top dock card");
+ok(handoffZone !== null && scrollBox !== null && !scrollBox.contains(handoffZone), "handoff dock is outside the scrolling timeline");
 const precedes = (a: Element | null, b: Element | null) => Boolean(a && b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+ok(precedes(handoffZone, scrollBox), "handoff dock precedes the scrolling timeline in the workspace layout");
 ok(precedes(handoffInput, dayHeading), "handoff input sits before the date heading");
 ok(precedes(handoffInput, timelineBox), "handoff input sits before the timeline");
-ok(handoffZone !== null && handoffZone === handoffInput?.closest(".assistant-handoff-zone"), "handoff input lives inside the sticky top zone");
+ok(host.querySelector(".assistant-handoff__hint")?.textContent === "Enter 发送", "handoff dock explains the active Enter send shortcut");
+
+// ── Handoff keyboard: reuses the configured Enter / Ctrl+Enter rule ──
+const reactProps = <T,>(node: Element): T => {
+  const key = Object.keys(node).find((candidate) => candidate.startsWith("__reactProps$"));
+  if (!key) throw new Error("missing React props");
+  return (node as unknown as Record<string, T>)[key];
+};
+const setHandoffValue = (value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")?.set;
+  act(() => {
+    setter?.call(handoffInput, value);
+    reactProps<{ onChange: (event: { target: HTMLTextAreaElement }) => void }>(handoffInput!).onChange({ target: handoffInput! });
+  });
+};
+const pressHandoffKey = (key: string, init: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean } = {}) => {
+  let prevented = false;
+  act(() => {
+    reactProps<{ onKeyDown: (event: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean; preventDefault: () => void }) => void }>(handoffInput!).onKeyDown({
+      key,
+      shiftKey: Boolean(init.shiftKey),
+      ctrlKey: Boolean(init.ctrlKey),
+      metaKey: Boolean(init.metaKey),
+      altKey: Boolean(init.altKey),
+      preventDefault: () => { prevented = true; },
+    });
+  });
+  return prevented;
+};
+
+ok(pressHandoffKey("Enter", { shiftKey: true }) === false, "Shift+Enter inserts a newline in Enter mode");
+act(() => { reactProps<{ onCompositionStart: () => void }>(handoffInput!).onCompositionStart(); });
+ok(pressHandoffKey("Enter") === false, "IME composing Enter never sends");
+act(() => { reactProps<{ onCompositionEnd: () => void }>(handoffInput!).onCompositionEnd(); });
+ok(pressHandoffKey("Enter") === true, "Enter sends in Enter mode");
+
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><AssistantWorkspace composerSubmitKey="ctrl_enter" /></ToastProvider></LocaleProvider>);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+ok(host.querySelector(".assistant-handoff__hint")?.textContent === "Ctrl+Enter 发送", "handoff dock follows the configured Ctrl+Enter shortcut");
+ok(pressHandoffKey("Enter") === false, "plain Enter inserts a newline in Ctrl+Enter mode");
+ok(pressHandoffKey("Enter", { altKey: true }) === false, "Alt+Enter never sends");
+ok(pressHandoffKey("Enter", { metaKey: true }) === true, "Meta+Enter sends in Ctrl+Enter mode on macOS");
+ok(pressHandoffKey("Enter", { ctrlKey: true }) === true, "Ctrl+Enter sends in Ctrl+Enter mode");
 
 // ── Run heading stays short; summary renders as Markdown ──────────────
 const runEvents = [...host.querySelectorAll(".assistant-event--run")];
@@ -80,6 +128,16 @@ ok(runEvents.every((event) => event.querySelector(".assistant-event__summary .md
 ok(runEvents.some((event) => event.querySelector(".assistant-event__summary .md")?.textContent?.includes("测试都通过了")), "full run summary is preserved inside the markdown body");
 const nonRunEvents = [...host.querySelectorAll(".assistant-event--memory, .assistant-event--next")];
 ok(nonRunEvents.length >= 1 && nonRunEvents.every((event) => event.querySelector(".md") === null), "memory and next events stay plain text");
+
+// ── Handoff submit keeps the queued notice and clears the draft ──
+setHandoffValue("排查构建失败");
+const handoffForm = host.querySelector(".assistant-handoff") as HTMLFormElement | null;
+await act(async () => {
+  handoffForm?.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+ok(host.querySelector(".assistant-handoff__status")?.textContent?.includes("已经交给助手") ?? false, "successful send surfaces the queued status inside the dock");
+ok(handoffInput!.value === "", "successful send clears the draft");
 
 const manage = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;
 await act(async () => { manage?.click(); });
@@ -168,6 +226,13 @@ ok(
   assistantCssSource.includes("background: rgba(19, 21, 25, 0.82);") &&
     assistantCssSource.includes("backdrop-filter: blur(16px) saturate(0.96);"),
   "management drawer uses a readable translucent material",
+);
+const handoffZoneBlock = assistantCssSource.match(/\.assistant-handoff-zone \{[\s\S]*?\n\}/)?.[0] ?? "";
+ok(
+  !handoffZoneBlock.includes("position: sticky") &&
+    !handoffZoneBlock.includes("position: fixed") &&
+    !handoffZoneBlock.includes("position: absolute"),
+  "handoff dock is no longer positioned with sticky/fixed/absolute",
 );
 
 const attentionSnapshot: AssistantSnapshot = {

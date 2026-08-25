@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   AlertCircle,
   Bot,
@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useI18n } from "../../../lib/i18n";
 import { useToast } from "../../../lib/toast";
+import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../../lib/composerKeyboard";
 import { Markdown } from "../../../components/Markdown";
 import {
   assistantApplyMemory,
@@ -56,6 +57,7 @@ type ManageTab = "overview" | "routines" | "memory" | "history" | "attention" | 
 interface AssistantWorkspaceProps {
   onOpenSession?: (scope: string, workspaceRoot: string, sessionPath: string) => void;
   focusAssistantID?: string;
+  composerSubmitKey?: ComposerSubmitKey;
 }
 
 export function AssistantSidebarEntry({ active, collapsed = false, onClick }: { active: boolean; collapsed?: boolean; onClick: () => void }) {
@@ -168,9 +170,10 @@ function useAssistantData(focusAssistantID?: string) {
   return { assistants, diagnostics, selectedID, snapshot, loading, error, loadList, refresh, select };
 }
 
-export function AssistantWorkspace({ onOpenSession, focusAssistantID }: AssistantWorkspaceProps) {
+export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSubmitKey }: AssistantWorkspaceProps) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
+  const submitKey = normalizeComposerSubmitKey(composerSubmitKey);
   const { showToast } = useToast();
   const data = useAssistantData(focusAssistantID);
   const [manageTab, setManageTab] = useState<ManageTab | null>(null);
@@ -233,6 +236,28 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID }: Assistan
     }
   }, [busy, copy.error, data, handoff, showToast]);
 
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
+
+  const resizeHandoff = useCallback(() => {
+    const element = textareaRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    const max = 120;
+    const height = Math.min(Math.max(element.scrollHeight, 0), max);
+    element.style.height = height > 0 ? `${height}px` : "";
+    element.style.overflowY = element.scrollHeight > max ? "auto" : "hidden";
+  }, []);
+
+  useEffect(() => { resizeHandoff(); }, [handoff, resizeHandoff]);
+
+  const handleHandoffKeyDown = useCallback((event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (isComposerSubmitKey(event, submitKey, composingRef.current)) {
+      event.preventDefault();
+      void submitHandoff();
+    }
+  }, [submitKey, submitHandoff]);
+
   if (data.loading && !data.snapshot) {
     return <section className="assistant-workspace assistant-workspace--center" aria-live="polite"><RefreshCw className="assistant-spin" size={22} /><p>{copy.loading}</p></section>;
   }
@@ -292,17 +317,36 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID }: Assistan
         </div>
       )}
 
-      <div className="assistant-workspace__scroll">
-        <div className="assistant-handoff-zone">
-          <form className="assistant-handoff" onSubmit={(event) => { event.preventDefault(); void submitHandoff(); }}>
-            <ChevronRight size={18} aria-hidden="true" />
-            <label className="sr-only" htmlFor="assistant-handoff-input">{copy.taskPlaceholder}</label>
-            <input id="assistant-handoff-input" value={handoff} onChange={(event) => setHandoff(event.target.value)} placeholder={copy.taskPlaceholder} disabled={Boolean(busy)} />
-            <button type="submit" disabled={!handoff.trim() || Boolean(busy)} aria-label={copy.send}><Send size={16} /></button>
-          </form>
-          {handoffNotice && <div className="assistant-notice" role="status"><Check size={14} />{copy.queued}<button type="button" aria-label={copy.close} onClick={() => setHandoffNotice(false)}><X size={13} /></button></div>}
+      <div className="assistant-handoff-zone">
+        <form className="assistant-handoff" onSubmit={(event) => { event.preventDefault(); void submitHandoff(); }}>
+          <label className="sr-only" htmlFor="assistant-handoff-input">{copy.taskPlaceholder}</label>
+          <textarea
+            id="assistant-handoff-input"
+            ref={textareaRef}
+            rows={1}
+            value={handoff}
+            onChange={(event) => setHandoff(event.target.value)}
+            onKeyDown={handleHandoffKeyDown}
+            onCompositionStart={() => { composingRef.current = true; }}
+            onCompositionEnd={() => { composingRef.current = false; }}
+            placeholder={copy.taskPlaceholder}
+            disabled={Boolean(busy)}
+          />
+          <button type="submit" disabled={!handoff.trim() || Boolean(busy)} aria-label={copy.send} title={copy.send}><Send size={16} /></button>
+        </form>
+        <div className="assistant-handoff__meta">
+          <span className="assistant-handoff__hint">{submitKey === "ctrl_enter" ? "Ctrl+Enter" : "Enter"} {copy.sendShortcut}</span>
+          {handoffNotice && (
+            <span className="assistant-handoff__status" role="status">
+              <Check size={13} aria-hidden="true" />
+              <span>{copy.queued}</span>
+              <button type="button" aria-label={copy.close} onClick={() => setHandoffNotice(false)}><X size={12} /></button>
+            </span>
+          )}
         </div>
+      </div>
 
+      <div className="assistant-workspace__scroll">
         <div className="assistant-day">
           <h1><span>{copy.today}</span>，{formatAssistantDate(today, locale)}</h1>
         </div>
