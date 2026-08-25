@@ -888,8 +888,11 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 	if required := assistant.RequiredCapabilities(run.Mission, prompt); len(required) > 0 {
 		b.WriteString("\n本次 Run 的硬性能力要求（缺少成功证据会被判为失败并重试）：\n")
 		for _, c := range required {
-			if c == assistant.CapabilityLiveWeb {
+			switch c {
+			case assistant.CapabilityLiveWeb:
 				b.WriteString("- live_web：必须用实时网页/浏览器工具（browser_open / browser_navigate / browser_state / browser_click / browser_scroll / web_fetch / web_search）取得至少一次成功结果并把它写进结论证据；只 dispatch、输入/附件操作或失败结果不算，禁止用本地缓存、归档或记忆替代实时网页检查。\n")
+			case assistant.CapabilitySkillLearning:
+				b.WriteString("- skill_learning：这是创建后的首个学习 Run。先按使命搜索 2–5 个类似任务可用的 Skill，比较来源、时效、适配度与风险；再用 install_source 的 project/skill/strict 计划实际评估。仅自动应用低/中风险 copy 方案，禁止自装 MCP、插件、可执行文件、link/register 或高风险来源；验证安全 Skill 并用 remember 记录来源、名称、路径和结果。没有合适 Skill 时记录检索范围与判断，然后结束本轮学习，禁止无限搜索。成功结论必须同时具有实时 Web 和 install_source 成功证据。\n")
 			}
 		}
 	}
@@ -1017,7 +1020,7 @@ func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
 	safeLocalWrites := []string{"write_file", "edit_file", "multi_edit", "notebook_edit"}
 	localAll := []string{
 		"write_file", "edit_file", "multi_edit", "notebook_edit",
-		"move_file", "delete_range", "delete_symbol", "bash",
+		"move_file", "delete_range", "delete_symbol", "bash", "run_skill",
 	}
 	networkTools := []string{
 		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll",
@@ -1047,10 +1050,11 @@ func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
 		// alike), mirroring the file writer auto-execute behaviour.
 		allow = append(allow, safeLocalWrites...)
 		allow = append(allow, "bash")
+		allow = append(allow, "run_skill")
 	case assistant.AccessDeny:
 		deny = append(deny, localAll...)
 	case assistant.AccessApprove:
-		ask = append(ask, "bash")
+		ask = append(ask, "bash", "run_skill")
 	}
 	if policy.Network == assistant.AccessAllow {
 		allow = append(allow, networkAllow...)
@@ -1060,6 +1064,16 @@ func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
 	}
 	if policy.Network == assistant.AccessApprove {
 		ask = append(ask, networkTools...)
+	}
+	// install_source fetches untrusted content and writes a project capability;
+	// it is allowed only when both frozen dimensions explicitly allow it.
+	switch {
+	case policy.LocalWrite == assistant.AccessDeny || policy.Network == assistant.AccessDeny:
+		deny = append(deny, "install_source")
+	case policy.LocalWrite == assistant.AccessAllow && policy.Network == assistant.AccessAllow:
+		allow = append(allow, "install_source")
+	default:
+		ask = append(ask, "install_source")
 	}
 	// Publish/Delete/Payment/Secrets/Private are deliberately never translated
 	// into Allow or Deny rules here: every concrete writer remains Ask even when

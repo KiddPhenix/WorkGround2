@@ -208,6 +208,7 @@ export interface AssistantCreateInput {
   requestId: string;
   assistant: AssistantRecord;
   routines: AssistantRoutine[];
+  initialPrompt?: string;
 }
 
 export interface AssistantUpdateInput {

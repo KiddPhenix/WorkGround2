@@ -5067,12 +5067,28 @@ function makeMockApp(): AppBindings {
         created_at: now,
         updated_at: now,
       }));
+      const initialPrompt = input.initialPrompt?.trim();
+      const runs: AssistantRun[] = initialPrompt ? [{
+        id: `run-initial-${Date.now()}`,
+        assistant_id: assistant.id,
+        prompt: initialPrompt,
+        scope: assistant.scope,
+        workspace_root: assistant.workspace_root,
+        request_id: `${input.requestId}:initial`,
+        trigger: "manual",
+        state: "queued",
+        attempt: 0,
+        max_attempts: 3,
+        revision: 1,
+        created_at: now,
+        updated_at: now,
+      }] : [];
       const snapshot: AssistantSnapshot = {
         revision: 1,
         assistant,
         routines,
         memory: { revision: 0, items: [] },
-        runs: [],
+        runs,
         attention: [],
         plan: { revision: 1, responsibilities: [] },
         artifacts: [],

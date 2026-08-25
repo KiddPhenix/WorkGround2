@@ -40,8 +40,10 @@ ok(clickText("推广") !== undefined, "create dialog shows the promotion phase-4
 const promo = clickText("推广");
 ok(promo?.disabled === true, "promotion template is not selectable");
 
-// Select code template → permission summary + confirmation gate.
+// Select code template → learn-first initial task + permission summary + confirmation gate.
 await act(async () => { clickText("代码项目")?.click(); });
+const learnFirst = host.querySelector(".assistant-create__learn input") as HTMLInputElement | null;
+ok(learnFirst?.checked === true && (host.textContent?.includes("先学习一下再干") ?? false), "learn-first is selected as the initial task by default");
 ok(host.textContent?.includes("权限摘要") ?? false, "code template shows a permission summary");
 ok(host.textContent?.includes("自动允许") ?? false, "code template discloses auto-allow local writes");
 const createButton = clickText("创建助手");
@@ -51,11 +53,18 @@ ok(confirmCheck !== null, "code template renders an explicit permission confirma
 await act(async () => { confirmCheck?.click(); });
 ok(clickText("创建助手")?.disabled === false, "confirming the permission enables creation");
 
-// Select general template → requires a routine, no confirmation gate.
+// Turning learn-first off keeps the template policy and clears stale confirmation.
+await act(async () => { learnFirst?.click(); });
+ok(learnFirst?.checked === false, "learn-first can be disabled at creation time");
+ok(clickText("创建助手")?.disabled === true, "changing the permission-bearing option clears stale confirmation");
+
+// Select general template → requires a routine; learn-first elevates only the
+// disclosed network/local permissions and therefore also requires confirmation.
 await act(async () => { clickText("选择模板")?.click(); });
 await act(async () => { clickText("通用")?.click(); });
 ok(clickText("创建助手")?.disabled === true, "general template is blocked until a routine is filled");
 ok(host.textContent?.includes("例行任务名称") ?? false, "general template exposes a routine form");
+ok((host.querySelector(".assistant-create__learn input") as HTMLInputElement | null)?.checked === true, "general template also offers learn-first by default");
 
 await act(async () => { root.unmount(); });
 console.log(`\n${passed} passed, ${failed} failed\n`);

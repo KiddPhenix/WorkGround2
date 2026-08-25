@@ -793,6 +793,7 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
   const [workspace, setWorkspace] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [learnFirst, setLearnFirst] = useState(true);
   const [routineTitle, setRoutineTitle] = useState("");
   const [routinePrompt, setRoutinePrompt] = useState("");
   const [routineKind, setRoutineKind] = useState<"manual" | "daily" | "interval">("daily");
@@ -830,6 +831,7 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
     setName(chosen.defaultName);
     setMission(chosen.mission);
     setConfirmed(false);
+    setLearnFirst(true);
   };
 
   const generalRoutineSchedule = (): AssistantRoutine["schedule"] => {
@@ -847,8 +849,12 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
     return [];
   };
 
+  const creationPolicy: AssistantRecord["policy"] | null = template ? (learnFirst
+    ? { ...template.policy, local_write: "allow", network: "allow" }
+    : { ...template.policy }) : null;
+
   const submit = async () => {
-    if (!template || !template.available) return;
+    if (!template || !template.available || !creationPolicy) return;
     const routines = routinesFor();
     if (routines.length === 0) return;
     const { assistantID: id, createdAt } = identity;
@@ -860,15 +866,16 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
       scope: workspace.trim() ? "workspace" : "global",
       workspace_root: workspace.trim() || undefined,
       lifecycle: "active",
-      policy: { ...template.policy },
+      policy: { ...creationPolicy },
       memory_revision: 0,
       revision: 0,
       created_at: createdAt,
       updated_at: createdAt,
     };
-    const key = assistantMutationKey("create", id, id, { assistant, routines, template: template.id });
+    const initialPrompt = learnFirst ? copy.learnFirstPrompt : undefined;
+    const key = assistantMutationKey("create", id, id, { assistant, routines, template: template.id, initialPrompt });
     setBusy(true);
-    try { await runAssistantMutation(key, (requestId) => assistantCreate({ requestId, assistant, routines })); onCreated(id); }
+    try { await runAssistantMutation(key, (requestId) => assistantCreate({ requestId, assistant, routines, initialPrompt })); onCreated(id); }
     catch (cause) { showToast(cause instanceof Error ? cause.message : copy.error, "error"); setBusy(false); }
   };
 
@@ -877,13 +884,13 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
     if (access === "deny") return copy.accessDeny;
     return copy.accessApprove;
   };
-  const permissionRows = template ? [
-    { label: copy.policyLocalWrite, access: accessLabel(template.policy.local_write) },
-    { label: copy.policyNetwork, access: accessLabel(template.policy.network) },
-    { label: copy.policyPublish, access: accessLabel(template.policy.publish) },
-    { label: copy.policyHighRisk, access: accessLabel(template.policy.delete) },
+  const permissionRows = creationPolicy ? [
+    { label: copy.policyLocalWrite, access: accessLabel(creationPolicy.local_write) },
+    { label: copy.policyNetwork, access: accessLabel(creationPolicy.network) },
+    { label: copy.policyPublish, access: accessLabel(creationPolicy.publish) },
+    { label: copy.policyHighRisk, access: accessLabel(creationPolicy.delete) },
   ] : [];
-  const needsConfirmation = template?.id === "code";
+  const needsConfirmation = template?.id === "code" || learnFirst;
   const generalRoutineValid = template?.id !== "general" || (routineTitle.trim() !== "" && routinePrompt.trim() !== "");
 
   return (
@@ -938,6 +945,13 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
                 {routineKind === "daily" && <label className="assistant-create__routine-label">{copy.at}<input type="time" value={routineAt} onChange={(event) => setRoutineAt(event.target.value)} /></label>}
                 {routineKind === "interval" && <label className="assistant-create__routine-label">{copy.hour}<input type="number" min={1} max={720} value={routineHours} onChange={(event) => setRoutineHours(Number(event.target.value))} /></label>}
               </div>
+            )}
+
+            {template && (
+              <label className="assistant-check assistant-create__learn">
+                <input type="checkbox" checked={learnFirst} onChange={(event) => { setLearnFirst(event.target.checked); setConfirmed(false); }} />
+                <span><strong>{copy.learnFirst}</strong><small>{copy.learnFirstHint}</small></span>
+              </label>
             )}
 
             {template && (

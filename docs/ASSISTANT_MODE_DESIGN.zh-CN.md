@@ -173,12 +173,15 @@ queued -> running -> succeeded
 | 对外发帖、回复、私信 | 必须审批 |
 | 删除、付费、凭据、隐私数据 | 必须逐次审批 |
 | Assistant 记忆读取/写入（`memory` / `remember` / `forget`） | 自动允许 |
+| 项目 Skill 安装（`install_source`） | 仅 `local_write=allow` 且 `network=allow` 时自动允许；任一拒绝则拒绝，其余逐次审批 |
 
 内建记忆工具 `memory`（只读检索）、`remember`、`forget` 在 Assistant Session 中始终自动执行：它们写入的是 Assistant 绑定项目的受控、版本化 memory store，而不是任意文件写入，因此即使 `local_write=deny/approve` 也保持允许，不再生成 `approve_tool:remember` / `approve_tool:forget` 人工待办。工具调用与结果事件、失败显式暴露和现有 memory queue 行为保持不变。
 
 `bash` 是一个完整 shell，权限跟随 `local_write` 三态：`allow` 时自动执行（含只读命令与普通构建/测试命令，不做命令内容白名单），`deny` 时拒绝且不触发审批，`approve` 时保持逐次审批。删除（`delete_range` / `delete_symbol`）、发布/MCP、`move_file`、browser 写动作等既有敏感边界仍按上表审批或拒绝。
 
 MCP 工具在阶段 2 统一视为外部边界：`network=deny` 时拒绝，其余网络策略下逐次审批。即使工具声明 `readOnly`，该声明也不能证明它不会把项目内容发送到外部服务；后续只有在引入可信 MCP 能力元数据后，才可对明确的本地只读工具放宽。
+
+创建向导可选“先学习一下再干”，默认选中。该选择本身是对首个学习 Run 的明确授权：创建时将 `local_write` 与 `network` 显式设为 `allow` 并要求用户确认权限摘要；取消选择则保留模板原策略。学习过程仅可安装项目级 Skill，不得自行安装 MCP、插件、可执行文件、link/register 或高风险来源。
 
 审批是持久 `AttentionItem`，关联 Assistant、Run、动作、摘要和恢复 token。应用重启后仍可批准、拒绝或取消。
 
@@ -262,6 +265,7 @@ type Opportunity struct {
 - occurrence key 使用 `assistantId/routineId/scheduledFor` 确定性生成。
 - Run 领取写入租约；启动时回收过期 `running`，进入 `queued` 或 `waiting_attention`。
 - 同 request ID 创建、立即运行、转换 Heartbeat 均返回同一结果。
+- 创建请求可携带 `InitialPrompt`；Assistant、Routine 与首个 queued Run 在一次聚合原子写入中提交，重复请求返回同一 Run，参数变化返回幂等冲突，不会产生“助手已创建但首个任务丢失”的半完成状态。
 
 ## 6. 执行流程
 
@@ -281,6 +285,7 @@ type Opportunity struct {
 每次 Assistant Run 使用独立的 `SessionKind=assistant` 会话身份，持久化在会话 sidecar 的 `SessionKind` 与 `AssistantID`，随保存/重载存活；`boot.Build` 据此使用专门的 Assistant 稳定 system prompt（长期 outcome executor）。普通 / Work / Collaboration 会话保持原有 coding-agent 行为。
 
 - 硬性能力从冻结的 Run mission + prompt 确定性派生（`assistant.RequiredCapabilities`）。命名 URL/域名或明确要求在线检查网站的任务派生 `live_web`。
+- “先学习一下再干”派生 `skill_learning`：必须同时取得实时 Web 成功证据和 `install_source` 成功计划/应用证据。Runner 要有界搜索 2–5 个候选，比较来源、时效、适配度与风险，安全时安装并验证项目 Skill，用 `remember` 记录来源、名称、路径和结果；没有合适候选时记录检索范围与判断后结束本轮，禁止无限学习。
 - Assistant Session 不使用 coding Session 的三工具 Anchored Bootstrap；首轮直接暴露完整工具目录，因此浏览器配置启用且使用默认 full token profile 时，`browser_*` 工具从第一次模型请求即可见。
 - 每个 Assistant Run 使用 `ToolApprovalAuto`：权限策略允许的可恢复操作直接执行，fallback 尽量自动放行；显式 Ask/Deny 规则与高风险业务边界继续请求人工确认或拒绝，不升级为 YOLO。
 - `live_web` 只由成功的实时网页/浏览器工具结果满足（browser open/navigate/state 或 web fetch/search 等）；只 dispatch 或失败结果不算。
@@ -314,7 +319,7 @@ type Opportunity struct {
 - 左侧项目树：展示项目绑定助手；全局助手进入全局分组。
 - 时间线首页：今日已做、学到的记忆、下一次计划和“对助手说”快速入口。
 - 管理抽屉：概览、例行任务、记忆、运行记录、权限。
-- 创建/编辑向导：模板、使命、项目、Routine、频率、权限确认。
+- 创建/编辑向导：模板、使命、项目、Routine、频率、可选首个“先学习一下再干”任务、权限确认。
 - 待处理收件箱：审批、连续失败、缺少用户输入。
 
 高频操作不进入深层设置：

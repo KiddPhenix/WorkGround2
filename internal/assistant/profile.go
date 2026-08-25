@@ -15,6 +15,10 @@ const (
 	// CapabilityLiveWeb requires a successful result from a live Web/browser
 	// tool. A dispatch alone, a failed result, or a local-only tool never counts.
 	CapabilityLiveWeb Capability = "live_web"
+	// CapabilitySkillLearning requires both live discovery evidence and a
+	// successful install_source plan/apply result. This prevents a learning Run
+	// from succeeding after merely discussing possible Skills.
+	CapabilitySkillLearning Capability = "skill_learning"
 )
 
 // liveWebTools are the tools whose successful result satisfies CapabilityLiveWeb.
@@ -56,11 +60,19 @@ var onlineMarkerKeywords = []string{"online", "在线"}
 // mission and routine prompt. At minimum, a task naming a URL/domain or
 // explicitly asking to inspect/browse an online website requires live_web.
 func RequiredCapabilities(mission, prompt string) []Capability {
+	if requiresSkillLearning(prompt) {
+		return []Capability{CapabilitySkillLearning}
+	}
 	text := strings.TrimSpace(mission) + "\n" + strings.TrimSpace(prompt)
 	if !requiresLiveWeb(text) {
 		return nil
 	}
 	return []Capability{CapabilityLiveWeb}
+}
+
+func requiresSkillLearning(text string) bool {
+	lower := strings.ToLower(text)
+	return containsAny(lower, "先学习一下再干", "先学习再干", "learn before working", "learn first")
 }
 
 func requiresLiveWeb(text string) bool {
@@ -86,14 +98,21 @@ func containsAny(text string, keywords ...string) bool {
 // Evidence accumulates the successful tool results observed for a single run. It
 // is the only source the runner consults when validating required capabilities.
 type Evidence struct {
-	liveWeb bool
+	liveWeb       bool
+	installSource bool
 }
 
 // RecordToolResult records a finished tool result. ok is true only when the call
 // completed without error; a failed, blocked, or denied result records nothing.
 func (e *Evidence) RecordToolResult(name string, ok bool) {
-	if ok && LiveWebTool(name) {
+	if !ok {
+		return
+	}
+	if LiveWebTool(name) {
 		e.liveWeb = true
+	}
+	if strings.TrimSpace(name) == "install_source" {
+		e.installSource = true
 	}
 }
 
@@ -102,6 +121,8 @@ func (e Evidence) Satisfies(c Capability) bool {
 	switch c {
 	case CapabilityLiveWeb:
 		return e.liveWeb
+	case CapabilitySkillLearning:
+		return e.liveWeb && e.installSource
 	default:
 		return false
 	}
@@ -127,7 +148,7 @@ func EvidenceFailure(missing []Capability) Failure {
 	}
 	return Failure{
 		Code:         "evidence_missing",
-		Message:      fmt.Sprintf("本次运行未取得必需能力的成功工具证据（%s）；浏览器/Web 工具可能未调用、不可用或执行失败，运行将按策略重试", strings.Join(codes, ", ")),
+		Message:      fmt.Sprintf("本次运行未取得必需能力的成功工具证据（%s）；对应工具可能未调用、不可用或执行失败，运行将按策略重试", strings.Join(codes, ", ")),
 		Retryable:    true,
 		OutcomeKnown: true,
 	}

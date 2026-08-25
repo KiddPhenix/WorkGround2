@@ -241,10 +241,11 @@ type AttentionItem struct {
 }
 
 type CreateInput struct {
-	RequestID string
-	Assistant Assistant
-	Routines  []Routine
-	Now       time.Time
+	RequestID     string
+	Assistant     Assistant
+	Routines      []Routine
+	InitialPrompt string
+	Now           time.Time
 }
 
 type RoutineInput struct {

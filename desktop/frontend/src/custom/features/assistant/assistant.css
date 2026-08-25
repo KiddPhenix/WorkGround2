@@ -799,3 +799,8 @@ button.assistant-run-state:focus-visible {
 .assistant-create__permission-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #8f8b86; font-size: 12px; }
 .assistant-create__permission-row strong { color: #c9b18e; font-weight: 600; }
 .assistant-create__confirm { color: #8f8b86 !important; }
+.assistant-create__learn { align-items: flex-start; gap: 10px; padding: 12px 13px; border: 1px solid #34373a; border-radius: 7px; background: #151719; cursor: pointer; }
+.assistant-create__learn input { margin-top: 2px; flex: 0 0 auto; }
+.assistant-create__learn span { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.assistant-create__learn strong { color: #e7dfd4; font-size: 13px; font-weight: 600; }
+.assistant-create__learn small { color: #8f8b86; font-size: 11px; line-height: 1.55; }

@@ -161,11 +161,18 @@ func (s *Store) Create(in CreateInput) (Snapshot, error) {
 	if err := validateID("assistant", in.Assistant.ID); err != nil {
 		return Snapshot{}, err
 	}
+	in.InitialPrompt = strings.TrimSpace(in.InitialPrompt)
+	if in.InitialPrompt != "" {
+		if err := validateDirectPrompt(in.InitialPrompt); err != nil {
+			return Snapshot{}, err
+		}
+	}
 	now := storeNow(in.Now)
 	fingerprint, err := inputFingerprint(struct {
-		Assistant Assistant
-		Routines  []Routine
-	}{assistantIntent(in.Assistant), routineIntents(in.Routines)})
+		Assistant     Assistant
+		Routines      []Routine
+		InitialPrompt string
+	}{assistantIntent(in.Assistant), routineIntents(in.Routines), in.InitialPrompt})
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -219,6 +226,20 @@ func (s *Store) Create(in CreateInput) (Snapshot, error) {
 		Memory: Memory{Revision: 1, Items: []MemoryItem{}}, Runs: []Run{}, Attention: []AttentionItem{},
 		Plan: emptyPlan(), Artifacts: []Artifact{}, Opportunities: []Opportunity{},
 		Requests: map[string]requestReceipt{}, Occurrences: map[string]string{}, UpdatedAt: now,
+	}
+	if in.InitialPrompt != "" {
+		initialRequestID := StableID("initial", in.RequestID)
+		run := Run{
+			ID: StableID("run", a.ID+"/"+initialRequestID), AssistantID: a.ID,
+			RequestID: initialRequestID, Trigger: TriggerManual, AssistantRevision: a.Revision,
+			Scope: a.Scope, WorkspaceRoot: a.WorkspaceRoot, Prompt: in.InitialPrompt,
+			Mission: a.Mission, Policy: a.Policy, State: RunQueued, MaxAttempts: 3,
+			Revision: 1, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := validateRun(run); err != nil {
+			return Snapshot{}, err
+		}
+		agg.Runs = append(agg.Runs, run)
 	}
 	result := snapshotOf(agg)
 	if err := putReceipt(agg, in.RequestID, "create", fingerprint, result, now); err != nil {

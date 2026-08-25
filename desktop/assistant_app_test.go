@@ -53,6 +53,25 @@ func TestAssistantAPICreateAndRunNowAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestAssistantCreateQueuesLearnFirstRun(t *testing.T) {
+	service, _ := newAssistantTestRuntime(t, &assistantHostStub{})
+	app := &App{assistant: service}
+	created, err := app.AssistantCreate(AssistantCreateRequest{
+		RequestID: "create-learn-first",
+		Assistant: assistant.Assistant{
+			Name: "Learning helper", Mission: "持续做好项目工作",
+			Policy: assistant.Policy{LocalWrite: assistant.AccessAllow, Network: assistant.AccessAllow, Publish: assistant.AccessApprove, Delete: assistant.AccessApprove, Payment: assistant.AccessApprove, Secrets: assistant.AccessApprove, Private: assistant.AccessApprove},
+		},
+		InitialPrompt: "先学习一下再干",
+	})
+	if err != nil {
+		t.Fatalf("AssistantCreate: %v", err)
+	}
+	if len(created.Runs) != 1 || created.Runs[0].Prompt != "先学习一下再干" || created.Runs[0].State != assistant.RunQueued {
+		t.Fatalf("initial learning run = %+v", created.Runs)
+	}
+}
+
 func TestAssistantSubmitInputRecordsDirectPromptAndIsIdempotent(t *testing.T) {
 	service, store := newAssistantTestRuntime(t, &assistantHostStub{})
 	app := &App{assistant: service}

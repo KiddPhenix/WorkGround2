@@ -41,6 +41,15 @@ func TestRequiredCapabilitiesLiveWeb(t *testing.T) {
 	}
 }
 
+func TestRequiredCapabilitiesSkillLearning(t *testing.T) {
+	for _, prompt := range []string{"先学习一下再干", "Learn before working"} {
+		got := RequiredCapabilities("持续推进使命", prompt)
+		if len(got) != 1 || got[0] != CapabilitySkillLearning {
+			t.Fatalf("RequiredCapabilities(%q) = %v, want [skill_learning]", prompt, got)
+		}
+	}
+}
+
 func TestLiveWebTool(t *testing.T) {
 	live := []string{"browser_open", "browser_navigate", "browser_state", "browser_click", "browser_scroll", "web_fetch", "web_search"}
 	for _, name := range live {
@@ -82,6 +91,22 @@ func TestEvidenceMissing(t *testing.T) {
 	e.RecordToolResult("web_search", true)
 	if got := e.Missing([]Capability{CapabilityLiveWeb}); len(got) != 0 {
 		t.Fatalf("Missing after evidence = %v, want empty", got)
+	}
+}
+
+func TestSkillLearningEvidenceRequiresWebAndInstaller(t *testing.T) {
+	var e Evidence
+	e.RecordToolResult("web_search", true)
+	if e.Satisfies(CapabilitySkillLearning) {
+		t.Fatal("web evidence alone satisfied skill_learning")
+	}
+	e.RecordToolResult("install_source", false)
+	if e.Satisfies(CapabilitySkillLearning) {
+		t.Fatal("failed installer satisfied skill_learning")
+	}
+	e.RecordToolResult("install_source", true)
+	if !e.Satisfies(CapabilitySkillLearning) {
+		t.Fatal("successful web + installer did not satisfy skill_learning")
 	}
 }
 

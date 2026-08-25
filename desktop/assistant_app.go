@@ -12,9 +12,10 @@ import (
 // AssistantCreateRequest is the typed Wails input for creating one durable
 // assistant aggregate. RequestID is the caller-owned idempotency key.
 type AssistantCreateRequest struct {
-	RequestID string              `json:"requestId"`
-	Assistant assistant.Assistant `json:"assistant"`
-	Routines  []assistant.Routine `json:"routines"`
+	RequestID     string              `json:"requestId"`
+	Assistant     assistant.Assistant `json:"assistant"`
+	Routines      []assistant.Routine `json:"routines"`
+	InitialPrompt string              `json:"initialPrompt,omitempty"`
 }
 
 type AssistantUpdateRequest struct {
@@ -159,12 +160,20 @@ func (a *App) AssistantCreate(req AssistantCreateRequest) (assistant.Snapshot, e
 			routine.Schedule.Kind = assistant.ScheduleManual
 		}
 	}
-	return service.store.Create(assistant.CreateInput{
-		RequestID: req.RequestID,
-		Assistant: req.Assistant,
-		Routines:  req.Routines,
-		Now:       time.Now(),
+	snapshot, err := service.store.Create(assistant.CreateInput{
+		RequestID:     req.RequestID,
+		Assistant:     req.Assistant,
+		Routines:      req.Routines,
+		InitialPrompt: req.InitialPrompt,
+		Now:           time.Now(),
 	})
+	if err != nil {
+		return assistant.Snapshot{}, err
+	}
+	if strings.TrimSpace(req.InitialPrompt) != "" {
+		service.Wake()
+	}
+	return snapshot, nil
 }
 
 func (a *App) AssistantUpdate(req AssistantUpdateRequest) (assistant.Assistant, error) {

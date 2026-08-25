@@ -710,6 +710,29 @@ func TestAssistantPermissionPolicyLocalAndNetworkThreeStates(t *testing.T) {
 	})
 }
 
+func TestAssistantPermissionSkillInstallRequiresLocalAndNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		local, network assistant.Access
+		wantAllowed    bool
+		wantApprovals  int
+	}{
+		{assistant.AccessAllow, assistant.AccessAllow, true, 0},
+		{assistant.AccessAllow, assistant.AccessApprove, false, 1},
+		{assistant.AccessApprove, assistant.AccessAllow, false, 1},
+		{assistant.AccessDeny, assistant.AccessAllow, false, 0},
+		{assistant.AccessAllow, assistant.AccessDeny, false, 0},
+	} {
+		policy := assistant.DefaultPolicy()
+		policy.LocalWrite, policy.Network = tc.local, tc.network
+		approver := &permissionApproverStub{}
+		gate := permission.NewGate(buildAssistantPermissionPolicy(policy), approver)
+		allowed, _, err := gate.Check(context.Background(), "install_source", json.RawMessage(`{"source":"https://example.com/SKILL.md","kind":"skill","scope":"project"}`), false)
+		if err != nil || allowed != tc.wantAllowed || approver.calls != tc.wantApprovals {
+			t.Fatalf("local=%s network=%s allowed=%v approvals=%d err=%v", tc.local, tc.network, allowed, approver.calls, err)
+		}
+	}
+}
+
 func TestAssistantPermissionPolicyKeepsMoveDeleteAndAllMCPAsk(t *testing.T) {
 	policy := assistant.DefaultPolicy()
 	policy.LocalWrite = assistant.AccessAllow

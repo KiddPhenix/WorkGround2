@@ -42,6 +42,36 @@ func TestStoreCreateIsDurablyIdempotentAndRejectsFingerprintConflict(t *testing.
 	}
 }
 
+func TestStoreCreateAtomicallyQueuesInitialPrompt(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "assistants")
+	store := testStore(t, root)
+	in := testCreateInput("helper-learn", "create-learn-1")
+	in.InitialPrompt = "  先学习一下再干  "
+	created, err := store.Create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Runs) != 1 {
+		t.Fatalf("initial runs = %d, want 1", len(created.Runs))
+	}
+	run := created.Runs[0]
+	if run.Prompt != "先学习一下再干" || run.State != RunQueued || run.Trigger != TriggerManual {
+		t.Fatalf("initial run = %+v", run)
+	}
+	if run.AssistantRevision != created.Assistant.Revision || run.Policy != created.Assistant.Policy || run.Mission != created.Assistant.Mission {
+		t.Fatalf("initial run did not freeze created assistant: run=%+v assistant=%+v", run, created.Assistant)
+	}
+
+	replay, err := testStore(t, root).Create(in)
+	if err != nil || len(replay.Runs) != 1 || replay.Runs[0].ID != run.ID {
+		t.Fatalf("replay duplicated or changed initial run: %+v err=%v", replay.Runs, err)
+	}
+	in.InitialPrompt = "换一个首个任务"
+	if _, err := store.Create(in); !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("changed initial prompt error = %v, want ErrIdempotency", err)
+	}
+}
+
 func TestStoreUpdateAssistantCASAndIdempotentRetry(t *testing.T) {
 	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
 	created := mustCreate(t, store, "helper-a")
