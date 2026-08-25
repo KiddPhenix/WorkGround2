@@ -217,6 +217,12 @@ export interface AssistantUpdateInput {
   assistant: AssistantRecord;
 }
 
+export interface AssistantDeleteInput {
+  assistantId: string;
+  requestId: string;
+  expectedRevision: number;
+}
+
 export interface AssistantRoutineInput {
   requestId: string;
   expectedRevision: number;

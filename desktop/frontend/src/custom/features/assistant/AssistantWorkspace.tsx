@@ -27,6 +27,7 @@ import {
   assistantApplyMemory,
   assistantCancel,
   assistantCreate,
+  assistantDelete,
   assistantGet,
   assistantList,
   assistantPutRoutine,
@@ -408,6 +409,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
           onTab={setManageTab}
           onClose={() => setManageTab(null)}
           onRefresh={data.refresh}
+          onDeleted={() => data.loadList()}
           onRun={run}
           onOpenSession={onOpenSession}
           diagnostics={data.diagnostics}
@@ -418,12 +420,13 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
   );
 }
 
-function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onRun, onOpenSession, diagnostics }: {
+function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted, onRun, onOpenSession, diagnostics }: {
   snapshot: AssistantSnapshot;
   tab: ManageTab;
   onTab: (tab: ManageTab) => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
+  onDeleted: () => Promise<void>;
   onRun: (routineID?: string) => Promise<void>;
   onOpenSession?: AssistantWorkspaceProps["onOpenSession"];
   diagnostics: AssistantDiagnostic[];
@@ -446,6 +449,25 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onRun, onO
     catch (cause) { showToast(cause instanceof Error ? cause.message : copy.error, "error"); return false; }
     finally { setBusy(""); }
   };
+  const deleteAssistant = async () => {
+    if (busy) return;
+    setBusy("delete");
+    const key = assistantMutationKey("delete", snapshot.assistant.id, snapshot.assistant.id, { revision: snapshot.revision });
+    try {
+      await runAssistantCASMutation(key, snapshot.revision, ({ requestId, expectedRevision }) => assistantDelete({
+        assistantId: snapshot.assistant.id,
+        requestId,
+        expectedRevision,
+      }));
+      showToast(copy.deletedAssistant, "info");
+      onClose();
+      await onDeleted();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : copy.error, "error");
+    } finally {
+      setBusy("");
+    }
+  };
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", close);
@@ -457,7 +479,7 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onRun, onO
         <header><h2>{copy.manage}</h2><button className="assistant-icon-button" type="button" aria-label={copy.close} onClick={onClose}><X size={18} /></button></header>
         <nav aria-label={copy.manage}>{tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={tab === id ? "page" : undefined} className={tab === id ? "is-active" : ""} onClick={() => onTab(id)}><Icon size={15} />{label}{id === "attention" && snapshot.attention.some((item) => attentionInboxAction(item, snapshot.runs.find((run) => run.id === item.run_id)) !== "none") && <span className="assistant-nav-dot" />}</button>)}</nav>
         <div className="assistant-manager__content">
-          {tab === "overview" && <OverviewEditor snapshot={snapshot} diagnostics={diagnostics} busy={busy} act={act} />}
+          {tab === "overview" && <OverviewEditor snapshot={snapshot} diagnostics={diagnostics} busy={busy} act={act} onDelete={deleteAssistant} />}
           {tab === "plan" && <PlanView snapshot={snapshot} />}
           {tab === "routines" && <RoutineEditor snapshot={snapshot} busy={busy} act={act} onRun={onRun} />}
           {tab === "memory" && <MemoryEditor snapshot={snapshot} busy={busy} act={act} />}
@@ -534,7 +556,7 @@ type Act = (key: string, action: () => Promise<unknown>) => Promise<boolean>;
 
 const ALWAYS_ASK_POLICY: ReadonlySet<keyof AssistantPolicy> = new Set(["publish", "delete", "payment", "secrets", "private_data"]);
 
-export function OverviewEditor({ snapshot, diagnostics, busy, act }: { snapshot: AssistantSnapshot; diagnostics: AssistantDiagnostic[]; busy: string; act: Act }) {
+export function OverviewEditor({ snapshot, diagnostics, busy, act, onDelete }: { snapshot: AssistantSnapshot; diagnostics: AssistantDiagnostic[]; busy: string; act: Act; onDelete: () => Promise<void> }) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
   const [name, setName] = useState(snapshot.assistant.name);
@@ -542,12 +564,14 @@ export function OverviewEditor({ snapshot, diagnostics, busy, act }: { snapshot:
   const [scope, setScope] = useState(snapshot.assistant.scope);
   const [workspace, setWorkspace] = useState(snapshot.assistant.workspace_root ?? "");
   const [policy, setPolicy] = useState<AssistantPolicy>(snapshot.assistant.policy);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   useEffect(() => {
     setName(snapshot.assistant.name);
     setMission(snapshot.assistant.mission);
     setScope(snapshot.assistant.scope);
     setWorkspace(snapshot.assistant.workspace_root ?? "");
     setPolicy(snapshot.assistant.policy);
+    setConfirmDelete(false);
   }, [snapshot.assistant.id, snapshot.assistant.revision]);
   const policyRows: Array<{ key: keyof AssistantPolicy; label: string }> = [
     { key: "local_write", label: copy.policyLocalWrite },
@@ -623,6 +647,17 @@ export function OverviewEditor({ snapshot, diagnostics, busy, act }: { snapshot:
         </button>
         <button className="assistant-button assistant-button--accent" type="submit" disabled={Boolean(busy) || !name.trim() || !mission.trim() || (scope === "workspace" && !workspace.trim())}>{copy.save}</button>
       </div>
+      <section className="assistant-danger-zone" aria-label={copy.deleteAssistantTitle}>
+        <div><strong>{copy.deleteAssistantTitle}</strong><p>{copy.deleteAssistantBody}</p></div>
+        {confirmDelete ? (
+          <div className="assistant-danger-zone__confirm" role="alert">
+            <button className="assistant-button" type="button" disabled={Boolean(busy)} onClick={() => setConfirmDelete(false)}>{copy.cancel}</button>
+            <button className="assistant-button assistant-button--danger" type="button" disabled={Boolean(busy)} onClick={() => void onDelete()}><Trash2 size={14} />{copy.confirmDeleteAssistant}</button>
+          </div>
+        ) : (
+          <button className="assistant-button assistant-button--danger-quiet" type="button" disabled={Boolean(busy)} onClick={() => setConfirmDelete(true)}><Trash2 size={14} />{copy.deleteAssistant}</button>
+        )}
+      </section>
     </form>
   );
 }

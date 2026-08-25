@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,34 @@ func TestAssistantAPICreateAndRunNowAreIdempotent(t *testing.T) {
 	}
 	if run1.ID != run2.ID || run1.Revision != run2.Revision {
 		t.Fatalf("run replay drifted: first=%+v second=%+v", run1, run2)
+	}
+}
+
+func TestAssistantAPIDeleteIsIdempotentAndRemovesFromList(t *testing.T) {
+	service, _ := newAssistantTestRuntime(t, &assistantHostStub{})
+	app := &App{assistant: service}
+	created, err := app.AssistantCreate(AssistantCreateRequest{
+		RequestID: "delete-create", Assistant: assistant.Assistant{Name: "Disposable", Mission: "Verify deletion"},
+		InitialPrompt: "queued work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := AssistantDeleteRequest{
+		AssistantID: created.Assistant.ID, RequestID: "delete-request", ExpectedRevision: created.Revision,
+	}
+	if err := app.AssistantDelete(req); err != nil {
+		t.Fatalf("AssistantDelete: %v", err)
+	}
+	if err := app.AssistantDelete(req); err != nil {
+		t.Fatalf("AssistantDelete replay: %v", err)
+	}
+	result, err := app.AssistantList()
+	if err != nil || len(result.Items) != 0 {
+		t.Fatalf("AssistantList after delete = %+v err=%v", result.Items, err)
+	}
+	if _, err := app.AssistantGet(created.Assistant.ID); !errors.Is(err, assistant.ErrNotFound) {
+		t.Fatalf("AssistantGet deleted error = %v, want ErrNotFound", err)
 	}
 }
 
