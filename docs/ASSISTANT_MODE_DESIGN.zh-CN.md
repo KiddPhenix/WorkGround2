@@ -1,6 +1,6 @@
 # WorkGround2 助手模式设计
 
-> 状态：阶段 1～4 已实现，阶段 5 实现中
+> 状态：阶段 1～5 已实现
 >
 > 分支：`developping/assistant-improvement-proposals+2026-08-26`
 >
@@ -451,7 +451,7 @@ type ChannelProposal struct {
 
 ### 阶段 5：持续改进提案闭环
 
-状态：实现中（2026-08-26）。
+状态：已完成（2026-08-26）。
 
 - `<assistant-progress>` 增加类型化 `proposals`；成功 Run、Plan 进度和提案在一次聚合写入中提交，解析失败不留下半完成配置。
 - 提案只覆盖 Routine Prompt / Schedule / Enabled 与 Channel 采集间隔 / Enabled；Store 捕获基线 revision 和变更前值，禁止修改 Mission、Policy、Workspace、渠道地址或凭据。
