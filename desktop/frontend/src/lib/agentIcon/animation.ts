@@ -1,8 +1,7 @@
 // 眼睛动画：帧选择是纯函数（fps/loop/holdLast 只从 manifest 读，禁止硬编码
-// 副本），共享单例时钟驱动所有图标 —— 不新增每图标 timer；隐藏 tab 时 rAF
-// 自动节流。reduced-motion：循环状态显示中间帧，单次状态显示末帧；不得用
-// 隐藏状态层关闭动画（资源 README 契约）。
-import { useEffect, useRef, useState } from "react";
+// 副本）。逐帧工作交给 Web Animations compositor，React 只在身份/状态或
+// reduced-motion 改变时配置一次 DOM；不使用 rAF/setState 热循环。
+import { useEffect, type RefObject } from "react";
 import type { AgentEyeStatus, AgentManifest } from "./types";
 
 /** 动画 key：status 或 sessionId 变化时 startedAt 归零；同状态反复渲染不重置。 */
@@ -34,50 +33,6 @@ export function eyeFrameAt(
   return Math.floor(phase) % frameCount;
 }
 
-// --- 共享单例时钟 -----------------------------------------------------------
-
-type TickCallback = (nowMs: number) => void;
-
-let tickSubscribers = new Set<TickCallback>();
-let tickHandle: number | null = null;
-let tickTimer: ReturnType<typeof setTimeout> | null = null;
-
-function tickLoop(nowMs: number): void {
-  for (const callback of tickSubscribers) callback(nowMs);
-  tickHandle = null;
-  tickTimer = null;
-  scheduleTick();
-}
-
-function scheduleTick(): void {
-  if (tickSubscribers.size === 0) return;
-  if (typeof requestAnimationFrame === "function") {
-    tickHandle = requestAnimationFrame(tickLoop);
-  } else {
-    // jsdom/测试环境无 rAF：退化为节流的 setTimeout，保证订阅不崩溃。
-    tickTimer = setTimeout(() => tickLoop(Date.now()), 1000 / 60);
-  }
-}
-
-/** 订阅全局动画时钟；返回退订函数。首个订阅者启动时钟，最后一个退订即停止。 */
-export function subscribeAnimationTick(callback: TickCallback): () => void {
-  tickSubscribers.add(callback);
-  if (tickHandle === null && tickTimer === null) scheduleTick();
-  return () => {
-    tickSubscribers.delete(callback);
-    if (tickSubscribers.size === 0) {
-      if (tickHandle !== null) cancelAnimationFrame(tickHandle);
-      if (tickTimer !== null) clearTimeout(tickTimer);
-      tickHandle = null;
-      tickTimer = null;
-    }
-  };
-}
-
-function clockNow(): number {
-  return typeof performance === "object" && typeof performance.now === "function" ? performance.now() : Date.now();
-}
-
 // --- prefers-reduced-motion 单例 -------------------------------------------------
 
 type ReducedMotionCallback = (reduced: boolean) => void;
@@ -95,9 +50,13 @@ export function subscribeReducedMotion(callback: ReducedMotionCallback): () => v
   reducedListeners.add(callback);
   if (reducedListeners.size === 1 && typeof matchMedia === "function") {
     reducedMql = matchMedia("(prefers-reduced-motion: reduce)");
+    reducedMotion = reducedMql.matches;
     reducedMql.addEventListener("change", refreshReducedMotion);
   }
-  refreshReducedMotion();
+  // Initialize only the new subscriber. Broadcasting here would restart every
+  // existing icon once per mount (O(N²)); full broadcast belongs to real media
+  // changes only.
+  callback(reducedMotion);
   return () => {
     reducedListeners.delete(callback);
     if (reducedListeners.size === 0 && reducedMql) {
@@ -116,21 +75,91 @@ export function getReducedMotion(): boolean {
     : reducedMotion;
 }
 
-/**
- * 单图标动画 hook：状态/身份变化才重置 startedAt，否则同一状态反复渲染
- * 不重置；帧号由共享时钟推导。组件只消费帧号做 background-position 切换。
- */
-export function useAgentEyeFrame(sessionId: string, eyeStatus: AgentEyeStatus, manifest: AgentManifest): number {
-  const [now, setNow] = useState<number>(clockNow);
-  const [reduced, setReduced] = useState<boolean>(getReducedMotion);
-  const key = animationKey(sessionId, eyeStatus);
-  const startedAtRef = useRef<number>(0);
-  const lastKeyRef = useRef<string | null>(null);
-  if (lastKeyRef.current !== key) {
-    lastKeyRef.current = key;
-    startedAtRef.current = clockNow();
+export interface AgentEyeAnimationPlan {
+  initialTransform: string;
+  keyframes: Keyframe[];
+  options: KeyframeAnimationOptions;
+}
+
+function frameTransform(frame: number, frameCount: number): string {
+  return `translateX(${-(frame / Math.max(1, frameCount)) * 100}%)`;
+}
+
+/** Build one compositor animation directly from the manifest contract. */
+export function agentEyeAnimationPlan(eyeStatus: AgentEyeStatus, reduced: boolean, manifest: AgentManifest): AgentEyeAnimationPlan | null {
+  const eye = manifest.eyes.find((entry) => entry.id === eyeStatus);
+  const frameCount = eye?.frames.length ?? 0;
+  if (!eye || frameCount === 0 || !Number.isFinite(eye.fps) || eye.fps <= 0) return null;
+  const staticFrame = reduced ? (eye.loop ? Math.floor(frameCount / 2) : frameCount - 1) : 0;
+  const initialTransform = frameTransform(staticFrame, frameCount);
+  if (reduced || frameCount === 1) {
+    return { initialTransform, keyframes: [], options: { duration: 0 } };
   }
-  useEffect(() => subscribeAnimationTick(setNow), []);
-  useEffect(() => subscribeReducedMotion(setReduced), []);
-  return eyeFrameAt(eyeStatus, startedAtRef.current, now, reduced, manifest);
+  const denominator = frameCount;
+  const keyframes: Keyframe[] = eye.frames.map((_, frame) => ({
+    transform: frameTransform(frame, frameCount),
+    offset: frame / denominator,
+    easing: "steps(1, end)",
+  }));
+  keyframes.push({ transform: frameTransform(frameCount - 1, frameCount), offset: 1, easing: "steps(1, end)" });
+  return {
+    initialTransform,
+    keyframes,
+    options: {
+      duration: (denominator / eye.fps) * 1000,
+      iterations: eye.loop ? Infinity : 1,
+      fill: !eye.loop && eye.holdLast ? "forwards" : "none",
+    },
+  };
+}
+
+const reportedAnimationErrors = new Set<string>();
+
+function reportAnimationError(eyeStatus: AgentEyeStatus, cause: unknown): void {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const key = `${eyeStatus}:${message}`;
+  if (reportedAnimationErrors.has(key)) return;
+  reportedAnimationErrors.add(key);
+  console.error(`[agent-icon] eye animation failed status=${eyeStatus}: ${message}`);
+}
+
+/** Configure the sprite compositor once; animation frames never enter React state. */
+export function useAgentEyeAnimation(
+  ref: RefObject<HTMLImageElement | null>,
+  sessionId: string,
+  eyeStatus: AgentEyeStatus,
+  manifest: AgentManifest,
+  enabled = true,
+): void {
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || !enabled) return;
+    let animation: Animation | null = null;
+    const apply = (reduced: boolean) => {
+      animation?.cancel();
+      animation = null;
+      const plan = agentEyeAnimationPlan(eyeStatus, reduced, manifest);
+      if (!plan) {
+        element.style.transform = frameTransform(0, 1);
+        reportAnimationError(eyeStatus, new Error("invalid manifest fps or frames"));
+        return;
+      }
+      element.style.transform = plan.initialTransform;
+      if (plan.keyframes.length === 0) return;
+      if (typeof element.animate !== "function") {
+        reportAnimationError(eyeStatus, new Error("Web Animations API unavailable"));
+        return;
+      }
+      try {
+        animation = element.animate(plan.keyframes, plan.options);
+      } catch (cause) {
+        reportAnimationError(eyeStatus, cause);
+      }
+    };
+    const unsubscribe = subscribeReducedMotion(apply);
+    return () => {
+      unsubscribe();
+      animation?.cancel();
+    };
+  }, [enabled, eyeStatus, manifest, ref, sessionId]);
 }

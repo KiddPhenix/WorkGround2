@@ -9,7 +9,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentManifest, assetURL, runtimeAssetPaths } from "../lib/agentIcon/assets";
-import { eyeFrameAt, animationKey } from "../lib/agentIcon/animation";
+import { agentEyeAnimationPlan, eyeFrameAt, animationKey, subscribeReducedMotion } from "../lib/agentIcon/animation";
 import { hashString, identitySeedKey, pickIdentity, stableIndex } from "../lib/agentIcon/identity";
 import { eyeStatusFor } from "../lib/agentIcon/state";
 import { resolveToolId, toolForTask, WIDGET_TASK_TOOL_ID } from "../lib/agentIcon/task";
@@ -160,6 +160,33 @@ console.log("\nagent icon — animation");
   const eye = agentManifest.eyes.find((e) => e.id === "success");
   assert.equal(eye?.fps, 8, "success fps comes from manifest");
   assert.equal(eye?.holdLast, true, "success holdLast comes from manifest");
+  const runningPlan = agentEyeAnimationPlan("running", false, agentManifest);
+  assert.equal(runningPlan?.keyframes.length, 7, "six manifest frames produce six steps plus the final hold keyframe");
+  assert.equal(runningPlan?.options.duration, 1000, "duration is manifest frame count / fps");
+  assert.equal(runningPlan?.options.iterations, Infinity, "manifest loop uses compositor infinity");
+  const successPlan = agentEyeAnimationPlan("success", false, agentManifest);
+  assert.equal(successPlan?.options.duration, 750, "one-shot duration still comes from manifest frames/fps");
+  assert.equal(successPlan?.options.iterations, 1, "manifest non-loop runs once");
+  assert.equal(successPlan?.options.fill, "forwards", "manifest holdLast keeps the final compositor frame");
+  const reducedPlan = agentEyeAnimationPlan("running", true, agentManifest);
+  assert.equal(reducedPlan?.keyframes.length, 0, "reduced motion does not start a compositor animation");
+  assert.match(reducedPlan?.initialTransform ?? "", /-50%/, "reduced loop uses the manifest middle frame");
+
+  let mediaChange: ((event: { matches: boolean }) => void) | undefined;
+  Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: () => ({
+    matches: false,
+    addEventListener: (_kind: string, listener: (event: { matches: boolean }) => void) => { mediaChange = listener; },
+    removeEventListener: () => {},
+  }) });
+  let firstUpdates = 0;
+  let secondUpdates = 0;
+  const offFirst = subscribeReducedMotion(() => { firstUpdates += 1; });
+  const offSecond = subscribeReducedMotion(() => { secondUpdates += 1; });
+  assert.deepEqual([firstUpdates, secondUpdates], [1, 1], "mounting another icon initializes only that subscriber");
+  mediaChange?.({ matches: true });
+  assert.deepEqual([firstUpdates, secondUpdates], [2, 2], "a real reduced-motion change broadcasts once to every icon");
+  offSecond();
+  offFirst();
 }
 
 console.log("\nagent icon — viewModel");
@@ -188,7 +215,7 @@ console.log("\nagent icon — viewModel");
   }));
   assert.equal(legacy.sessionId, "sessions/legacy.jsonl", "legacy retained falls back to sessionPath");
   // 未知 workspace 图标 → 空键（渲染侧 folder 中性回退）
-  const unknownIcon = buildAgentIconViewModel(taskItem({ workspaceIcon: "rocket" }));
+  const unknownIcon = buildAgentIconViewModel(taskItem({ workspaceIcon: "__unknown_agent_icon__" }));
   assert.equal(unknownIcon.workspaceBadge.iconKey, "", "unknown workspace icon degrades to neutral");
 }
 {

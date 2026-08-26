@@ -1,11 +1,11 @@
 // AgentIcon：按 manifest.layerOrder 纯渲染 5 层（frame → headwear → eyes →
 // workspaceBadge → taskTool），DOM 顺序即叠加顺序。组件不计算身份、不查任务
-// 映射、不推导状态 —— 全部来自 lib 层产出的 AgentIconViewModel；动画帧号由
-// 共享时钟 hook 给出，组件只做 sprite 位移。缺资源不破图：隐藏该层并去重
+// 映射、不推导状态 —— 全部来自 lib 层产出的 AgentIconViewModel；眼睛动画
+// 由 Web Animations compositor 直接移动 sprite，不逐帧触发 React。缺资源隐藏并去重
 // 上报（frame 缺失则整图标不渲染）；reduced-motion 由 animation 层处理。
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useRef, useState } from "react";
 import { Bookmark, Code2, Folder, SquareTerminal, Star, Zap } from "lucide-react";
-import { useAgentEyeFrame } from "../../lib/agentIcon/animation";
+import { useAgentEyeAnimation } from "../../lib/agentIcon/animation";
 import { agentManifest, assetURL } from "../../lib/agentIcon/assets";
 import type { AgentIconViewModel } from "../../lib/agentIcon/types";
 import { isWorkspaceMatteIcon, type ProjectIconKey } from "../../lib/projectIcons";
@@ -44,8 +44,7 @@ function BadgeGlyph({ iconKey }: { iconKey: ProjectIconKey }) {
 }
 
 export const AgentIcon = memo(function AgentIcon({ viewModel, onAssetMissing }: { viewModel: AgentIconViewModel; onAssetMissing?: (info: AgentIconAssetMissing) => void }) {
-  // 动画帧：状态/身份变化才重置；同一状态反复渲染不重置（animation.ts）。
-  const eyeFrame = useAgentEyeFrame(viewModel.sessionId, viewModel.eyeStatus, agentManifest);
+  const eyeRef = useRef<HTMLImageElement>(null);
   // 组件内按层记录 onError 缺失；viewModel.missingLayers 是 manifest/契约层
   // 的静态缺失（同步滞后等），两者合并决定每层是否隐藏。
   const [errored, setErrored] = useState<ReadonlySet<string>>(() => new Set());
@@ -58,11 +57,7 @@ export const AgentIcon = memo(function AgentIcon({ viewModel, onAssetMissing }: 
 
   const frameLayer = agentManifest.frames.find((entry) => entry.id === viewModel.frameId);
   const frameURL = frameLayer ? assetURL(frameLayer.png) : undefined;
-  // frame 缺失 → 整图标不渲染并上报（规范 §6.3），绝不显示破图。
-  if (!frameLayer || !frameURL || missingLayers.has("frame")) {
-    reportAssetMissing({ sessionId: viewModel.sessionId, layer: "frame", path: frameLayer?.png ?? viewModel.frameId }, onAssetMissing);
-    return null;
-  }
+  const frameMissing = !frameLayer || !frameURL || missingLayers.has("frame");
 
   const headwearLayer = viewModel.headwear.kind === "hat"
     ? agentManifest.hats.find((entry) => entry.id === viewModel.headwear.id)
@@ -95,6 +90,13 @@ export const AgentIcon = memo(function AgentIcon({ viewModel, onAssetMissing }: 
   }
 
   const framesPerEye = eyeLayer?.frames.length ?? 0;
+  useAgentEyeAnimation(eyeRef, viewModel.sessionId, viewModel.eyeStatus, agentManifest, !frameMissing && !eyeMissing);
+
+  // Hooks stay unconditional; frame 缺失 still removes the whole icon.
+  if (frameMissing) {
+    reportAssetMissing({ sessionId: viewModel.sessionId, layer: "frame", path: frameLayer?.png ?? viewModel.frameId }, onAssetMissing);
+    return null;
+  }
 
   return (
     <span className="agent-icon" aria-hidden="true" data-eye-status={viewModel.eyeStatus}>
@@ -106,11 +108,12 @@ export const AgentIcon = memo(function AgentIcon({ viewModel, onAssetMissing }: 
         {eyeMissing
           ? neutralURL ? <img src={neutralURL} alt="" className="agent-icon__eyes-fallback" draggable={false} /> : null
           : <img
+              ref={eyeRef}
               src={spriteURL}
               alt=""
               className="agent-icon__eyes"
               draggable={false}
-              style={{ width: `${framesPerEye * 100}%`, transform: `translateX(${-(eyeFrame / framesPerEye) * 100}%)` }}
+              style={{ width: `${framesPerEye * 100}%`, transform: "translateX(0%)" }}
               onError={() => { markMissing("eyes"); reportAssetMissing({ sessionId: viewModel.sessionId, layer: "eyes", path: eyeLayer?.sprite ?? viewModel.eyeStatus }, onAssetMissing); }}
             />}
       </span>

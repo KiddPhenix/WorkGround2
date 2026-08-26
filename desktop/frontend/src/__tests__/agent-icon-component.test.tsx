@@ -24,6 +24,15 @@ globalThis.window = dom.window as unknown as Window & typeof globalThis;
 globalThis.document = dom.window.document;
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
 globalThis.HTMLElement = dom.window.HTMLElement;
+const animations: Array<{ keyframes: Keyframe[]; options: KeyframeAnimationOptions; cancelled: boolean }> = [];
+Object.defineProperty(dom.window.HTMLElement.prototype, "animate", {
+  configurable: true,
+  value(keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+    const call = { keyframes, options, cancelled: false };
+    animations.push(call);
+    return { cancel: () => { call.cancelled = true; } } as Animation;
+  },
+});
 
 function taskItem(overrides: Partial<DesktopIconItem> = {}): DesktopIconItem {
   return {
@@ -75,12 +84,17 @@ console.log("\nagent-icon component — layers");
   ok(eyeImg.src.endsWith(eye?.sprite ?? "none"), "eyes sprite matches the mapped status");
   ok(eyeImg.src.endsWith(".png"), "eyes render from a PNG sprite");
   ok(eyeImg.style.width === "600%", "eyes sprite is 6 frames wide");
-  ok(eyeImg.style.transform === "translateX(0%)" || /translateX\(-/.test(eyeImg.style.transform), "eyes sprite is frame-offset");
+  ok(eyeImg.style.transform === "translateX(0%)", "React renders one stable initial sprite transform");
+  const eyeAnimation = animations.at(-1);
+  ok(eyeAnimation?.keyframes.length === (eye?.frames.length ?? 0) + 1, "compositor receives manifest frames plus final hold keyframe");
+  ok(eyeAnimation?.options.duration === ((eye?.frames.length ?? 0) / (eye?.fps ?? 1)) * 1000, "compositor duration comes from manifest fps");
+  ok(eyeAnimation?.options.iterations === Infinity, "running compositor animation follows manifest loop");
   ok(host.querySelector(".agent-icon__layer--badge .agent-icon__badge-template") !== null, "workspace badge template renders");
   ok(host.querySelector(".agent-icon__layer--badge .agent-icon__badge-glyph") !== null, "workspace badge glyph renders");
   const toolImg = host.querySelector<HTMLImageElement>(".agent-icon > img.agent-icon__layer:last-child");
   ok(toolImg !== null && toolImg.src.endsWith("png/tools/general.png"), "task tool is the manifest general tool");
   await unmount(root);
+  ok(eyeAnimation?.cancelled === true, "unmount cancels the compositor animation");
 }
 
 {
@@ -99,7 +113,7 @@ console.log("\nagent-icon component — layers");
   await unmount(root2);
   host2.remove();
 
-  const unknown = buildAgentIconViewModel(taskItem({ workspaceIcon: "rocket" }));
+  const unknown = buildAgentIconViewModel(taskItem({ workspaceIcon: "__unknown_agent_icon__" }));
   const host3 = document.createElement("div");
   document.body.appendChild(host3);
   const root3 = createRoot(host3);

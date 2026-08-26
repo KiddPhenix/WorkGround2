@@ -62,8 +62,8 @@ export interface AgentWorkspaceBadgeViewModel {
   stableKey: string;
 }
 
-// AgentIcon 组件的完整输入。eyeFrame/reducedMotion 不属于静态 ViewModel：
-// 动画帧由共享 rAF 时钟与 prefers-reduced-motion 在组件内推导。
+// AgentIcon 组件的完整输入。动画帧不属于静态 ViewModel：Web Animations
+// compositor 直接消费 manifest，并监听 prefers-reduced-motion。
 export interface AgentIconViewModel {
   /** 稳定身份 seed（sessionId；空时回退 sessionPath → topicId → item.id）。 */
   sessionId: string;
