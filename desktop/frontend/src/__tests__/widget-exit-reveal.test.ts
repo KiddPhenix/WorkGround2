@@ -22,6 +22,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function main() {
   console.log("\nwidget exit reveal");
   const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
+  const controllerSource = readFileSync(new URL("../lib/useController.ts", import.meta.url), "utf8");
   const workspaceSource = readFileSync(new URL("../collab/CollaborationWorkspace.tsx", import.meta.url), "utf8");
 
   // ── Source contract: the reveal intent fires only on a real widget exit ──
@@ -45,6 +46,12 @@ async function main() {
       workspaceSource.includes("scrollTimelineToBottomAfterLayout") &&
       /if \(revealSignal <= 0\) return;/.test(workspaceSource),
     "CollaborationWorkspace repins its own .collab-scroll owner on a reveal signal",
+  );
+  ok(
+    /<ReactActivity mode=\{widgetMode \? "hidden" : "visible"\}>[\s\S]{0,500}<MainApp/.test(appSource) &&
+      controllerSource.includes("const off = onEvent((e) => {") &&
+      controllerSource.includes("void syncActiveTabFromBackend(false, true).then((tabId) => {"),
+    "Activity preserves MainApp while hidden and reactivation re-synchronizes authoritative backend state",
   );
 
   // ── Opening a task from the widget collapses the Assistant surface ──
