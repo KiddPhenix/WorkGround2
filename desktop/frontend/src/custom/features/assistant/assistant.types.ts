@@ -175,6 +175,40 @@ export interface AssistantOpportunity {
   created_at: string;
 }
 
+export type AssistantProposalTarget = "routine" | "channel";
+export type AssistantProposalState = "pending" | "applied" | "rejected" | "superseded";
+
+export interface AssistantRoutineProposalPatch {
+  prompt?: string;
+  schedule?: AssistantSchedule;
+  enabled?: boolean;
+}
+
+export interface AssistantChannelProposalPatch {
+  collect_interval_seconds?: number;
+  enabled?: boolean;
+}
+
+export interface AssistantChangeProposal {
+  id: string;
+  assistant_id: string;
+  run_id: string;
+  target_kind: AssistantProposalTarget;
+  target_id: string;
+  base_revision: number;
+  routine?: { before: AssistantRoutineProposalPatch; after: AssistantRoutineProposalPatch };
+  channel?: { before: AssistantChannelProposalPatch; after: AssistantChannelProposalPatch };
+  summary: string;
+  reason: string;
+  evidence: string[];
+  state: AssistantProposalState;
+  resolution?: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  resolved_at?: string;
+}
+
 export interface AssistantChannel {
   id: string;
   assistant_id: string;
@@ -241,6 +275,7 @@ export interface AssistantSnapshot {
   plan: AssistantPlan;
   artifacts: AssistantArtifact[];
   opportunities: AssistantOpportunity[];
+  proposals?: AssistantChangeProposal[];
   channels: AssistantChannel[];
   channel_actions: AssistantChannelAction[];
   channel_metrics: AssistantChannelMetric[];
@@ -319,6 +354,15 @@ export interface AssistantResolveAttentionInput {
   expectedRevision: number;
   state: "approved" | "rejected" | "cancelled";
   resolution: string;
+}
+
+export interface AssistantResolveProposalInput {
+  assistantId: string;
+  proposalId: string;
+  requestId: string;
+  expectedRevision: number;
+  decision: "accept" | "reject";
+  resolution?: string;
 }
 
 export interface AssistantResumeInput {

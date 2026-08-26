@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { AssistantSidebarEntry, AssistantWorkspace, AttentionInbox, OverviewEditor, assistantDiagnosticWarning } from "../custom/features/assistant/AssistantWorkspace";
+import { AssistantSidebarEntry, AssistantWorkspace, AttentionInbox, OverviewEditor, ProposalInbox, assistantDiagnosticWarning } from "../custom/features/assistant/AssistantWorkspace";
 import { assistantCopy } from "../custom/features/assistant/assistant.copy";
 import { assistantGet } from "../custom/features/assistant/assistant.bridge";
 import type { AssistantSnapshot } from "../custom/features/assistant/assistant.types";
@@ -51,6 +51,7 @@ await act(async () => {
 ok(host.querySelector(".assistant-workspace") !== null, "workspace mounts as a full surface");
 ok(host.textContent?.includes("代码项目助手") ?? false, "workspace renders the selected assistant");
 ok(host.textContent?.includes("让它继续工作") ?? false, "primary repeat action is visible");
+ok(host.querySelector(".assistant-proposal-chip")?.textContent?.trim() === "1", "top bar exposes the pending improvement proposal count");
 ok(host.querySelector("#assistant-handoff-input") !== null, "quick handoff input is keyboard accessible");
 ok(host.querySelector("#assistant-handoff-input")?.getAttribute("placeholder") === "对助手说…", "handoff input prompts a message to the assistant");
 ok(host.textContent?.includes("输入会被记录") ?? false, "handoff dock states that the input will be recorded");
@@ -200,6 +201,18 @@ await act(async () => { channelsTab?.click(); });
 ok(host.textContent?.includes("还没有推广渠道") ?? false, "channel manager explains the empty Discourse state");
 ok(host.querySelector('input[type="password"]') !== null, "channel API key uses a secret input and is not projected from the snapshot");
 ok(host.textContent?.includes("逐次审批") ?? false, "channel manager keeps outbound approval explicit");
+const proposalsTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("改进建议")) as HTMLButtonElement | undefined;
+await act(async () => { proposalsTab?.click(); });
+ok(host.querySelectorAll(".assistant-proposal").length === 1, "proposal manager renders the durable pending proposal");
+ok(host.textContent?.includes("把发布准备检查提前到上午") ?? false, "proposal manager shows the evidence-backed summary");
+ok(host.textContent?.includes("每天 18:00") && host.textContent?.includes("每天 09:00") || false, "proposal manager compares the schedule before and after values");
+ok(host.textContent?.includes("run-scan：18:00 检查后才发现发布说明缺升级提醒") ?? false, "proposal manager keeps the source evidence visible");
+const acceptProposal = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("接受并应用")) as HTMLButtonElement | undefined;
+await act(async () => { acceptProposal?.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+const proposalApplied = await assistantGet("assistant-code-project");
+ok(proposalApplied.proposals?.[0]?.state === "applied", "accepting a proposal persists its terminal applied state");
+ok(proposalApplied.routines[0].schedule.at === "09:00", "accepting a proposal applies the typed target change");
+ok(host.textContent?.includes("已应用") && !host.textContent?.includes("接受并应用") || false, "applied proposal moves to decision history and loses action buttons");
 const overviewTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("概览")) as HTMLButtonElement | undefined;
 await act(async () => { overviewTab?.click(); });
 const workspaceInput = [...host.querySelectorAll("input")].find((input) => input.value === "~/projects/WorkGround2");
@@ -326,6 +339,11 @@ ok(
   "management drawer uses a readable translucent material",
 );
 ok(
+  assistantCssSource.includes(".assistant-proposal__diff-row") &&
+    assistantCssSource.includes("grid-template-columns: minmax(92px, 0.55fr)"),
+  "proposal cards preserve a readable before/after comparison layout",
+);
+ok(
   /\.app--windows-frameless \.assistant-manager > header \{[^}]*padding-right:\s*calc\(var\(--windows-window-controls-safe\) \+ 14px\);/s.test(assistantCssSource),
   "management drawer close action reserves the native Windows caption-control safe area",
 );
@@ -355,6 +373,22 @@ const attentionSnapshot: AssistantSnapshot = {
   attention: [{ id: "attention-answer", assistant_id: "assistant-answer", run_id: "run-answer", request_id: "attention-request", action: "answer_required", summary: "需要明确答案", state: "open", revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z" }],
   updated_at: "2026-08-17T00:00:00Z",
 };
+
+const rejectedProposalSnapshot: AssistantSnapshot = {
+	...attentionSnapshot,
+	proposals: [{
+		id: "proposal-rejected", assistant_id: attentionSnapshot.assistant.id, run_id: "run-answer",
+		target_kind: "routine", target_id: "routine-missing", base_revision: 1,
+		routine: { before: { enabled: true }, after: { enabled: false } },
+		summary: "暂停例行任务", reason: "等待用户资料", evidence: ["run-answer 等待回答"],
+		state: "rejected", resolution: "保持启用", revision: 2,
+		created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:01:00Z", resolved_at: "2026-08-17T00:01:00Z",
+	}],
+};
+await act(async () => {
+	root.render(<LocaleProvider><ToastProvider><ProposalInbox snapshot={rejectedProposalSnapshot} busy="" act={async () => true} /></ToastProvider></LocaleProvider>);
+});
+ok(host.textContent?.includes("处理记录") && host.textContent?.includes("保持启用") || false, "terminal rejected proposals remain auditable in decision history");
 await act(async () => {
   root.render(<LocaleProvider><ToastProvider><AttentionInbox snapshot={attentionSnapshot} busy="" act={async () => true} onOverview={() => undefined} /></ToastProvider></LocaleProvider>);
 });

@@ -14,6 +14,7 @@ import type {
   AssistantCancelInput,
   AssistantChannel,
   AssistantChannelInput,
+	AssistantChangeProposal,
   AssistantCreateInput,
   AssistantDeleteInput,
   AssistantMemory,
@@ -21,6 +22,7 @@ import type {
   AssistantListResult,
   AssistantRecord,
   AssistantResolveAttentionInput,
+	AssistantResolveProposalInput,
   AssistantResumeInput,
   AssistantRoutine,
   AssistantRoutineInput,
@@ -538,6 +540,7 @@ export interface AppBindings extends WailsWorkBindings {
   AssistantRunNow(input: AssistantRunNowInput): Promise<AssistantRun>;
   AssistantSubmitInput(input: AssistantSubmitInputInput): Promise<AssistantRun>;
   AssistantResolveAttention(input: AssistantResolveAttentionInput): Promise<AssistantAttentionItem>;
+  AssistantResolveProposal(input: AssistantResolveProposalInput): Promise<AssistantChangeProposal>;
   AssistantResume(input: AssistantResumeInput): Promise<AssistantRun>;
   AssistantCancel(input: AssistantCancelInput): Promise<AssistantRun>;
   PickAssistantWorkspace(defaultDir: string): Promise<string>;
@@ -2717,6 +2720,25 @@ function makeMockApp(): AppBindings {
     opportunities: [
       { id: "opp-release", assistant_id: mockAssistant.id, resp_id: "resp-release", run_id: "run-scan", reason: "发布说明可补齐", revision: 1, created_at: assistantISO(9, 34) },
     ],
+	proposals: [{
+		id: "proposal-release-morning",
+		assistant_id: mockAssistant.id,
+		run_id: "run-scan",
+		target_kind: "routine",
+		target_id: mockRoutine.id,
+		base_revision: mockRoutine.revision,
+		routine: {
+			before: { schedule: mockRoutine.schedule },
+			after: { schedule: { kind: "daily", timezone: "Asia/Singapore", at: "09:00" } },
+		},
+		summary: "把发布准备检查提前到上午",
+		reason: "连续两次傍晚检查才发现当天可发布，留给处理发布说明的时间不足。",
+		evidence: ["run-scan：18:00 检查后才发现发布说明缺升级提醒", "run-memory：同日 18:06 才完成后续记录"],
+		state: "pending",
+		revision: 1,
+		created_at: assistantISO(10, 6),
+		updated_at: assistantISO(10, 6),
+	}],
     channels: [],
     channel_actions: [],
     channel_metrics: [],
@@ -5103,6 +5125,7 @@ function makeMockApp(): AppBindings {
         plan: { revision: 1, responsibilities: [] },
         artifacts: [],
         opportunities: [],
+        proposals: [],
         channels: [],
         channel_actions: [],
         channel_metrics: [],
@@ -5251,6 +5274,33 @@ function makeMockApp(): AppBindings {
       item.updated_at = new Date().toISOString();
       touchAssistantSnapshot(snapshot);
       return cloneAssistant(item);
+    },
+    async AssistantResolveProposal(input: AssistantResolveProposalInput) {
+      const snapshot = findAssistantSnapshot(input.assistantId);
+      const proposal = (snapshot.proposals ?? []).find((item) => item.id === input.proposalId);
+      if (!proposal) throw new Error("改进建议已不存在");
+      if (proposal.revision !== input.expectedRevision) throw new Error("改进建议已更新，请刷新后重试");
+      if (proposal.state !== "pending") throw new Error("改进建议已经处理");
+      if (input.decision === "accept") {
+        if (proposal.routine) {
+          const target = snapshot.routines.find((item) => item.id === proposal.target_id);
+          if (!target) throw new Error("目标例行任务已不存在");
+          Object.assign(target, proposal.routine.after, { revision: target.revision + 1, updated_at: new Date().toISOString() });
+        } else if (proposal.channel) {
+          const target = snapshot.channels.find((item) => item.id === proposal.target_id);
+          if (!target) throw new Error("目标渠道已不存在");
+          Object.assign(target, proposal.channel.after, { revision: target.revision + 1, updated_at: new Date().toISOString() });
+        }
+        proposal.state = "applied";
+      } else {
+        proposal.state = "rejected";
+      }
+      proposal.resolution = input.resolution || (input.decision === "accept" ? "applied by user" : "rejected by user");
+      proposal.resolved_at = new Date().toISOString();
+      proposal.updated_at = proposal.resolved_at;
+      proposal.revision += 1;
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(proposal);
     },
     async AssistantResume(input: AssistantResumeInput) {
       const snapshot = mockAssistantSnapshots.find((item) => item.runs.some((run) => run.id === input.runId));

@@ -4,6 +4,7 @@ import type {
   AssistantCancelInput,
   AssistantChannel,
   AssistantChannelInput,
+	AssistantChangeProposal,
   AssistantCreateInput,
   AssistantDeleteInput,
   AssistantMemory,
@@ -11,6 +12,7 @@ import type {
   AssistantRecord,
   AssistantListResult,
   AssistantResolveAttentionInput,
+	AssistantResolveProposalInput,
   AssistantResumeInput,
   AssistantRoutine,
   AssistantRoutineInput,
@@ -73,6 +75,10 @@ export function assistantSubmitInput(input: AssistantSubmitInputInput): Promise<
 
 export function assistantResolveAttention(input: AssistantResolveAttentionInput): Promise<AssistantAttentionItem> {
   return app.AssistantResolveAttention(input) as Promise<AssistantAttentionItem>;
+}
+
+export function assistantResolveProposal(input: AssistantResolveProposalInput): Promise<AssistantChangeProposal> {
+	return app.AssistantResolveProposal(input) as Promise<AssistantChangeProposal>;
 }
 
 export function assistantResume(input: AssistantResumeInput): Promise<AssistantRun> {

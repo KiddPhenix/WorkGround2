@@ -11,6 +11,7 @@ import {
   ExternalLink,
   FolderOpen,
   History,
+	Lightbulb,
   Megaphone,
   Pause,
   Play,
@@ -37,6 +38,7 @@ import {
   assistantPutChannel,
   assistantPutRoutine,
   assistantResolveAttention,
+	assistantResolveProposal,
   assistantResume,
   assistantRunNow,
   assistantSubmitInput,
@@ -50,6 +52,7 @@ import {
   assistantEntityID,
   type AssistantAccess,
   type AssistantChannel,
+	type AssistantChangeProposal,
   type AssistantMemoryKind,
   type AssistantDiagnostic,
   type AssistantPolicy,
@@ -61,7 +64,7 @@ import {
 } from "./assistant.types";
 import "./assistant.css";
 
-type ManageTab = "overview" | "routines" | "memory" | "channels" | "history" | "attention" | "plan";
+type ManageTab = "overview" | "routines" | "memory" | "channels" | "proposals" | "history" | "attention" | "plan";
 
 export interface AssistantSessionTarget {
   scope: "global" | "project";
@@ -220,6 +223,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
   const today = useMemo(() => new Date(), [data.snapshot?.revision]);
   const timeline = useMemo(() => data.snapshot ? timelineEntries(data.snapshot, today, locale, copy) : [], [copy, data.snapshot, locale, today]);
   const openAttention = data.snapshot?.attention.filter((item) => attentionInboxAction(item, data.snapshot?.runs.find((run) => run.id === item.run_id)) !== "none").length ?? 0;
+	const openProposals = data.snapshot?.proposals?.filter((item) => item.state === "pending").length ?? 0;
 
   const run = useCallback(async (routineID?: string) => {
     if (!data.snapshot || busy) return;
@@ -317,6 +321,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
           <span className="assistant-state">{lifecycleLabel(assistant, copy)}</span>
         </div>
         <div className="assistant-workspace__actions">
+		  {openProposals > 0 && <button className="assistant-proposal-chip" type="button" title={copy.proposals} aria-label={`${copy.proposals} ${openProposals}`} onClick={() => setManageTab("proposals")}><Lightbulb size={14} />{openProposals}</button>}
           {openAttention > 0 && <button className="assistant-attention-chip" type="button" onClick={() => setManageTab("attention")}><AlertCircle size={14} />{openAttention}</button>}
           <button className="assistant-icon-button" type="button" aria-label={copy.newAssistant} title={copy.newAssistant} onClick={() => setCreating(true)}><Plus size={17} /></button>
           <button className="assistant-icon-button" type="button" aria-label={copy.manage} title={copy.manage} onClick={() => setManageTab("overview")}><Settings2 size={17} /></button>
@@ -453,6 +458,7 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted,
     { id: "routines", label: copy.routines, icon: CalendarClock },
     { id: "memory", label: copy.memory, icon: Brain },
     { id: "channels", label: copy.channels, icon: Megaphone },
+	{ id: "proposals", label: copy.proposals, icon: Lightbulb },
     { id: "history", label: copy.history, icon: History },
     { id: "attention", label: copy.attention, icon: AlertCircle },
   ];
@@ -490,13 +496,14 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted,
     <div className="assistant-manager-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <aside className="assistant-manager" role="dialog" aria-modal="true" aria-label={copy.manage}>
         <header><h2>{copy.manage}</h2><button className="assistant-icon-button" type="button" aria-label={copy.close} onClick={onClose}><X size={18} /></button></header>
-        <nav aria-label={copy.manage}>{tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={tab === id ? "page" : undefined} className={tab === id ? "is-active" : ""} onClick={() => onTab(id)}><Icon size={15} />{label}{id === "attention" && snapshot.attention.some((item) => attentionInboxAction(item, snapshot.runs.find((run) => run.id === item.run_id)) !== "none") && <span className="assistant-nav-dot" />}</button>)}</nav>
+        <nav aria-label={copy.manage}>{tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={tab === id ? "page" : undefined} className={tab === id ? "is-active" : ""} onClick={() => onTab(id)}><Icon size={15} />{label}{id === "attention" && snapshot.attention.some((item) => attentionInboxAction(item, snapshot.runs.find((run) => run.id === item.run_id)) !== "none") && <span className="assistant-nav-dot" />}{id === "proposals" && snapshot.proposals?.some((item) => item.state === "pending") && <span className="assistant-nav-dot" />}</button>)}</nav>
         <div className="assistant-manager__content">
           {tab === "overview" && <OverviewEditor snapshot={snapshot} diagnostics={diagnostics} busy={busy} act={act} onDelete={deleteAssistant} />}
           {tab === "plan" && <PlanView snapshot={snapshot} />}
           {tab === "routines" && <RoutineEditor snapshot={snapshot} busy={busy} act={act} onRun={onRun} />}
           {tab === "memory" && <MemoryEditor snapshot={snapshot} busy={busy} act={act} />}
           {tab === "channels" && <ChannelEditor snapshot={snapshot} busy={busy} act={act} />}
+		  {tab === "proposals" && <ProposalInbox snapshot={snapshot} busy={busy} act={act} />}
           {tab === "history" && <RunHistory snapshot={snapshot} busy={busy} act={act} onRun={onRun} onAttention={() => onTab("attention")} onOpenSession={onOpenSession} />}
           {tab === "attention" && <AttentionInbox snapshot={snapshot} busy={busy} act={act} onOverview={() => onTab("overview")} />}
         </div>
@@ -564,6 +571,101 @@ function PlanView({ snapshot }: { snapshot: AssistantSnapshot }) {
       )}
     </div>
   );
+}
+
+interface ProposalDiff {
+	label: string;
+	before: string;
+	after: string;
+}
+
+function proposalStateLabel(state: AssistantChangeProposal["state"], copy: ReturnType<typeof assistantCopy>): string {
+	return {
+		pending: copy.proposalPending,
+		applied: copy.proposalApplied,
+		rejected: copy.proposalRejected,
+		superseded: copy.proposalSuperseded,
+	}[state];
+}
+
+function proposalScheduleLabel(schedule: AssistantRoutine["schedule"], copy: ReturnType<typeof assistantCopy>): string {
+	return scheduleLabel({ schedule } as AssistantRoutine, copy);
+}
+
+function proposalIntervalLabel(seconds: number, copy: ReturnType<typeof assistantCopy>): string {
+	if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600} ${copy.hour}`;
+	return `${Math.round(seconds / 60)} ${copy.minute}`;
+}
+
+function proposalDiffs(proposal: AssistantChangeProposal, copy: ReturnType<typeof assistantCopy>): ProposalDiff[] {
+	const rows: ProposalDiff[] = [];
+	if (proposal.routine) {
+		const { before, after } = proposal.routine;
+		if (after.prompt !== undefined) rows.push({ label: copy.routinePrompt, before: before.prompt ?? "", after: after.prompt });
+		if (after.schedule !== undefined) rows.push({
+			label: copy.frequency,
+			before: before.schedule ? proposalScheduleLabel(before.schedule, copy) : copy.unknownValue,
+			after: proposalScheduleLabel(after.schedule, copy),
+		});
+		if (after.enabled !== undefined) rows.push({ label: copy.enabled, before: before.enabled ? copy.enabledState : copy.disabledState, after: after.enabled ? copy.enabledState : copy.disabledState });
+	}
+	if (proposal.channel) {
+		const { before, after } = proposal.channel;
+		if (after.collect_interval_seconds !== undefined) rows.push({
+			label: copy.channelCollectInterval,
+			before: before.collect_interval_seconds !== undefined ? proposalIntervalLabel(before.collect_interval_seconds, copy) : copy.unknownValue,
+			after: proposalIntervalLabel(after.collect_interval_seconds, copy),
+		});
+		if (after.enabled !== undefined) rows.push({ label: copy.enabled, before: before.enabled ? copy.enabledState : copy.disabledState, after: after.enabled ? copy.enabledState : copy.disabledState });
+	}
+	return rows;
+}
+
+export function ProposalInbox({ snapshot, busy, act }: { snapshot: AssistantSnapshot; busy: string; act: Act }) {
+	const { locale } = useI18n();
+	const copy = assistantCopy(locale);
+	const proposals = [...(snapshot.proposals ?? [])].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+	const pending = proposals.filter((item) => item.state === "pending");
+	const history = proposals.filter((item) => item.state !== "pending");
+	const resolve = (proposal: AssistantChangeProposal, decision: "accept" | "reject") => {
+		const intent = { decision, proposalRevision: proposal.revision };
+		const key = assistantMutationKey(`proposal-${decision}`, snapshot.assistant.id, proposal.id, intent);
+		return act(`proposal-${proposal.id}`, () => runAssistantCASMutation(key, proposal.revision, ({ requestId, expectedRevision }) => assistantResolveProposal({
+			assistantId: snapshot.assistant.id,
+			proposalId: proposal.id,
+			requestId,
+			expectedRevision,
+			decision,
+			resolution: decision === "accept" ? copy.proposalAcceptedNote : copy.proposalRejectedNote,
+		})));
+	};
+	const targetLabel = (proposal: AssistantChangeProposal) => {
+		if (proposal.target_kind === "routine") return snapshot.routines.find((item) => item.id === proposal.target_id)?.title ?? proposal.target_id;
+		return snapshot.channels.find((item) => item.id === proposal.target_id)?.name ?? proposal.target_id;
+	};
+	const renderProposal = (proposal: AssistantChangeProposal) => (
+		<article key={proposal.id} className={`assistant-proposal assistant-proposal--${proposal.state}`}>
+			<header>
+				<div><strong>{proposal.summary}</strong><span>{copy.proposalTarget}：{targetLabel(proposal)}</span></div>
+				<span className="assistant-proposal__state">{proposalStateLabel(proposal.state, copy)}</span>
+			</header>
+			<p className="assistant-proposal__reason"><span>{copy.proposalReason}</span>{proposal.reason}</p>
+			<div className="assistant-proposal__diff" aria-label={copy.proposalChanges}>
+				{proposalDiffs(proposal, copy).map((row) => <div key={row.label} className="assistant-proposal__diff-row"><strong>{row.label}</strong><span>{row.before}</span><ChevronRight size={14} aria-hidden="true" /><span>{row.after}</span></div>)}
+			</div>
+			<div className="assistant-proposal__evidence"><strong>{copy.proposalEvidence}</strong><ul>{proposal.evidence.map((item, index) => <li key={`${proposal.id}-evidence-${index}`}>{item}</li>)}</ul></div>
+			{proposal.state === "pending" ? <footer>
+				<button className="assistant-button assistant-button--accent" type="button" disabled={Boolean(busy)} onClick={() => void resolve(proposal, "accept")}><Check size={14} />{copy.acceptProposal}</button>
+				<button className="assistant-button" type="button" disabled={Boolean(busy)} onClick={() => void resolve(proposal, "reject")}><X size={14} />{copy.rejectProposal}</button>
+			</footer> : <p className="assistant-proposal__resolution"><span>{copy.proposalResolution}</span>{proposal.resolution}</p>}
+		</article>
+	);
+	if (proposals.length === 0) return <div className="assistant-proposals"><p className="assistant-empty-copy">{copy.noProposals}</p><p className="assistant-proposals__hint">{copy.proposalIntro}</p></div>;
+	return <div className="assistant-proposals">
+		<p className="assistant-proposals__hint">{copy.proposalIntro}</p>
+		<section aria-label={copy.pendingProposals}><h3>{copy.pendingProposals}<span>{pending.length}</span></h3>{pending.length > 0 ? pending.map(renderProposal) : <p className="assistant-empty-copy">{copy.noPendingProposals}</p>}</section>
+		{history.length > 0 && <section aria-label={copy.proposalHistory}><h3>{copy.proposalHistory}</h3>{history.map(renderProposal)}</section>}
+	</div>;
 }
 
 type Act = (key: string, action: () => Promise<unknown>) => Promise<boolean>;
