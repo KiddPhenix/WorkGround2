@@ -114,12 +114,17 @@ export function attentionRejectResolution(action: string, fallback: string, answ
 export type AssistantInboxAction = "approval" | "answer" | "continue" | "rebind" | "verify" | "none";
 
 export function attentionInboxAction(item: AssistantAttentionItem, run?: AssistantRun): AssistantInboxAction {
+  // A run can request several approvals in sequence. Resolved items stay in
+  // the snapshot for audit, so only the item bound to the run's current
+  // continuation may remain actionable.
+  if (run && (item.resume_token || run.resume_token) && item.resume_token !== run.resume_token) return "none";
   if (item.state === "open") {
     if (attentionNeedsRebind(item.action)) return "rebind";
     if (attentionVerifiesOutcome(item.action)) return "verify";
     return attentionNeedsAnswer(item.action) ? "answer" : "approval";
   }
   const waiting = run?.state === "waiting_approval" || run?.state === "waiting_attention";
+  if (!item.resume_token || !run?.resume_token) return "none";
   if (item.state === "approved" && attentionVerifiesOutcome(item.action)) {
     return item.resolution === "retry_acknowledged" && waiting ? "continue" : "none";
   }

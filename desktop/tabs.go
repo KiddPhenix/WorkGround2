@@ -1369,6 +1369,7 @@ type TabMeta struct {
 	GitBranch           string                   `json:"gitBranch,omitempty"`
 	TopicID             string                   `json:"topicId"`
 	TopicTitle          string                   `json:"topicTitle"`
+	TitleSource         string                   `json:"titleSource,omitempty"` // "auto" | "manual" | "" (from desktop-topic-title-sources.json)
 	SessionDisplayTitle string                   `json:"sessionDisplayTitle,omitempty"`
 	SessionPath         string                   `json:"sessionPath,omitempty"`
 	ReadOnly            bool                     `json:"readOnly,omitempty"`
@@ -1443,6 +1444,7 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		WorkspacePath:     tab.WorkspaceRoot,
 		TopicID:           tab.TopicID,
 		TopicTitle:        tab.TopicTitle,
+		TitleSource:       loadTopicTitleSource(topicTitleRoot(tab.Scope, tab.WorkspaceRoot), tab.TopicID),
 		SessionPath:       tab.currentSessionPath(),
 		ReadOnly:          tab.ReadOnly,
 		Label:             tab.Label,

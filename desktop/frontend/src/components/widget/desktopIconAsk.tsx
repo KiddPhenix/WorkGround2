@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import type { QuestionAnswer } from "../../lib/types";
 import type { WidgetQuestion } from "../../lib/bridge";
+import { useT } from "../../lib/i18n";
 
 export interface AskFlowProps {
   questions: WidgetQuestion[];
@@ -19,6 +20,7 @@ function questionAnswered(question: WidgetQuestion, sel: Record<string, string[]
 }
 
 export function AskFlow({ questions, busy, onAnswer }: AskFlowProps) {
+  const t = useT();
   const [step, setStep] = useState(0);
   const [sel, setSel] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
@@ -102,18 +104,18 @@ export function AskFlow({ questions, busy, onAnswer }: AskFlowProps) {
         })}
       </div>
       <label className="desktop-icon-popup__ask-custom">
-        <span className="sr-only">自定义回答</span>
+        <span className="sr-only">{t("desktopIcon.notice.customAnswer")}</span>
         <input
           value={custom[question.id] ?? ""}
           disabled={busy}
-          placeholder="自定义回答"
+          placeholder={t("desktopIcon.notice.customAnswer")}
           onInput={(event) => setTyped(event.currentTarget.value)}
         />
       </label>
       <div className="desktop-icon-popup__ask-nav">
         {step > 0 && (
           <button type="button" className="subtle" disabled={busy} onClick={() => setStep((i) => Math.max(0, i - 1))}>
-            返回
+            {t("desktopIcon.ask.back")}
           </button>
         )}
         <button
@@ -122,7 +124,7 @@ export function AskFlow({ questions, busy, onAnswer }: AskFlowProps) {
           disabled={busy || !questionAnswered(question, sel, custom)}
           onClick={advance}
         >
-          {isLast ? "提交" : "下一题"}
+          {isLast ? t("desktopIcon.ask.submit") : t("desktopIcon.ask.next")}
         </button>
       </div>
     </div>

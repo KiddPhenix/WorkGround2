@@ -3,6 +3,7 @@ import { gsap } from "gsap";
 import { DUR_FAST, EASE_OUT, prefersReducedMotion } from "./gsapAnimations";
 
 const BOTTOM_THRESHOLD_PX = 80;
+const WHEEL_END_DELAY_MS = 150;
 
 function isNearBottom(el: HTMLElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_THRESHOLD_PX;
@@ -28,8 +29,8 @@ export function isVerticalScrollbarPointer(el: HTMLElement, clientX: number, cli
   return clientX >= scrollbarLeft && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
 }
 
-export function shouldAutoScroll(sticky: boolean, scrollbarDragging: boolean, force = false): boolean {
-  return !scrollbarDragging && (sticky || force);
+export function shouldAutoScroll(sticky: boolean, userScrolling: boolean, force = false): boolean {
+  return !userScrolling && (sticky || force);
 }
 
 export function shouldAutoScrollForQuestionChange(prev: QuestionScrollSnapshot, next: QuestionScrollSnapshot): boolean {
@@ -60,6 +61,8 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const scrollbarDragging = useRef(false);
+  const wheelScrolling = useRef(false);
+  const wheelEndTimer = useRef<number | null>(null);
   const gsapCtx = useRef<gsap.Context | null>(null);
   const questionSnapshot = useRef<QuestionScrollSnapshot>({ count: 0, lastId: "" });
   const resizeFrame = useRef<number | null>(null);
@@ -83,6 +86,8 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
       if (repinFrame.current !== null) cancelAnimationFrame(repinFrame.current);
       for (const frame of layoutScrollFrames.current) cancelAnimationFrame(frame);
       layoutScrollFrames.current = [];
+      if (wheelEndTimer.current !== null) window.clearTimeout(wheelEndTimer.current);
+      wheelEndTimer.current = null;
     };
   }, []);
 
@@ -135,7 +140,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
   const scrollToBottom = useCallback((force = false) => {
     const el = scrollEl();
     if (!el) return;
-    if (!shouldAutoScroll(stick.current, scrollbarDragging.current, force)) return;
+    if (!shouldAutoScroll(stick.current, scrollbarDragging.current || wheelScrolling.current, force)) return;
     if (force) {
       stick.current = true;
       setIsAtBottom(true);
@@ -146,7 +151,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
     }
     resizeFrame.current = requestAnimationFrame(() => {
       resizeFrame.current = null;
-      if (!shouldAutoScroll(stick.current, scrollbarDragging.current, force)) return;
+      if (!shouldAutoScroll(stick.current, scrollbarDragging.current || wheelScrolling.current, force)) return;
       if (force) {
         stick.current = true;
         setIsAtBottom(true);
@@ -167,7 +172,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
 
   const snapToBottom = useCallback(() => {
     const el = scrollEl();
-    if (!el || scrollbarDragging.current) return;
+    if (!el || scrollbarDragging.current || wheelScrolling.current) return;
     if (resizeFrame.current !== null) {
       cancelAnimationFrame(resizeFrame.current);
       resizeFrame.current = null;
@@ -201,14 +206,14 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
   const scrollToBottomAfterLayout = useCallback((frames = 4) => {
     for (const frame of layoutScrollFrames.current) cancelAnimationFrame(frame);
     layoutScrollFrames.current = [];
-    if (scrollbarDragging.current) return;
+    if (scrollbarDragging.current || wheelScrolling.current) return;
     snapToBottom();
     let remaining = Math.max(0, frames);
     const tick = () => {
       if (remaining <= 0) return;
       const frame = requestAnimationFrame(() => {
         layoutScrollFrames.current = layoutScrollFrames.current.filter((id) => id !== frame);
-        if (scrollbarDragging.current) return;
+        if (scrollbarDragging.current || wheelScrolling.current) return;
         snapToBottom();
         remaining -= 1;
         tick();
@@ -220,7 +225,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
 
   /** Call when a new question is submitted — overrides stick state. */
   const onNewQuestion = useCallback(() => {
-    if (scrollbarDragging.current) return;
+    if (scrollbarDragging.current || wheelScrolling.current) return;
     stick.current = true;
     scrollToBottom(true);
   }, [scrollToBottom]);
@@ -262,13 +267,53 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
     };
   }, [scrollEl, updateBottomState]);
 
+  // Wheel gestures are continuous and land slightly before the resulting
+  // scroll event, so track them the same way as a native scrollbar drag:
+  // suppress auto-follow for the whole gesture, then recompute stickiness
+  // from the real scroll position once the gesture settles.
+  useEffect(() => {
+    const el = scrollEl();
+    if (!el) return;
+    const endWheel = () => {
+      if (!wheelScrolling.current) return;
+      wheelScrolling.current = false;
+      updateBottomState(el);
+    };
+    const scheduleWheelEnd = () => {
+      if (wheelEndTimer.current !== null) window.clearTimeout(wheelEndTimer.current);
+      wheelEndTimer.current = window.setTimeout(() => {
+        wheelEndTimer.current = null;
+        endWheel();
+      }, WHEEL_END_DELAY_MS);
+    };
+    const onWheel = () => {
+      if (!wheelScrolling.current) {
+        wheelScrolling.current = true;
+        gsap.killTweensOf?.(el);
+        if (resizeFrame.current !== null) {
+          cancelAnimationFrame(resizeFrame.current);
+          resizeFrame.current = null;
+        }
+        for (const frame of layoutScrollFrames.current) cancelAnimationFrame(frame);
+        layoutScrollFrames.current = [];
+      }
+      scheduleWheelEnd();
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      if (wheelEndTimer.current !== null) window.clearTimeout(wheelEndTimer.current);
+      wheelEndTimer.current = null;
+    };
+  }, [scrollEl, updateBottomState]);
+
   /**
    * Refresh pin state on resize — call from a ResizeObserver on the container.
    */
   const repinIfWasPinned = useCallback(
     (containerHeightDelta: number) => {
       const el = scrollEl();
-      if (!el || scrollbarDragging.current) return;
+      if (!el || scrollbarDragging.current || wheelScrolling.current) return;
       const bottomDistance = el.scrollHeight - el.scrollTop - el.clientHeight;
       if (!stick.current && bottomDistance + containerHeightDelta >= BOTTOM_THRESHOLD_PX) return;
       stick.current = true;
@@ -280,7 +325,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
 
   const scheduleRepinIfWasPinned = useCallback(
     (containerHeightDelta: number) => {
-      if (scrollbarDragging.current) return;
+      if (scrollbarDragging.current || wheelScrolling.current) return;
       pendingRepinHeightDelta.current += containerHeightDelta;
       if (repinFrame.current !== null) return;
       repinFrame.current = requestAnimationFrame(() => {
@@ -317,6 +362,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
     scrollEl,
     stick,
     scrollbarDragging,
+    wheelScrolling,
     onScroll,
     isAtBottom,
     smoothScrollTo,

@@ -1,4 +1,5 @@
 import { projectIconKey, type ProjectIconKey } from "../../lib/projectIcons";
+import { t } from "../../lib/i18n";
 
 // The Rooms management dialog reads its authoritative list from
 // app.ListProjectTree(). It never builds or persists its own room state: every
@@ -35,7 +36,7 @@ function bindingArray(value: unknown, keys: string[], label: string): unknown[] 
       if (key in record && nested == null) return [];
     }
   }
-  throw new Error(`${label}返回格式无效`);
+  throw new Error(t("desktopIcon.rooms.invalidBindingFormat", { name: label }));
 }
 
 // Wails serializes a nil Go slice as null. Older local builds also exposed the
@@ -44,8 +45,8 @@ function bindingArray(value: unknown, keys: string[], label: string): unknown[] 
 export function normalizeRoomPins(value: unknown): string[] {
   const result: string[] = [];
   const seen = new Set<string>();
-  for (const entry of bindingArray(value, ["topicIds", "TopicIDs", "pins", "Pins"], "Room 固定设置")) {
-    if (typeof entry !== "string") throw new Error("Room 固定设置包含非字符串 ID");
+  for (const entry of bindingArray(value, ["topicIds", "TopicIDs", "pins", "Pins"], t("desktopIcon.rooms.pinSettings"))) {
+    if (typeof entry !== "string") throw new Error(t("desktopIcon.rooms.invalidPinId"));
     const topicId = entry.trim();
     if (!topicId || seen.has(topicId)) continue;
     seen.add(topicId);
@@ -60,14 +61,14 @@ export function normalizeRoomPins(value: unknown): string[] {
 export function normalizeRoomIcons(value: unknown): Record<string, string> {
   if (value == null) return {};
   let record = bindingRecord(value);
-  if (!record) throw new Error("Room 图标设置返回格式无效");
+  if (!record) throw new Error(t("desktopIcon.rooms.invalidIconFormat"));
   const wrapped = bindingRecord(record.icons) ?? bindingRecord(record.Icons);
   if (wrapped) record = wrapped;
   const result: Record<string, string> = {};
   for (const [rawTopicId, rawIcon] of Object.entries(record)) {
     const topicId = rawTopicId.trim();
     if (!topicId) continue;
-    if (typeof rawIcon !== "string") throw new Error(`Room ${topicId} 的图标设置格式无效`);
+    if (typeof rawIcon !== "string") throw new Error(t("desktopIcon.rooms.invalidIconForTopic", { name: topicId }));
     result[topicId] = rawIcon;
   }
   return result;
@@ -120,10 +121,10 @@ export function roomRows(tree: unknown): RoomRow[] {
   const rows: RoomRow[] = [];
   const seen = new Set<string>();
   const walk = (value: unknown) => {
-    const nodes = bindingArray(value, ["nodes", "Nodes", "items", "Items", "tree", "Tree", "projectTree", "ProjectTree"], "Room 列表");
+    const nodes = bindingArray(value, ["nodes", "Nodes", "items", "Items", "tree", "Tree", "projectTree", "ProjectTree"], t("desktopIcon.rooms.roomList"));
     for (const rawNode of nodes) {
       const node = bindingRecord(rawNode);
-      if (!node) throw new Error("Room 列表包含无效节点");
+      if (!node) throw new Error(t("desktopIcon.rooms.invalidNode"));
       const kind = String(node.kind ?? node.Kind ?? "");
       const sessionKind = String(node.sessionKind ?? node.SessionKind ?? "");
       if ((kind === "topic" || kind === "global_topic") && sessionKind === "collaboration") {

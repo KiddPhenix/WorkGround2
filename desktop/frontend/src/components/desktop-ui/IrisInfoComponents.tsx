@@ -18,7 +18,7 @@ import {
 import { TaskMemoryBar } from "../desktop-ui/TaskMemoryBar";
 import { ArtifactShelf } from "../desktop-ui/ArtifactShelf";
 import { QueueTray } from "../desktop-ui/QueueTray";
-import { RuntimeConfigBar, connectionStatusFromRuntime, runtimeStatusLabel, type ConnectionStatus, type SurfaceKind } from "../desktop-ui/RuntimeConfigBar";
+import { RuntimeConfigBar, connectionStatusFromRuntime, type ConnectionStatus, type SurfaceKind } from "../desktop-ui/RuntimeConfigBar";
 import { AddOnWorkbench } from "../desktop-ui/AddOnWorkbench";
 import { RunBlock } from "../desktop-ui/RunBlock";
 import { useRunStore, type RunRecord, type RunStatus } from "../../store/run";
@@ -468,7 +468,7 @@ export function SessionConfigBar({
       config={{
         modelId: modelLabel,
         contextPercent,
-        runtimeStatus: runtimeStatusLabel(runtimeMode),
+        runtimeMode,
         collaborationMode,
         approvalMode: toolApprovalMode,
       }}

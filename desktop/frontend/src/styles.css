@@ -19033,6 +19033,7 @@ body > .mermaid-diagram--fullscreen {
 
 .composer-runstatus {
   --wails-draggable: no-drag;
+  box-sizing: border-box;
   flex: 0 1 auto;
   min-width: 0;
   display: inline-flex;
@@ -19065,6 +19066,10 @@ body > .mermaid-diagram--fullscreen {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+.composer-runstatus > .tooltip-trigger {
+  flex: 0 0 auto;
 }
 
 .composer-runstatus__stop {
@@ -34265,7 +34270,7 @@ body > .mermaid-diagram--fullscreen {
 .session-status-popup {
   position: absolute;
   top: calc(100% + 4px);
-  right: 0;
+  right: -24px;
   min-width: 280px;
   max-width: 420px;
   max-height: 320px;
@@ -44702,6 +44707,19 @@ body > .mermaid-diagram--fullscreen {
   background: color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
+:root .app--workbench .workspace-sidebar .project-tree__folder--active {
+  border-color: color-mix(in srgb, var(--project-accent) 72%, var(--border));
+  background: color-mix(in srgb, var(--project-accent) 14%, transparent);
+  box-shadow:
+    inset 4px 0 0 var(--project-accent),
+    0 0 0 1px color-mix(in srgb, var(--project-accent) 12%, transparent);
+}
+
+:root .app--workbench .workspace-sidebar .project-tree__folder--active:hover {
+  border-color: color-mix(in srgb, var(--project-accent) 78%, var(--border));
+  background: color-mix(in srgb, var(--project-accent) 18%, var(--sidebar-hover));
+}
+
 .app--workbench .workspace-sidebar .project-tree__folder--has-color .project-tree__folder-main,
 .app--workbench .workspace-sidebar .project-tree__folder--has-color:hover .project-tree__folder-main,
 .app--workbench .workspace-sidebar .project-tree__folder--has-color.project-tree__folder--menu-open .project-tree__folder-main {
@@ -44753,6 +44771,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--workbench .workspace-sidebar .project-tree__folder--active .project-tree__folder-label {
   color: var(--fg);
+  font-weight: 680;
 }
 
 .app--workbench .workspace-sidebar .project-tree__folder-count {

@@ -74,12 +74,12 @@ ok(
   sessionSurfaceSource.includes("workSendAvailable={workSendAvailable}")
     && sessionSurfaceSource.includes("onWorkSendChange={onWorkSendChange}")
     && runtimeConfigSource.includes("runtime-config-bar__work-send")
-    && runtimeConfigSource.includes('workSendSelected ? "将作为工作发送" : "作为工作开始"'),
+    && runtimeConfigSource.includes('t(workSendSelected ? "runtimeBar.workSend.on" : "runtimeBar.workSend.off")'),
   "工作台隐藏 Composer 元数据栏时，发送为工作入口由可见的 RuntimeConfigBar 承载",
 );
 ok(
   sessionSurfaceSource.includes("surfaceKind={variant}")
-    && runtimeConfigSource.includes('surfaceKind === "work" ? "工作" : "对话"'),
+    && runtimeConfigSource.includes('surfaceKind === "work" ? "runtimeBar.collab.work" : "runtimeBar.collab.chat"'),
   "Work Surface 将自身类型透传到底栏，normal 协作模式显示为工作而非对话",
 );
 ok(
@@ -88,7 +88,7 @@ ok(
 );
 ok(
   runtimeConfigSource.includes("? <CheckCircle2")
-    && runtimeConfigSource.includes('workSendSelected ? "将作为工作发送" : "作为工作开始"')
+    && runtimeConfigSource.includes('t(workSendSelected ? "runtimeBar.workSend.on" : "runtimeBar.workSend.off")')
     && stylesSource.includes(".runtime-config-bar__work-send--active")
     && stylesSource.includes("background: var(--accent);"),
   "发送为工作的选中态同时使用实心强调色、勾选图标和明确状态文案",

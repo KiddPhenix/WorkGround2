@@ -224,6 +224,7 @@ export interface TabMeta {
   gitBranch?: string;
   topicId: string;
   topicTitle: string;
+  titleSource?: string;
   sessionDisplayTitle?: string;
   sessionPath?: string;
   readOnly?: boolean;

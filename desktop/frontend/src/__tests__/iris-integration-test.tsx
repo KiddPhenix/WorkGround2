@@ -112,6 +112,7 @@ function installDom() {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
   globalThis.document = dom.window.document;
+  Object.defineProperty(dom.window.navigator, "language", { configurable: true, value: "zh-CN" });
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
   globalThis.Node = dom.window.Node;
   globalThis.Element = dom.window.Element;
@@ -142,7 +143,7 @@ function installDom() {
 function render(ui: React.ReactElement): Element {
   if (!_rootEl) throw new Error("DOM not installed");
   if (!_root) _root = createRoot(_rootEl);
-  act(() => _root.render(ui));
+  act(() => _root.render(<LocaleProvider>{ui}</LocaleProvider>));
   return _rootEl;
 }
 

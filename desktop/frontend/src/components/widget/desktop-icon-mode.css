@@ -145,6 +145,10 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon__runtime-track i { flex: 1; border-radius: 2px; background: rgb(83 220 227 / 24%); animation: desktop-icon-running-step 1.35s ease-in-out infinite; }
 .desktop-icon__runtime-track i:nth-child(2) { animation-delay: .18s; }
 .desktop-icon__runtime-track i:nth-child(3) { animation-delay: .36s; }
+/* An occluded block keeps its box (visibility, never display) so the
+   occlusion measurement stays stable and the decision cannot oscillate;
+   aria-hidden on the element marks it for assistive tech. */
+.desktop-icon__runtime--occluded { visibility: hidden; }
 .desktop-icon__unread, .desktop-icon__activity { position: absolute; z-index: 3; right: 1px; top: 0; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px; display: grid; place-items: center; color: white; background: #7450df; border: 2px solid #171922; font-size: 10px; font-weight: 700; }
 .desktop-icon__activity { background: #137d89; }
 .desktop-icon__status { position: absolute; z-index: 4; right: 1px; top: 41px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; border: 2px solid #171922; background: #4a2b8f; }

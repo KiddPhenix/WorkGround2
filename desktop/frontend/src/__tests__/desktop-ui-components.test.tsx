@@ -79,6 +79,7 @@ function installDom() {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
   globalThis.document = dom.window.document;
+  Object.defineProperty(dom.window.navigator, "language", { configurable: true, value: "zh-CN" });
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
   globalThis.Node = dom.window.Node;
   globalThis.Element = dom.window.Element;
@@ -115,7 +116,7 @@ function render(ui: React.ReactElement): Element {
   if (!_rootEl) throw new Error("DOM not installed");
   // Create a single root on first render; unmount + re-render for each test.
   if (!_root) _root = createRoot(_rootEl);
-  act(() => _root!.render(ui));
+  act(() => _root!.render(<LocaleProvider>{ui}</LocaleProvider>));
   return _rootEl;
 }
 
@@ -198,7 +199,7 @@ const QUEUE_ITEMS: QueueItem[] = [
 const BASE_CONFIG: RuntimeConfig = {
   modelId: "DeepSeek-R1",
   contextPercent: 33,
-  runtimeStatus: "运行中",
+  runtimeMode: "foreground" as const,
   collaborationMode: "normal" as const,
   approvalMode: "ask" as const,
 };
@@ -931,22 +932,22 @@ installDom();
 
 // ── derivePrimaryActionLabel ────────────────────────────────────────────────
 
-eq(derivePrimaryActionLabel("idle", false), "发送", "derivePrimaryActionLabel: idle → 发送");
-eq(derivePrimaryActionLabel("foreground", true), "加入队列", "derivePrimaryActionLabel: foreground → 加入队列");
-eq(derivePrimaryActionLabel("waiting_user", false), "加入队列", "derivePrimaryActionLabel: waiting_user → 加入队列");
-eq(derivePrimaryActionLabel("background_only", false), "发送", "derivePrimaryActionLabel: background_only → 发送");
-eq(derivePrimaryActionLabel("cancelling", false), "加入队列", "derivePrimaryActionLabel: cancelling → 加入队列");
-eq(derivePrimaryActionLabel("offline", false), "发送", "derivePrimaryActionLabel: offline → 发送 (启动队列，就绪后自动发送)");
+eq(derivePrimaryActionLabel("idle", false), "runtimeBar.action.send", "derivePrimaryActionLabel: idle → send key");
+eq(derivePrimaryActionLabel("foreground", true), "runtimeBar.action.queue", "derivePrimaryActionLabel: foreground → queue key");
+eq(derivePrimaryActionLabel("waiting_user", false), "runtimeBar.action.queue", "derivePrimaryActionLabel: waiting_user → queue key");
+eq(derivePrimaryActionLabel("background_only", false), "runtimeBar.action.send", "derivePrimaryActionLabel: background_only → send key");
+eq(derivePrimaryActionLabel("cancelling", false), "runtimeBar.action.queue", "derivePrimaryActionLabel: cancelling → queue key");
+eq(derivePrimaryActionLabel("offline", false), "runtimeBar.action.send", "derivePrimaryActionLabel: offline → send key (启动队列，就绪后自动发送)");
 eq(connectionStatusFromRuntime("foreground", true), "foreground", "foreground runtime queues replies");
 eq(connectionStatusFromRuntime("waiting_user", true), "waiting_user", "waiting_user runtime queues replies");
 eq(connectionStatusFromRuntime("background_only", false), "background_only", "background_only runtime allows a new send");
 eq(connectionStatusFromRuntime("cancelling", true), "cancelling", "cancelling runtime preserves foreground queue semantics");
 eq(connectionStatusFromRuntime("cancelling", false), "idle", "cancelling without foreground activity does not claim replies are queued");
 eq(connectionStatusFromRuntime("idle", false), "idle", "idle runtime sends normally");
-eq(runtimeStatusLabel("foreground"), "运行中", "foreground runtime label");
-eq(runtimeStatusLabel("waiting_user"), "等待用户", "waiting_user runtime label");
-eq(runtimeStatusLabel("background_only"), "后台运行", "background_only runtime label");
-eq(runtimeStatusLabel("cancelling"), "取消中", "cancelling runtime label");
+eq(runtimeStatusLabel("foreground"), "runtimeBar.runtime.foreground", "foreground runtime label key");
+eq(runtimeStatusLabel("waiting_user"), "runtimeBar.runtime.waitingUser", "waiting_user runtime label key");
+eq(runtimeStatusLabel("background_only"), "runtimeBar.runtime.background", "background_only runtime label key");
+eq(runtimeStatusLabel("cancelling"), "runtimeBar.runtime.cancelling", "cancelling runtime label key");
 
 // ── AddOnWorkbench ─────────────────────────────────────────────────────────
 

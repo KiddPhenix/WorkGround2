@@ -8,7 +8,6 @@ export interface IconSurfaceCoordinatorOptions {
 	apply: IconSurfaceApply;
 	envelope?: number;
 	initialBounds?: IconSurfaceBounds;
-	initialGeneration?: number;
 	onError?: (err: unknown) => void;
 	onApplied?: (result: DesktopIconSurfaceResult) => void;
 }
@@ -54,37 +53,60 @@ export function desktopIconLayoutBounds(items: DesktopIconItem[], collapsed: boo
 // A transient surface gets the whole bounded canvas. Popup contents never need
 // to mount once merely to be measured.
 export const DESKTOP_ICON_OVERLAY_BOUNDS: IconSurfaceBounds = { width: 1216, height: 836 };
-const DESKTOP_ICON_INITIAL_BOUNDS: IconSurfaceBounds = { width: 1016, height: 656 };
 
 export function createIconSurfaceCoordinator(options: IconSurfaceCoordinatorOptions): IconSurfaceCoordinator {
 	const envelope = Math.max(0, options.envelope ?? 32);
 	let appliedBounds = normalize(options.initialBounds ?? { width: 0, height: 0 });
 	let requestedBounds = appliedBounds;
-	let pendingBounds: IconSurfaceBounds = { width: 0, height: 0 };
-	let pending: Promise<boolean> | null = null;
+	let pending: Promise<void> | null = null;
+	let waiters: Array<{ bounds: IconSurfaceBounds; resolve: (ready: boolean) => void }> = [];
 	let actual: DesktopIconSurfaceResult | null = null;
-	let generation = Math.max(0, Math.trunc(options.initialGeneration ?? 0));
 	let disposed = false;
 
-	const apply = async (bounds: IconSurfaceBounds, token: number): Promise<boolean> => {
-		try {
-			const result = await options.apply({ ...bounds, envelope, generation: token });
-			if (disposed || token !== generation || result.generation !== token) return false;
-			actual = result;
-			appliedBounds = bounds;
-			options.onApplied?.(result);
-			return true;
-		} catch (cause) {
-			if (!disposed && token === generation) options.onError?.(cause);
-			return false;
+	const resolveReady = () => {
+		const remaining: typeof waiters = [];
+		for (const waiter of waiters) {
+			if (covers(appliedBounds, waiter.bounds)) waiter.resolve(true);
+			else remaining.push(waiter);
 		}
+		waiters = remaining;
 	};
-	const request = (bounds: IconSurfaceBounds): Promise<boolean> => {
-		const current = apply(bounds, ++generation);
-		pendingBounds = bounds;
+	const failWaiters = () => {
+		const failed = waiters;
+		waiters = [];
+		failed.forEach((waiter) => waiter.resolve(false));
+	};
+	const drain = () => {
+		if (disposed || pending || covers(appliedBounds, requestedBounds)) {
+			resolveReady();
+			return;
+		}
+		const target = requestedBounds;
+		let applied = false;
+		const current = (async () => {
+			try {
+				const result = await options.apply({ ...target, envelope });
+				if (disposed) return;
+				actual = result;
+				appliedBounds = union(appliedBounds, target);
+				applied = true;
+				options.onApplied?.(result);
+				resolveReady();
+			} catch (cause) {
+				if (!disposed) options.onError?.(cause);
+			}
+		})();
 		pending = current;
-		void current.finally(() => { if (pending === current) pending = null; });
-		return current;
+		void current.finally(() => {
+			if (pending !== current) return;
+			pending = null;
+			if (disposed) return;
+			if (!applied) {
+				failWaiters();
+				return;
+			}
+			drain();
+		});
 	};
 	return {
 		async prepare(bounds) {
@@ -92,19 +114,19 @@ export function createIconSurfaceCoordinator(options: IconSurfaceCoordinatorOpti
 			const next = normalize(bounds);
 			requestedBounds = union(requestedBounds, next);
 			if (covers(appliedBounds, next)) return true;
-			if (pending && covers(pendingBounds, requestedBounds)) return pending;
-			return request(requestedBounds);
+			const ready = new Promise<boolean>((resolve) => waiters.push({ bounds: next, resolve }));
+			drain();
+			return ready;
 		},
 		settle(bounds) {
 			if (disposed) return;
 			const next = normalize(bounds);
 			requestedBounds = union(requestedBounds, next);
 			if (!grows(requestedBounds, appliedBounds)) return;
-			if (pending && covers(pendingBounds, requestedBounds)) return;
-			void request(requestedBounds);
+			drain();
 		},
 		current: () => actual,
-		dispose() { disposed = true; generation += 1; },
+		dispose() { disposed = true; failWaiters(); },
 	};
 }
 
@@ -112,12 +134,8 @@ export function useDesktopIconSurface(onError?: (err: unknown) => void, onApplie
 	const ref = useRef<IconSurfaceCoordinator | null>(null);
 	if (ref.current === null) ref.current = createIconSurfaceCoordinator({
 		apply: (input) => app.SetDesktopIconSurface(input),
-		initialBounds: DESKTOP_ICON_INITIAL_BOUNDS,
 		onError,
 		onApplied,
-		// A React remount inside the same native icon-mode lifetime must not
-		// restart below the backend's last monotonic token.
-		initialGeneration: Date.now() * 1000 + Math.floor(Math.random() * 1000),
 	});
 	useEffect(() => () => ref.current?.dispose(), []);
 	return ref.current;

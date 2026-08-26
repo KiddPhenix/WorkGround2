@@ -85,6 +85,7 @@ export interface AssistantRun {
   request_id: string;
   trigger: "manual" | "scheduled" | "retry";
   state: AssistantRunState;
+  resume_token?: string;
   attempt: number;
   max_attempts: number;
   session_path?: string;
@@ -128,6 +129,7 @@ export interface AssistantAttentionItem {
   request_id: string;
   action: string;
   summary: string;
+  resume_token?: string;
   state: "open" | "approved" | "rejected" | "cancelled";
   resolution?: string;
   revision: number;

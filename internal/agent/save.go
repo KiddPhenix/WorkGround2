@@ -255,6 +255,13 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 			return err
 		}
 		if decision.upToDate {
+			// A previous crash or external truncation can remove only the
+			// compatibility anchor while leaving the authoritative event log and
+			// revision ledger current. Same-content retries must still restore the
+			// anchor; otherwise the up-to-date fast path strands the half-state.
+			if err := rebuildSessionAnchorFrom(path, msgs); err != nil {
+				slog.Warn("session: refresh empty transcript anchor", "path", path, "err", err)
+			}
 			// Disk already holds exactly this transcript. Rewriting it would only
 			// bump the revision, invalidating the persistence baseline of every
 			// other runtime resumed on this file and turning their next
@@ -305,6 +312,18 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 				if err := appendSessionAppendEvent(path, decision.appendFrom, msgs[decision.appendFrom:], digest, decision.revision); err != nil {
 					return err
 				}
+			}
+			// Anchor guarantee: the append-only path never rewrites the .jsonl
+			// compatibility anchor (only compaction/rewrites do), so a session
+			// that started from a pre-created empty file would keep a 0-byte
+			// anchor forever while the event log carries the real transcript.
+			// Refresh it now — only when it is missing or empty, atomically — so
+			// the "content only in the sidecar" half-state cannot be re-created.
+			// Failures are non-fatal (the event log and revision are
+			// authoritative and already durable); the next compact/rewrite
+			// retries the anchor.
+			if err := rebuildSessionAnchorFrom(path, msgs); err != nil {
+				slog.Warn("session: refresh empty transcript anchor", "path", path, "err", err)
 			}
 			revision, err := recordSessionContentRevision(path, digest, decision.revision)
 			if err != nil {
@@ -420,7 +439,7 @@ func writeSessionMessages(path string, msgs []provider.Message) error {
 // checkSnapshotWrite decides whether this session may write msgs over path, and
 // whether the safe write shape is a no-op, append-only suffix, or full rewrite.
 func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextDigest [sha256.Size]byte, nextVersion uint64, allowOwnedRewrite bool) (snapshotWriteDecision, error) {
-	current, err := loadSessionUnlocked(path)
+	current, err := loadSessionUnlocked(path, false)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return snapshotWriteDecision{}, nil
@@ -590,7 +609,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 		unlockOriginal()
 		return RecoveryBranchInfo{}, fmt.Errorf("lock original session file: %w", lockErr)
 	}
-	current, err := loadSessionUnlocked(originalPath)
+	current, err := loadSessionUnlocked(originalPath, false)
 	unlockOriginalFile()
 	unlockOriginal()
 	if err != nil && !os.IsNotExist(err) {
@@ -677,7 +696,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 		return RecoveryBranchInfo{}, fmt.Errorf("lock recovery session file: %w", err)
 	}
 	defer unlockRecoveryFile()
-	if loaded, loadErr := loadSessionUnlocked(recoveryPath); loadErr == nil && loaded != nil {
+	if loaded, loadErr := loadSessionUnlocked(recoveryPath, false); loadErr == nil && loaded != nil {
 		existingDigest, digestErr := digestSessionMessages(loaded.Snapshot())
 		if digestErr != nil {
 			return RecoveryBranchInfo{}, digestErr
@@ -1157,13 +1176,32 @@ func CanonicalSessionPath(path string) string {
 func LoadSession(path string) (*Session, error) {
 	unlock := lockSessionSavePath(path)
 	defer unlock()
-	return loadSessionUnlocked(path)
+	return loadSessionUnlocked(path, true)
 }
 
-func loadSessionUnlocked(path string) (*Session, error) {
-	msgs, _, damaged, err := loadSessionMessages(path)
+func loadSessionUnlocked(path string, healAnchor bool) (*Session, error) {
+	msgs, fromEvents, damaged, err := loadSessionMessages(path)
 	if err != nil {
 		return nil, err
+	}
+	// Self-heal a stale-empty anchor: sessions that started from a pre-created
+	// empty .jsonl (Desktop's createEmptySessionFile) keep a 0-byte anchor while
+	// the event log holds the real transcript. Rebuilding it here makes every
+	// load path (desktop resume, previews, CLI resume) converge on a valid
+	// anchor; it is idempotent, atomic, and never touches a non-empty anchor.
+	// A rebuild failure must not fail the load — the messages are already
+	// recovered from the authoritative event log — so it degrades to a warning
+	// and the anchor is retried on the next load/save.
+	if healAnchor && fromEvents && !damaged && len(msgs) > 0 && !anchorHasContent(path) {
+		unlockFile, lockErr := lockSessionFile(path)
+		if lockErr != nil {
+			slog.Warn("session: lock empty transcript anchor", "path", path, "err", lockErr)
+		} else {
+			if err := rebuildSessionAnchorFrom(path, msgs); err != nil {
+				slog.Warn("session: rebuild empty transcript anchor", "path", path, "err", err)
+			}
+			unlockFile()
+		}
 	}
 	s := &Session{Messages: msgs, eventLogDamaged: damaged}
 	// Repair persisted-history-safe issues before anything reads the session.

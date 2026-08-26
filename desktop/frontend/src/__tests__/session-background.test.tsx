@@ -258,6 +258,11 @@ ok(
   "foreground controls reserve a right-side lane without covering queued-message actions",
 );
 ok(
+  /\.composer-runstatus\s*\{[^}]*box-sizing:\s*border-box;/.test(cssSource) &&
+    /\.composer-runstatus\s*>\s*\.tooltip-trigger\s*\{[^}]*flex:\s*0\s+0\s+auto;/.test(cssSource),
+  "narrow foreground controls keep Stop inside the width-constrained status pill",
+);
+ok(
   cssSource.includes(".app--workbench .work-session-host {") &&
     cssSource.includes("backdrop-filter: none;") &&
     cssSource.includes(".app--workbench .work-session-host::before {") &&

@@ -14,6 +14,7 @@ import { IDLE_HOVER_BURST_WINDOW_MS, IDLE_HOVER_HEALTHY_FRAMES, IDLE_HOVER_HEALT
 import type { DesktopIconDiagnosticsInput, DesktopIconItem } from "../lib/bridge";
 import { isWorkspaceMatteIcon, projectIconKey, WORKSPACE_MATTE_ICON_OPTIONS } from "../lib/projectIcons";
 import { canRenameTaskIcon } from "../components/widget/desktopIconRename";
+import { occludedRuntimeIDs, sameRuntimeOcclusion, type RuntimeRect } from "../components/widget/desktopIconRuntimeOcclusion";
 import type { ProjectNode } from "../lib/types";
 
 // --- rename eligibility: a task icon is only renameable when it carries a
@@ -31,8 +32,8 @@ assert.equal(canRenameTaskIcon(taskIcon({ sessionRef: undefined })), false, "tas
 assert.equal(canRenameTaskIcon(taskIcon({ kind: "workspace", sessionRef: { scope: "global", sessionPath: "sp-1" } })), false, "non-task icons never rename");
 
 assert.equal(quickStartModelLabel("deepseek-pro/deepseek-v4-pro"), "deepseek-v4-pro", "QuickStart shows the selected model name without a redundant provider prefix");
-assert.equal(quickStartModelLabel(""), "未配置", "QuickStart exposes a missing default model explicitly");
-assert.deepEqual([quickStartApprovalLabel("ask"), quickStartApprovalLabel("auto"), quickStartApprovalLabel("yolo")], ["需要批准", "自动批准", "全部允许"], "QuickStart shows all configured approval postures");
+assert.equal(quickStartModelLabel(""), "Not set", "QuickStart exposes a missing default model explicitly");
+assert.deepEqual([quickStartApprovalLabel("ask"), quickStartApprovalLabel("auto"), quickStartApprovalLabel("yolo")], ["Approval needed", "Auto-approve", "Allow all"], "QuickStart shows all configured approval postures through the locale dictionary (test env defaults to English)");
 assert.deepEqual(quickStartPreferences({ defaultModel: "provider/model", defaultToolApprovalMode: "auto", composerSubmitKey: "ctrl_enter" }), { model: "provider/model", approvalMode: "auto", submitKey: "ctrl_enter" }, "QuickStart normalizes the shared new-session settings as one snapshot");
 
 // --- model / approval picker selection logic (pure) ---
@@ -199,8 +200,8 @@ assert.match(component, /asArray\(notice\.options\)\.map\(/, "notice choices tol
 const css = readFileSync(resolve(import.meta.dirname, "../components/widget/desktop-icon-mode.css"), "utf8");
 const backend = readFileSync(resolve(import.meta.dirname, "../../../widget_icon_mode.go"), "utf8");
 assert.match(component, /readExternalRunLaunch\(localStorage\)[\s\S]+prepareExternalRunLaunch\(localStorage, choice\.root, prompt,[\s\S]+LaunchDSHRun\(\{ requestId: packet\.requestId, workspace: packet\.workspace, prompt: packet\.prompt \}\)/, "DSH quick start reloads and replays the complete persisted launch packet");
-assert.match(component, /item\.actions\?\.includes\("cancel"\)[\s\S]+取消 DSH 任务/, "external-run controls render cancel only from the capability-derived action list");
-assert.match(component, /item\.kind === "external"[\s\S]+item\.actions\?\.includes\("remove"\)[\s\S]+run\(item, "remove"\)[\s\S]+移除/, "external-run context menu renders remove only from the backend action list");
+assert.match(component, /item\.actions\?\.includes\("cancel"\)[\s\S]+t\("desktopIcon\.dsh\.cancelTask"\)/, "external-run controls render cancel only from the capability-derived action list");
+assert.match(component, /item\.kind === "external"[\s\S]+item\.actions\?\.includes\("remove"\)[\s\S]+run\(item, "remove"\)[\s\S]+t\("desktopIcon\.remove"\)/, "external-run context menu renders remove only from the backend action list");
 assert.doesNotMatch(component.slice(component.indexOf("function ExternalRunBody"), component.indexOf("function previewText")), />打开<|>重试<|>恢复<|>批准<|>发送</, "DSH rc.8 external-run popup does not manufacture unsupported controls");
 assert.match(backend, /run\.Capabilities\.Cancel && !run\.State\.IsTerminal\(\)[\s\S]+item\.Actions = append\(item\.Actions, "cancel"\)/, "backend freezes the rc.8 capability surface into external icon actions");
 assert.match(backend, /run\.State\.IsTerminal\(\)[\s\S]+item\.Actions = append\(item\.Actions, "remove"\)/, "backend freezes remove onto terminal external icons only");
@@ -211,8 +212,8 @@ assert.doesNotMatch(css, /desktop-icon-exit/, "icon mode CSS carries no exit-but
 assert.match(component, /onOpenMain: \(\) => Promise<void>/, "the quick toolbar receives the open-main callback from the root App");
 assert.match(component, /const \[quickOpen, setQuickOpen\] = useState\(false\)/, "the quick toolbar owns its own open state");
 assert.match(component, /desktop-icon-collapse[\s\S]*desktop-icon-quick[\s\S]*desktop-icon-anchor/, "the quick toolbar renders between the collapse toggle and the WG2 anchor");
-assert.match(component, /role="toolbar" aria-label="小组件快捷操作"/, "the quick toolbar is a labelled toolbar surface");
-assert.match(component, /aria-label="缩小图标"[\s\S]*aria-label="放大图标"[\s\S]*aria-label="打开主窗口"[\s\S]*aria-label="设置"/, "the quick toolbar exposes zoom out, zoom in, open main, and settings in order");
+assert.match(component, /role="toolbar" aria-label=\{t\("desktopIcon\.quickToolbarAria"\)\}/, "the quick toolbar is a labelled toolbar surface");
+assert.match(component, /aria-label=\{t\("desktopIcon\.zoomOut"\)\}[\s\S]*aria-label=\{t\("desktopIcon\.zoomIn"\)\}[\s\S]*aria-label=\{t\("desktopIcon\.openMain"\)\}[\s\S]*aria-label=\{t\("desktopIcon\.settings"\)\}/, "the quick toolbar exposes zoom out, zoom in, open main, and settings in order");
 assert.match(component, /role="switch" aria-checked=\{topmost\}/, "the always-on-top control is a switch with an explicit checked state");
 assert.match(component, /DesktopStartupSettings\(\)[\s\S]+widgetAlwaysOnTop/, "the initial always-on-top state comes through the existing startup settings contract");
 assert.match(component, /SetDesktopWidgetAlwaysOnTop\(next\)[\s\S]+setTopmost\(next\)/, "the always-on-top switch persists through the backend and only reflects the confirmed config state");
@@ -229,7 +230,7 @@ assert.match(component, /SetDesktopIconHitRegions/, "frontend reports visible hi
 assert.match(component, /getClientRects\(\)\.length\s*>\s*0/, "popup visibility does not depend on offsetParent semantics");
 assert.match(component, /new ResizeObserver\(sync\)/, "native regions follow popup and menu content size changes");
 assert.match(component, /regionQueue\.current/, "native region updates are serialized instead of racing");
-assert.match(component, /item\.kind === "task" && <><button[\s\S]{0,220}>改名<\/button><button[\s\S]{0,650}createRoutine\(item\)[\s\S]{0,320}"randomize_icon"[\s\S]{0,100}>换个样子<\/button>/, "task/session context menus expose rename, daily-routine extraction, and appearance randomization");
+assert.match(component, /item\.kind === "task" && <><button[\s\S]{0,220}\{t\("desktopIcon\.rename"\)\}<\/button><button[\s\S]{0,650}createRoutine\(item\)[\s\S]{0,320}"randomize_icon"[\s\S]{0,100}\{t\("desktopIcon\.randomize"\)\}<\/button>/, "task/session context menus expose rename, daily-routine extraction, and appearance randomization");
 assert.match(component, /CreateDailyRoutine\(\{ tabId: item\.sourceId, sessionRef: item\.sessionRef, requestId: stableRequest \}\)/, "daily routine extraction submits the backend-owned Session identity with a stable retry request");
 assert.match(component, /const requestKey = item\.sessionRef\?\.sessionPath \|\| item\.sourceId;[\s\S]{0,260}routineExtractRequests\.current\.set\(requestKey, stableRequest\)[\s\S]{0,180}writeDailyRoutineRequests\(DAILY_ROUTINE_EXTRACT_REQUESTS_KEY/, "failed extraction and renderer restarts reuse a persisted per-Session request id");
 assert.match(component, /active && active\.kind === "workspace" && <DailyRoutinePanel key=\{active\.sourceId\} workspaceRoot=\{active\.sourceId\}/, "left-clicking a workspace icon renders its workspace-owned daily routines");
@@ -265,9 +266,9 @@ assert.match(component, /isComposerSubmitKey\(event, preferences\.submitKey, eve
 assert.doesNotMatch(component, /<small>模型<\/small>|<small>审批<\/small>/, "QuickStart omits redundant model and approval captions");
 assert.match(component, /onClick=\{\(\) => pickApproval\(nextQuickStartApproval\(selectedApproval\)\)\}/, "QuickStart cycles approval directly on click");
 assert.doesNotMatch(component, /aria-label="选择审批模式"/, "QuickStart does not open an approval picker");
-assert.match(component, /Ctrl\+Enter 发送[\s\S]+Enter 发送/, "QuickStart shows the active keyboard submission hint");
+assert.match(component, /t\("desktopIcon\.quick\.submitHintCtrl"\)[\s\S]+t\("desktopIcon\.quick\.submitHintEnter"\)/, "QuickStart shows the active keyboard submission hint");
 assert.match(component, />Ctrl \+ ←<\/button>[\s\S]+>Ctrl \+ →<\/button>/, "QuickStart workspace buttons explain the Ctrl+ArrowLeft/Right shortcuts");
-assert.match(component, /上一个 Workspace（LT 或 Ctrl\+←）[\s\S]+下一个 Workspace（RT 或 Ctrl\+→）/, "LT/RT gamepad hints stay on the workspace buttons");
+assert.match(component, /t\("desktopIcon\.quick\.previousWorkspaceAria"\)[\s\S]+t\("desktopIcon\.quick\.nextWorkspaceAria"\)/, "LT/RT gamepad hints stay on the workspace buttons");
 assert.match(component, /\(event\.ctrlKey \|\| event\.metaKey\)[\s\S]+ArrowLeft[\s\S]+ArrowRight[\s\S]+event\.preventDefault\(\)[\s\S]+switchBy/, "Ctrl+ArrowLeft/Right switch workspaces and stop the default caret movement");
 assert.match(component, /const submitted = submitJob\([\s\S]{0,120}\{ prompt, workspace, model: selectedModel, approvalMode: selectedApproval \},[\s\S]{0,80}editJob \? \{ replacesRequestId: editJob\.requestId \} : undefined[\s\S]{0,120}\)/, "QuickStart enqueues the selected model and approval mode with the prompt through the hoisted job runner; an edited job replaces its frozen requestId");
 assert.match(component, /if \(!submitted\.ok\) \{ setError\(submitted\.error\); sentRef\.current = false; return; \}[\s\S]{0,60}setDraft\(""\);[\s\S]{0,40}onClose\(\);/, "a successful submit closes the modal synchronously; a validation/persistence failure keeps it open with the error visible");
@@ -317,8 +318,8 @@ assert.match(component, /desktop-icon__queued/, "a queued job renders a subtle p
 // always announces 后台发送中 while delivering and 发送失败，可重试 once failed,
 // while the icon stays a plain keyboard-operable button.
 assert.match(component, /if \(isQuickStartJobItem\(item\)\) return quickStartJobStateLabel\(item\);/, "the optimistic preview announces the delivery state");
-assert.match(component, /aria-label=\{`\$\{item\.title\}，\$\{previewText\(item\)\}`\}[\s\S]{0,120}title=\{isQuickStartJobItem\(item\) \? `\$\{item\.title\}，\$\{quickStartJobStateLabel\(item\)\}` : undefined\}/, "optimistic icons carry the state in both aria-label and title");
-assert.match(jobsSource, /return item\.status === "failed" \? "发送失败，可重试" : "后台发送中"/, "the state label helper exposes the exact 后台发送中 / 发送失败，可重试 wording");
+assert.match(component, /aria-label=\{t\("desktopIcon\.iconAria", \{ title: iconTitle\(item\), text: previewText\(item\) \}\)\}[\s\S]{0,120}title=\{isQuickStartJobItem\(item\) \? t\("desktopIcon\.iconTitle", \{ title: iconTitle\(item\), state: quickStartJobStateLabel\(item\) \}\) : undefined\}/, "optimistic icons carry the state in both aria-label and title");
+assert.match(jobsSource, /return item\.status === "failed" \? t\("desktopIcon\.job\.stateFailed"\) : t\("desktopIcon\.job\.stateSubmitting"\)/, "the state label helper exposes the exact 后台发送中 / 发送失败，可重试 wording through localized keys");
 // no front-end flight timeout / no accepted-grace eviction (#2, #3)
 assert.doesNotMatch(jobsSource, /flightTimeoutMs|acceptedGraceMs|QUICK_JOB_FLIGHT_TIMEOUT|QUICK_JOB_ACCEPTED_GRACE|后台发送超时/, "the front end has no flight timeout and no accepted-grace timer");
 assert.match(jobsSource, /There is no front-end flight timeout/, "the module documents why the queued backend call is never fenced");
@@ -353,11 +354,11 @@ assert.match(component, /initialDraft=\{quickDraftDecision\.draft\}/, "QuickStar
 assert.doesNotMatch(component, /initialDraft=\{\(\(\) => \{[\s\S]{0,300}(removeItem|setItem|clearConsumedDraftMarker|cleanupConsumedDraft)/, "the initial-draft render path never writes storage (an aborted or StrictMode render cannot remove the draft/marker)");
 assert.match(component, /useEffect\(\(\) => \{[\s\S]{0,180}active && active\.sourceId === "new"[\s\S]{0,200}cleanupConsumedDraft\(localStorage, quickDraftDecision\.cleanupMarker\)[\s\S]{0,120}setQuickError/, "the committed cleanup can recreate a missing marker from the active requestId before removing the draft, and failures stay visible");
 assert.match(component, /recordConsumedDraftMarker\(localStorage, trimmed, result\.requestId\)[\s\S]{0,200}localStorage\.removeItem\(QUICK_DRAFT_KEY\)[\s\S]{0,120}clearConsumedDraftMarker\(localStorage\)/, "the consumed-draft marker is recorded BEFORE the best-effort draft removal and cleared once the removal succeeds");
-assert.match(component, /后台发送中，请等待/, "a running optimistic job explains itself with 后台发送中，请等待");
-assert.match(component, /job\.phase === "running" && <button onClick=\{onOpenMain\}>打开主窗口<\/button>/, "a running job offers an open-main action, never a delete");
+assert.match(component, /t\("desktopIcon\.job\.waitingSync"\)/, "a running optimistic job explains itself with 后台发送中，请等待");
+assert.match(component, /job\.phase === "running" && <button onClick=\{onOpenMain\}>\{t\("desktopIcon\.openMain"\)\}<\/button>/, "a running job offers an open-main action, never a delete");
 assert.match(component, /const dismissible = failed \|\| \(job\.phase === "accepted" && Boolean\(job\.tabId\)\);/, "only failed and accepted-with-tabId entries are dismissible");
-assert.match(component, /\{dismissible && <button className="subtle" onClick=\{\(\) => onDismiss\(job\.requestId\)\}>丢弃<\/button>\}/, "the dismiss action renders only when the entry is dismissible (never for running jobs)");
-assert.doesNotMatch(component, /后台发送中，请等待[\s\S]{0,120}onDismiss[\s\S]{0,80}丢弃/, "the running-job popup never offers deletion next to its waiting message");
+assert.match(component, /\{dismissible && <button className="subtle" onClick=\{\(\) => onDismiss\(job\.requestId\)\}>\{t\("desktopIcon\.dismiss"\)\}<\/button>\}/, "the dismiss action renders only when the entry is dismissible (never for running jobs)");
+assert.doesNotMatch(component, /t\("desktopIcon\.job\.waitingSync"\)[\s\S]{0,120}onDismiss[\s\S]{0,80}t\("desktopIcon\.dismiss"\)/, "the running-job popup never offers deletion next to its waiting message");
 assert.match(component, /app\.CompleteVocabulary\(vocabularyToken\.prefix, 5\)/, "QuickStart vocabulary completion reuses the shared controller data source");
 assert.match(component, /const first = asArray\(items\)\.find[\s\S]+setVocabMatch\(first\)/, "QuickStart follows Session by showing only the best vocabulary match");
 assert.match(component, /desktop-icon-popup__vocab-ghost[\s\S]+<span>\{draft\}<\/span><b>\{vocabMatch\.suffix\}<\/b>/, "vocabulary renders as an inline ghost suffix inside the input");
@@ -391,7 +392,7 @@ assert.match(component, /desktop-icon__runtime-track[\s\S]*<i \/><i \/><i \/>/, 
 assert.doesNotMatch(component, /已读取当前 Workspace|即将组织结果|desktop-icon-popup__stages/, "runtime UI does not fabricate future or completed steps");
 assert.doesNotMatch(component, /desktop-icon__ring/, "the shared legacy orbit is removed");
 assert.match(css, /\.desktop-icon__motion--thinking[^}]*desktop-icon-thinking-breathe/, "thinking has a breathing visual language");
-assert.match(component, /desktop-icon-wrap[^\n]*>[\s\S]*<RuntimeIndicator item=\{item\} \/>[\s\S]*<button[^>]*>[\s\S]*desktop-icon__art/, "thinking and running status uses a dedicated layer outside the icon button");
+assert.match(component, /desktop-icon-wrap[^\n]*>[\s\S]*<RuntimeIndicator item=\{item\} nodeRef=\{\(node\) => \{ if \(node\) runtimeRefs\.current\.set\(item\.id, node\); else runtimeRefs\.current\.delete\(item\.id\); \}\} occluded=\{hiddenRuntimeIDs\.has\(item\.id\)\} \/>[\s\S]*<button[^>]*>[\s\S]*desktop-icon__art/, "thinking and running status uses a dedicated layer outside the icon button");
 assert.match(css, /\.desktop-icon__runtime[^}]*position:\s*absolute[^}]*pointer-events:\s*none[^}]*translate\(-50%,\s*calc\(-100% - 3px\)\)/, "the runtime layer stays above the icon without contributing to grid row height");
 assert.doesNotMatch(css, /\.desktop-icon--thinking,\s*\.desktop-icon--running\s*\{[^}]*min-height/, "runtime states keep the regular icon cell height");
 assert.match(component, /desktop-icon__motion-corner[^\n]*desktop-icon__motion-corner[^\n]*desktop-icon__motion-corner[^\n]*desktop-icon__motion-corner/, "running renders four explicit scan corners");
@@ -399,6 +400,63 @@ assert.doesNotMatch(css, /-webkit-mask-composite|conic-gradient|desktop-icon-run
 assert.match(css, /\.desktop-icon__motion-corner[^}]*desktop-icon-running-frame[^}]*steps\(1, end\)/, "running uses a discrete sequence-frame animation");
 assert.match(css, /\.desktop-icon__motion-corner:nth-child\(4\)/, "all four scan-frame corners have explicit placement");
 assert.match(css, /\.desktop-icon__runtime--running[^}]*#8cebf0/, "running status uses a distinct cyan treatment");
+// --- runtime occlusion: the floating block hides only when its real rendered
+// rectangle collides with another icon unit above it (never its own icon) ---
+{
+	const rect = (id: string, x: number, y: number, width: number, height: number): RuntimeRect => ({ id, rect: { x, y, width, height } });
+	// lower-row runtime block overlapping the upper-row icon unit → hidden
+	assert.deepEqual([...occludedRuntimeIDs(
+		[rect("task:2", 0, 70, 78, 27)], // the floating block above the lower-row icon (icon at y=100)
+		[rect("task:1", 0, 0, 66, 74), rect("task:2", 0, 100, 66, 74)], // upper unit + its own icon
+	)], ["task:2"], "a runtime block colliding with an upper icon unit is occluded");
+	// no overlap → stays visible
+	assert.deepEqual([...occludedRuntimeIDs(
+		[rect("task:2", 200, 80, 78, 27)],
+		[rect("task:1", 0, 0, 66, 74), rect("task:2", 200, 100, 66, 74)],
+	)], [], "a runtime block with clear space above stays visible");
+	// overlapping its own icon alone never hides the block
+	assert.deepEqual([...occludedRuntimeIDs(
+		[rect("task:1", 0, -20, 78, 27)], // spans y [-20,7], genuinely overlapping its own icon below
+		[rect("task:1", 0, 0, 66, 74)],
+	)], [], "the block's own icon is excluded from occlusion");
+	// exact touch (adjacent edges) and the 1px tolerance boundary are not collisions
+	assert.deepEqual([...occludedRuntimeIDs(
+		[rect("task:2", 0, 74, 78, 27)], // block top touches icon bottom exactly
+		[rect("task:1", 0, 0, 66, 74)],
+	)], [], "pixel-adjacent units are not occluded");
+	assert.deepEqual([...occludedRuntimeIDs(
+		[rect("task:2", 0, 73, 78, 27)], // 1px overlap sits inside the tolerance
+		[rect("task:1", 0, 0, 66, 74)],
+	)], [], "sub-tolerance overlap stays visible");
+	assert.deepEqual([...occludedRuntimeIDs(
+		[rect("task:2", 0, 72, 78, 27)], // 2px overlap exceeds the tolerance
+		[rect("task:1", 0, 0, 66, 74)],
+	)], ["task:2"], "overlap beyond the tolerance is occluded");
+	// unmeasurable (zero-size) rects are skipped
+	assert.deepEqual([...occludedRuntimeIDs(
+		[rect("task:2", 0, 0, 0, 0)],
+		[rect("task:1", 0, 0, 66, 74)],
+	)], [], "unmeasurable runtime rects never hide");
+	assert.equal(sameRuntimeOcclusion(new Set(["a"]), new Set(["a"])), true, "an unchanged hidden-ID set keeps the previous state (no churn)");
+	assert.equal(sameRuntimeOcclusion(new Set(["a"]), new Set(["b"])), false, "a changed hidden-ID set re-renders");
+	assert.equal(sameRuntimeOcclusion(new Set(), new Set()), true, "two empty sets compare equal");
+}
+// the occlusion pass measures REAL rendered geometry, never row/column guesses
+assert.match(component, /for \(const \[id, node\] of runtimeRefs\.current\)[\s\S]{0,80}node\.getBoundingClientRect\(\)/, "runtime occlusion measures the rendered runtime block rect");
+assert.match(component, /for \(const \[id, node\] of itemRefs\.current\)[\s\S]{0,80}node\.getBoundingClientRect\(\)/, "runtime occlusion measures every rendered icon unit rect");
+assert.match(component, /occludedRuntimeIDs\(runtimeRects, iconRects\)/, "occlusion is decided by the pure geometry pass over the measured rects");
+assert.match(component, /sameRuntimeOcclusion\(current, next\) \? current : next/, "an unchanged hidden-ID set reuses the previous state so React bails out");
+assert.match(component, /setHiddenRuntimeIDs\(\(current\) => current\.size === 0 \? current : new Set\(\)\)/, "stale hidden ids are cleared when no runtime block remains");
+assert.match(component, /requestAnimationFrame\(\(\) => \{ if \(alive\) recomputeRuntimeOcclusion\(\); \}\)/, "occlusion re-runs on element resize through a rAF-throttled ResizeObserver");
+assert.match(component, /window\.addEventListener\("resize", sync\)/, "occlusion re-runs on viewport resize");
+assert.match(component, /document\.fonts\?\.ready\.then/, "occlusion re-runs after fonts settle");
+assert.match(component, /useLayoutEffect\(\(\) => \{\s*recomputeRuntimeOcclusion\(\);\s*\}, \[collapsed, clusterZoom, desktopZoom, displayItems, viewport\.width\]\);/, "occlusion re-measures on layout inputs (item/row/wrap/zoom/collapse) but skips unrelated renders");
+assert.match(component, /observer\.disconnect\(\); window\.removeEventListener\("resize", sync\)/, "occlusion observers/listeners are cleaned up on unmount");
+// hidden content is marked for assistive tech and keeps its measurable box
+assert.match(component, /desktop-icon__runtime--occluded/, "the occluded block gets a dedicated state class");
+assert.match(component, /aria-hidden=\{occluded \|\| undefined\}/, "the hidden block is marked aria-hidden for assistive tech");
+assert.match(css, /\.desktop-icon__runtime--occluded\s*\{\s*visibility:\s*hidden;\s*\}/, "hiding uses visibility so the block keeps its measurable geometry and cannot oscillate");
+assert.doesNotMatch(css, /\.desktop-icon__runtime--occluded[^}]*display:\s*none/, "the occluded block is never display:none (that would zero its rect and oscillate)");
 assert.match(component, /position\.row === "top"/, "component renders a dedicated top row");
 assert.match(component, /position\.row === "bottom"/, "component renders a dedicated bottom row");
 assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__search\)\s*\{[^}]*height:\s*min\(calc\(var\(--popup-pad-y, 15px\) \+ var\(--popup-pad-y, 15px\) \+ 354px\), var\(--popup-max-height, 420px\)\)[^}]*max-height:\s*var\(--popup-max-height, 420px\)/, "the search outer frame reserves seven result rows with multiplication-free calc syntax and clamps to the measured anchor-space budget");
@@ -408,8 +466,8 @@ assert.doesNotMatch(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__search
 assert.match(css, /\.desktop-icon-popup__searchbox[^}]*flex:\s*0 0 auto/, "the search input and close control stay fixed while the results list scrolls");
 assert.match(css, /\.desktop-icon-popup__search-content[^}]*flex:\s*1 1 0[^}]*min-height:\s*0[^}]*overflow-y:\s*auto[^}]*overflow-wrap:\s*anywhere/, "one flexing inner region scrolls every search state and wraps long errors without changing the outer height");
 const searchPanelSource = component.slice(component.indexOf("function SearchPanel("), component.indexOf("function WorkspaceGlyph("));
-assert.match(searchPanelSource, /desktop-icon-popup__searchbox[\s\S]*desktop-icon-popup__search-content" role="region" aria-label="搜索结果" aria-busy=/, "the fixed search controls precede the single scrolling content region");
-assert.match(searchPanelSource, /error[\s\S]*role="alert"[\s\S]*loading[\s\S]*搜索中…[\s\S]*results\.length[\s\S]*role="listbox"[\s\S]*role="option"[\s\S]*没有匹配结果/, "error, loading, result listbox, and empty states are mutually exclusive inside the same stable scroll region");
+assert.match(searchPanelSource, /desktop-icon-popup__searchbox[\s\S]*desktop-icon-popup__search-content" role="region" aria-label=\{t\("desktopIcon\.search\.results"\)\} aria-busy=/, "the fixed search controls precede the single scrolling content region");
+assert.match(searchPanelSource, /error[\s\S]*role="alert"[\s\S]*loading[\s\S]*t\("desktopIcon\.search\.searching"\)[\s\S]*results\.length[\s\S]*role="listbox"[\s\S]*role="option"[\s\S]*t\("desktopIcon\.search\.empty"\)/, "error, loading, result listbox, and empty states are mutually exclusive inside the same stable scroll region");
 assert.doesNotMatch(searchPanelSource, /role="listbox"[^>]*>\{?(?:error|!loading)/, "non-option error and empty states never become direct listbox children");
 assert.match(backend, /desktopIconWidth\s*=\s*1080[\s\S]+desktopIconHeight\s*=\s*720[\s\S]+legacyIconWidth\s*=\s*900[\s\S]+legacyIconHeight\s*=\s*600/, "native icon window enlarges to 1080×720 and recognizes the legacy default for migration");
 assert.match(css, /prefers-reduced-motion:\s*reduce/, "motion has a reduced-motion fallback");
@@ -456,7 +514,7 @@ for (const [name, rule] of [["base popup", basePopupRule], ["preview outer box",
   assert.ok(outerOverflow.every((value) => value === "visible"), `${name} never clips or scrolls its arrow and shadow`);
 }
 assert.match(component, /onMouseEnter=\{\(\) => timers\.current\?\.clearPreviewClose\(\)\} onMouseLeave=\{\(event\) => \{ if \(!event\.currentTarget\.contains\(document\.activeElement\)\) closePreviewSoon\(\); \}\}/, "pointer entry cancels hover-close and pointer exit cannot close a focused preview");
-assert.match(component, /!active && <p tabIndex=\{0\} aria-label=\{`\$\{popupItem\.title\}，\$\{previewText\(popupItem\)\}`\} onFocus=\{\(\) => timers\.current\?\.clearPreviewClose\(\)\} onBlur=\{closePreviewSoon\}>\{previewText\(popupItem\)\}<\/p>/, "the complete scrollable preview is keyboard-focusable and focus cancels the pending hover-close timer");
+assert.match(component, /!active && <p tabIndex=\{0\} aria-label=\{t\("desktopIcon\.iconAria", \{ title: iconTitle\(popupItem\), text: previewText\(popupItem\) \}\)\} onFocus=\{\(\) => timers\.current\?\.clearPreviewClose\(\)\} onBlur=\{closePreviewSoon\}>\{previewText\(popupItem\)\}<\/p>/, "the complete scrollable preview is keyboard-focusable and focus cancels the pending hover-close timer");
 
 // --- collapse persistence: the WG2 anchor now drags the native window, so
 // only the collapsed flag survives under the stable cluster key ---
@@ -624,8 +682,8 @@ assert.equal(DRAG_THRESHOLD, 7, "the drag threshold stays 7px");
 const logoSymbol = readFileSync(resolve(import.meta.dirname, "../assets/logo-symbol.svg"), "utf8");
 assert.match(logoSymbol, /aria-label="WorkGround2"/, "the anchor reuses the real WG2 logo-symbol asset");
 assert.match(component, /logo-symbol\.svg/, "the component imports the real logo-symbol.svg for the anchor");
-assert.match(component, /aria-label="移动小组件窗口"/, "the WG2 anchor describes that it moves the native widget window");
-assert.match(component, /aria-label=\{collapsed \? "展开图标组" : "收起图标组"\}/, "the toggle label distinguishes collapse and expand by state");
+assert.match(component, /aria-label=\{t\("desktopIcon\.anchorAria"\)\}/, "the WG2 anchor describes that it moves the native widget window");
+assert.match(component, /aria-label=\{collapsed \? t\("desktopIcon\.expandGroup"\) : t\("desktopIcon\.collapseGroup"\)\}/, "the toggle label distinguishes collapse and expand by state");
 assert.match(component, /aria-expanded=\{!collapsed\}/, "the toggle reflects the group visibility for assistive tech");
 assert.match(component, /desktop-icon-collapse[^>]*onClick=/, "the toggle is a keyboard-activatable button without drag handlers");
 assert.doesNotMatch(component, /desktop-icon-collapse[^>]*onPointerDown/, "the toggle must never start a drag");
@@ -687,7 +745,7 @@ assert.match(component, /const \[quickError, setQuickError\] = useState\(""\);/,
 assert.match(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setError\(next\.error \|\| ""\);/, "the 1s snapshot poll writes only the snapshot error channel");
 assert.doesNotMatch(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setQuickError/, "the snapshot poll never touches the quick-error channel");
 assert.match(component, /\(error \|\| quickError \|\| quickJobs\.storageError \|\| routineNotice\) && <div className="desktop-icon-toast" role=\{error \|\| quickError \|\| quickJobs\.storageError \? "alert" : "status"\}/, "the toast surfaces errors together and announces successful routine extraction as status");
-assert.match(component, /\.catch\(\(\) => \{ if \(alive\) \{ setTopmostReadFailed\(true\); setQuickError\(TOPMOST_READ_ERROR\); \} \}\)/, "an initial always-on-top read failure stays visible and never assumes false");
+assert.match(component, /\.catch\(\(\) => \{ if \(alive\) \{ setTopmostReadFailed\(true\); setQuickError\(t\("desktopIcon\.topmostReadError"\)\); \} \}\)/, "an initial always-on-top read failure stays visible and never assumes false");
 assert.match(component, /disabled=\{exiting \|\| topmostBusy \|\| !topmostLoaded \|\| topmostReadFailed\}/, "the always-on-top switch stays disabled after a failed initial read and while exiting");
 assert.match(component, /const \[topmostAttempt, setTopmostAttempt\] = useState\(0\);/, "the always-on-top read retry is driven by an explicit attempt counter");
 
@@ -729,7 +787,7 @@ assert.match(component, /onClose=\{\(\) => \{ setActiveID\(""\);\s*setActiveNoti
 // notice: no collapsed 对话框 trigger, no expanded/collapsed dialog state.
 assert.doesNotMatch(component, /desktop-icon-popup__dialog-trigger|>对话框<\/button>/, "completion notices no longer hide the continuation behind a 对话框 trigger button");
 assert.doesNotMatch(component, /dialogOpen|closeDialog|desktop-icon-popup__dialog/, "the continuation composer has no dialog state or 对话框 surface at all");
-assert.match(component, /desktop-icon-popup__continue[\s\S]+<textarea[\s\S]+placeholder="告诉 WorkGround2 接下来要完成什么…"/, "completion notices always render the resident continuation textarea");
+assert.match(component, /desktop-icon-popup__continue[\s\S]+<textarea[\s\S]+placeholder=\{t\("desktopIcon\.notice\.continuePlaceholder"\)\}/, "completion notices always render the resident continuation textarea");
 assert.match(component, /run\("continue", \[text\]\)/, "the completion composer continues the current task instead of starting a separate conversation");
 // Ctrl/Cmd+Enter submits, plain Enter stays a newline, and IME composition
 // (isComposing, keyCode 229, compositionend grace) never leaks into a send.
@@ -743,11 +801,11 @@ assert.match(component, /const sendFollowup = async \(\) => \{[\s\S]{0,120}const
 assert.match(component, /const freezeRetry = \(\) => \{[\s\S]{0,120}setFollowup\(text\);[\s\S]{0,100}setFailedFollowup\(text\);[\s\S]{0,100}followupSent\.current = false/, "retry freezing preserves the exact submitted text and releases the send guard");
 assert.match(component, /try \{[\s\S]{0,80}const status = await run\("continue", \[text\]\);[\s\S]{0,100}status === "retryable_error"[\s\S]{0,80}freezeRetry\(\)[\s\S]{0,260}catch \{[\s\S]{0,240}freezeRetry\(\)/, "both retryable results and rejected run promises freeze the original text without an unhandled rejection");
 assert.match(component, /desktop-icon-popup__continue" aria-busy=\{busy\}/, "the continuation area announces the busy state");
-assert.match(component, /disabled=\{busy\} readOnly=\{Boolean\(failedFollowup\)\}[\s\S]{0,180}aria-label="继续当前任务"/, "the continuation textarea is labelled, busy-disabled, and read-only only after retryable failure");
+assert.match(component, /disabled=\{busy\} readOnly=\{Boolean\(failedFollowup\)\}[\s\S]{0,180}aria-label=\{t\("desktopIcon\.notice\.continueAria"\)\}/, "the continuation textarea is labelled, busy-disabled, and read-only only after retryable failure");
 assert.match(component, /aria-describedby=\{failedFollowup \? "desktop-icon-followup-error" : "desktop-icon-followup-hint"\}/, "the textarea describes both its normal keyboard help and retryable failure state");
-assert.match(component, /发送失败，可重试原内容[\s\S]{0,220}failedFollowup \? "重试发送" : "发送"[\s\S]{0,160}failedFollowup \? "原内容已锁定"/, "retryable failure explains that only the original content can be resent");
-assert.match(component, /desktop-icon-popup__scroll" tabIndex=\{0\} role="region" aria-label="任务通知详情"/, "the overflowing notice body is keyboard-focusable and named");
-assert.match(component, /role=\{popupAttention \? "alertdialog" : active \? "dialog" : "status"\} aria-label=\{active \? popupAttention \? `\$\{popupItem\.title\}，\$\{roomAttentionLabel\(popupAttention\)\}` : `\$\{popupItem\.title\} 操作` : undefined\}/, "interactive popups expose a named dialog role and mentions escalate to a named alertdialog");
+assert.match(component, /t\("desktopIcon\.notice\.sendFailed"\)[\s\S]{0,220}failedFollowup \? t\("desktopIcon\.notice\.retrySend"\) : t\("desktopIcon\.send"\)[\s\S]{0,160}failedFollowup \? t\("desktopIcon\.notice\.locked"\)/, "retryable failure explains that only the original content can be resent");
+assert.match(component, /desktop-icon-popup__scroll" tabIndex=\{0\} role="region" aria-label=\{t\("desktopIcon\.notice\.details"\)\}/, "the overflowing notice body is keyboard-focusable and named");
+assert.match(component, /role=\{popupAttention \? "alertdialog" : active \? "dialog" : "status"\} aria-label=\{active \? popupAttention \? t\("desktopIcon\.popupAriaAttention", \{ title: iconTitle\(popupItem\), attention: roomAttentionLabel\(popupAttention\) \}\) : t\("desktopIcon\.popupAria", \{ title: iconTitle\(popupItem\) \}\) : undefined\}/, "interactive popups expose a named dialog role and mentions escalate to a named alertdialog");
 assert.match(component, /notice\.summaryStatus === "failed"/, "a failed summary surfaces an explicit retryable hint");
 assert.match(css, /\.desktop-icon-popup__summary-failed/, "the failed-summary hint has its own style");
 const okRule = css.match(/\.desktop-icon-popup button\.desktop-icon-popup__ok\s*\{[^}]*\}/)?.[0] ?? "";
@@ -783,8 +841,8 @@ assert.match(css, /button:disabled\s*\{\s*opacity: \.55/, "disabled buttons stay
 // --- workspace management: the fixed workspace icon between 新建 and Rooms ---
 // The backend fixed bar is the declared Go contract: 新建 → 工作区 → Rooms → 助手 → 委托 → 搜索.
 assert.match(backend, /\{"new", "新建", "plus"\},\s*\{"workspace", "工作区", "workspace"\},\s*\{"rooms", "Rooms", "rooms"\},\s*\{"assistant", "助手", "bot"\},\s*\{"delegate", "委托", "users"\},\s*\{"search", "搜索", "search"\}/, "backend fixed bar order is 新建 → 工作区 → Rooms → 助手 → 委托 → 搜索 by declaration");
-assert.match(component, /function DelegationPanel\([\s\S]*正在运行的委托[\s\S]*当前没有运行中的委托/, "delegate fixed entry renders a running-list panel with an explicit empty state");
-assert.match(component, /error && <p role="alert" className="desktop-icon-popup__delegation-error">委托扫描失败：[\s\S]*列表保留已读取结果，将自动重试/, "delegate panel exposes partial scan failures and automatic retry state inline");
+assert.match(component, /function DelegationPanel\([\s\S]*t\("desktopIcon\.delegation\.title"\)[\s\S]*t\("desktopIcon\.delegation\.empty"\)/, "delegate fixed entry renders a running-list panel with an explicit empty state");
+assert.match(component, /error && <p role="alert" className="desktop-icon-popup__delegation-error">\{t\("desktopIcon\.delegation\.scanFailed", \{ detail: error \}\)\}/, "delegate panel exposes partial scan failures and automatic retry state inline");
 assert.match(component, /active\.sourceId === "delegate"[\s\S]*items=\{snapshot\.delegations \|\| \[\]\}[\s\S]*run\(active, "open_delegation", \[item\.id\]\)/, "delegate list opens the exact typed snapshot item through the idempotent backend action");
 const delegationBridge = readFileSync(resolve(import.meta.dirname, "../lib/bridge.ts"), "utf8");
 assert.match(delegationBridge, /interface DesktopIconDelegation[\s\S]*sessionRef\?: DesktopIconTaskRef;[\s\S]*interface DesktopIconSnapshot \{ items: DesktopIconItem\[\]; delegations: DesktopIconDelegation\[\]/, "bridge exposes the typed delegation view only through DesktopIconSnapshot");
@@ -804,16 +862,16 @@ assert.match(component, /const targetPinned = !row\.pinned;[\s\S]+app\.SetProjec
 assert.match(component, /Promise\.all\(\[app\.ListProjectTree\(\), app\.GetDesktopWorkspaceSlots\(\)\]\)/, "workspace rows and the persisted desktop count load together");
 assert.match(component, /await app\.SetDesktopWorkspaceSlots\(slots\)[\s\S]{0,120}await onChanged\(\)[\s\S]{0,120}setWorkspaceSlots\(slots\)/, "changing the 0-4 desktop count persists and refreshes before committing local UI state, so refresh failures remain retryable");
 assert.match(component, /length: WORKSPACE_PIN_LIMIT \+ 1[\s\S]{0,300}aria-pressed=\{workspaceSlots === slots\}/, "the workspace manager exposes every desktop count from zero through four");
-assert.match(component, /固定优先，空位由当前与最近活跃工作区补齐/, "the count control explains the retained priority and auto-fill policy");
+assert.match(component, /t\("desktopIcon\.workspace\.countHint"\)/, "the count control explains the retained priority and auto-fill policy");
 assert.match(component, /app\.RenameProject\(row\.root, renameTitle\(renameDraft\)\)/, "rename commits the raw input through the shared empty-title contract");
-assert.match(component, /留空恢复目录名/, "the rename editor explains the empty-title restore semantics");
+assert.match(component, /t\("desktopIcon\.workspace\.renameHint"\)/, "the rename editor explains the empty-title restore semantics");
 assert.match(component, /deleteConfirmNext\(armed, row\.root\)[\s\S]+next\.confirmed\) void confirmDelete\(row\)/, "delete uses the two-step confirm state machine before calling the backend");
 assert.match(component, /app\.RemoveWorkspace\(row\.root\)[\s\S]+setArmed\(null\)[\s\S]+await reload\(\)/, "delete calls the backend only on the confirmed step, then clears the arm and reloads");
 assert.doesNotMatch(component, /RemoveWorkspace[\s\S]{0,60}setRows/, "delete never optimistically removes the row before the backend confirms");
 assert.match(component, /catch \(cause\) \{\s*\/\/ The row stays[\s\S]+setError\(cause instanceof Error \? cause\.message : String\(cause\)\)/, "delete failure keeps the row and the armed retry entry");
 assert.match(component, /WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]{0,400}<WorkspaceMatteIcon icon=\{option\.key\}/, "the workspace editor exposes every matte PNG through one typed catalog");
 assert.match(component, /await app\.SetProjectIcon\(row\.root, icon\)[\s\S]{0,100}await reload\(\)[\s\S]{0,100}await onChanged\(\)[\s\S]{0,100}setIconEditing\(null\)/, "a successful icon assignment persists, reloads the manager, and refreshes the widget snapshot before closing");
-assert.match(component, /item\.kind === "workspace" && <button[\s\S]{0,160}openWorkspaceIconEditor\(item\)[\s\S]{0,160}>修改图标<\/button>/, "a workspace icon context menu exposes 修改图标 for the clicked workspace");
+assert.match(component, /item\.kind === "workspace" && <button[\s\S]{0,160}openWorkspaceIconEditor\(item\)[\s\S]{0,160}\{t\("desktopIcon\.changeIcon"\)\}<\/button>/, "a workspace icon context menu exposes 修改图标 for the clicked workspace");
 assert.match(component, /<DailyRoutinePanel[\s\S]{0,220}onStartHere=\{\(\) => \{ setQuickWorkspace\(`project:\$\{active\.sourceId\}`\); setQuickStartEditJob\(null\); setPopupAnchorID\(active\.id\); setActiveID\("fixed:new"\); \}\}/, "workspace 日常 panel keeps 在此发起 anchored to the clicked project, clears stale edit intent, and preselects its workspace");
 assert.match(component, /itemRefs\.current\.get\(popupAnchorID\) \|\| itemRefs\.current\.get\(popupItem\.id\)/, "popup placement prefers the explicit workspace anchor over the fixed 新建 icon");
 assert.match(component, /<QuickStart[\s\S]{0,300}initialWorkspace=\{quickWorkspace\}/, "the anchored QuickStart receives the selected workspace");
@@ -1015,9 +1073,9 @@ popupState = reconcileRoomPopups(consumedMention.state, [popupRoom("history", 7,
 assert.deepEqual(popupState.queue, [], "count mode advances watermarks and clears pending auto-popups");
 popupState = reconcileRoomPopups(popupState, [popupRoom("history", 7, 80)], "popup");
 assert.deepEqual(popupState.queue, [], "switching to popup does not replay a sequence already observed in count mode");
-assert.equal(roomAttentionLabel("mention_member"), "提到了你");
-assert.equal(roomAttentionLabel("mention_agent"), "提到了你的 Agent");
-assert.equal(roomAttentionLabel("mention_both"), "提到了你和你的 Agent");
+assert.equal(roomAttentionLabel("mention_member"), "Mentioned you");
+assert.equal(roomAttentionLabel("mention_agent"), "Mentioned your Agent");
+assert.equal(roomAttentionLabel("mention_both"), "Mentioned you and your Agent");
 
 // --- rooms fixed icon: glyph, dialog open, and the generic fallback exclusion ---
 assert.match(component, /rooms: "discussion"/, "the rooms fixed icon renders its own distinct matte discussion asset");
@@ -1031,31 +1089,31 @@ assert.match(component, /<RoomsManager roomIconCount=\{roomIconCount\} onRoomIco
 // optimistic writes, explicit placeholder ---
 assert.match(component, /Promise\.allSettled\([\s\S]{0,700}app\.ListProjectTree\(\)[\s\S]{0,700}app\.GetDesktopRoomPins[\s\S]{0,700}app\.GetDesktopRoomIcons/, "RoomsManager settles the Room tree and optional preference bindings independently");
 assert.match(component, /treeResult\.status === "rejected"[\s\S]{0,900}normalizeRoomPins\(pinsResult\.value\)[\s\S]{0,900}normalizeRoomIcons\(iconsResult\.value\)[\s\S]{0,900}setRows\(applyRoomIcons\(applyRoomPins\(roomRows\(treeResult\.value\), pins\), icons\)\)/, "RoomsManager keeps the authoritative tree when nil, missing, old or malformed preference bindings fall back to defaults");
-assert.match(component, /Room 设置加载失败（已使用默认值）/, "preference degradation remains explicit after the Room list recovers");
+assert.match(component, /t\("desktopIcon\.rooms\.settingsLoadFailed"/, "preference degradation remains explicit after the Room list recovers");
 assert.match(component, /app\.OpenTopicSession\(row\.scope, row\.workspaceRoot, row\.topicId, row\.sessionPath\)[\s\S]+onOpenRoom\(meta\.id\)/, "opening a Room activates the backend tab and exits the widget focused on it");
 assert.match(component, /const targetPinned = !row\.pinned;[\s\S]+app\.SetDesktopRoomPinned\(row\.topicId, targetPinned\)[\s\S]+await reload\(\)[\s\S]+await onChanged\(\)/, "Room pin toggles use the desktop-specific idempotent API, reload rows and refresh the snapshot");
 assert.match(component, /Array\.from\(\{ length: ROOM_PIN_LIMIT \}/, "the Room manager always renders seven pin slots");
 assert.match(component, /!row\.pinned && pinsFull/, "a full Room pin set disables only new pins so existing pins can be removed");
 assert.match(component, /app\.RenameTopic\(row\.topicId, renameTitle\(renameDraft\)\)/, "rename commits the raw input through the shared empty-title contract");
-assert.match(component, /留空恢复自动标题/, "the room rename editor explains the empty-title restore semantics");
+assert.match(component, /t\("desktopIcon\.rooms\.renameHint"\)/, "the room rename editor explains the empty-title restore semantics");
 assert.match(component, /deleteConfirmNext\(armed, row\.topicId\)[\s\S]+next\.confirmed\) void confirmTrash\(row\)/, "trash uses the two-step confirm state machine before calling the backend");
 assert.match(component, /app\.TrashTopic\(row\.topicId\)[\s\S]+setArmed\(null\)[\s\S]+await reload\(\)/, "trash calls the backend only on the confirmed step, then clears the arm and reloads");
 assert.doesNotMatch(component, /TrashTopic[\s\S]{0,60}setRows/, "trash never optimistically removes the row before the backend confirms");
 assert.match(component, /await app\.SetDesktopRoomIcon\(row\.topicId, icon\)[\s\S]{0,100}await reload\(\)[\s\S]{0,100}await onChanged\(\)[\s\S]{0,100}setIconEditing\(null\)/, "Room icon assignment persists, reloads and refreshes before closing the palette");
-assert.match(component, /默认 Room 图标[\s\S]{0,260}<WorkspaceMatteIcon icon="social" \/>[\s\S]{0,260}WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]{0,400}<WorkspaceMatteIcon icon=\{option\.key\}/, "Room icon palette previews the social matte default before the shared matte catalog");
+assert.match(component, /\{t\("desktopIcon\.rooms\.defaultIcon"\)\}[\s\S]{0,260}<WorkspaceMatteIcon icon="social" \/>[\s\S]{0,260}WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]{0,400}<WorkspaceMatteIcon icon=\{option\.key\}/, "Room icon palette previews the social matte default before the shared matte catalog");
 assert.match(component, /Keep the palette open[\s\S]{0,220}setError\(cause instanceof Error \? cause\.message : String\(cause\)\)/, "a Room icon failure keeps the palette open for retry");
 assert.match(component, /function RoomGlyph[\s\S]+isWorkspaceMatteIcon\(icon\)[\s\S]+default: return <WorkspaceMatteIcon icon="social" className=\{matteClassName\}/, "Room rows use the social matte asset by default while preserving configured matte and legacy icons");
 assert.match(component, /<RoomGlyph icon=\{row\.icon\}/, "Room rows and slots render their configured glyph instead of raw icon text");
 assert.match(component, /desktop-icon-popup__workspaces desktop-icon-popup__rooms/, "RoomsManager reuses the WorkspaceManager layout and marks its own popup root");
-assert.match(component, /onClick=\{onNewRoom\}>新增<\/button>/, "the Rooms header 新增 delegates to the root App coordination callback");
+assert.match(component, /onClick=\{onNewRoom\}>\{t\("desktopIcon\.rooms\.add"\)\}<\/button>/, "the Rooms header 新增 delegates to the root App coordination callback");
 assert.match(component, /writeRoomIconCount\(localStorage, count\);[\s\S]{0,100}onRoomIconCountChange\(count\)/, "the Rooms count persists before reflecting the new displayed count");
-assert.match(component, /catch \(cause\) \{[\s\S]{0,120}保存 Room 显示数量设置失败/, "a Room count persistence failure remains explicit and retryable in the manager");
+assert.match(component, /catch \(cause\) \{[\s\S]{0,120}t\("desktopIcon\.rooms\.countSaveFailed"/, "a Room count persistence failure remains explicit and retryable in the manager");
 assert.match(component, /writeRoomNotificationMode\(localStorage, mode\);[\s\S]{0,100}onNotificationModeChange\(mode\)/, "notification mode persists before the UI reflects it, so write failures keep the confirmed mode");
-assert.match(component, /role="radiogroup" aria-label="Room 消息提醒方式"[\s\S]{0,260}role="radio" aria-checked=\{notificationMode === "count"\}[\s\S]{0,260}role="radio" aria-checked=\{notificationMode === "popup"\}/, "Rooms exposes accessible count and popup notification choices as the only top settings row");
+assert.match(component, /role="radiogroup" aria-label=\{t\("desktopIcon\.rooms\.notificationAria"\)\}[\s\S]{0,260}role="radio" aria-checked=\{notificationMode === "count"\}[\s\S]{0,260}role="radio" aria-checked=\{notificationMode === "popup"\}/, "Rooms exposes accessible count and popup notification choices as the only top settings row");
 assert.match(component, /desktop-icon-popup__workspace-count desktop-icon-popup__room-count/, "the Rooms count selector reuses the workspace count layout and marks its own room-count modifier");
-assert.match(component, /aria-label="桌面 Room 显示数量"[\s\S]{0,300}Array\.from\(\{ length: ROOM_PIN_LIMIT \+ 1 \}, \(_, count\)[\s\S]{0,300}aria-pressed=\{roomIconCount === count\}[\s\S]{0,100}chooseRoomCount\(count\)/, "the Rooms manager exposes every desktop count from zero through seven");
-assert.match(component, /desktop-icon-popup__room-pins"[\s\S]*?desktop-icon-popup__room-count[\s\S]*?优先固定/, "the Room count selector sits in the pin area before the 优先固定 heading");
-assert.match(component, /固定优先，空位由其余 Room 按顺序补齐/, "the Room count control explains pinned priority and the authoritative fill order");
+assert.match(component, /aria-label=\{t\("desktopIcon\.rooms\.countAria"\)\}[\s\S]{0,300}Array\.from\(\{ length: ROOM_PIN_LIMIT \+ 1 \}, \(_, count\)[\s\S]{0,300}aria-pressed=\{roomIconCount === count\}[\s\S]{0,100}chooseRoomCount\(count\)/, "the Rooms manager exposes every desktop count from zero through seven");
+assert.match(component, /desktop-icon-popup__room-pins"[\s\S]*?desktop-icon-popup__room-count[\s\S]*?t\("desktopIcon\.workspace\.pinsHead"\)/, "the Room count selector sits in the pin area before the 优先固定 heading");
+assert.match(component, /t\("desktopIcon\.rooms\.countHint"\)/, "the Room count control explains pinned priority and the authoritative fill order");
 assert.match(component, /reconcileRoomPopups\(current, snapshot\.items, roomNotificationMode\)/, "each real snapshot advances the monotonic Room popup tracker");
 assert.match(component, /if \(!snapshotLoaded\) return/, "the placeholder snapshot never establishes popup history watermarks");
 assert.match(component, /activeID \|\| previewID \|\| menuID \|\| renamingID \|\| anchorMenuOpen \|\| quickOpen \|\| draggingID \|\| busy \|\| exiting/, "automatic Room popups wait while another interaction owns the widget");
@@ -1075,7 +1133,7 @@ assert.match(component, /item\.kind === "room"[\s\S]{0,180}<RoomGlyph icon=\{pro
 assert.match(component, /desktop-icon-popup__eyebrow--mention[\s\S]{0,180}notice\.title \|\| roomAttentionLabel\(attention\)/, "mention popup headings preserve the backend author-aware title and use the local label only as fallback");
 assert.match(component, /popupAttention \? "alertdialog"[\s\S]{0,300}aria-live=\{popupAttention \|\|/, "Room mention popups use assertive alertdialog semantics while ordinary messages remain polite");
 assert.match(component, /notice\.kind === "message" && \(item\.kind === "room" \|\| item\.kind === "person"\) && <button[\s\S]{0,160}run\("reply"/, "mention presentation preserves the Room reply action");
-assert.match(component, /notice\.kind === "message" && <button[\s\S]{0,160}run\("open"\)[\s\S]{0,80}>打开会话<\/button>/, "mention presentation preserves the open-conversation action");
+assert.match(component, /notice\.kind === "message" && <button[\s\S]{0,160}run\("open"\)[\s\S]{0,80}\{t\("desktopIcon\.notice\.openSession"\)\}<\/button>/, "mention presentation preserves the open-conversation action");
 assert.match(css, /\.desktop-icon-popup--mention[^}]*border-color:[^}]*box-shadow:/, "Room mention popups have a distinct high-attention visual treatment");
 
 // --- App coordination: monotonic signal, exit-before-open, tab-focus exit ---
@@ -1107,8 +1165,8 @@ assert.match(component, /const close = \(\) => closeTransient\(\);[\s\S]*?addEve
 assert.match(component, /const onPointerDown = \(event: PointerEvent\) => \{[\s\S]*if \(target\.closest\(TRANSIENT_PROTECTED_SELECTOR\)\) return;[\s\S]*closeTransient\(\);[\s\S]*document\.addEventListener\("pointerdown", onPointerDown\)/, "clicking the empty desktop or any container/grid/control gap closes every transient surface through the central close path");
 assert.match(component, /HIT_REGION_SELECTOR[^;]*desktop-icon-anchor-menu/, "the anchor menu joins the native hit-region reporting so the transparent window keeps it clickable");
 assert.match(component, /HIT_REGION_SELECTOR[^;]*desktop-icon-quick/, "the quick toolbar joins the native hit-region reporting so the transparent window keeps it clickable");
-assert.match(component, /\}, \[activeID, menuID, previewID, snapshot\.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems, roomIconCount, surfaceGeneration, overlayReadyKey\]\);/, "hit-region refresh reruns after native surface generations change and after an already-expanded surface mounts a new popup");
-assert.match(component, /SetDesktopIconHitRegions\(\{ rects, generation: surfaceGeneration \}\)/, "hit regions are tied to the surface generation whose coordinates they use");
+assert.match(component, /\}, \[activeID, menuID, previewID, snapshot\.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems, roomIconCount, surfaceGeometry, overlayReadyKey\]\);/, "hit-region refresh reruns after authoritative native geometry changes and after an already-expanded surface mounts a new popup");
+assert.match(component, /SetDesktopIconHitRegions\(\{ rects, surface: surfaceGeometry \}\)/, "hit regions are tied to the authoritative surface geometry whose coordinates they use");
 assert.match(component, /\.desktop-icon-menu, \.desktop-icon-toast, \.desktop-icon-anchor-menu, \.desktop-icon-quick/, "the quick toolbar gets the same shadow padding in native hit regions");
 assert.match(css, /\.desktop-icon-anchor-menu\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the anchor menu never inherits the window drag region");
 assert.match(css, /\.desktop-icon-collapse, \.desktop-icon, \.desktop-icon-popup, \.desktop-icon-menu, \.desktop-icon-anchor-menu, \.desktop-icon-quick, \.desktop-icon-toast\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the shared interactive-controls rule covers the anchor menu and quick toolbar");
@@ -1445,13 +1503,54 @@ assert.equal(
   assert.match(mode, /void run\(item, "open"\)/, "run(item, \"open\") path unchanged");
   assert.match(mode, /item\.kind === "fixed" \? openItem\(item\) : void run\(item, "open"\)/, "menu open path unchanged");
   assert.match(mode, /item\.retained \|\| item\.kind === "person"/, "personal IM rows expose the same remove menu action as retained session icons");
-  assert.match(mode, /item\.kind === "person" && <button disabled=\{busy\} className="danger" onClick=\{\(\) => run\("remove"\)\}>移除<\/button>/, "personal IM popup exposes an explicit remove action");
+  assert.match(mode, /item\.kind === "person" && <button disabled=\{busy\} className="danger" onClick=\{\(\) => run\("remove"\)\}>\{t\("desktopIcon\.remove"\)\}<\/button>/, "personal IM popup exposes an explicit remove action");
 }
 
 // bridge 快照类型携带 Agent Icon 展示字段（稳定身份、显式外观、workspace/ref）。
 {
   const bridge = readFileSync(resolve(testDir, "../lib/bridge.ts"), "utf8");
   assert.match(bridge, /sessionId\?: string;\s*\n\s*appearanceSeed\?: string;\s*\n\s*workspaceIcon\?: string;[\s\S]{0,120}sessionRef\?: DesktopIconTaskRef;/, "DesktopIconItem exposes the Agent Icon display fields");
+}
+
+// --- Desktop Icon Mode i18n 契约：English 模式下固定入口标题与确定性弹窗/
+// 菜单文案必须走 typed locale 字典，禁止把后端的硬编码中文标题直接渲染出来。
+// 该回归直接对应截图问题：English 模式出现中文“新建/助手/委托/搜索”。---
+{
+  const en = readFileSync(resolve(testDir, "../locales/en.ts"), "utf8");
+  const zh = readFileSync(resolve(testDir, "../locales/zh.ts"), "utf8");
+  const zhTW = readFileSync(resolve(testDir, "../locales/zh-TW.ts"), "utf8");
+  const mode = readFileSync(resolve(testDir, "../components/widget/DesktopIconMode.tsx"), "utf8");
+  // English fixed labels come from the dictionary, not from the backend snapshot.
+  assert.match(en, /"desktopIcon\.fixed\.new": "New"/, "English dictionary localizes the New fixed icon");
+  assert.match(en, /"desktopIcon\.fixed\.workspace": "Workspace"/, "English dictionary localizes the Workspace fixed icon");
+  assert.match(en, /"desktopIcon\.fixed\.delegate": "Delegation"/, "English dictionary localizes the Delegation fixed icon");
+  assert.match(en, /"desktopIcon\.fixed\.search": "Search"/, "English dictionary localizes the Search fixed icon");
+  assert.match(en, /"desktopIcon\.fixed\.assistant": "Assistant"/, "English dictionary localizes the Assistant fixed icon");
+  assert.match(en, /"desktopIcon\.fixed\.dsh": "DSH"/, "English dictionary keeps the DSH fixed icon");
+  // Representative Rooms popup actions/settings are English too.
+  assert.match(en, /"desktopIcon\.open": "Open"/, "English dictionary localizes the Open action");
+  assert.match(en, /"desktopIcon\.rename": "Rename"/, "English dictionary localizes the Rename action");
+  assert.match(en, /"desktopIcon\.rooms\.trash": "Move to Trash"/, "English dictionary localizes the Rooms trash action");
+  assert.match(en, /"desktopIcon\.rooms\.confirmTrash": "Confirm move"/, "English dictionary localizes the Rooms confirm-trash action");
+  assert.match(en, /"desktopIcon\.rooms\.notificationCount": "Count"/, "English dictionary localizes the Rooms notification Count choice");
+  assert.match(en, /"desktopIcon\.rooms\.notificationPopup": "Popup"/, "English dictionary localizes the Rooms notification Popup choice");
+  // zh and zh-TW carry the same key set with real translations (type layer enforces exact keys).
+  assert.match(zh, /"desktopIcon\.fixed\.new": "新建"/, "Simplified Chinese keeps the New fixed icon meaning");
+  assert.match(zhTW, /"desktopIcon\.fixed\.new": "新增"/, "Traditional Chinese localizes the New fixed icon");
+  // Fixed titles render through the source-id mapping, never the backend title.
+  assert.match(mode, /const FIXED_ICON_TITLE_KEYS: Record<string, DictKey> = \{[\s\S]{0,60}new: "desktopIcon\.fixed\.new"[\s\S]{0,120}workspace: "desktopIcon\.fixed\.workspace"[\s\S]{0,120}rooms: "desktopIcon\.fixed\.rooms"[\s\S]{0,120}assistant: "desktopIcon\.fixed\.assistant"[\s\S]{0,120}delegate: "desktopIcon\.fixed\.delegate"[\s\S]{0,120}search: "desktopIcon\.fixed\.search"[\s\S]{0,120}dsh: "desktopIcon\.fixed\.dsh"/, "fixed entries map every stable source id to a localized title key");
+  assert.match(mode, /function iconTitle\(item: DesktopIconItem\): string \{[\s\S]{0,160}item\.kind === "fixed"/, "fixed entries render the localized title instead of the backend snapshot title");
+  assert.match(mode, /<span className="desktop-icon__label">\{iconTitle\(item\)\}<\/span>/, "the visible icon label uses the localized fixed title");
+  assert.match(mode, /if \(item\.kind === "fixed"\) return iconTitle\(item\);/, "the hover preview shows the localized fixed title");
+  assert.doesNotMatch(mode, /desktop-icon__label">\{item\.title\}/, "the visible label never renders the raw snapshot title");
+  assert.match(mode, /aria-label=\{t\("desktopIcon\.iconAria", \{ title: iconTitle\(item\), text: previewText\(item\) \}\)\}/, "icon aria/title text uses the localized fixed title");
+  // Rooms manager actions route through the typed keys.
+  assert.match(mode, /desktop-icon-popup__room-open[\s\S]{0,200}t\("desktopIcon\.open"\)/, "the Rooms open action uses the localized label");
+  assert.match(mode, /t\("desktopIcon\.rooms\.trash"\)/, "the Rooms trash action uses the localized label");
+  assert.match(mode, /t\("desktopIcon\.rooms\.notificationCount"\)[\s\S]{0,200}t\("desktopIcon\.rooms\.notificationPopup"\)/, "the Rooms notification choices use the localized labels");
+  // Regression guard: the widget source must not re-introduce the backend's
+  // hardcoded Chinese fixed titles (新建/工作区/助手/委托/搜索) as UI copy.
+  assert.doesNotMatch(mode.replace(/\/\/[^\n]*/g, ""), /(新建|工作区|助手|委托|搜索|DSH 未就绪|正在运行的委托)/, "no hardcoded Chinese fixed-title or delegation copy remains in the widget source (comments stripped)");
 }
 
 console.log("desktop icon mode tests passed");

@@ -139,6 +139,26 @@ console.log("\n── Running count includes CLI sessions ──\n");
     running?.dispatchEvent(new dom.window.MouseEvent("mouseover", { bubbles: true }));
   });
   eq(container.querySelectorAll(".session-status-popup__row").length, 2, "hover tip lists only running sessions");
+
+  act(() => {
+    running?.dispatchEvent(new dom.window.MouseEvent("mouseout", { bubbles: true }));
+  });
+  eq(container.querySelectorAll(".session-status-popup__row").length, 2, "mouse leave keeps the running list open during the click grace period");
+
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  });
+  eq(container.querySelectorAll(".session-status-popup__row").length, 0, "running list closes after the mouse-leave delay");
+
+  act(() => {
+    running?.dispatchEvent(new dom.window.MouseEvent("mouseover", { bubbles: true }));
+    running?.dispatchEvent(new dom.window.MouseEvent("mouseout", { bubbles: true }));
+    running?.dispatchEvent(new dom.window.MouseEvent("mouseover", { bubbles: true }));
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  });
+  eq(container.querySelectorAll(".session-status-popup__row").length, 2, "moving back before the delay cancels the scheduled close");
 }
 
 console.log("\n── Running indicator hidden at 0 ──\n");
@@ -293,7 +313,7 @@ console.log("\n── CSS classes exist ──\n");
   ok(styles.includes("--attention"), "attention variant class defined");
   ok(styles.includes("session-status-popup"), "popup class defined");
   ok(styles.includes(".session-status-indicator__dot"), "running control uses the reference status dot");
-  ok(styles.includes("right: 0"), "running tip opens inward from the right edge");
+  ok(styles.includes("right: -24px"), "running tip shifts right to make its rows easier to reach");
   ok(styles.includes(":disabled"), "disabled state defined");
 }
 

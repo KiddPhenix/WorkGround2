@@ -20,8 +20,8 @@ assert.deepEqual(
 assert.deepEqual(normalizeRoomPins({ TopicIDs: [" old-a ", "old-a", "old-b"] }), ["old-a", "old-b"], "old Wails state wrappers remain readable");
 assert.deepEqual(normalizeRoomIcons(null), {}, "a nil Go icon map falls back to default glyphs");
 assert.deepEqual(normalizeRoomIcons({ Icons: { room: "python" } }), { room: "python" }, "old icon state wrappers remain readable");
-assert.throws(() => normalizeRoomPins({ topicIds: [1] }), /非字符串 ID/, "malformed pin payloads remain explicit");
-assert.throws(() => normalizeRoomIcons({ room: 1 }), /图标设置格式无效/, "malformed icon payloads remain explicit");
+assert.throws(() => normalizeRoomPins({ topicIds: [1] }), /non-string ID/, "malformed pin payloads remain explicit (localized, test env defaults to English)");
+assert.throws(() => normalizeRoomIcons({ room: 1 }), /Invalid icon format/, "malformed icon payloads remain explicit (localized, test env defaults to English)");
 assert.deepEqual(roomRows({ Nodes: [{ Kind: "global_topic", Label: "旧 Room", TopicID: "old-room", SessionKind: "collaboration", SessionPath: "/rooms/old.jsonl" }] }), [
   { topicId: "old-room", label: "旧 Room", pinned: false, icon: "", scope: "global", workspaceRoot: "", sessionPath: "/rooms/old.jsonl" },
 ], "old Wails ProjectNode field casing is normalized at the Room list boundary");

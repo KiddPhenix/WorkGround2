@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { AnchoredPopover } from "../AnchoredPopover";
+import { useT, type DictKey } from "../../lib/i18n";
 import type { ArtifactRecord, ArtifactStatus } from "../../store/artifacts";
 
 // ── Props ──────────────────────────────────────────────────────────────────
@@ -80,13 +81,17 @@ function groupArtifacts(artifacts: ArtifactRecord[]): ArtifactGroups {
 
 // ── Status helpers ─────────────────────────────────────────────────────────
 
-const STATUS_LABEL: Record<ArtifactStatus, string> = {
-  generating: "生成中",
-  available: "可用",
-  stale: "可能已过期",
-  missing: "文件不存在",
-  failed: "生成失败",
+const STATUS_LABEL_KEYS: Record<ArtifactStatus, DictKey> = {
+  generating: "artifact.status.generating",
+  available: "artifact.status.available",
+  stale: "artifact.status.stale",
+  missing: "artifact.status.missing",
+  failed: "artifact.status.failed",
 };
+
+function statusLabel(status: ArtifactStatus, t: ReturnType<typeof useT>): string {
+  return t(STATUS_LABEL_KEYS[status]);
+}
 
 function statusIcon(status: ArtifactStatus, size = 14): React.ReactNode {
   switch (status) {
@@ -161,6 +166,7 @@ function typeIcon(type: string, size = 20): React.ReactNode {
 // ── ArtifactItem (preserved — used on shelf) ────────────────────────────────
 
 export function ArtifactItem({ artifact, onOpen, onRevalidate, onRegenerate }: ArtifactItemProps) {
+  const t = useT();
   const canOpen = artifact.status === "available";
   const showStatus = artifact.status !== "available";
   const statusActions: React.ReactNode[] = [];
@@ -170,7 +176,7 @@ export function ArtifactItem({ artifact, onOpen, onRevalidate, onRegenerate }: A
         <ActionButton
           key="revalidate"
           icon={<RefreshCw size={12} />}
-          label="重新校验"
+          label={t("artifact.revalidate")}
           onClick={() => onRevalidate(artifact.artifactId)}
         />
       );
@@ -180,7 +186,7 @@ export function ArtifactItem({ artifact, onOpen, onRevalidate, onRegenerate }: A
         <ActionButton
           key="regenerate"
           icon={<RefreshCw size={12} />}
-          label="重新生成"
+          label={t("artifact.regenerate")}
           onClick={() => onRegenerate(artifact.artifactId)}
         />
       );
@@ -191,7 +197,7 @@ export function ArtifactItem({ artifact, onOpen, onRevalidate, onRegenerate }: A
       <ActionButton
         key="regenerate"
         icon={<RefreshCw size={12} />}
-        label="重新生成"
+        label={t("artifact.regenerate")}
         onClick={() => onRegenerate(artifact.artifactId)}
       />
     );
@@ -201,7 +207,7 @@ export function ArtifactItem({ artifact, onOpen, onRevalidate, onRegenerate }: A
       <ActionButton
         key="regenerate"
         icon={<RefreshCw size={12} />}
-        label="重新生成"
+        label={t("artifact.regenerate")}
         onClick={() => onRegenerate(artifact.artifactId)}
       />
     );
@@ -214,7 +220,7 @@ export function ArtifactItem({ artifact, onOpen, onRevalidate, onRegenerate }: A
       <span className="artifact-item__name" title={artifact.name}>{artifact.name}</span>
       {showStatus && <span className="artifact-item__status-badge">
         {statusIcon(artifact.status, 14)}
-        <span className="artifact-item__status-label">{STATUS_LABEL[artifact.status]}</span>
+        <span className="artifact-item__status-label">{statusLabel(artifact.status, t)}</span>
       </span>}
     </>
   );
@@ -223,20 +229,20 @@ export function ArtifactItem({ artifact, onOpen, onRevalidate, onRegenerate }: A
     <div
       className={`artifact-item artifact-item--${artifact.status}${actionable ? " artifact-item--actionable" : ""}`}
       role="listitem"
-      aria-label={`${artifact.name} — ${STATUS_LABEL[artifact.status]}`}
+      aria-label={`${artifact.name} — ${statusLabel(artifact.status, t)}`}
     >
       {canOpen && onOpen ? (
         <button
           type="button"
           className="artifact-item__primary"
-          aria-label={`打开 ${artifact.name}`}
+          aria-label={t("artifact.open", { name: artifact.name })}
           onClick={() => onOpen(artifact.artifactId)}
         >
           {content}
         </button>
       ) : <span className="artifact-item__primary">{content}</span>}
       {statusActions.length > 0 && (
-        <span className="artifact-item__actions" aria-label={`${artifact.name} 操作`}>
+        <span className="artifact-item__actions" aria-label={t("artifact.actions", { name: artifact.name })}>
           {statusActions}
         </span>
       )}
@@ -257,6 +263,7 @@ export function ArtifactItem({ artifact, onOpen, onRevalidate, onRegenerate }: A
  * This is a pure presentational primitive — it does NOT subscribe to stores.
  */
 export function ArtifactShelf({ artifacts, onOpen, onRevalidate, onRegenerate }: ArtifactShelfProps) {
+  const t = useT();
   const groups = useMemo(() => groupArtifacts(artifacts), [artifacts]);
   const { active, historical } = groups;
   const total = artifacts.length;
@@ -271,12 +278,12 @@ export function ArtifactShelf({ artifacts, onOpen, onRevalidate, onRegenerate }:
     <div
       className="artifact-shelf"
       role="region"
-      aria-label={`产物架 — ${total} 项`}
+      aria-label={t("artifact.shelfAria", { n: total })}
     >
-      <span className="artifact-shelf__count">产物 {total}</span>
+      <span className="artifact-shelf__count">{t("artifact.shelfCount", { n: total })}</span>
 
       {total === 0 && (
-        <span className="artifact-shelf__empty">暂无产物</span>
+        <span className="artifact-shelf__empty">{t("artifact.empty")}</span>
       )}
 
       {total > 0 && (
@@ -284,17 +291,17 @@ export function ArtifactShelf({ artifacts, onOpen, onRevalidate, onRegenerate }:
           ref={allBtnRef}
           type="button"
           className="artifact-shelf__all-btn"
-          aria-label="查看全部产物"
+          aria-label={t("artifact.viewAllAria")}
           aria-haspopup="dialog"
           aria-expanded={popoverOpen}
           onClick={() => setPopoverOpen((v) => !v)}
         >
-          全部
+          {t("artifact.viewAll")}
         </button>
       )}
 
       {total > 0 && (
-        <div className="artifact-shelf__recent" role="list" aria-label="最近产物">
+        <div className="artifact-shelf__recent" role="list" aria-label={t("artifact.recent")}>
           {shelfItems.map((art) => (
             <ArtifactItem
               key={art.artifactId}
@@ -349,6 +356,7 @@ function ArtifactPopoverContent({
   onRegenerate?: (artifactId: string) => void;
   onClose: () => void;
 }) {
+  const t = useT();
   const total = active.length + historical.length;
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
@@ -373,13 +381,13 @@ function ArtifactPopoverContent({
   const showSearch = total > POPOVER_SEARCH_THRESHOLD;
 
   return (
-    <div className="artifact-popover__wrap" role="dialog" aria-label="全部产物">
+    <div className="artifact-popover__wrap" role="dialog" aria-label={t("artifact.popover.aria")}>
       <div className="artifact-popover__head">
-        <span className="artifact-popover__title">全部产物 · {total}</span>
+        <span className="artifact-popover__title">{t("artifact.popover.title", { n: total })}</span>
         <button
           type="button"
           className="artifact-popover__close"
-          aria-label="关闭"
+          aria-label={t("common.close")}
           onClick={onClose}
         >
           <X size={14} />
@@ -393,7 +401,7 @@ function ArtifactPopoverContent({
             <input
               type="text"
               className="artifact-popover__search-input"
-              placeholder="搜索名称、路径或类型…"
+              placeholder={t("artifact.searchPlaceholder")}
               value={search}
               onInput={(e) => setSearch(e.currentTarget.value)}
             />
@@ -401,7 +409,7 @@ function ArtifactPopoverContent({
               <button
                 type="button"
                 className="artifact-popover__search-clear"
-                aria-label="清除搜索"
+                aria-label={t("artifact.clearSearchAria")}
                 onClick={() => setSearch("")}
               >
                 <X size={12} />
@@ -415,9 +423,9 @@ function ArtifactPopoverContent({
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value)}
             >
-              <option value="">全部类型</option>
-              {availableTypes.map((t) => (
-                <option key={t} value={t}>{t}</option>
+              <option value="">{t("artifact.typeAll")}</option>
+              {availableTypes.map((type) => (
+                <option key={type} value={type}>{type}</option>
               ))}
             </select>
           </div>
@@ -427,7 +435,7 @@ function ArtifactPopoverContent({
       <div className="artifact-popover__list">
         {filteredActive.length > 0 && (
           <>
-            <div className="artifact-popover__group-title">可用 / 进行中</div>
+            <div className="artifact-popover__group-title">{t("artifact.groupActive")}</div>
             {filteredActive.map((a) => (
               <PopoverItem
                 key={a.artifactId}
@@ -442,7 +450,7 @@ function ArtifactPopoverContent({
 
         {filteredHistorical.length > 0 && (
           <>
-            <div className="artifact-popover__group-title">历史</div>
+            <div className="artifact-popover__group-title">{t("artifact.groupHistorical")}</div>
             {filteredHistorical.map((a) => (
               <PopoverItem
                 key={a.artifactId}
@@ -458,8 +466,8 @@ function ArtifactPopoverContent({
         {filteredTotal === 0 && (
           <div className="artifact-popover__empty">
             {search || typeFilter
-              ? "没有匹配的产物"
-              : "暂无产物"}
+              ? t("artifact.emptyFiltered")
+              : t("artifact.empty")}
           </div>
         )}
       </div>
@@ -495,6 +503,7 @@ function PopoverItem({
   onRevalidate?: (artifactId: string) => void;
   onRegenerate?: (artifactId: string) => void;
 }) {
+  const t = useT();
   const canOpen = artifact.status === "available" && Boolean(onOpen);
   const Tag = canOpen ? "button" : "span";
   const props = canOpen
@@ -520,21 +529,21 @@ function PopoverItem({
       </span>
       <span className="artifact-popover__item-status">
         {statusIcon(artifact.status, 12)}
-        <span>{STATUS_LABEL[artifact.status]}</span>
+        <span>{statusLabel(artifact.status, t)}</span>
       </span>
       {(artifact.status === "stale" || artifact.status === "missing" || artifact.status === "failed") && (
-        <span className="artifact-popover__item-actions" aria-label={`${artifact.name} 操作`}>
+        <span className="artifact-popover__item-actions" aria-label={t("artifact.actions", { name: artifact.name })}>
           {artifact.status === "stale" && onRevalidate && (
             <ActionButton
               icon={<RefreshCw size={12} />}
-              label="重新校验"
+              label={t("artifact.revalidate")}
               onClick={() => onRevalidate(artifact.artifactId)}
             />
           )}
           {onRegenerate && (
             <ActionButton
               icon={<RefreshCw size={12} />}
-              label="重新生成"
+              label={t("artifact.regenerate")}
               onClick={() => onRegenerate(artifact.artifactId)}
             />
           )}

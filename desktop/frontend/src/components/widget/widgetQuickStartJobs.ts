@@ -59,6 +59,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { DesktopIconItem, WidgetConversationInput, WidgetConversationResult } from "../../lib/bridge";
+import { t } from "../../lib/i18n";
 import { startWidgetConversationWithRetry } from "./startWidgetConversation";
 
 export const QUICK_JOBS_KEY = "wg2.icon-widget-jobs";
@@ -493,7 +494,7 @@ export function quickStartJobPromptLabel(intent: QuickStartJobIntent): string {
 }
 
 export function quickStartJobWorkspaceLabel(workspace: string): string {
-	if (!workspace || workspace === "auto") return "自动";
+	if (!workspace || workspace === "auto") return t("desktopIcon.workspaceAuto");
 	if (workspace === "global") return "Global";
 	const root = workspace.startsWith("project:") ? workspace.slice("project:".length) : workspace;
 	const parts = root.split(/[/\\]/).filter(Boolean);
@@ -504,7 +505,7 @@ export function quickStartJobWorkspaceLabel(workspace: string): string {
 // icon must announce: the accepted phase still means the backend turn is
 // running, so it reads as 后台发送中 alongside the still-in-flight phase.
 export function quickStartJobStateLabel(item: DesktopIconItem): string {
-	return item.status === "failed" ? "发送失败，可重试" : "后台发送中";
+	return item.status === "failed" ? t("desktopIcon.job.stateFailed") : t("desktopIcon.job.stateSubmitting");
 }
 
 // quickStartJobItem projects one job onto the shared icon model. The stable
@@ -815,7 +816,7 @@ export function createQuickStartJobRunner(options: QuickStartJobRunnerOptions): 
 					return {
 						...current,
 						phase: "failed",
-						error: result.error || "发起失败，可安全重试",
+						error: result.error || t("desktopIcon.job.failedRetry"),
 						updatedAt: now(),
 					};
 				});
@@ -854,7 +855,7 @@ export function createQuickStartJobRunner(options: QuickStartJobRunnerOptions): 
 		},
 		submit(intent, opts) {
 			const prompt = intent.prompt.trim();
-			if (!prompt) return { ok: false, error: "请输入对话内容" };
+			if (!prompt) return { ok: false, error: t("desktopIcon.job.promptRequired") };
 			const requestId = quickStartJobRequestId("icon-new");
 			const job: QuickStartJob = {
 				requestId,
@@ -897,7 +898,7 @@ export function createQuickStartJobRunner(options: QuickStartJobRunnerOptions): 
 			if (current.phase === "running" || (current.phase === "accepted" && !current.tabId)) return false;
 			const result = commit({ kind: "remove", requestId }, false);
 			if (result.error || jobs[requestId]) {
-				reportStorageError(`删除失败：${result.error ?? "存储不可用"}`, "dismiss");
+				reportStorageError(t("desktopIcon.job.dismissFailed", { detail: result.error ?? t("desktopIcon.job.storageUnavailable") }), "dismiss");
 				return false;
 			}
 			return true;

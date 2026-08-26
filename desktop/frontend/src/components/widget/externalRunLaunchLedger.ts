@@ -1,3 +1,5 @@
+import { t } from "../../lib/i18n";
+
 export const EXTERNAL_RUN_LAUNCH_KEY = "wg2.external-run-launch-v1";
 
 export interface ExternalRunLaunchPacket {
@@ -41,7 +43,7 @@ export function prepareExternalRunLaunch(
 ): ExternalRunLaunchPacket {
 	workspace = workspace.trim();
 	prompt = prompt.trim();
-	if (!prompt) throw new Error("请输入 DSH 任务");
+	if (!prompt) throw new Error(t("desktopIcon.dsh.promptRequired"));
 	const current = readExternalRunLaunch(storage);
 	if (current && sameExternalRunIntent(current, workspace, prompt)) return current;
 	const packet: ExternalRunLaunchPacket = { version: 1, requestId: newRequestId(), workspace, prompt };

@@ -30,10 +30,10 @@ import {
   assistantApplyMemory,
   assistantCancel,
   assistantCreate,
-  assistantCreateWorkspace,
   assistantDelete,
   assistantGet,
   assistantList,
+  assistantListWorkspaces,
   assistantPickWorkspace,
   assistantPutChannel,
   assistantPutRoutine,
@@ -63,6 +63,7 @@ import {
   type AssistantSnapshot,
 } from "./assistant.types";
 import "./assistant.css";
+import type { ProjectNode } from "../../../lib/types";
 
 type ManageTab = "overview" | "routines" | "memory" | "channels" | "proposals" | "history" | "attention" | "plan";
 
@@ -1012,11 +1013,12 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
     createdAt: new Date().toISOString(),
   }));
   const [picking, setPicking] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const workspaceOp = useRef<"pick" | "create" | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createParent, setCreateParent] = useState("");
-  const [createName, setCreateName] = useState("");
+  const workspaceOp = useRef(false);
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const [chooserLoading, setChooserLoading] = useState(false);
+  const [chooserError, setChooserError] = useState("");
+  const [workspaceChoices, setWorkspaceChoices] = useState<Array<{ root: string; label: string }>>([]);
+  const chooserGeneration = useRef(0);
   useEffect(() => { nameRef.current?.focus(); }, []);
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
@@ -1047,54 +1049,62 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
     setLearnFirst(true);
   };
 
-  const pickDirectory = async (defaultDir: string): Promise<string | null> => {
-    if (workspaceOp.current) return null;
-    workspaceOp.current = "pick";
+  // "从文件夹新建": the native folder picker creates or picks any directory;
+  // an empty result means the user canceled, so the current value is kept.
+  const pickWorkspace = async () => {
+    if (workspaceOp.current || chooserOpen) return;
+    workspaceOp.current = true;
     setPicking(true);
     try {
-      return await assistantPickWorkspace(defaultDir);
+      const picked = await assistantPickWorkspace(workspace);
+      if (picked && picked.trim()) setWorkspace(picked.trim());
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : copy.error, "error");
-      return null;
     } finally {
-      workspaceOp.current = null;
+      workspaceOp.current = false;
       setPicking(false);
     }
   };
 
-  const pickWorkspace = async () => {
-    const picked = await pickDirectory(workspace);
-    if (picked) setWorkspace(picked);
-  };
-
-  const pickCreateParent = async () => {
-    const picked = await pickDirectory(createParent);
-    if (picked) setCreateParent(picked);
-  };
-
-  const openCreate = () => {
-    setCreateParent(workspace.trim() ? workspace : "");
-    setCreateName("");
-    setCreateOpen(true);
-  };
-
-  const createWorkspace = async () => {
-    if (workspaceOp.current) return;
-    const parent = createParent.trim();
-    const name = createName.trim();
-    if (!parent || !name) return;
-    workspaceOp.current = "create";
-    setCreating(true);
+  // "选择已有工作区": pick a registered project workspace from ListProjectTree.
+  // The generation guard drops late responses after the chooser closes or a
+  // newer load starts, so they can never overwrite a later selection state.
+  const loadWorkspaces = async () => {
+    const gen = ++chooserGeneration.current;
+    setChooserLoading(true);
+    setChooserError("");
     try {
-      const created = await assistantCreateWorkspace(parent, name);
-      setWorkspace(created);
-      setCreateOpen(false);
+      const tree = await assistantListWorkspaces();
+      if (chooserGeneration.current !== gen) return;
+      setWorkspaceChoices(
+        tree
+          .filter((node): node is ProjectNode & { root: string } => node.kind === "project" && Boolean(node.root))
+          .map((node) => ({ root: node.root, label: node.label || node.root })),
+      );
     } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : copy.error, "error");
+      if (chooserGeneration.current !== gen) return;
+      setChooserError(cause instanceof Error ? cause.message : copy.error);
     } finally {
-      workspaceOp.current = null;
-      setCreating(false);
+      if (chooserGeneration.current === gen) setChooserLoading(false);
     }
+  };
+
+  const openChooser = () => {
+    if (workspaceOp.current) return;
+    setChooserOpen(true);
+    setWorkspaceChoices([]);
+    void loadWorkspaces();
+  };
+
+  const closeChooser = () => {
+    chooserGeneration.current += 1;
+    setChooserOpen(false);
+  };
+
+  const chooseWorkspace = (root: string) => {
+    if (workspaceOp.current) return;
+    setWorkspace(root);
+    closeChooser();
   };
 
   const generalRoutineSchedule = (): AssistantRoutine["schedule"] => {
@@ -1191,26 +1201,38 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
             <div className="assistant-create__workspace">
               <label>{copy.workspace}<input id="assistant-workspace-input" value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="D:\\Work\\Project" /></label>
               <div className="assistant-create__workspace-actions">
-                <button className="assistant-button" type="button" disabled={picking || creating} onClick={() => void pickWorkspace()} aria-label={copy.workspacePick}>{picking ? <RefreshCw className="assistant-spin" size={14} /> : <FolderOpen size={14} />}{copy.workspacePick}</button>
-                <button className="assistant-button" type="button" disabled={picking || creating} onClick={openCreate} aria-label={copy.workspaceNew}><Plus size={14} />{copy.workspaceNew}</button>
+                <button className="assistant-button" type="button" disabled={Boolean(workspaceOp.current) || picking || chooserOpen} onClick={openChooser} aria-label={copy.workspacePick}><FolderOpen size={14} />{copy.workspacePick}</button>
+                <button className="assistant-button" type="button" disabled={Boolean(workspaceOp.current) || chooserOpen} onClick={() => void pickWorkspace()} aria-label={copy.workspaceNew}>{picking ? <RefreshCw className="assistant-spin" size={14} /> : <Plus size={14} />}{copy.workspaceNew}</button>
               </div>
-              {createOpen && (
-                <div className="assistant-create__new-workspace" role="group" aria-label={copy.workspaceNew}>
-                  <div className="assistant-create__new-workspace-field">
-                    <span>{copy.workspaceNewParent}</span>
-                    <span className="assistant-create__new-workspace-row">
-                      <input id="assistant-new-parent" value={createParent} onChange={(event) => setCreateParent(event.target.value)} placeholder="D:\\Work" />
-                      <button className="assistant-button" type="button" disabled={picking || creating} onClick={() => void pickCreateParent()} aria-label={copy.workspacePick}>{copy.workspacePick}</button>
-                    </span>
-                  </div>
-                  <div className="assistant-create__new-workspace-field">
-                    <span>{copy.workspaceNewName}</span>
-                    <input id="assistant-new-name" value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder={copy.workspaceNewNamePlaceholder} />
-                  </div>
-                  <div className="assistant-create__new-workspace-actions">
-                    <button className="assistant-button" type="button" disabled={creating} onClick={() => setCreateOpen(false)}>{copy.cancel}</button>
-                    <button className="assistant-button assistant-button--accent" type="button" disabled={picking || creating || !createParent.trim() || !createName.trim()} onClick={() => void createWorkspace()}>{creating && <RefreshCw className="assistant-spin" size={14} />}{copy.workspaceNewCreate}</button>
-                  </div>
+              {chooserOpen && (
+                <div className="assistant-create__workspace-chooser" role="group" aria-label={copy.workspaceChooseTitle} aria-busy={chooserLoading}>
+                  <header>
+                    <strong>{copy.workspaceChooseTitle}</strong>
+                    <button className="assistant-icon-button" type="button" aria-label={copy.close} onClick={closeChooser}><X size={15} /></button>
+                  </header>
+                  <p>{copy.workspaceChooseBody}</p>
+                  {chooserLoading ? (
+                    <p className="assistant-create__workspace-chooser-note"><RefreshCw className="assistant-spin" size={13} />{copy.workspaceChooseLoading}</p>
+                  ) : chooserError ? (
+                    <p className="assistant-create__workspace-chooser-note assistant-create__workspace-chooser-error" role="alert">
+                      <AlertCircle size={13} />{copy.workspaceChooseFailed}: {chooserError}
+                      <button className="assistant-text-action" type="button" onClick={() => void loadWorkspaces()}>{copy.retry}</button>
+                    </p>
+                  ) : workspaceChoices.length === 0 ? (
+                    <p className="assistant-create__workspace-chooser-note">{copy.workspaceChooseEmpty}</p>
+                  ) : (
+                    <ul className="assistant-create__workspace-chooser-list">
+                      {workspaceChoices.map((choice) => (
+                        <li key={choice.root}>
+                          <button className="assistant-create__workspace-choice" type="button" onClick={() => chooseWorkspace(choice.root)}>
+                            <span className="assistant-create__workspace-choice-label">{choice.label}</span>
+                            <span className="assistant-create__workspace-choice-path">{choice.root}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="assistant-create__workspace-chooser-hint">{copy.workspaceNewHint}</p>
                 </div>
               )}
             </div>

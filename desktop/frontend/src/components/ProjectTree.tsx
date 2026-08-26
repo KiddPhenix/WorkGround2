@@ -9,7 +9,7 @@ import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app, onUnreadState } from "../lib/bridge";
 import type { ProjectNode, ProjectTopicRuntimeHint, ProjectTopicStatus, ResolvedSession, UnreadConversation, UnreadState } from "../lib/types";
-import { topicActivityTime } from "../lib/session";
+import { localizedSessionTitle, topicActivityTime } from "../lib/session";
 import { getLocale, useT, type DictKey, type Translator } from "../lib/i18n";
 import { PROJECT_COLOR_OPTIONS, projectColorValue } from "../lib/projectColors";
 import { PROJECT_ICON_OPTIONS, projectIconKey, type ProjectIconKey } from "../lib/projectIcons";
@@ -1557,7 +1557,8 @@ export function ProjectTree({
       const scopeClass = scope === "global" ? " project-tree__topic--global" : " project-tree__topic--project";
       const accentStyle = isCrewSessionNode(node) ? undefined : projectAccentStyle(node.projectColor, scope === "global" ? "var(--project-tree-global-accent)" : undefined);
       const active = section !== "recent" && key === activeRowKey;
-      const label = (node.label || node.topicId || "Untitled").replace(/^●\s*/, "");
+      const renameLabel = (node.label || node.topicId || "Untitled").replace(/^●\s*/, "");
+      const label = localizedSessionTitle(renameLabel, node.titleSource, "Untitled", t);
       const activityAt = node.lastActivityAt || node.createdAt || 0;
       const sideTimeVisible = compactTopics || creationTopics;
       const timeLabel = sideTimeVisible && activityAt ? topicActivityLabel(activityAt, t, true) : "";
@@ -1633,7 +1634,7 @@ export function ProjectTree({
               key: "rename",
               icon: <Pencil size={13} />,
               label: t("projectTree.renameTopic"),
-              onSelect: () => renameTarget && startRenameNode(menuKey, renameTarget, label),
+              onSelect: () => renameTarget && startRenameNode(menuKey, renameTarget, renameLabel),
             }]
           : []),
         trashMenuItem,
@@ -1740,7 +1741,7 @@ export function ProjectTree({
                 clearTimeout(clickTimerRef.current.timer);
                 clickTimerRef.current = null;
               }
-              if (renameTarget) startRenameNode(menuKey, renameTarget, label);
+              if (renameTarget) startRenameNode(menuKey, renameTarget, renameLabel);
             }}
           >
             {compactTopics && section === "recent" && remoteUnreadCount > 0 ? (
@@ -2253,6 +2254,7 @@ export function ProjectTree({
                 openProjectMenu(event);
               }
             }}
+            aria-current={projectActive ? "location" : undefined}
             aria-expanded={folderDisclosure.ariaExpanded}
           >
             <span className="project-tree__folder-chevron" aria-hidden="true">

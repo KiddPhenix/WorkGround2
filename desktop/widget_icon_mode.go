@@ -80,11 +80,23 @@ type DesktopIconRect struct {
 	Height int `json:"height"`
 }
 
-// DesktopIconHitRegionsInput binds one hit-region snapshot to the native
-// surface generation whose client coordinates it was measured against.
+// DesktopIconHitRegionsInput binds one hit-region snapshot to the authoritative
+// native surface whose client coordinates it was measured against.
 type DesktopIconHitRegionsInput struct {
-	Rects      []DesktopIconRect `json:"rects"`
-	Generation int64             `json:"generation"`
+	Rects   []DesktopIconRect `json:"rects"`
+	Surface WidgetWindowState `json:"surface"`
+}
+
+type desktopIconSurfaceRuntime struct {
+	State   WidgetWindowState
+	Request DesktopIconSurfaceInput
+}
+
+func newDesktopIconSurfaceRuntime(state WidgetWindowState) desktopIconSurfaceRuntime {
+	return desktopIconSurfaceRuntime{
+		State:   state,
+		Request: DesktopIconSurfaceInput{Width: state.Width, Height: state.Height},
+	}
 }
 
 func normalizeDesktopIconRects(rects []DesktopIconRect, width, height int) []DesktopIconRect {
@@ -117,10 +129,11 @@ func (a *App) SetDesktopIconHitRegions(input DesktopIconHitRegionsInput) error {
 		a.widgetMu.Unlock()
 		return nil
 	}
-	// A bottom-right anchored resize changes the client origin. Requests
-	// measured against an older surface must never reinstall the old HRGN after
-	// SetDesktopIconSurface cleared it.
-	if input.Generation != a.widgetSurfaceGen {
+	// Coordinates are accepted only for the authoritative native geometry they
+	// were measured against. Geometry is the identity here: a late request from
+	// an older bottom-right anchored surface cannot reinstall an old HRGN, and a
+	// React remount does not need to invent a larger sequence number.
+	if input.Surface != a.widgetSurface.State {
 		a.widgetMu.Unlock()
 		return nil
 	}
@@ -130,43 +143,47 @@ func (a *App) SetDesktopIconHitRegions(input DesktopIconHitRegionsInput) error {
 	// the restored main window again.
 	a.widgetRegionMu.Lock()
 	a.widgetMu.Unlock()
-	defer a.widgetRegionMu.Unlock()
 	// The frontend reports physical WebView pixels using devicePixelRatio. Native
 	// code owns the final client-bound clamp; applying WindowGetSize/GetDpiForWindow
 	// here would mix Wails logical units into that physical coordinate contract.
-	return setDesktopIconHitRegions(input.Rects)
+	err := setDesktopIconHitRegions(input.Rects)
+	a.widgetRegionMu.Unlock()
+	return err
 }
 
-// DesktopIconSurfaceInput is one monotonic request to resize the native icon
+// DesktopIconSurfaceInput is one monotonic intent to resize the native icon
 // canvas. Width/Height are the content's logical bounds (icons plus any open
 // transient surface) and Envelope is the safety margin added on every side so
-// content never sits on the transparent edge. Generation is the frontend's
-// request token; it is echoed back unchanged so late responses can be dropped.
+// content never sits on the transparent edge.
 type DesktopIconSurfaceInput struct {
-	Width      int   `json:"width"`
-	Height     int   `json:"height"`
-	Envelope   int   `json:"envelope"`
-	Generation int64 `json:"generation"`
+	Width    int `json:"width"`
+	Height   int `json:"height"`
+	Envelope int `json:"envelope"`
 }
 
 // DesktopIconSurfaceResult reports the geometry that actually took effect.
 type DesktopIconSurfaceResult struct {
-	Width      int   `json:"width"`
-	Height     int   `json:"height"`
-	X          int   `json:"x"`
-	Y          int   `json:"y"`
-	Generation int64 `json:"generation"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+	X      int `json:"x"`
+	Y      int `json:"y"`
 }
 
-func growDesktopIconSurfaceInput(input DesktopIconSurfaceInput, current WidgetWindowState) DesktopIconSurfaceInput {
-	input.Width = max(input.Width, current.Width-input.Envelope*2)
-	input.Height = max(input.Height, current.Height-input.Envelope*2)
-	return input
+func mergeDesktopIconSurfaceInput(current, next DesktopIconSurfaceInput) DesktopIconSurfaceInput {
+	currentWidth := max(0, current.Width) + max(0, current.Envelope)*2
+	currentHeight := max(0, current.Height) + max(0, current.Envelope)*2
+	nextWidth := max(0, next.Width) + max(0, next.Envelope)*2
+	nextHeight := max(0, next.Height) + max(0, next.Envelope)*2
+	return DesktopIconSurfaceInput{Width: max(currentWidth, nextWidth), Height: max(currentHeight, nextHeight)}
+}
+
+func desktopIconSurfaceResult(state WidgetWindowState) DesktopIconSurfaceResult {
+	return DesktopIconSurfaceResult{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y}
 }
 
 // SetDesktopIconSurface applies a bounded icon-surface geometry request and
 // returns the geometry that actually took effect. It is idempotent: repeating
-// the same request reapplies the same clamped bounds with no drift, and every
+// the same request returns the current bounds without native work, and every
 // request is anchored to the current monitor work area's bottom-right corner.
 func (a *App) SetDesktopIconSurface(input DesktopIconSurfaceInput) (DesktopIconSurfaceResult, error) {
 	if a.ctx == nil {
@@ -177,21 +194,16 @@ func (a *App) SetDesktopIconSurface(input DesktopIconSurfaceInput) (DesktopIconS
 	if !a.widgetMode || a.widgetStyle != "icons" {
 		return DesktopIconSurfaceResult{}, errors.New("desktop icon surface is not active")
 	}
-	if input.Generation < a.widgetSurfaceGen {
-		state := a.widgetSurfaceState
-		return DesktopIconSurfaceResult{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y, Generation: input.Generation}, nil
+	// Merge by desired outer bounds. Repeated, smaller, reordered, and remounted
+	// requests all converge on the same maximum intent and return the current
+	// geometry without touching SetWindowPos or HRGN.
+	next := mergeDesktopIconSurfaceInput(a.widgetSurface.Request, input)
+	if next == a.widgetSurface.Request {
+		return desktopIconSurfaceResult(a.widgetSurface.State), nil
 	}
-	if input.Generation == a.widgetSurfaceGen && a.widgetSurfaceGen > 0 {
-		state := a.widgetSurfaceState
-		return DesktopIconSurfaceResult{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y, Generation: input.Generation}, nil
-	}
-	// The native state is the final authority for monotonic growth, including a
-	// frontend remount that does not know how far an earlier instance expanded.
-	// Preserve each current axis before adding this request's envelope.
-	input = growDesktopIconSurfaceInput(input, a.widgetSurfaceState)
 	a.widgetRegionMu.Lock()
 	defer a.widgetRegionMu.Unlock()
-	state, err := applyDesktopIconSurface(a.ctx, input)
+	state, err := applyDesktopIconSurface(a.ctx, next)
 	if err != nil {
 		return DesktopIconSurfaceResult{}, err
 	}
@@ -199,18 +211,14 @@ func (a *App) SetDesktopIconSurface(input DesktopIconSurfaceInput) (DesktopIconS
 	// a bottom-right anchored window moves that origin, so clear the old region
 	// before React mounts the prepared content; the normal hit-region sync will
 	// install the new precise union immediately after commit.
-	if err := clearWidgetWindowRegion(); err != nil {
-		return DesktopIconSurfaceResult{}, err
+	if state != a.widgetSurface.State {
+		if err := clearWidgetWindowRegion(); err != nil {
+			return DesktopIconSurfaceResult{}, err
+		}
 	}
-	a.widgetSurfaceGen = input.Generation
-	a.widgetSurfaceState = state
-	return DesktopIconSurfaceResult{
-		Width:      state.Width,
-		Height:     state.Height,
-		X:          state.X,
-		Y:          state.Y,
-		Generation: input.Generation,
-	}, nil
+	a.widgetSurface.Request = next
+	a.widgetSurface.State = state
+	return desktopIconSurfaceResult(state), nil
 }
 
 // DesktopIconTaskRef is the typed session identity every task icon snapshot
@@ -399,6 +407,9 @@ type desktopIconKept struct {
 	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
 	TopicID       string `json:"topicId,omitempty"`
 	SessionPath   string `json:"sessionPath,omitempty"`
+	// SessionKind records the session kind at retain time so an Assistant
+	// session never re-flows into an independent retained task icon.
+	SessionKind string `json:"sessionKind,omitempty"`
 }
 
 type desktopIconPersistedState struct {
@@ -579,7 +590,7 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 		return
 	}
 	meta := a.tabMeta(tab, false)
-	if strings.EqualFold(meta.SessionSource, "cli") || meta.SessionKind == "collaboration" {
+	if strings.EqualFold(meta.SessionSource, "cli") || meta.SessionKind == "collaboration" || meta.SessionKind == string(agent.SessionKindAssistant) {
 		return
 	}
 	id := "task:" + meta.ID
@@ -606,6 +617,7 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 		WorkspaceRoot: meta.WorkspaceRoot,
 		TopicID:       meta.TopicID,
 		SessionPath:   strings.TrimSpace(meta.SessionPath),
+		SessionKind:   meta.SessionKind,
 	}
 	if existing, exists := a.iconWidgetState.Kept[id]; exists {
 		existing.SourceID = entry.SourceID
@@ -2059,7 +2071,8 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 	hiddenKeptIDs := map[string]bool{}
 	hiddenKeptPaths := map[string]bool{}
 	for _, source := range sources {
-		if !strings.EqualFold(strings.TrimSpace(source.meta.SessionSource), "cli") && !widgetSourceIsSubagent(source) {
+		isAssistant := source.meta.SessionKind == string(agent.SessionKindAssistant)
+		if !strings.EqualFold(strings.TrimSpace(source.meta.SessionSource), "cli") && !widgetSourceIsSubagent(source) && !isAssistant {
 			continue
 		}
 		for _, id := range []string{source.meta.ID, source.meta.SessionID, source.meta.WorkID} {
@@ -2098,6 +2111,14 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 	for _, source := range sources {
 		meta := source.meta
 		if meta.SessionKind == "collaboration" {
+			continue
+		}
+		// Assistant Sessions never render an ordinary task icon: a running one
+		// projects onto the delegation entry, a completed/idle one drops out.
+		if meta.SessionKind == string(agent.SessionKindAssistant) {
+			if meta.RunningWork {
+				delegatedRunning++
+			}
 			continue
 		}
 		// Real running sub-agents owned by this session are the authoritative
@@ -2345,6 +2366,9 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 }
 
 func desktopIconKeptIsDelegation(kept desktopIconKept, hiddenIDs, hiddenPaths map[string]bool) bool {
+	if kept.SessionKind == string(agent.SessionKindAssistant) {
+		return true
+	}
 	if hiddenIDs[strings.TrimSpace(kept.SourceID)] || hiddenIDs[strings.TrimSpace(kept.SessionID)] {
 		return true
 	}

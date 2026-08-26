@@ -150,7 +150,7 @@ export function irisFixtureArtifacts(): ArtifactRecord[] {
 export interface IrisFixtureConfig {
   modelId: string;
   contextPercent: number;
-  runtimeStatus: string;
+  runtimeMode: string;
   collaborationMode: string;
   approvalMode: string;
 }
@@ -159,7 +159,7 @@ export function irisFixtureConfig(): IrisFixtureConfig {
   return {
     modelId: "DeepSeek-R1",
     contextPercent: 33,
-    runtimeStatus: "运行中",
+    runtimeMode: "foreground",
     collaborationMode: "normal",
     approvalMode: "ask",
   };

@@ -29,6 +29,19 @@ const (
 	sessionEventLogCompactFactor = int64(4)
 )
 
+// ErrSessionAnchorUnrecoverable reports that a session's primary .jsonl is
+// missing or empty and no authoritative recovery source holds a replayable
+// transcript (the native event log is absent, foreign, or undecodable). The
+// caller must surface this explicitly instead of silently showing an empty
+// conversation — the transcript the meta sidecar promises is not on disk.
+var ErrSessionAnchorUnrecoverable = errors.New("session transcript cannot be recovered: no replayable event log")
+
+// ErrSessionAnchorDamaged reports that recovery found a native event log but
+// could replay only a clean prefix. That prefix remains readable in memory,
+// but promoting it to the compatibility anchor would silently present a
+// partial transcript as complete.
+var ErrSessionAnchorDamaged = errors.New("session transcript cannot be recovered: event log is damaged")
+
 type sessionEventRecord struct {
 	SchemaVersion int                `json:"schema_version"`
 	Type          string             `json:"type"`
@@ -257,6 +270,85 @@ func loadSessionMessages(sessionPath string) (msgs []provider.Message, fromEvent
 	}
 	msgs, err = loadSessionMessagesFromJSONL(sessionPath)
 	return msgs, false, false, err
+}
+
+// anchorHasContent reports whether the compatibility .jsonl anchor already
+// holds a non-empty transcript. An existing non-empty anchor is never touched
+// by recovery: it may be a newer or intentionally rewritten transcript, and
+// overwriting it would violate the snapshot-CAS guarantees the save paths rely
+// on.
+func anchorHasContent(sessionPath string) bool {
+	info, err := os.Stat(sessionPath)
+	return err == nil && !info.IsDir() && info.Size() > 0
+}
+
+// rebuildSessionAnchorFrom rewrites the compatibility .jsonl anchor from msgs
+// when the anchor is missing or empty. The event log is the authoritative
+// transcript; the .jsonl is only a checkpoint/discovery anchor, and a
+// stale-empty anchor (a pre-created empty file at session start) leaves direct
+// readers — previews, topic titles, older binaries, external tools — with a
+// 0-byte file even though the conversation is intact.
+//
+// The rebuild is idempotent and crash-safe: writeSessionMessages stages a
+// sibling temp file, fsyncs it, and renames it into place, so a crash leaves
+// either the old anchor or the complete new one, never a partial transcript.
+// A non-empty anchor is never overwritten. An empty msgs slice is a no-op
+// (nothing to rebuild with).
+func rebuildSessionAnchorFrom(sessionPath string, msgs []provider.Message) error {
+	if len(msgs) == 0 || anchorHasContent(sessionPath) {
+		return nil
+	}
+	return writeSessionMessages(sessionPath, msgs)
+}
+
+// RebuildSessionAnchor heals a session whose primary .jsonl is missing or
+// empty by rebuilding it from the authoritative event log. It is the load-side
+// counterpart of the save-path anchor guarantee: sessions that started from a
+// pre-created empty .jsonl (Desktop's createEmptySessionFile) keep a 0-byte
+// anchor while the event log carries the real transcript, and this restores a
+// usable anchor without touching the event log.
+//
+// Authority ordering for transcript content: the native event log
+// (<id>.events.jsonl) is the single authoritative source once present; the
+// .jsonl is only a compatibility checkpoint/anchor; the checkpoint directory
+// (<id>.ckpt/turn-*.json) carries turn-boundary metadata (rewind prompts,
+// message indices, file snapshots) and is never used to reconstruct messages.
+// loadSessionMessages already applies that ordering — a foreign or newer-schema
+// log is read-ignored in favor of the anchor — and RebuildSessionAnchor only
+// writes the anchor from a replayable native log, so the rebuild cannot invent
+// content or overwrite a newer transcript.
+//
+// Idempotent and safe to retry; never overwrites a non-empty .jsonl. When no
+// authoritative recovery source exists (no native event log, or nothing
+// replayable) it returns ErrSessionAnchorUnrecoverable so callers can surface
+// the data-loss state explicitly instead of silently showing a blank
+// conversation.
+func RebuildSessionAnchor(sessionPath string) error {
+	if sessionPath == "" {
+		return fmt.Errorf("empty session path")
+	}
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
+	unlockFile, err := lockSessionFile(sessionPath)
+	if err != nil {
+		return fmt.Errorf("lock session file: %w", err)
+	}
+	defer unlockFile()
+
+	if anchorHasContent(sessionPath) {
+		return nil
+	}
+	msgs, fromEvents, damaged, err := loadSessionMessages(sessionPath)
+	if err != nil {
+		return err
+	}
+	if damaged {
+		return ErrSessionAnchorDamaged
+	}
+	if !fromEvents || len(msgs) == 0 {
+		return ErrSessionAnchorUnrecoverable
+	}
+	return writeSessionMessages(sessionPath, msgs)
 }
 
 func loadSessionMessagesFromJSONL(path string) ([]provider.Message, error) {

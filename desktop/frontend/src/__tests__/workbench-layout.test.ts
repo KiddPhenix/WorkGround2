@@ -128,6 +128,23 @@ ok(
 );
 
 ok(
+  includes(projectTreeSource, 'aria-current={projectActive ? "location" : undefined}') &&
+    finalDeclaration(stylesSource, ":root .app--workbench .workspace-sidebar .project-tree__folder--active", "border-color") ===
+      "color-mix(in srgb, var(--project-accent) 72%, var(--border))" &&
+    finalDeclaration(stylesSource, ":root .app--workbench .workspace-sidebar .project-tree__folder--active", "background") ===
+      "color-mix(in srgb, var(--project-accent) 14%, transparent)" &&
+    finalDeclaration(stylesSource, ":root .app--workbench .workspace-sidebar .project-tree__folder--active", "box-shadow")?.includes("inset 4px 0 0 var(--project-accent)") === true,
+  "Session List: current Workspace has semantic state, an outlined tint, and a left accent marker",
+);
+
+ok(
+  finalDeclaration(stylesSource, ":root .app--workbench .workspace-sidebar .project-tree__folder--active:hover", "background") ===
+    "color-mix(in srgb, var(--project-accent) 18%, var(--sidebar-hover))" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__folder--active .project-tree__folder-label", "font-weight") === "680",
+  "Session List: current Workspace keeps its selected treatment on hover and strengthens its label",
+);
+
+ok(
   includes(projectTreeSource, 'className="project-tree__workspace-actions"') &&
     includes(projectTreeSource, "<MoreVertical") &&
     includes(projectTreeSource, "void handleCreateTopic(scope, projectRoot, key)"),
@@ -502,7 +519,7 @@ ok(
 );
 ok(
   includes(runtimeConfigSource, 'label={`${config.contextPercent}%`}') &&
-    includes(runtimeConfigSource, 'label={`审批：${approvalLabel(config.approvalMode)}`}'),
+    includes(runtimeConfigSource, 't("runtimeBar.approval.label", { mode: approvalValue })'),
   "RuntimeConfigBar: context and approval labels use compact meaningful copy",
 );
 ok(

@@ -1,5 +1,6 @@
 import { normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../lib/composerKeyboard";
 import { normalizeToolApprovalMode, type ModelInfo, type SettingsView, type ToolApprovalMode } from "../../lib/types";
+import { t } from "../../lib/i18n";
 
 export type QuickStartPreferences = {
 	model: string;
@@ -13,23 +14,23 @@ export type QuickStartPreferences = {
 export const QUICK_MODEL_KEY = "wg2.icon-widget-model";
 export const QUICK_APPROVAL_KEY = "wg2.icon-widget-approval";
 
-export const QUICK_APPROVAL_OPTIONS: { value: ToolApprovalMode; label: string }[] = [
-	{ value: "ask", label: "需要批准" },
-	{ value: "auto", label: "自动批准" },
-	{ value: "yolo", label: "全部允许" },
+export const QUICK_APPROVAL_OPTIONS: { value: ToolApprovalMode }[] = [
+	{ value: "ask" },
+	{ value: "auto" },
+	{ value: "yolo" },
 ];
 
 export function quickStartModelLabel(model: string): string {
 	const value = model.trim();
-	if (!value) return "未配置";
+	if (!value) return t("desktopIcon.model.unset");
 	const parts = value.split("/");
 	return parts[parts.length - 1] || value;
 }
 
 export function quickStartApprovalLabel(mode: ToolApprovalMode): string {
-	if (mode === "auto") return "自动批准";
-	if (mode === "yolo") return "全部允许";
-	return "需要批准";
+	if (mode === "auto") return t("desktopIcon.approval.auto");
+	if (mode === "yolo") return t("desktopIcon.approval.yolo");
+	return t("desktopIcon.approval.ask");
 }
 
 export function nextQuickStartApproval(mode: ToolApprovalMode): ToolApprovalMode {

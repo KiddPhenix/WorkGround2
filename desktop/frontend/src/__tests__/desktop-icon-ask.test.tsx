@@ -8,6 +8,7 @@ import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { AskFlow } from "../components/widget/desktopIconAsk";
+import { LocaleProvider } from "../lib/i18n";
 import type { QuestionAnswer } from "../lib/types";
 import type { WidgetQuestion } from "../lib/bridge";
 
@@ -104,9 +105,12 @@ console.log("\ndesktop icon ask flow");
   const mount = async () => {
     // A fresh key remounts AskFlow per scenario, exactly like the popup keys
     // NoticeBody by notice id — state never leaks between questions/asks.
+    // LocaleProvider gives the flow its translator; the jsdom environment
+    // auto-detects English (navigator.language en-US), so the flow chrome
+    // renders English while the question fixture data stays verbatim.
     scenario += 1;
     await act(async () => {
-      root.render(React.createElement(AskFlow, { key: `scenario-${scenario}`, questions, busy: false, onAnswer: (answers) => submitted.push(answers) }));
+      root.render(React.createElement(LocaleProvider, null, React.createElement(AskFlow, { key: `scenario-${scenario}`, questions, busy: false, onAnswer: (answers) => submitted.push(answers) })));
       await Promise.resolve();
     });
   };
@@ -115,7 +119,7 @@ console.log("\ndesktop icon ask flow");
   eq(byText("语言")?.textContent, "语言", "first question header renders");
   eq(byText("1/2")?.textContent, "1/2", "multi-question progress renders");
   eq(document.querySelectorAll(".desktop-icon-popup__answers > button").length, 4, "all 4 options of question 1 render");
-  ok(byText("返回") === null, "back is hidden on the first question");
+  ok(byText("Back") === null, "back is hidden on the first question");
   const nextDisabled = (document.querySelector(".desktop-icon-popup__ask-next") as HTMLButtonElement | null)?.disabled;
   ok(nextDisabled === true, "next stays disabled until the question is answered");
 
@@ -127,12 +131,12 @@ console.log("\ndesktop icon ask flow");
 
   eq(byText("能力")?.textContent, "能力", "second question header renders");
   eq(byText("2/2")?.textContent, "2/2", "progress advances to 2/2");
-  ok(byText("返回") !== null, "back is available on later questions");
+  ok(byText("Back") !== null, "back is available on later questions");
   eq(document.querySelectorAll(".desktop-icon-popup__answers > button").length, 3, "question 2 shows its 3 options");
   click(byText("搜索"), "toggle multi option 搜索");
   click(byText("发布"), "toggle multi option 发布");
   const submit = document.querySelector(".desktop-icon-popup__ask-next") as HTMLButtonElement | null;
-  eq(submit?.textContent?.trim(), "提交", "last question shows 提交 instead of 下一题");
+  eq(submit?.textContent?.trim(), "Submit", "last question shows Submit instead of Next question");
   ok(submit?.disabled === false, "submit enables after multi answers");
   click(submit, "submit batch");
 
@@ -159,7 +163,7 @@ console.log("\ndesktop icon ask flow");
   await mount();
   click(byText("TypeScript"), "question 1: pick TypeScript");
   click(document.querySelector(".desktop-icon-popup__ask-next"), "advance to question 2");
-  click(byText("返回"), "go back to question 1");
+  click(byText("Back"), "go back to question 1");
   const pressed = [...document.querySelectorAll<HTMLButtonElement>(".desktop-icon-popup__answers > button")].find((b) => b.getAttribute("aria-pressed") === "true");
   eq(pressed?.textContent?.trim(), "TypeScript", "back preserves the earlier selection");
 
@@ -168,7 +172,7 @@ console.log("\ndesktop icon ask flow");
   // structure so a removed option can never be submitted as a custom value.
   const structuralKey = "same-question-ids";
   await act(async () => {
-    root.render(React.createElement(AskFlow, { key: structuralKey, questions, busy: false, onAnswer: (answers) => submitted.push(answers) }));
+    root.render(React.createElement(LocaleProvider, null, React.createElement(AskFlow, { key: structuralKey, questions, busy: false, onAnswer: (answers) => submitted.push(answers) })));
     await Promise.resolve();
   });
   click(byText("Rust"), "same-id structure: select old option");
@@ -177,7 +181,7 @@ console.log("\ndesktop icon ask flow");
     questions[1],
   ];
   await act(async () => {
-    root.render(React.createElement(AskFlow, { key: structuralKey, questions: changedQuestions, busy: false, onAnswer: (answers) => submitted.push(answers) }));
+    root.render(React.createElement(LocaleProvider, null, React.createElement(AskFlow, { key: structuralKey, questions: changedQuestions, busy: false, onAnswer: (answers) => submitted.push(answers) })));
     await Promise.resolve();
   });
   eq(byText("重新选择语言")?.textContent, "重新选择语言", "same-id structural update renders the latest prompt");

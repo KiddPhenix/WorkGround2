@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Activity as ReactActivity, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type CSSProperties, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { ShellExpandProvider, useShellExpand } from "./lib/shellExpand";
 import gsap from "gsap";
@@ -43,7 +43,7 @@ import { asArray } from "./lib/array";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, useI18n, useT, type Translator } from "./lib/i18n";
 import { useController, type Item, type LiveStream } from "./lib/useController";
 import { isWorkChatDisabled, routeWorkChat } from "./lib/workChatRoute";
-import { app, onEvent, onProjectTreeChanged } from "./lib/bridge";
+import { app, onEvent, onProjectTreeChanged, onSessionActivated } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { playSuccessChime } from "./lib/sound";
 import { Transcript } from "./components/Transcript";
@@ -159,7 +159,7 @@ import { useAddOnDialogStore } from "./store/addonDialog";
 import { canDrainQueue, selectSessionQueueHead, useComposerQueueStore } from "./store/composerQueue";
 import { hydrateDisplayMode } from "./lib/displayMode";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "./lib/statusBarItems";
-import { paletteSessionDisplayTitle, paletteSessionHint, paletteSessionKeywords, sessionActivityTime, tabSessionDisplayTitle } from "./lib/session";
+import { localizedSessionTitle, paletteSessionDisplayTitle, paletteSessionHint, paletteSessionKeywords, sessionActivityTime, tabDisplayTitle } from "./lib/session";
 import { enqueueNavigationRequest, type PendingNavigationRequest } from "./lib/openTopicCoalescing";
 import {
   applyTheme,
@@ -957,16 +957,17 @@ function tabWorkspaceTitle(tab?: TabMeta): string {
   return tab.workspaceName || tab.workspaceRoot || "Global";
 }
 
-function topicTitle(tab?: TabMeta): string {
+function topicTitle(tab: TabMeta | undefined, t: Translator): string {
   if (!tab) return "Global";
   const workspaceTitle = tabWorkspaceTitle(tab);
-  const topic = tab.topicTitle || (tab.scope === "global" ? workspaceTitle : "Untitled");
+  const topic = localizedSessionTitle(tab.topicTitle, tab.titleSource, tab.scope === "global" ? workspaceTitle : "Untitled", t);
   return topic === workspaceTitle ? workspaceTitle : `${workspaceTitle} / ${topic}`;
 }
 
-function topicDisplayTitle(tab?: TabMeta): string {
+function topicDisplayTitle(tab: TabMeta | undefined, t: Translator): string {
   if (!tab) return "Global";
-  return tab.topicTitle || (tab.scope === "global" ? tabWorkspaceTitle(tab) : "Untitled");
+  const workspaceTitle = tabWorkspaceTitle(tab);
+  return localizedSessionTitle(tab.topicTitle, tab.titleSource, tab.scope === "global" ? workspaceTitle : "Untitled", t);
 }
 
 function sessionsForScope(sessions: SessionMeta[], filter: HistoryScopeFilter): SessionMeta[] {
@@ -1086,6 +1087,10 @@ function comparableSessionPath(path: string | undefined): string {
 
 function comparableWorkspaceRoot(root: string | undefined): string {
   return comparableSessionPath((root ?? "").replace(/[\\/]+$/, ""));
+}
+
+function sameTabMetaSnapshot(current: TabMeta[], next: TabMeta[]): boolean {
+  return current.length === next.length && JSON.stringify(current) === JSON.stringify(next);
 }
 
 function linkedSessionOwnerWorkID(sessionSource: string | undefined): string {
@@ -1971,7 +1976,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     });
   }, [scopedTodoKey]);
 
-  const sessionTitle = topicTitle(activeTab);
+  const sessionTitle = topicTitle(activeTab, t);
   const hydratePlaceholderActive = Boolean(
     state.hydrating
     && state.items.length === 0
@@ -2252,8 +2257,9 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     ]);
     const tabs = asArray(tabsResult);
     const runtimeTabs = asArray(runtimeTabsResult);
-    setTabMetas(tabs);
-    setRuntimeTabMetas(runtimeTabs.length > 0 ? runtimeTabs : tabs);
+    const nextRuntimeTabs = runtimeTabs.length > 0 ? runtimeTabs : tabs;
+    setTabMetas((current) => sameTabMetaSnapshot(current, tabs) ? current : tabs);
+    setRuntimeTabMetas((current) => sameTabMetaSnapshot(current, nextRuntimeTabs) ? current : nextRuntimeTabs);
     return tabs;
   }, []);
   const seedActiveTabMeta = useCallback((tab: TabMeta): void => {
@@ -2311,9 +2317,17 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   }, [activeTab?.scope, activeTab?.workspaceRoot]);
 
   useEffect(() => {
-    void refreshTabMetas();
-    const id = window.setInterval(() => void refreshTabMetas(), 2000);
-    return () => window.clearInterval(id);
+    let stopped = false;
+    let timer = 0;
+    const poll = async () => {
+      await refreshTabMetas();
+      if (!stopped) timer = window.setTimeout(() => void poll(), 2000);
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
   }, [refreshTabMetas]);
 
   useEffect(() => {
@@ -3508,6 +3522,22 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     }
   }, [assistantOpenSignal, closeTransientOverlays]);
 
+  // Opening a task/session from the widget exits widget mode first and the
+  // backend confirms the target Session activation with
+  // session:activated(widget-open). That explicit event must collapse the
+  // Assistant surface (and any transient overlay) so the activated Session is
+  // visible — even when the main window was in Assistant mode before entering
+  // the widget. Plain "打开主窗口" exits never emit the event, so the previous
+  // Assistant mode stays untouched; other activation reasons keep their own
+  // useController handling and must not close the Assistant surface here.
+  useEffect(() => {
+    return onSessionActivated((event) => {
+      if (event.reason !== "widget-open") return;
+      closeTransientOverlays();
+      setAssistantOpen(false);
+    });
+  }, [closeTransientOverlays]);
+
   const finishCollaborationConnect = useCallback(async () => {
     await refreshProjectsAndTabs();
     setCollaborationDialog(null);
@@ -3852,7 +3882,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
       ? "桌面信息架构重构"
       : sidebarImDetailConnection
         ? t("botDetail.title", { name: sidebarImDetailConnection.title })
-        : tabSessionDisplayTitle(activeTab),
+        : tabDisplayTitle(activeTab, t),
     irisFixtureActive,
     sidebarImDetailConnection,
     contextPercent: irisFixtureActive ? 33 : contextPercent,
@@ -4153,7 +4183,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
       document.documentElement.setAttribute("data-theme-style", "iris");
     }).catch((err) => console.warn("Iris fixture failed to load", err));
   }, []);
-  const topicbarTitle = sidebarImDetailConnection ? t("botDetail.title", { name: sidebarImDetailConnection.title }) : topicDisplayTitle(activeTab);
+  const topicbarTitle = sidebarImDetailConnection ? t("botDetail.title", { name: sidebarImDetailConnection.title }) : topicDisplayTitle(activeTab, t);
   const topicbarWorkspaceLabel = sidebarImDetailConnection ? t("botDetail.subtitle") : activeTab ? tabWorkspaceTitle(activeTab) : "";
   const topicbarWorkspacePath = activeTab?.scope === "project" ? activeTab.workspaceRoot || state.meta?.cwd : "";
   const topicbarImSource = activeTab?.scope === "global" && activeTab.topicId ? imTopicSources[activeTab.topicId] : undefined;
@@ -4841,7 +4871,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                     />
                   </div>
                 ) : sidebarCreation && topicbarCanRename ? (
-                  <h1 title={tabSessionDisplayTitle(activeTab)}>
+                  <h1 title={tabDisplayTitle(activeTab, t)}>
                     <button
                       className="topicbar__title-button"
                       type="button"
@@ -4852,7 +4882,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                     </button>
                   </h1>
                 ) : (
-                  <h1 title={sidebarImDetailConnection ? topicbarTitle : tabSessionDisplayTitle(activeTab)}>{topicbarTitle}</h1>
+                  <h1 title={sidebarImDetailConnection ? topicbarTitle : tabDisplayTitle(activeTab, t)}>{topicbarTitle}</h1>
                 )}
                 {!sidebarCreation && (
                   <Tooltip label={t("topicBar.renameSession")}>
@@ -5565,7 +5595,9 @@ export default function App() {
 
   return (
 	<>
-	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} onDismissWindow={dismissMainWindow} collabDialogSignal={collabDialogSignal} assistantOpenSignal={assistantOpenSignal} />
+	  <ReactActivity mode={widgetMode ? "hidden" : "visible"}>
+	    <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} onDismissWindow={dismissMainWindow} collabDialogSignal={collabDialogSignal} assistantOpenSignal={assistantOpenSignal} />
+	  </ReactActivity>
 	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} onOpenAssistant={openWidgetAssistant} />}
 	</>
   );

@@ -132,12 +132,14 @@ const zh = {
   create: "创建助手",
   createName: "例如：代码项目助手",
   createMission: "例如：持续关注项目健康度，在发布条件满足时询问我。",
-  workspacePick: "选择",
-  workspaceNew: "新建",
-  workspaceNewParent: "父目录",
-  workspaceNewName: "目录名",
-  workspaceNewNamePlaceholder: "例如：my-project",
-  workspaceNewCreate: "创建",
+  workspacePick: "选择已有工作区",
+  workspaceNew: "从文件夹新建",
+  workspaceChooseTitle: "选择已有工作区",
+  workspaceChooseBody: "从 WorkGround2 已登记的项目工作区中选择；未登记的目录请用“从文件夹新建”。",
+  workspaceChooseLoading: "正在读取工作区列表…",
+  workspaceChooseEmpty: "还没有已登记的工作区。",
+  workspaceChooseFailed: "工作区列表读取失败",
+  workspaceNewHint: "在文件夹选择器中新建或选择目录，作为该助手的工作区。",
   error: "操作失败，请重试。",
   saved: "已保存",
   resolveNote: "由桌面端处理",
@@ -203,12 +205,14 @@ const en: typeof zh = {
   approve: "Approve", continueRun: "Continue run", reject: "Reject", answer: "Answer", answerPlaceholder: "Enter a clear answer for the assistant…", confirmRetry: "Confirm retry", markSucceeded: "Mark succeeded", markFailed: "Mark failed", cancel: "Cancel", retryRun: "Retry", rerun: "Run again", waitingRetry: "The system will retry on schedule, or you can cancel this run.", handleAttention: "Review", changeProject: "Change project", cancelOldRun: "Cancel old run", rebindWarning: "This run froze the previous project path. Save the new path, then run again; approving this run would still use the old path.", stopRun: "Stop", openSession: "Open session", createTitle: "Create an ongoing assistant",
   createBody: "Give it a clear mission, then choose how often it should wake up.", create: "Create assistant", createName: "e.g. Code project assistant",
   createMission: "e.g. Track project health and ask before publishing when ready.",
-  workspacePick: "Choose",
-  workspaceNew: "New",
-  workspaceNewParent: "Parent folder",
-  workspaceNewName: "Folder name",
-  workspaceNewNamePlaceholder: "e.g. my-project",
-  workspaceNewCreate: "Create",
+  workspacePick: "Choose existing",
+  workspaceNew: "Create from folder",
+  workspaceChooseTitle: "Choose a workspace",
+  workspaceChooseBody: "Pick from project workspaces already registered in WorkGround2; use “Create from folder” for anything else.",
+  workspaceChooseLoading: "Loading workspaces…",
+  workspaceChooseEmpty: "No registered workspaces yet.",
+  workspaceChooseFailed: "Couldn't load workspaces",
+  workspaceNewHint: "Create or pick a folder in the native picker; it becomes this assistant's workspace.",
   error: "That didn't work. Please retry.", saved: "Saved", resolveNote: "Resolved from Desktop", rejectNote: "The user declined to answer", templates: "Choose a template", templateCode: "Code project", templateGeneral: "General", templatePromo: "Promotion",
   templateCodeDesc: "Project health, test/build, release readiness; publishing always asks first.", templateGeneralDesc: "Mission and routines are yours to fill; read-only by default.",
   templatePromoDesc: "Connect Discourse communities, publish according to its permission, and improve from real results.", phase4Preview: "Phase 4", routinePreview: "It will create these routines",
@@ -228,7 +232,7 @@ const en: typeof zh = {
   artifacts: "Artifacts & evidence", opportunities: "Opportunities & proposals", noArtifacts: "No artifacts or evidence yet.", noOpportunities: "No opportunities or proposals yet.",
 };
 
-const zhTW: typeof zh = { ...zh, entry: "助手", newAssistant: "新增助手", memory: "明確記憶", history: "執行記錄", attention: "待處理", save: "儲存", sendShortcut: "傳送", workspacePick: "選擇", workspaceNew: "新增", workspaceNewParent: "父資料夾", workspaceNewName: "資料夾名稱", workspaceNewNamePlaceholder: "例如：my-project", workspaceNewCreate: "建立" };
+const zhTW: typeof zh = { ...zh, entry: "助手", newAssistant: "新增助手", memory: "明確記憶", history: "執行記錄", attention: "待處理", save: "儲存", sendShortcut: "傳送", workspacePick: "選擇既有工作區", workspaceNew: "從資料夾新增", workspaceChooseTitle: "選擇既有工作區", workspaceChooseBody: "從 WorkGround2 已登記的專案工作區中選擇；未登記的目錄請用「從資料夾新增」。", workspaceChooseLoading: "正在讀取工作區列表…", workspaceChooseEmpty: "尚無已登記的工作區。", workspaceChooseFailed: "工作區列表讀取失敗", workspaceNewHint: "在資料夾選擇器中新增或選擇目錄，作為該助手的工作區。" };
 
 export type AssistantCopy = typeof zh;
 

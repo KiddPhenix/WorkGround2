@@ -6,7 +6,7 @@
 //   2. "待关注 N" — Sparkles icon + count, full-button click area. Click jumps
 //      to the next needs-attention session (earliest completed first). Disabled
 //      (greyed out) when N === 0.
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
 import type { TabMeta } from "../lib/types";
 import type { Translator } from "../lib/i18n";
@@ -74,9 +74,30 @@ function RunningIndicator({ tabs, activeTabId, onSwitchTab, t }: Props) {
   const [listOpen, setListOpen] = useState(false);
   const containerRef = useRef<HTMLSpanElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showList = useCallback(() => setListOpen(true), []);
-  const hideList = useCallback(() => setListOpen(false), []);
+  const cancelHide = useCallback(() => {
+    if (hideTimerRef.current === null) return;
+    clearTimeout(hideTimerRef.current);
+    hideTimerRef.current = null;
+  }, []);
+  const showList = useCallback(() => {
+    cancelHide();
+    setListOpen(true);
+  }, [cancelHide]);
+  const hideList = useCallback(() => {
+    cancelHide();
+    setListOpen(false);
+  }, [cancelHide]);
+  const scheduleHideList = useCallback(() => {
+    cancelHide();
+    hideTimerRef.current = setTimeout(() => {
+      hideTimerRef.current = null;
+      setListOpen(false);
+    }, 300);
+  }, [cancelHide]);
+
+  useEffect(() => cancelHide, [cancelHide]);
 
   if (running.length === 0) return null;
 
@@ -90,7 +111,7 @@ function RunningIndicator({ tabs, activeTabId, onSwitchTab, t }: Props) {
       ref={containerRef}
       className="session-status-indicator session-status-indicator--running"
       onMouseEnter={showList}
-      onMouseLeave={hideList}
+      onMouseLeave={scheduleHideList}
       onFocus={showList}
       onBlur={(e) => {
         if (!containerRef.current?.contains(e.relatedTarget as Node)) hideList();

@@ -8,6 +8,7 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { ArtifactShelf, filterGroup } from "../components/desktop-ui/ArtifactShelf";
+import { LocaleProvider } from "../lib/i18n";
 import type { ArtifactRecord } from "../store/artifacts";
 
 let passed = 0;
@@ -31,6 +32,7 @@ const dom = new JSDOM('<!doctype html><html><head></head><body><div id="root"></
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 globalThis.window = dom.window as unknown as Window & typeof globalThis;
 globalThis.document = dom.window.document;
+Object.defineProperty(dom.window.navigator, "language", { configurable: true, value: "zh-CN" });
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
 globalThis.Node = dom.window.Node;
 globalThis.Element = dom.window.Element;
@@ -64,7 +66,7 @@ const rootElement = document.getElementById("root")!;
 let root: Root | null = null;
 function render(ui: React.ReactElement) {
   root ??= createRoot(rootElement);
-  act(() => root!.render(ui));
+  act(() => root!.render(<LocaleProvider>{ui}</LocaleProvider>));
   return rootElement;
 }
 function cleanup() {

@@ -1,13 +1,25 @@
 // Run: tsx src/__tests__/session-title-contract.test.ts
 
 import {
+  DEFAULT_TOPIC_TITLE_SENTINEL,
   historySessionDisplayTitle,
+  isAutoBlankTitle,
+  localizedSessionTitle,
   paletteSessionDisplayTitle,
   paletteSessionHint,
   paletteSessionKeywords,
+  tabDisplayTitle,
   tabSessionDisplayTitle,
 } from "../lib/session";
-import type { SessionMeta } from "../lib/types";
+import { en, type DictKey } from "../locales/en";
+import type { SessionMeta, TabMeta } from "../lib/types";
+
+// Deterministic English translator backed by the canonical dictionary.
+const enT = (key: DictKey, vars?: Record<string, string | number>): string => {
+  const value = en[key] ?? key;
+  if (!vars) return value;
+  return value.replace(/\{(\w+)\}/g, (_, k) => (vars[k] !== undefined ? String(vars[k]) : `{${k}}`));
+};
 
 let passed = 0;
 let failed = 0;
@@ -132,6 +144,95 @@ eq(
     "Cmd+K skips duplicate title hints that repeat the visible topic title",
   );
 }
+
+// ── Auto-blank title localization ──────────────────────────────────────────
+
+eq(DEFAULT_TOPIC_TITLE_SENTINEL, "新的会话", "sentinel mirrors backend defaultTopicTitle");
+
+eq(isAutoBlankTitle("新的会话", "auto"), true, "auto-sourced sentinel title is blank");
+eq(isAutoBlankTitle("新的会话", ""), true, "legacy sentinel title without source metadata is blank");
+eq(isAutoBlankTitle("新的会话", undefined), true, "legacy sentinel title with no source field is blank");
+eq(isAutoBlankTitle("新的会话", "manual"), false, "manually named sentinel-equal title stays verbatim");
+eq(isAutoBlankTitle("实现登录功能", "auto"), false, "auto-sourced derived title (promoted from first message) is not blank");
+eq(isAutoBlankTitle("My real topic", "auto"), false, "auto-sourced non-sentinel title is not blank");
+eq(isAutoBlankTitle("  ", "auto"), false, "whitespace-only title is not blank");
+eq(isAutoBlankTitle("", "auto"), false, "empty title is not blank");
+
+eq(
+  localizedSessionTitle("新的会话", "auto", "Untitled", enT),
+  "New session",
+  "English locale renders the auto blank title as New session",
+);
+eq(
+  localizedSessionTitle("新的会话", undefined, "Untitled", enT),
+  "New session",
+  "English locale renders the legacy blank sentinel as New session",
+);
+eq(
+  localizedSessionTitle("新的会话", "manual", "Untitled", enT),
+  "新的会话",
+  "manual title equal to the sentinel stays verbatim",
+);
+eq(
+  localizedSessionTitle("实现登录功能", "auto", "Untitled", enT),
+  "实现登录功能",
+  "auto-sourced derived title stays verbatim",
+);
+eq(
+  localizedSessionTitle("My project", "manual", "Untitled", enT),
+  "My project",
+  "manual English title stays verbatim",
+);
+eq(
+  localizedSessionTitle("", undefined, "Untitled", enT),
+  "Untitled",
+  "missing title falls back",
+);
+
+const blankTab: TabMeta = {
+  id: "tab-blank",
+  scope: "project",
+  workspaceRoot: "/work/project",
+  workspaceName: "project",
+  topicId: "topic-blank",
+  topicTitle: "新的会话",
+  titleSource: "auto",
+  label: "DeepSeek-R1",
+  ready: true,
+  running: false,
+  cancellable: false,
+  active: true,
+  cwd: "/work/project",
+  mode: "normal",
+  collaborationMode: "normal",
+  toolApprovalMode: "ask",
+  tokenMode: "full",
+};
+eq(
+  tabDisplayTitle(blankTab, enT),
+  "New session",
+  "active header shows New session for an auto-blank tab in English",
+);
+eq(
+  tabDisplayTitle({ ...blankTab, topicTitle: "我的项目", titleSource: "manual" }, enT),
+  "我的项目",
+  "active header keeps a manual topic title verbatim",
+);
+eq(
+  tabDisplayTitle({ ...blankTab, topicTitle: "新的会话", titleSource: "manual" }, enT),
+  "新的会话",
+  "active header keeps a manual sentinel-equal title verbatim",
+);
+eq(
+  tabDisplayTitle({ ...blankTab, sessionDisplayTitle: "Renamed session" }, enT),
+  "Renamed session",
+  "active header prefers the verbatim session rename",
+);
+eq(
+  tabDisplayTitle({ ...blankTab, topicTitle: "实现登录功能", titleSource: "auto" }, enT),
+  "实现登录功能",
+  "active header keeps an auto-derived content title verbatim",
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

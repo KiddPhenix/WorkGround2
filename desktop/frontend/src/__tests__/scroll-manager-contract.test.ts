@@ -31,6 +31,8 @@ function snap(count: number, lastId = ""): QuestionScrollSnapshot {
   return { count, lastId };
 }
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 console.log("\nscroll manager contract");
 
 ok(
@@ -121,6 +123,32 @@ await act(async () => {
   window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
 });
 ok(scrollManager.stick.current, "releasing at the bottom restores automatic following");
+
+// Wheel gestures are continuous and land slightly before the resulting scroll
+// event, so auto-follow must hold off for the whole gesture and then recover
+// from the real scroll position — the same contract a scrollbar drag already
+// gets. Without this, streaming content pulls the viewport back to the bottom
+// and makes the wheel scroll flicker.
+renderedHost.scrollTop = 800;
+scrollManager.stick.current = true;
+await act(async () => {
+  renderedHost.dispatchEvent(new dom.window.Event("wheel", { bubbles: true }));
+});
+ok(scrollManager.wheelScrolling.current, "wheel gesture marks the viewport as actively scrolling");
+renderedHost.scrollTop = 500; // user scrolls away from the bottom mid-gesture
+await act(async () => { scrollManager.scrollToBottomAfterLayout(1); });
+ok(renderedHost.scrollTop === 500, "auto-follow cannot snap back while the wheel gesture is active");
+await act(async () => { await sleep(200); });
+ok(!scrollManager.wheelScrolling.current, "wheel gesture settles and releases the scroll lock");
+ok(!scrollManager.stick.current, "settling away from the bottom keeps automatic following disabled");
+
+renderedHost.scrollTop = 800;
+scrollManager.stick.current = false;
+await act(async () => {
+  renderedHost.dispatchEvent(new dom.window.Event("wheel", { bubbles: true }));
+});
+await act(async () => { await sleep(200); });
+ok(scrollManager.stick.current, "settling at the bottom resumes automatic following");
 
 await act(async () => { root.unmount(); });
 dom.window.close();

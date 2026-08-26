@@ -11,6 +11,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import type { CollaborationMode, RuntimeMode, ToolApprovalMode } from "../../lib/types";
+import { useT, type DictKey } from "../../lib/i18n";
 import { ModelSwitcher } from "../ModelSwitcher";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -25,7 +26,7 @@ export type SurfaceKind = "work" | "workspace";
 export interface RuntimeConfig {
   modelId: string;
   contextPercent: number;
-  runtimeStatus: string;
+  runtimeMode: RuntimeMode;
   collaborationMode: CollaborationMode;
   approvalMode: ToolApprovalMode;
 }
@@ -54,8 +55,17 @@ export interface RuntimeConfigBarProps {
 
 // ── Primary action label derivation ────────────────────────────────────────
 
+const PRIMARY_ACTION_KEYS: Record<ConnectionStatus, DictKey> = {
+  idle: "runtimeBar.action.send",
+  foreground: "runtimeBar.action.queue",
+  waiting_user: "runtimeBar.action.queue",
+  background_only: "runtimeBar.action.send",
+  cancelling: "runtimeBar.action.queue",
+  offline: "runtimeBar.action.send",
+};
+
 /**
- * Derive the primary action label.
+ * Derive the primary action label key.
  *
  * 启动/暂未就绪（offline）时仍可安全提交到启动队列，controller
  * 就绪后由 drainStartupSend 自动发送，因此主按钮统一显示“发送”。
@@ -72,18 +82,8 @@ export interface RuntimeConfigBarProps {
 export function derivePrimaryActionLabel(
   connectionStatus: ConnectionStatus,
   _hasQueue: boolean,
-): string {
-  switch (connectionStatus) {
-    case "idle":
-    case "background_only":
-      return "发送";
-    case "foreground":
-    case "waiting_user":
-    case "cancelling":
-      return "加入队列";
-    case "offline":
-      return "发送";
-  }
+): DictKey {
+  return PRIMARY_ACTION_KEYS[connectionStatus];
 }
 
 function primaryActionIcon(connectionStatus: ConnectionStatus): React.ReactNode {
@@ -110,43 +110,40 @@ export function connectionStatusFromRuntime(runtimeMode: RuntimeMode, foreground
   return "idle";
 }
 
-/** Derive a short runtime status label from runtimeMode. */
-export function runtimeStatusLabel(runtimeMode: RuntimeMode): string {
-  switch (runtimeMode) {
-    case "foreground":
-      return "运行中";
-    case "waiting_user":
-      return "等待用户";
-    case "background_only":
-      return "后台运行";
-    case "cancelling":
-      return "取消中";
-    default:
-      return "空闲";
-  }
+const RUNTIME_STATUS_KEYS: Record<RuntimeMode, DictKey> = {
+  foreground: "runtimeBar.runtime.foreground",
+  waiting_user: "runtimeBar.runtime.waitingUser",
+  background_only: "runtimeBar.runtime.background",
+  cancelling: "runtimeBar.runtime.cancelling",
+  idle: "runtimeBar.runtime.idle",
+};
+
+/** Derive the runtime status label key from runtimeMode. */
+export function runtimeStatusLabel(runtimeMode: RuntimeMode): DictKey {
+  return RUNTIME_STATUS_KEYS[runtimeMode];
 }
 
 // ── Label mapping ───────────────────────────────────────────────────────────
 
-function collaborationLabel(mode: CollaborationMode, surfaceKind?: SurfaceKind): string {
+function collaborationLabelKey(mode: CollaborationMode, surfaceKind?: SurfaceKind): DictKey {
   switch (mode) {
     case "plan":
-      return "规划";
+      return "runtimeBar.collab.plan";
     case "goal":
-      return "目标";
+      return "runtimeBar.collab.goal";
     default:
-      return surfaceKind === "work" ? "工作" : "对话";
+      return surfaceKind === "work" ? "runtimeBar.collab.work" : "runtimeBar.collab.chat";
   }
 }
 
-function approvalLabel(mode: ToolApprovalMode): string {
+function approvalLabelKey(mode: ToolApprovalMode): DictKey {
   switch (mode) {
     case "auto":
-      return "自动";
+      return "runtimeBar.approval.auto";
     case "yolo":
-      return "全部允许";
+      return "runtimeBar.approval.yolo";
     default:
-      return "询问";
+      return "runtimeBar.approval.ask";
   }
 }
 
@@ -189,13 +186,16 @@ export function RuntimeConfigBar({
   onSetApprovalMode,
   surfaceKind,
 }: RuntimeConfigBarProps) {
-  const actionLabel = derivePrimaryActionLabel(connectionStatus, hasQueue);
+  const t = useT();
+  const actionLabel = t(derivePrimaryActionLabel(connectionStatus, hasQueue));
+  const collabLabel = t(collaborationLabelKey(config.collaborationMode, surfaceKind));
+  const approvalValue = t(approvalLabelKey(config.approvalMode));
 
   return (
     <div
       className="runtime-config-bar"
       role="toolbar"
-      aria-label="运行时配置"
+      aria-label={t("runtimeBar.aria")}
     >
       {/* 1. Model — embedded ModelSwitcher */}
       {onSwitchModel ? (
@@ -203,48 +203,48 @@ export function RuntimeConfigBar({
           <ModelSwitcher label={config.modelId} tabId={tabId} onPick={onSwitchModel} />
         </div>
       ) : (
-        <StaticPill icon={<Brain size={16} />} label={config.modelId} ariaLabel="当前模型" />
+        <StaticPill icon={<Brain size={16} />} label={config.modelId} ariaLabel={t("runtimeBar.modelAria")} />
       )}
 
       {/* 2. Context — static, percent only */}
       <StaticPill
         icon={<Gauge size={16} />}
         label={`${config.contextPercent}%`}
-        ariaLabel="上下文使用率"
+        ariaLabel={t("runtimeBar.contextAria")}
       />
 
       {/* 3. Runtime — static, short */}
       <StaticPill
         icon={<Activity size={16} />}
-        label={config.runtimeStatus}
-        ariaLabel="运行状态"
+        label={t(runtimeStatusLabel(config.runtimeMode))}
+        ariaLabel={t("runtimeBar.runtimeAria")}
       />
 
       {/* 4. Collaboration — clickable, cycles modes */}
       {onCycleCollaboration ? (
-        <Pill icon={<Shield size={16} />} label={collaborationLabel(config.collaborationMode, surfaceKind)} onClick={onCycleCollaboration} ariaLabel="协作模式" />
+        <Pill icon={<Shield size={16} />} label={collabLabel} onClick={onCycleCollaboration} ariaLabel={t("runtimeBar.collabAria")} />
       ) : (
-        <StaticPill icon={<Shield size={16} />} label={collaborationLabel(config.collaborationMode, surfaceKind)} ariaLabel="协作模式" />
+        <StaticPill icon={<Shield size={16} />} label={collabLabel} ariaLabel={t("runtimeBar.collabAria")} />
       )}
 
       {/* 5. Approval — clickable, cycles 询问/自动/全部允许 */}
       {onSetApprovalMode ? (
-        <Pill icon={approvalIcon(config.approvalMode)} label={`审批：${approvalLabel(config.approvalMode)}`} onClick={() => {
+        <Pill icon={approvalIcon(config.approvalMode)} label={t("runtimeBar.approval.label", { mode: approvalValue })} onClick={() => {
           const next: ToolApprovalMode =
             config.approvalMode === "ask" ? "auto" :
             config.approvalMode === "auto" ? "yolo" :
             "ask";
           onSetApprovalMode(next);
-        }} ariaLabel="工具批准模式" />
+        }} ariaLabel={t("runtimeBar.approvalAria")} />
       ) : (
-        <StaticPill icon={approvalIcon(config.approvalMode)} label={`审批：${approvalLabel(config.approvalMode)}`} ariaLabel="工具批准模式" />
+        <StaticPill icon={approvalIcon(config.approvalMode)} label={t("runtimeBar.approval.label", { mode: approvalValue })} ariaLabel={t("runtimeBar.approvalAria")} />
       )}
 
       {workSendAvailable && (
         <button
           type="button"
           className={`runtime-config-bar__work-send${workSendSelected ? " runtime-config-bar__work-send--active" : ""}`}
-          aria-label={workSendSelected ? "将作为工作发送" : "作为工作开始"}
+          aria-label={t(workSendSelected ? "runtimeBar.workSend.on" : "runtimeBar.workSend.off")}
           aria-pressed={workSendSelected}
           disabled={workSendDisabled}
           onClick={() => onWorkSendChange?.(!workSendSelected)}
@@ -252,7 +252,7 @@ export function RuntimeConfigBar({
           {workSendSelected
             ? <CheckCircle2 size={16} aria-hidden="true" />
             : <BriefcaseBusiness size={15} aria-hidden="true" />}
-          <span>{workSendSelected ? "将作为工作发送" : "作为工作开始"}</span>
+          <span>{t(workSendSelected ? "runtimeBar.workSend.on" : "runtimeBar.workSend.off")}</span>
         </button>
       )}
 

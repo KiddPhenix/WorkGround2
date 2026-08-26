@@ -274,14 +274,16 @@ type App struct {
 	widgetConversationMu sync.Mutex
 	widgetMode           bool
 	widgetStyle          string
-	widgetSurfaceGen     int64 // protected by widgetMu; rejects stale resize calls
-	widgetSurfaceState   WidgetWindowState
-	widgetStateLoaded    bool
-	widgetState          widgetPersistedState
-	widgetIdleSince      int64 // protected by widgetActionMu
-	widgetInfoMu         sync.Mutex
-	widgetInfoCache      widgetInfoCache
-	widgetSystemProbe    func() WidgetSystemInfo
+	// widgetSurface is the single authoritative icon-canvas runtime state. Native
+	// geometry, the largest accepted layout intent, and its applied hit regions
+	// move together under widgetMu; no request sequence/version is required.
+	widgetSurface     desktopIconSurfaceRuntime
+	widgetStateLoaded bool
+	widgetState       widgetPersistedState
+	widgetIdleSince   int64 // protected by widgetActionMu
+	widgetInfoMu      sync.Mutex
+	widgetInfoCache   widgetInfoCache
+	widgetSystemProbe func() WidgetSystemInfo
 
 	// iconWidgetMu owns the additive desktop-icon widget projection. The
 	// pager widget above remains available; both views consume the same
@@ -4006,7 +4008,28 @@ func loadResumableSession(sessionPath string) (*agent.Session, error) {
 	if agent.IsCleanupPending(sessionPath) {
 		return nil, fmt.Errorf("session is pending cleanup")
 	}
-	return agent.LoadSession(sessionPath)
+	loaded, err := agent.LoadSession(sessionPath)
+	if err != nil {
+		return nil, err
+	}
+	// Self-heal + explicit failure for the stale-empty-anchor anomaly: a
+	// session whose primary .jsonl is 0 bytes but whose event log holds the
+	// transcript. LoadSession already rebuilt the anchor from the event log
+	// when it could; RebuildSessionAnchor is now a no-op (anchor non-empty) or
+	// reports that no authoritative recovery source exists. Only fail when the
+	// meta sidecar promises content — a genuinely new/empty session must still
+	// open as an empty conversation. This surfaces the data-loss state instead
+	// of silently showing a blank window.
+	if err := agent.RebuildSessionAnchor(sessionPath); err != nil {
+		if errors.Is(err, agent.ErrSessionAnchorUnrecoverable) {
+			if meta, ok, metaErr := agent.LoadBranchMeta(sessionPath); metaErr == nil && ok && (meta.Turns > 0 || strings.TrimSpace(meta.Preview) != "") {
+				return nil, fmt.Errorf("session transcript is empty and no replayable event log remains: %s", filepath.Base(sessionPath))
+			}
+			return loaded, nil
+		}
+		return nil, err
+	}
+	return loaded, nil
 }
 
 // PreviewSession reads a saved session for display only. It does not snapshot or

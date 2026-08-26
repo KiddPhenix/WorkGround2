@@ -2,6 +2,8 @@ import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { CreateAssistantDialog } from "../custom/features/assistant/AssistantWorkspace";
+import { setMockListProjectTree, setMockPickAssistantWorkspace } from "../lib/bridge";
+import type { ProjectNode } from "../lib/types";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 
@@ -69,48 +71,118 @@ ok(confirmCheck !== null, "code template renders an explicit permission confirma
 await act(async () => { confirmCheck?.click(); });
 ok(clickText("创建助手")?.disabled === false, "confirming the permission enables creation");
 
-// Workspace field: hand-typed path, native pick, and inline new-folder creation.
+// Workspace field: manual path, registered-workspace chooser, native picker.
 const wsInput = () => host.querySelector("#assistant-workspace-input") as HTMLInputElement | null;
-const parentInput = () => host.querySelector("#assistant-new-parent") as HTMLInputElement | null;
-const nameInput = () => host.querySelector("#assistant-new-name") as HTMLInputElement | null;
-const createFolderButton = () => [...host.querySelectorAll(".assistant-create__new-workspace button")].find((item) => item.textContent?.includes("创建")) as HTMLButtonElement | undefined;
-ok(host.querySelector(".assistant-create__workspace-actions button[aria-label='选择']") !== null, "workspace field shows a pick button");
-ok(host.querySelector(".assistant-create__workspace-actions button[aria-label='新建']") !== null, "workspace field shows a new-folder button");
+const chooseButton = () => host.querySelector(".assistant-create__workspace-actions button[aria-label='选择已有工作区']") as HTMLButtonElement | null;
+const newButton = () => host.querySelector(".assistant-create__workspace-actions button[aria-label='从文件夹新建']") as HTMLButtonElement | null;
+const chooser = () => host.querySelector(".assistant-create__workspace-chooser");
+const closeChooser = () => (chooser()?.querySelector("header button") as HTMLButtonElement | null)?.click();
+const choiceRows = () => [...host.querySelectorAll(".assistant-create__workspace-choice")] as HTMLButtonElement[];
+ok(chooseButton() !== null && newButton() !== null, "workspace field shows clearly labeled choose-existing and create-from-folder buttons");
+ok(host.querySelector("#assistant-new-parent") === null && host.querySelector("#assistant-new-name") === null && host.querySelector(".assistant-create__new-workspace") === null, "the parent/name new-folder form is removed");
 
-const pickButton = host.querySelector(".assistant-create__workspace-actions button[aria-label='选择']") as HTMLButtonElement | null;
-await act(async () => { pickButton?.click(); });
+// Manual typing keeps working.
+await setValue(wsInput()!, "D:\\Manual\\Path");
+ok(wsInput()?.value === "D:\\Manual\\Path", "workspace input stays manually editable");
+
+// "选择已有工作区" lists registered workspaces from ListProjectTree and never
+// opens the native picker.
+let pickerCalls = 0;
+setMockPickAssistantWorkspace(async () => { pickerCalls += 1; return "~/should-not-be-used"; });
+await act(async () => { chooseButton()?.click(); });
 await flush();
-ok(wsInput()?.value === "~/projects/assistant-workspace", "choosing a directory fills the workspace input");
-
-const newButton = host.querySelector(".assistant-create__workspace-actions button[aria-label='新建']") as HTMLButtonElement | null;
-await act(async () => { newButton?.click(); });
-ok(parentInput() !== null && nameInput() !== null, "new-folder reveals parent and name fields");
-ok(createFolderButton()?.disabled === true, "create folder is blocked while name is empty");
-
-await setValue(parentInput()!, "~/projects");
-await setValue(nameInput()!, "my-helper");
-ok(createFolderButton()?.disabled === false, "create folder enables once parent and name are set");
-await act(async () => { createFolderButton()?.click(); });
+ok(chooser() !== null, "choose-existing opens the registered-workspace list");
+ok(pickerCalls === 0, "opening the registered list never calls the native picker");
+ok(choiceRows().some((row) => row.textContent?.includes("joyquant-db")), "list shows a registered workspace name");
+ok(choiceRows().some((row) => row.textContent?.includes("~/projects/joyquant-sys")), "list shows the registered workspace path");
+const sysRow = choiceRows().find((row) => row.textContent?.includes("~/projects/joyquant-sys"));
+await act(async () => { sysRow?.click(); });
 await flush();
-ok(wsInput()?.value === "~/projects/my-helper", "creating a folder fills the workspace input");
-ok(parentInput() === null, "successful create closes the inline interaction");
+ok(wsInput()?.value === "~/projects/joyquant-sys", "picking a registered workspace fills the input with its root");
+ok(chooser() === null, "choosing closes the registered list");
+ok(pickerCalls === 0, "the registered choice still never calls the native picker");
 
-await act(async () => { newButton?.click(); });
-await setValue(parentInput()!, "~/projects");
-await setValue(nameInput()!, "temp");
-const cancelInline = () => [...host.querySelectorAll(".assistant-create__new-workspace button")].find((item) => item.textContent?.includes("取消")) as HTMLButtonElement | undefined;
-await act(async () => { cancelInline()?.click(); });
-ok(parentInput() === null, "cancel closes the inline interaction");
-ok(wsInput()?.value === "~/projects/my-helper", "cancel keeps the workspace value unchanged");
-
-await act(async () => { newButton?.click(); });
-await setValue(parentInput()!, "~/projects");
-await setValue(nameInput()!, "../evil");
-await act(async () => { createFolderButton()?.click(); });
+// Empty registered list explains itself and keeps the current value.
+setMockListProjectTree(async () => []);
+await act(async () => { chooseButton()?.click(); });
 await flush();
-ok(wsInput()?.value === "~/projects/my-helper", "failed create keeps the workspace value");
-ok(parentInput() !== null, "failed create keeps the inline interaction open for retry");
-ok(host.querySelector(".toast__text") !== null, "failed create surfaces an error toast");
+ok(host.textContent?.includes("还没有已登记的工作区") ?? false, "empty registered list explains the empty state");
+await act(async () => { closeChooser(); });
+ok(wsInput()?.value === "~/projects/joyquant-sys", "closing the empty list keeps the workspace value");
+
+// List failure surfaces inline and retry recovers without a picker call.
+let treeCalls = 0;
+setMockListProjectTree(async () => {
+  treeCalls += 1;
+  if (treeCalls === 1) throw new Error("tree unavailable");
+  return [{ key: "project_~/fresh", kind: "project", label: "fresh-project", root: "~/fresh" }];
+});
+await act(async () => { chooseButton()?.click(); });
+await flush();
+ok(chooser()?.querySelector("[role='alert']") !== null, "workspace list failure surfaces an inline error");
+const retryListButton = [...(chooser()?.querySelectorAll("button") ?? [])].find((item) => item.textContent?.includes("重新读取")) as HTMLButtonElement | undefined;
+await act(async () => { retryListButton?.click(); });
+await flush();
+ok(choiceRows().some((row) => row.textContent?.includes("fresh-project")), "retrying the failed list recovers");
+await act(async () => { closeChooser(); });
+ok(pickerCalls === 0, "list retry never calls the native picker");
+setMockPickAssistantWorkspace(null);
+setMockListProjectTree(null);
+
+// A late list response must not reopen a closed chooser nor leak into a
+// subsequent load.
+let resolveLate: ((tree: ProjectNode[]) => void) | null = null;
+setMockListProjectTree(() => new Promise<ProjectNode[]>((resolve) => { resolveLate = resolve; }));
+await act(async () => { chooseButton()?.click(); });
+ok(chooser() !== null && chooser()?.getAttribute("aria-busy") === "true", "chooser shows loading while the list is pending");
+await act(async () => { closeChooser(); });
+await act(async () => { resolveLate!([{ key: "project_late", kind: "project", label: "late-project", root: "~/late" }]); });
+await flush();
+ok(chooser() === null, "a late list response cannot reopen a closed chooser");
+setMockListProjectTree(null);
+await act(async () => { chooseButton()?.click(); });
+await flush();
+ok(choiceRows().every((row) => !row.textContent?.includes("late-project")), "reopened chooser ignores the stale late response");
+ok(choiceRows().some((row) => row.textContent?.includes("joyquant-db")), "reopened chooser loads the current registered workspaces");
+await act(async () => { closeChooser(); });
+
+// Operations are mutually exclusive: while the chooser is open the folder
+// picker button is disabled.
+setMockListProjectTree(() => new Promise<ProjectNode[]>(() => undefined));
+ok(newButton()?.disabled === false, "folder picker button starts enabled");
+await act(async () => { chooseButton()?.click(); });
+ok(newButton()?.disabled === true, "folder picker button is disabled while the chooser is open");
+await act(async () => { closeChooser(); });
+setMockListProjectTree(null);
+
+// "从文件夹新建" opens the native picker; a picked folder fills the input.
+await setValue(wsInput()!, "");
+setMockPickAssistantWorkspace(null);
+await act(async () => { newButton()?.click(); });
+await flush();
+ok(wsInput()?.value === "~/projects/assistant-workspace", "creating from the folder picker fills the workspace input");
+
+// Canceled picker (empty result) keeps the current value.
+setMockPickAssistantWorkspace(async () => "");
+await act(async () => { newButton()?.click(); });
+await flush();
+ok(wsInput()?.value === "~/projects/assistant-workspace", "canceling the folder picker keeps the current workspace value");
+
+// Failed picker keeps the value, shows a toast, and can be retried.
+let pickCalls = 0;
+setMockPickAssistantWorkspace(async () => {
+  pickCalls += 1;
+  if (pickCalls === 1) throw new Error("picker unavailable");
+  return "~/retried-folder";
+});
+await act(async () => { newButton()?.click(); });
+await flush();
+ok(wsInput()?.value === "~/projects/assistant-workspace", "failed folder picker keeps the workspace value");
+ok(host.querySelector(".toast__text") !== null, "failed folder picker surfaces an error toast");
+await act(async () => { newButton()?.click(); });
+await flush();
+ok(wsInput()?.value === "~/retried-folder", "folder picker can be retried after a failure");
+setMockPickAssistantWorkspace(null);
 
 // Turning learn-first off keeps the template policy and clears stale confirmation.
 await act(async () => { learnFirst?.click(); });

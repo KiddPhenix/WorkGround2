@@ -51,6 +51,15 @@ function currentRun(sessionId: string): ActiveRun {
   return nextRun(sessionId);
 }
 
+/** Whether a run for this session + turn identity already exists in the store. */
+function hasRunForTurn(sessionId: string, turnId: string): boolean {
+  const runs = useRunStore.getState().runs;
+  for (const run of Object.values(runs)) {
+    if (run.sessionId === sessionId && run.turnId === turnId) return true;
+  }
+  return false;
+}
+
 function append(sessionId: string, run: ActiveRun, event: Omit<RunEvent, "eventId">, stableId?: string) {
   useRunStore.getState().mergeRunEvent(
     run.runId,
@@ -116,6 +125,14 @@ export function applyRunWireEvent(sessionId: string, event: WireEvent, turnId?: 
   if (!sessionId) return;
 
   if (event.kind === "turn_started") {
+    // A turn_started for the same session + turnId can be re-delivered on
+    // replay, reconnect, or duplicate delivery. It must be idempotent: reuse
+    // the existing run (never spawn a second live run) and never repeat the
+    // start event. An existing record also keeps a terminal run from being
+    // resurrected by a stale turn_started. Without a turnId there is no
+    // reliable identity to dedupe on, so keep the legacy behavior of opening
+    // a new run for each turn_started.
+    if (turnId && hasRunForTurn(sessionId, turnId)) return;
     const run = nextRun(sessionId, turnId);
     append(sessionId, run, { kind: "generic", content: "开始执行", stepLabel: "开始" }, `${run.runId}:start`);
     return;

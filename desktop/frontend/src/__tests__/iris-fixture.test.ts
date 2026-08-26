@@ -136,7 +136,7 @@ ok(allAvailable, "all artifacts available");
 const config = irisFixtureConfig();
 eq(config.modelId, "DeepSeek-R1", "config model");
 eq(config.contextPercent, 33, "config context percent");
-eq(config.runtimeStatus, "运行中", "config runtime status");
+eq(config.runtimeMode, "foreground", "config runtime mode");
 eq(config.collaborationMode, "normal", "config collaboration mode");
 eq(config.approvalMode, "ask", "config approval mode");
 

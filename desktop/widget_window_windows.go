@@ -302,19 +302,18 @@ func setDesktopWindowBounds(_ context.Context, width, height, x, y int) error {
 	if hwnd == 0 {
 		return fmt.Errorf("setDesktopWindowBounds: window not found")
 	}
-	flags := uintptr(windowPosNoZOrder | windowPosNoActivate)
-	ret, _, callErr := procSetWindowPos.Call(uintptr(hwnd), 0, uintptr(x), uintptr(y), 0, 0, flags|windowPosNoSize)
-	if ret == 0 {
-		return fmt.Errorf("setDesktopWindowBounds: move failed: %w", callErr)
-	}
 	dpi, _, _ := procGetDpiForWindow.Call(uintptr(hwnd))
 	physicalWidth := scaleForDPI(width, uint32(dpi))
 	physicalHeight := scaleForDPI(height, uint32(dpi))
-	ret, _, callErr = procSetWindowPos.Call(
+	// Move and resize in one compositor transaction. Two SetWindowPos calls
+	// expose an intermediate frame at the new origin with the old size, which is
+	// especially visible through a transparent WebView2 widget surface.
+	flags := uintptr(windowPosNoZOrder | windowPosNoActivate)
+	ret, _, callErr := procSetWindowPos.Call(
 		uintptr(hwnd), 0, uintptr(x), uintptr(y), uintptr(physicalWidth), uintptr(physicalHeight), flags,
 	)
 	if ret == 0 {
-		return fmt.Errorf("setDesktopWindowBounds: resize failed: %w", callErr)
+		return fmt.Errorf("setDesktopWindowBounds: apply bounds failed: %w", callErr)
 	}
 	var rect w32Rect
 	ret, _, callErr = procGetWindowRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&rect)))

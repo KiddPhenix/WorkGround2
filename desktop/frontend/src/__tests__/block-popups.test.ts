@@ -100,7 +100,7 @@ console.log("\nblocked-session popup reminders");
 {
   const mode = readFileSync(new URL("../components/widget/DesktopIconMode.tsx", import.meta.url), "utf8");
   const css = readFileSync(new URL("../components/widget/desktop-icon-mode.css", import.meta.url), "utf8");
-  ok(mode.includes('const blockLabel = item.status === "needs_input" ? "待回答" : item.status === "needs_confirm" ? "待确认" : "";'), "blocked sessions derive a persistent text label");
+  ok(mode.includes('const blockLabel = item.status === "needs_input" ? t("desktopIcon.blockAnswer") : item.status === "needs_confirm" ? t("desktopIcon.blockConfirm") : "";'), "blocked sessions derive a persistent text label (localized)");
   ok(mode.includes("blockLabel && <span className={`desktop-icon__block-state"), "blocked sessions render the text label outside the popup");
   ok(/\.desktop-icon__block-state\s*\{[^}]*display:\s*block[^}]*font-size:\s*9px/.test(css), "blocked-session text remains visible beneath the icon");
 }

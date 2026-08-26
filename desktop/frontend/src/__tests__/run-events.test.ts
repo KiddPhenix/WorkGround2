@@ -44,6 +44,41 @@ runs = Object.values(useRunStore.getState().runs);
 ok(runs.length === 2, "a later turn creates a separate run tab");
 ok(runs[1]?.status === "failed", "failed turn remains explicit");
 
+// ── duplicate turn_started for the same turn is idempotent ────────────────
+
+applyRunWireEvent("tab-dup", { kind: "turn_started" }, "turn:1");
+applyRunWireEvent("tab-dup", { kind: "turn_started" }, "turn:1"); // replay / duplicate delivery
+let dupRuns = Object.values(useRunStore.getState().runs).filter((r) => r.sessionId === "tab-dup");
+ok(dupRuns.length === 1, "duplicate turn_started keeps a single run");
+ok(dupRuns[0]?.status === "running", "duplicate turn_started keeps the run active");
+ok(dupRuns[0]?.events.filter((e) => e.stepLabel === "开始").length === 1, "duplicate turn_started does not repeat the start event");
+
+applyRunWireEvent("tab-dup", { kind: "tool_dispatch", tool: { id: "d1", name: "read_file", args: "a.go", readOnly: true } });
+applyRunWireEvent("tab-dup", { kind: "tool_result", tool: { id: "d1", name: "read_file", output: "ok", readOnly: true } });
+applyRunWireEvent("tab-dup", { kind: "turn_done" });
+dupRuns = Object.values(useRunStore.getState().runs).filter((r) => r.sessionId === "tab-dup");
+ok(dupRuns.length === 1, "post-duplicate tool events land on the reused run");
+ok(dupRuns[0]?.status === "completed", "turn_done still completes the reused run");
+ok(dupRuns[0]?.events.some((e) => e.stepLabel?.includes("read_file")) === true, "post-duplicate tools become steps on the reused run");
+
+// ── terminal runs are not resurrected by a stale turn_started ─────────────
+
+applyRunWireEvent("tab-term", { kind: "turn_started" }, "turn:1");
+applyRunWireEvent("tab-term", { kind: "turn_done" });
+applyRunWireEvent("tab-term", { kind: "turn_started" }, "turn:1"); // stale replay after completion
+let termRuns = Object.values(useRunStore.getState().runs).filter((r) => r.sessionId === "tab-term");
+ok(termRuns.length === 1, "stale turn_started does not resurrect a terminal run");
+ok(termRuns[0]?.status === "completed", "completed run stays completed");
+
+// ── a distinct turnId still opens a new run ───────────────────────────────
+
+applyRunWireEvent("tab-turn2", { kind: "turn_started" }, "turn:1");
+applyRunWireEvent("tab-turn2", { kind: "turn_done" });
+applyRunWireEvent("tab-turn2", { kind: "turn_started" }, "turn:2");
+let turn2Runs = Object.values(useRunStore.getState().runs).filter((r) => r.sessionId === "tab-turn2");
+ok(turn2Runs.length === 2, "a distinct turnId opens a separate run");
+ok(turn2Runs[1]?.turnId === "turn:2" && turn2Runs[1]?.status === "running", "new run carries the new turn identity and is active");
+
 projectRunHistory("tab-history", [
   { kind: "user" },
   { kind: "assistant", reasoning: "先检查文件" },

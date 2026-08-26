@@ -383,12 +383,12 @@ export interface ExternalRunLaunchResult { receipt: ExternalRunReceipt; run: Ext
 export interface ExternalRunCancelInput { runId: string; requestId: string; }
 export interface ExternalRunActionResult { receipt: ExternalRunReceipt; run: ExternalRunProjection; snapshot: ExternalRunSnapshot; }
 export interface DesktopIconRect { x: number; y: number; width: number; height: number; }
-export interface DesktopIconHitRegionsInput { rects: DesktopIconRect[]; generation: number; }
+export interface DesktopIconSurfaceResult { width: number; height: number; x: number; y: number; }
+export interface DesktopIconHitRegionsInput { rects: DesktopIconRect[]; surface: DesktopIconSurfaceResult; }
 // DesktopIconSurfaceInput is one monotonic native-canvas resize request. Width
 // and height are the content's logical bounds, envelope is the safety margin
-// added on every side, and generation is the coordinator's request token.
-export interface DesktopIconSurfaceInput { width: number; height: number; envelope: number; generation: number; }
-export interface DesktopIconSurfaceResult { width: number; height: number; x: number; y: number; generation: number; }
+// added on every side. Backend geometry is the authoritative identity.
+export interface DesktopIconSurfaceInput { width: number; height: number; envelope: number; }
 export interface CreateBlankSessionInput { scope: string; workspaceRoot: string; requestId: string; }
 export interface DailyRoutine {
   id: string; workspaceRoot?: string; name: string; prompt: string; goal: string;
@@ -1372,6 +1372,23 @@ let mockDecisionSkillExportFn: (() => Promise<DecisionSkillExportResult>) | null
 /** Test-only override for the decision-skill export browser mock. */
 export function setMockDecisionSkillExport(fn: (() => Promise<DecisionSkillExportResult>) | null): void {
   mockDecisionSkillExportFn = fn;
+}
+
+// mockPickAssistantWorkspaceFn / mockListProjectTreeFn let tests drive the
+// browser mock's assistant workspace outcomes (picked / canceled / failed /
+// late list responses) without touching Wails. Null (the default) uses the
+// canned behavior below.
+let mockPickAssistantWorkspaceFn: ((defaultDir: string) => Promise<string>) | null = null;
+let mockListProjectTreeFn: (() => Promise<ProjectNode[]>) | null = null;
+
+/** Test-only override for the assistant workspace picker browser mock. */
+export function setMockPickAssistantWorkspace(fn: ((defaultDir: string) => Promise<string>) | null): void {
+  mockPickAssistantWorkspaceFn = fn;
+}
+
+/** Test-only override for the project-tree browser mock. */
+export function setMockListProjectTree(fn: (() => Promise<ProjectNode[]>) | null): void {
+  mockListProjectTreeFn = fn;
 }
 
 function makeMockApp(): AppBindings {
@@ -2966,7 +2983,7 @@ function makeMockApp(): AppBindings {
 			// bottom-right of a virtual 1920×1080 work area.
 			const width = Math.min(1920, Math.max(640, input.width + input.envelope * 2));
 			const height = Math.min(1080, Math.max(540, input.height + input.envelope * 2));
-			return { width, height, x: Math.max(0, 1920 - width - 16), y: Math.max(0, 1080 - height - 24), generation: input.generation };
+			return { width, height, x: Math.max(0, 1920 - width - 16), y: Math.max(0, 1080 - height - 24) };
 		},
 		async SetDesktopWorkspaceSlots(slots: number) {
 			if (!Number.isInteger(slots) || slots < 0 || slots > 4) throw new Error("desktop workspace slots must be between 0 and 4");
@@ -5326,6 +5343,7 @@ function makeMockApp(): AppBindings {
       return cloneAssistant(run);
     },
     async PickAssistantWorkspace(defaultDir: string) {
+      if (mockPickAssistantWorkspaceFn) return mockPickAssistantWorkspaceFn(defaultDir);
       return defaultDir?.trim() || "~/projects/assistant-workspace";
     },
     async CreateAssistantWorkspace(parentDir: string, name: string) {
@@ -5631,6 +5649,7 @@ function makeMockApp(): AppBindings {
       }
     },
     async ListProjectTree() {
+      if (mockListProjectTreeFn) return mockListProjectTreeFn();
       return cloneProjectTree();
     },
     async RenameProject(workspaceRoot: string, title: string) {

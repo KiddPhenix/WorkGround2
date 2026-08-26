@@ -1,4 +1,5 @@
 import { app } from "../../../lib/bridge";
+import type { ProjectNode } from "../../../lib/types";
 import type {
   AssistantAttentionItem,
   AssistantCancelInput,
@@ -93,6 +94,8 @@ export function assistantPickWorkspace(defaultDir = ""): Promise<string> {
   return app.PickAssistantWorkspace(defaultDir) as Promise<string>;
 }
 
-export function assistantCreateWorkspace(parentDir: string, name: string): Promise<string> {
-  return app.CreateAssistantWorkspace(parentDir, name) as Promise<string>;
+// assistantListWorkspaces exposes the shared project tree; the create dialog
+// keeps only registered project nodes with a valid root.
+export function assistantListWorkspaces(): Promise<ProjectNode[]> {
+  return app.ListProjectTree();
 }

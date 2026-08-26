@@ -1162,6 +1162,98 @@ func TestWidgetDelegationsAggregatesDeduplicatesAndSorts(t *testing.T) {
 	}
 }
 
+func TestWidgetDelegationsProjectsRunningAssistantSession(t *testing.T) {
+	dir := t.TempDir()
+	assistantPath := filepath.Join(dir, "assistant.jsonl")
+	assistant := widgetSource{
+		meta:        TabMeta{ID: "assistant-tab", SessionID: "assistant-session", SessionKind: string(agent.SessionKindAssistant), Scope: "global", TopicID: "assistant-topic", TopicTitle: "Assistant Session", SessionPath: assistantPath, RunningWork: true, TurnStartedAt: time.Unix(40, 0).UnixMilli()},
+		sessionDir:  dir,
+		branchID:    "assistant",
+		requestText: "帮我整理周报",
+	}
+	app := &App{}
+	items, counts, err := app.widgetDelegations([]widgetSource{assistant})
+	if err != nil {
+		t.Fatalf("widgetDelegations: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %+v, want one assistant delegation", items)
+	}
+	if items[0].Kind != "assistant" || items[0].Status != "running" || items[0].Content != "帮我整理周报" {
+		t.Fatalf("assistant delegation = %+v", items[0])
+	}
+	if items[0].SessionRef == nil || items[0].SessionRef.SessionPath != assistantPath {
+		t.Fatalf("assistant delegation ref = %+v", items[0].SessionRef)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("counts = %v, want no subagent counts for a plain assistant", counts)
+	}
+}
+
+func TestWidgetDelegationsExcludesIdleAssistantSession(t *testing.T) {
+	dir := t.TempDir()
+	assistant := widgetSource{
+		meta:       TabMeta{ID: "assistant-tab", SessionID: "assistant-session", SessionKind: string(agent.SessionKindAssistant), SessionPath: filepath.Join(dir, "assistant.jsonl")},
+		sessionDir: dir,
+		branchID:   "assistant",
+	}
+	app := &App{}
+	items, _, err := app.widgetDelegations([]widgetSource{assistant})
+	if err != nil {
+		t.Fatalf("widgetDelegations: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("idle assistant remained in delegations: %+v", items)
+	}
+}
+
+func TestBuildDesktopIconSnapshotProjectsRunningAssistantOntoDelegate(t *testing.T) {
+	sources := []widgetSource{{meta: TabMeta{ID: "assistant-tab", SessionID: "assistant-session", SessionKind: string(agent.SessionKindAssistant), RunningWork: true, TurnStartedAt: time.Now().UnixMilli()}}}
+	delegations := []DesktopIconDelegation{{ID: "assistant:assistant-tab", Kind: "assistant", Content: "帮我整理周报", Status: "running"}}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, nil, delegations)
+	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
+	if delegate == nil || delegate.ActivityCount != 1 || delegate.Status != "running" {
+		t.Fatalf("delegate = %#v, want one running assistant delegation", delegate)
+	}
+	if findDesktopIconItem(snapshot.Items, "task:assistant-tab") != nil {
+		t.Fatal("running assistant session received an independent task icon")
+	}
+}
+
+func TestBuildDesktopIconSnapshotExcludesIdleAssistantSession(t *testing.T) {
+	sources := []widgetSource{{meta: TabMeta{ID: "assistant-tab", SessionID: "assistant-session", SessionKind: string(agent.SessionKindAssistant)}}}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, nil, nil)
+	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
+	if delegate == nil || delegate.ActivityCount != 0 || delegate.Status != "idle" {
+		t.Fatalf("delegate = %#v, want idle without assistant delegation", delegate)
+	}
+	if findDesktopIconItem(snapshot.Items, "task:assistant-tab") != nil {
+		t.Fatal("idle assistant session received an independent task icon")
+	}
+}
+
+func TestBuildDesktopIconSnapshotFiltersRetainedAssistant(t *testing.T) {
+	dir := t.TempDir()
+	assistantPath := filepath.Join(dir, "assistant.jsonl")
+	normalPath := filepath.Join(dir, "normal.jsonl")
+	state := desktopIconPersistedState{Kept: map[string]desktopIconKept{
+		"task:assistant-old":    {ItemID: "task:assistant-old", SourceID: "assistant-tab", SessionID: "assistant-session", Title: "旧 Assistant", SessionPath: assistantPath, SessionKind: string(agent.SessionKindAssistant)},
+		"task:assistant-legacy": {ItemID: "task:assistant-legacy", SourceID: "assistant-legacy-tab", SessionID: "assistant-legacy-session", Title: "旧版 Assistant", SessionPath: filepath.Join(dir, "assistant-legacy.jsonl")},
+		"task:normal":           {ItemID: "task:normal", SourceID: "normal", Title: "普通 Session", SessionPath: normalPath},
+	}, CompletionSummaries: map[string]desktopIconCompletionSummary{}}
+	sources := []widgetSource{{meta: TabMeta{ID: "assistant-legacy-tab", SessionID: "assistant-legacy-session", SessionKind: string(agent.SessionKindAssistant), SessionPath: filepath.Join(dir, "assistant-legacy.jsonl")}}}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, state, 0, nil, nil, nil, nil)
+	if findDesktopIconItem(snapshot.Items, "task:assistant-old") != nil {
+		t.Fatalf("retained assistant delegation leaked into ordinary icons: %+v", snapshot.Items)
+	}
+	if findDesktopIconItem(snapshot.Items, "task:assistant-legacy") != nil {
+		t.Fatalf("legacy retained assistant leaked while its typed source was loaded: %+v", snapshot.Items)
+	}
+	if findDesktopIconItem(snapshot.Items, "task:normal") == nil {
+		t.Fatal("ordinary retained session was filtered with assistant delegations")
+	}
+}
+
 func TestWidgetDelegationsEmptyErrorAndCompletionRecovery(t *testing.T) {
 	app := &App{}
 	items, counts, err := app.widgetDelegations(nil)
@@ -1303,23 +1395,27 @@ func TestNormalizeDesktopIconRectsClampsAndDropsInvalid(t *testing.T) {
 	}
 }
 
-func TestDesktopIconHitRegionsIgnoreStaleSurface(t *testing.T) {
-	app := &App{ctx: context.Background(), widgetMode: true, widgetStyle: "icons", widgetSurfaceGen: 8}
+func TestDesktopIconHitRegionsIgnoreDifferentSurface(t *testing.T) {
+	state := WidgetWindowState{Width: 1080, Height: 720, X: 824, Y: 336}
+	app := &App{ctx: context.Background(), widgetMode: true, widgetStyle: "icons", widgetSurface: newDesktopIconSurfaceRuntime(state)}
 	if err := app.SetDesktopIconHitRegions(DesktopIconHitRegionsInput{
-		Rects:      []DesktopIconRect{{X: 10, Y: 10, Width: 20, Height: 20}},
-		Generation: 7,
+		Rects:   []DesktopIconRect{{X: 10, Y: 10, Width: 20, Height: 20}},
+		Surface: WidgetWindowState{Width: 1280, Height: 900, X: 624, Y: 156},
 	}); err != nil {
 		t.Fatalf("stale hit region should be ignored: %v", err)
 	}
 }
 
-func TestDesktopIconSurfaceInputPreservesCurrentAxes(t *testing.T) {
-	input := growDesktopIconSurfaceInput(
-		DesktopIconSurfaceInput{Width: 700, Height: 900, Envelope: 32, Generation: 9},
-		WidgetWindowState{Width: 1080, Height: 720},
+func TestDesktopIconSurfaceIntentMergesByBounds(t *testing.T) {
+	input := mergeDesktopIconSurfaceInput(
+		DesktopIconSurfaceInput{Width: 1080, Height: 720},
+		DesktopIconSurfaceInput{Width: 700, Height: 900, Envelope: 32},
 	)
-	if input.Width != 1016 || input.Height != 900 || input.Generation != 9 {
-		t.Fatalf("input = %#v, want width preserved and larger height retained", input)
+	if input.Width != 1080 || input.Height != 964 || input.Envelope != 0 {
+		t.Fatalf("input = %#v, want authoritative outer bounds union", input)
+	}
+	if got := mergeDesktopIconSurfaceInput(input, DesktopIconSurfaceInput{Width: 600, Height: 600, Envelope: 20}); got != input {
+		t.Fatalf("smaller retry changed intent: got %#v, want %#v", got, input)
 	}
 }
 
@@ -1956,7 +2052,7 @@ func TestRememberDesktopIconTaskIdempotentKeepsOriginalSummary(t *testing.T) {
 	}
 }
 
-func TestRememberDesktopIconTaskSkipsCliAndCollaboration(t *testing.T) {
+func TestRememberDesktopIconTaskSkipsDelegationSessions(t *testing.T) {
 	cliTab, cliSP := completionTestTab(t, 0)
 	cliTab.ID = "cli-tab"
 	cliMeta, _, err := agent.LoadBranchMeta(cliSP)
@@ -1970,15 +2066,20 @@ func TestRememberDesktopIconTaskSkipsCliAndCollaboration(t *testing.T) {
 	collabTab, _ := completionTestTab(t, 0)
 	collabTab.ID = "collab-tab"
 	collabTab.sessionKind = agent.SessionKindCollaboration
+	assistantTab, _ := completionTestTab(t, 0)
+	assistantTab.ID = "assistant-tab"
+	assistantTab.sessionKind = agent.SessionKindAssistant
 	app := newSummaryTestApp(t, cliTab, fakeCompletionSummaryGenerator{})
 	app.tabs[collabTab.ID] = collabTab
+	app.tabs[assistantTab.ID] = assistantTab
 	app.widgetMode = true
 
 	app.rememberDesktopIconTask(cliTab.ID)
 	app.rememberDesktopIconTask(collabTab.ID)
+	app.rememberDesktopIconTask(assistantTab.ID)
 
 	if len(app.iconWidgetState.Kept) != 0 {
-		t.Fatalf("cli/collaboration tabs were retained: %+v", app.iconWidgetState.Kept)
+		t.Fatalf("delegation sessions were retained: %+v", app.iconWidgetState.Kept)
 	}
 }
 

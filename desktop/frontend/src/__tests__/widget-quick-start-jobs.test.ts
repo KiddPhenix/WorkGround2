@@ -235,14 +235,15 @@ function realTask(id: string): DesktopIconItem {
 	assert.equal(quickStartJobItemID("r1"), "opt:r1", "the optimistic key builder round-trips");
 	assert.equal(quickStartJobPromptLabel({ ...intent, prompt: "  first line\nsecond line  " }), "first line", "the label uses the first prompt line");
 	assert.equal(quickStartJobPromptLabel({ ...intent, prompt: "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十" }).length, 25, "a long prompt truncates to 24 chars plus an ellipsis");
-	assert.equal(quickStartJobWorkspaceLabel("auto"), "自动", "auto workspace reads as 自动");
+	assert.equal(quickStartJobWorkspaceLabel("auto"), "Auto", "auto workspace reads as Auto through the locale dictionary");
 	assert.equal(quickStartJobWorkspaceLabel("global"), "Global", "global workspace reads as Global");
 	assert.equal(quickStartJobWorkspaceLabel("project:D:/Work/Alpha"), "Alpha", "a project workspace shows its folder name");
 	// aria/title contracts: the optimistic icon's accessible/mouse state always
-	// announces 后台发送中 while delivering and 发送失败，可重试 once failed.
-	assert.equal(quickStartJobStateLabel(runningItem), "后台发送中", "an in-flight job announces 后台发送中");
-	assert.equal(quickStartJobStateLabel(quickStartJobItem(acceptedJob)), "后台发送中", "an accepted job still announces 后台发送中 (backend turn running)");
-	assert.equal(quickStartJobStateLabel(quickStartJobItem(failed)), "发送失败，可重试", "a failed job announces 发送失败，可重试");
+	// announces 后台发送中 while delivering and 发送失败，可重试 once failed
+	// (through the locale dictionary; the test env defaults to English).
+	assert.equal(quickStartJobStateLabel(runningItem), "Sending in the background", "an in-flight job announces 后台发送中");
+	assert.equal(quickStartJobStateLabel(quickStartJobItem(acceptedJob)), "Sending in the background", "an accepted job still announces 后台发送中 (backend turn running)");
+	assert.equal(quickStartJobStateLabel(quickStartJobItem(failed)), "Send failed. Retry.", "a failed job announces 发送失败，可重试");
 }
 
 // --- merge with the authoritative snapshot (pure) ---
@@ -426,7 +427,7 @@ function realTask(id: string): DesktopIconItem {
 		wait: async () => {},
 	});
 	const outcome = runner.submit({ ...intent, prompt: "   " });
-	assert.deepEqual(outcome, { ok: false, error: "请输入对话内容" }, "an empty prompt fails validation synchronously");
+	assert.deepEqual(outcome, { ok: false, error: "Enter a message first" }, "an empty prompt fails validation synchronously (localized error, test env defaults to English)");
 	assert.equal(calls.length, 0, "an invalid submit never dispatches");
 	assert.deepEqual(runner.jobs(), {}, "an invalid submit never enqueues");
 }

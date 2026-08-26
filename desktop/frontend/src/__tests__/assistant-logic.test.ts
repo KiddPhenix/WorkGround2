@@ -31,9 +31,11 @@ ok(runHistoryAction("waiting_attention") === "attention", "waiting_attention rou
 ok(attentionNeedsRebind("rebind_workspace"), "workspace rebind attention never approves a frozen old run");
 ok(attentionNeedsRebind("cancel_recreate"), "cancel and recreate attention never approves a frozen old run");
 ok(!attentionNeedsRebind("publish_release"), "ordinary attention can still follow the approval flow");
-const attentionBase: AssistantAttentionItem = { id: "attention-state", assistant_id: "assistant-1", run_id: "run-waiting", request_id: "attention-request", action: "publish_release", summary: "确认发布", state: "open", revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z" };
-const waitingRun: AssistantRun = { id: "run-waiting", assistant_id: "assistant-1", routine_id: "routine-1", request_id: "run-request", trigger: "manual", state: "waiting_attention", attempt: 1, max_attempts: 3, revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z" };
+const attentionBase: AssistantAttentionItem = { id: "attention-state", assistant_id: "assistant-1", run_id: "run-waiting", request_id: "attention-request", action: "publish_release", summary: "确认发布", resume_token: "approval-2", state: "open", revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z" };
+const waitingRun: AssistantRun = { id: "run-waiting", assistant_id: "assistant-1", routine_id: "routine-1", request_id: "run-request", trigger: "manual", state: "waiting_attention", resume_token: "approval-2", attempt: 1, max_attempts: 3, revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z" };
 ok(attentionInboxAction({ ...attentionBase, state: "approved" }, waitingRun) === "continue", "approved attention remains actionable while its run still waits");
+ok(attentionInboxAction({ ...attentionBase, resume_token: "approval-1", state: "approved" }, waitingRun) === "none", "an approved item from an earlier continuation stays in history instead of resurfacing");
+ok(attentionInboxAction({ ...attentionBase, resume_token: "approval-1" }, waitingRun) === "none", "an open item from an earlier continuation cannot replace the current decision");
 ok(attentionInboxAction({ ...attentionBase, state: "approved" }, { ...waitingRun, state: "running" }) === "none", "approved attention hides after its run continues");
 ok(attentionInboxAction({ ...attentionBase, action: "answer_required" }, waitingRun) === "answer", "answer-required attention exposes an answer flow");
 ok(attentionInboxAction({ ...attentionBase, action: "verify_run_outcome" }, waitingRun) === "verify", "unknown run outcome exposes the three-way verification flow");

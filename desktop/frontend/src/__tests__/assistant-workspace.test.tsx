@@ -372,8 +372,8 @@ const attentionSnapshot: AssistantSnapshot = {
   revision: 1,
   assistant: { id: "assistant-answer", name: "答疑助理", mission: "等待回答", scope: "global", lifecycle: "active", policy: { local_write: "deny", network: "deny", publish: "approve", delete: "approve", payment: "approve", secrets: "approve", private_data: "approve" }, memory_revision: 0, revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z" },
   routines: [], memory: { revision: 0, items: [] },
-  runs: [{ id: "run-answer", assistant_id: "assistant-answer", request_id: "run-request", trigger: "manual", state: "waiting_attention", attempt: 1, max_attempts: 3, revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z" }],
-  attention: [{ id: "attention-answer", assistant_id: "assistant-answer", run_id: "run-answer", request_id: "attention-request", action: "answer_required", summary: "需要明确答案", state: "open", revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z" }],
+  runs: [{ id: "run-answer", assistant_id: "assistant-answer", request_id: "run-request", trigger: "manual", state: "waiting_attention", resume_token: "answer-2", attempt: 1, max_attempts: 3, revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z" }],
+  attention: [{ id: "attention-answer", assistant_id: "assistant-answer", run_id: "run-answer", request_id: "attention-request", action: "answer_required", summary: "需要明确答案", resume_token: "answer-2", state: "open", revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z" }],
   updated_at: "2026-08-17T00:00:00Z",
 };
 
@@ -405,6 +405,14 @@ await act(async () => {
   root.render(<LocaleProvider><ToastProvider><AttentionInbox snapshot={{ ...attentionSnapshot, attention: [{ ...attentionSnapshot.attention[0], state: "approved" }] }} busy="" act={async () => true} onOverview={() => undefined} /></ToastProvider></LocaleProvider>);
 });
 ok(host.textContent?.includes("继续运行") ?? false, "approved attention remains visible with a continue action while its run waits");
+
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><AttentionInbox snapshot={{ ...attentionSnapshot, attention: [
+    { ...attentionSnapshot.attention[0], id: "attention-history", resume_token: "answer-1", state: "approved" },
+    attentionSnapshot.attention[0],
+  ] }} busy="" act={async () => true} onOverview={() => undefined} /></ToastProvider></LocaleProvider>);
+});
+ok(!host.textContent?.includes("继续运行") && host.textContent?.includes("需要明确答案") || false, "resolved history stays hidden while the current continuation remains actionable");
 
 const outcomeAttention = { ...attentionSnapshot.attention[0], id: "attention-outcome", action: "verify_run_outcome", state: "open" as const };
 await act(async () => {

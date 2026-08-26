@@ -1,4 +1,5 @@
 import type { DesktopIconItem, DesktopIconNotice } from "../../lib/bridge";
+import { t } from "../../lib/i18n";
 
 export const ROOM_NOTIFICATION_MODE_KEY = "wg2.icon-widget-room-notification-mode";
 
@@ -104,8 +105,8 @@ export function consumeRoomPopup(state: RoomPopupState): { state: RoomPopupState
 }
 
 export function roomAttentionLabel(attention?: RoomAttention): string {
-  if (attention === "mention_both") return "提到了你和你的 Agent";
-  if (attention === "mention_agent") return "提到了你的 Agent";
-  if (attention === "mention_member") return "提到了你";
-  return "新消息";
+  if (attention === "mention_both") return t("desktopIcon.room.mentionBoth");
+  if (attention === "mention_agent") return t("desktopIcon.room.mentionAgent");
+  if (attention === "mention_member") return t("desktopIcon.room.mentionMember");
+  return t("desktopIcon.room.newMessage");
 }
