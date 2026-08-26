@@ -460,6 +460,20 @@ type ChannelProposal struct {
 - Desktop 增加“改进建议”页、待处理计数、前后值对比、接受/拒绝与终态历史；迟到 revision 不覆盖新状态，失败保留可重试入口。
 - 单元测试覆盖协议解析、无变化/越界拒绝、原子创建、幂等重放、CAS 接受、已达目标、冲突淘汰、拒绝、重启恢复和 UI 主交互；通过 Go 全量测试/vet、Frontend test/typecheck/build 与 Desktop 构建。
 
+### 阶段 6：角色化调度、反思与脑洞
+
+状态：实现中（2026-08-27）。
+
+每个 Assistant 固定拥有一个 Dispatcher、最多三个并行 Runner、一个 Reflector 和一个低频 Ideator。角色是持久业务阶段，不依赖某个 Panel 或 Session 的生命周期：
+
+1. 用户直接输入先原子创建 `Dispatch`。Dispatcher 将其分类为 `task`、`question`、`feedback`、`improvement`、`correction` 或 `control`，保存面向用户的一级回复，并创建零到多个具名 Runner Job。提交接口返回完整 Dispatch；失败保留显式可重试状态，不把未分类输入伪装成已执行。
+2. Runner Job 冻结输入分类、目标、Runner 名称、权限、Workspace 和 ContextPack revision。不同 Job 可并行，单 Assistant 默认上限为 3；领取、续租、完成、失败和重试继续使用稳定 request ID 与 fence。计划、记忆和其它共享状态只经 Store 的 revision/CAS 入口提交。
+3. 全部关联 Job 进入终态后，Reflector 生成一个有界 `ContextPack`：包含结论、证据、失败、可复用策略、未决事项和建议的后续 Runner 上下文。ContextPack 与来源 Dispatch/Job 绑定并原子提交；Runner 只读取适用的 ContextPack，不注入无限原始历史。
+4. Ideator 在距上次脑洞至少 7 天或新增 5 个成功任务 Dispatch 后触发，也可由用户手动触发。它可以暂时放下既有策略假设来重新审视使命、目标和路径，但绝不能绕过权限、安全、Workspace、凭据和发布边界。产出保存为 `IdeaProposal`，必须由人类接受或拒绝；接受只转化为策略记忆或新的责任候选，不直接改 Mission、Policy 或执行外部动作。
+5. UI 时间线展示 Dispatcher 一级回复、分类、Runner 状态、反思摘要和脑洞待确认项。迟到快照按 revision 丢弃；所有失败均保留重试入口。
+
+验收至少覆盖：分类与幂等重放、同 request ID 冲突、零 Job 反馈输入、多 Job 三并发上限、租约恢复、反思只执行一次、ContextPack 有界与归属过滤、5 次/7 天触发、脑洞接受/拒绝 CAS、权限不可扩大、重启恢复，以及 Desktop/前端主交互。
+
 ## 11. 风险与约束
 
 - 没有 Desktop 或本机 daemon 运行时不会执行任务；宿主恢复后按 `coalesce_latest` 补一次。
