@@ -157,6 +157,14 @@ func TestTrySubmitUserTurnWithPolicyBusyDoesNotMutateRuntime(t *testing.T) {
 	close(release)
 }
 
+func TestLegacyEmptyOneShotGrantCoversNewSemanticSubject(t *testing.T) {
+	manager := newApprovalManager(permission.New("ask", nil, []string{"browser_type"}, nil), ToolApprovalAsk, 0)
+	manager.configure(manager.policy, ToolApprovalAsk, []ToolGrant{{Tool: "browser_type"}})
+	if !manager.preApproved("browser_type", "ordinary") {
+		t.Fatal("legacy empty browser_type grant did not cover classified ordinary input")
+	}
+}
+
 type permissionCheckingRunner struct {
 	check  func() (bool, error)
 	result chan permissionCheckResult
@@ -202,6 +210,26 @@ func TestTrySubmitUserTurnWithPolicyInstallsGateBeforeRun(t *testing.T) {
 	}
 	if c.approval.preApproved("write_file", "release.txt") {
 		t.Fatal("accepted submit retained old session grant")
+	}
+}
+
+func TestRunWithPolicyInstallsGateBeforeSynchronousRun(t *testing.T) {
+	result := make(chan permissionCheckResult, 1)
+	var c *Controller
+	runner := permissionCheckingRunner{
+		result: result,
+		check: func() (bool, error) {
+			allow, _, err := c.permissionGate.Check(context.Background(), "write_file", json.RawMessage(`{"path":"release.txt"}`), false)
+			return allow, err
+		},
+	}
+	c = New(Options{Runner: runner, Policy: permission.New("allow", nil, nil, nil)})
+	if err := c.RunWithPolicy(context.Background(), "assistant turn", permission.New("allow", nil, nil, []string{"write_file"}), ToolApprovalAsk); err != nil {
+		t.Fatal(err)
+	}
+	got := <-result
+	if got.err != nil || got.allow {
+		t.Fatalf("runner observed gate result allow=%v err=%v, want deny", got.allow, got.err)
 	}
 }
 

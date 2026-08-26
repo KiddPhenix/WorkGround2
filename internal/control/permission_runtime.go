@@ -35,6 +35,16 @@ func (g *runtimePermissionGate) Check(ctx context.Context, tool string, args jso
 	return gate.Check(ctx, tool, args, readOnly)
 }
 
+func (g *runtimePermissionGate) CheckSubject(ctx context.Context, tool, subject string, args json.RawMessage, readOnly bool) (bool, string, error) {
+	g.mu.RLock()
+	gate := g.gate
+	g.mu.RUnlock()
+	if gate == nil {
+		return true, "", nil
+	}
+	return gate.CheckSubject(ctx, tool, subject, args, readOnly)
+}
+
 func clonePermissionPolicy(policy permission.Policy) permission.Policy {
 	policy.Allow = append([]permission.Rule(nil), policy.Allow...)
 	policy.Ask = append([]permission.Rule(nil), policy.Ask...)

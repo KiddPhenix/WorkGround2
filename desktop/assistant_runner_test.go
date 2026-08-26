@@ -977,6 +977,43 @@ func TestAssistantPromptForInjectsResponsibilityGraph(t *testing.T) {
 	}
 }
 
+func TestAssistantPromptForInjectsTypedProposalTargetsAndPendingDedupContext(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "proposal-context")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	newPrompt := "Inspect tests, release notes, and publish readiness"
+	if _, err := store.CompleteRunWithProgress(assistant.CompleteRunInput{
+		RequestID: "seed-proposal", RunID: claimed.ID, LeaseOwner: "desktop-test", LeaseFence: claimed.LeaseFence,
+		Progress: assistant.ProgressBlock{PlanRevision: 1, Proposals: []assistant.ProposalDecl{{
+			TargetKind: assistant.ProposalTargetRoutine, TargetID: snapshot.Routines[0].ID,
+			Routine: &assistant.RoutineProposalPatch{Prompt: &newPrompt},
+			Summary: "Expand release checks", Reason: "The last run missed release notes", Evidence: []string{"run summary omitted release notes"},
+		}}}, Now: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Trigger(assistant.TriggerInput{
+		AssistantID: snapshot.Assistant.ID, RoutineID: snapshot.Routines[0].ID,
+		RequestID: "run-proposal-context-second", Trigger: assistant.TriggerManual, Now: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, _, _, _, err := service.promptFor(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{snapshot.Routines[0].ID, "可提出改进建议的 Routine", "已有待用户处理的改进建议", "Expand release checks", `"proposals"`, "不能声称配置已经修改", "禁止通过提案修改使命、权限、Workspace、渠道地址或凭据"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("proposal prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
 func TestAssistantPromptForDirectInputUsesUserInputSemantics(t *testing.T) {
 	host := &assistantHostStub{}
 	service, store := newAssistantTestRuntime(t, host)
@@ -1131,6 +1168,35 @@ func TestAssistantCompleteRunSucceedsDiscardingBlockedProgress(t *testing.T) {
 	}
 	if !hasAssistantDiagnostic(service, "progress_apply") {
 		t.Fatalf("blocked patch did not record a progress_apply diagnostic: %+v", service.Diagnostics())
+	}
+}
+
+func TestAssistantCompleteRunAcceptsCompleteWithStaleActiveMarker(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "complete-active")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	block := `<assistant-progress>{"responsibility":"learn-skills","responsibilities":[{"alias":"learn-skills","objective":"learn skills"},{"alias":"promote","objective":"promote product","depends_on":["learn-skills"]}],"complete":["learn-skills"],"active":["learn-skills"]}</assistant-progress>`
+	service.completeRun(*claimed, nil, snapshot.Plan.Revision, assistantTurnResult{Summary: "learned", ProgressText: block}, "C:/assistant/session.jsonl")
+
+	got, err := store.Get(snapshot.Assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runs[0].State != assistant.RunSucceeded {
+		t.Fatalf("run state = %s, want succeeded", got.Runs[0].State)
+	}
+	if resp := assistantRespByAlias(got, "learn-skills"); resp == nil || resp.Status != assistant.RespDone {
+		t.Fatalf("learn-skills = %+v, want done", resp)
+	}
+	if resp := assistantRespByAlias(got, "promote"); resp == nil || resp.Status != assistant.RespReady {
+		t.Fatalf("promote = %+v, want ready", resp)
+	}
+	if hasAssistantDiagnostic(service, "progress_apply") {
+		t.Fatalf("valid complete+active patch recorded a diagnostic: %+v", service.Diagnostics())
 	}
 }
 
@@ -1355,7 +1421,7 @@ func TestAssistantObserveEventCollectsRawProgressFromTextDeltas(t *testing.T) {
 
 func hasAssistantDiagnostic(service *AssistantRuntime, operation string) bool {
 	for _, d := range service.Diagnostics() {
-		if d.Operation == operation {
+		if d.Operation == operation && d.Category == assistantDiagnosticRuntime {
 			return true
 		}
 	}

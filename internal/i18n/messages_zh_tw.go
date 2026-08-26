@@ -350,6 +350,7 @@ var ChineseTraditional = Messages{
   WorkGround2 init                                         查看如何產生專案記憶（AGENTS.md）
   WorkGround2 doctor [--json]                              輸出脫敏的本機診斷資訊
   WorkGround2 bot start|doctor|weixin-login                多管道 IM bot 閘道
+  WorkGround2 assistant daemon [--once] [--interval 30s]   執行本機助手排程與執行迴圈
   WorkGround2 upgrade [--check] [--force]                   自更新至最新版本（也可用：WorkGround2 update）
   WorkGround2 version
   WorkGround2 help

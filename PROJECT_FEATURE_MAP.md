@@ -316,7 +316,7 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 
 ### 助手模式
 - Location: `internal/assistant`, `desktop/assistant_app.go`, `desktop/assistant_runner.go`, `desktop/frontend/src/custom/features/assistant`, `desktop/frontend/src/components/SessionSurface.tsx`, `desktop/frontend/src/components/ProjectTree.tsx`, `docs/ASSISTANT_MODE_DESIGN.zh-CN.md`
-- Summary: 长期助手聚合（使命、责任图 Plan、Routine、记忆、Run、Attention）与桌面后台调度；Run 使用冻结的用户意图生成可读 Session 标题并自愈旧内部提示标题，从助手打开的 Session 保留精确路径与助手身份以提供返回入口；Run 成功后经 `<assistant-progress>` 幂等推进责任、证据与机会。Assistant 可经二次确认删除，聚合原子移入本地回收区且请求重放安全，既有 Session 保留；管理页关闭按钮避开 Windows 原生标题栏控制区。
-- Keywords: AssistantWorkspace, AssistantRuntime, AssistantSessionTarget, SessionReturn, AssistantDelete, local trash, readable title, Responsibility, Plan, CompleteRunWithProgress
+- Summary: 长期助手聚合（使命、责任图 Plan、Routine、记忆、Run、Attention、渠道与改进提案）与本机后台调度；Run 使用冻结的用户意图生成可读 Session 标题并自愈旧内部提示标题，从助手打开的 Session 保留精确路径与助手身份以提供返回入口；Run 成功后经 `<assistant-progress>` 幂等推进责任、证据、机会与类型化配置提案。提案经用户接受后用目标基线 revision 原子应用，用户已修改的目标不会被覆盖，权限不可通过提案扩大。Assistant 可经二次确认删除，聚合原子移入本地回收区且请求重放安全，既有 Session 保留；管理页关闭按钮避开 Windows 原生标题栏控制区。浏览器点击/输入按当前 page revision 的真实元素语义分类，普通交互随 `network`，发帖/回复/提交随 `publish` 三态，密码、私有字段、删除与付费继续保持敏感边界；Desktop 与 daemon 共用同一权限映射。
+- Keywords: AssistantWorkspace, AssistantRuntime, AssistantSessionTarget, SessionReturn, AssistantDelete, ChangeProposal, ResolveProposal, BrowserPermissionSubject, publish policy, local trash, readable title, Responsibility, Plan, CompleteRunWithProgress
 - Source: verified-by-search
-- Updated: 2026-08-25
+- Updated: 2026-08-26

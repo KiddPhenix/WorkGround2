@@ -15,7 +15,9 @@ const promo = assistantTemplate("promo", "zh");
 
 ok(code.available, "code-project template is selectable");
 ok(general.available, "general template is selectable");
-ok(!promo.available, "promotion template stays a phase-4 preview and is not selectable");
+ok(promo.available, "promotion template is selectable in phase 4");
+ok(promo.policy.network === "allow" && promo.policy.publish === "approve", "promotion template reads the network while keeping outbound approval");
+ok(promo.routines.length === 3 && promo.routines.some((routine) => routine.title === "效果复盘"), "promotion template includes content, metrics, and reply routines");
 ok(code.defaultName !== "" && code.mission !== "", "code template fills name and mission");
 ok(code.policy.local_write === "allow" && code.policy.publish === "approve", "code template allows local writes but keeps publishing approval");
 ok(code.routines.length === 3, "code template carries health / test-build / release-readiness routines");

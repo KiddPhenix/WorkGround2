@@ -90,6 +90,7 @@ type ProgressBlock struct {
 	Complete         []string          `json:"complete,omitempty"`
 	Artifacts        []ArtifactDecl    `json:"artifacts,omitempty"`
 	Opportunities    []OpportunityDecl `json:"opportunities,omitempty"`
+	Proposals        []ProposalDecl    `json:"proposals,omitempty"`
 }
 
 // RespDecl declares (or re-declares) a responsibility by alias. Re-declaring an
@@ -127,6 +128,7 @@ const (
 	maxProgressBytes     = 256 * 1024
 	maxRespDeclarations  = 256
 	maxProgressArtifacts = 256
+	maxProgressProposals = 64
 )
 
 // validAlias reports whether s is an acceptable responsibility alias: a short,
@@ -225,6 +227,7 @@ func MergeProgressBlocks(blocks []ProgressBlock) ProgressBlock {
 		out.Complete = append(out.Complete, b.Complete...)
 		out.Artifacts = append(out.Artifacts, b.Artifacts...)
 		out.Opportunities = append(out.Opportunities, b.Opportunities...)
+		out.Proposals = append(out.Proposals, b.Proposals...)
 	}
 	return out
 }
@@ -266,7 +269,7 @@ func RebaseProgress(plan Plan, progress *ProgressBlock) bool {
 
 func progressBlockEmpty(b ProgressBlock) bool {
 	return b.PlanRevision == 0 && b.Responsibility == "" && len(b.Responsibilities) == 0 &&
-		len(b.Active) == 0 && len(b.Complete) == 0 && len(b.Artifacts) == 0 && len(b.Opportunities) == 0
+		len(b.Active) == 0 && len(b.Complete) == 0 && len(b.Artifacts) == 0 && len(b.Opportunities) == 0 && len(b.Proposals) == 0
 }
 
 func validateProgressBlock(b ProgressBlock) error {
@@ -275,6 +278,14 @@ func validateProgressBlock(b ProgressBlock) error {
 	}
 	if len(b.Artifacts) > maxProgressArtifacts {
 		return errors.New("assistant: too many artifact declarations")
+	}
+	if len(b.Proposals) > maxProgressProposals {
+		return errors.New("assistant: too many proposal declarations")
+	}
+	for _, proposal := range b.Proposals {
+		if err := validateProposalDecl(proposal); err != nil {
+			return err
+		}
 	}
 	return nil
 }

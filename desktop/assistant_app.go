@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"workground2/internal/assistant"
+	"workground2/internal/config"
 )
 
 // AssistantCreateRequest is the typed Wails input for creating one durable
@@ -47,6 +50,13 @@ type AssistantApplyMemoryRequest struct {
 	Patch            assistant.MemoryPatch `json:"patch"`
 }
 
+type AssistantPutChannelRequest struct {
+	RequestID        string                   `json:"requestId"`
+	ExpectedRevision int64                    `json:"expectedRevision"`
+	Channel          assistant.ChannelBinding `json:"channel"`
+	APIKey           string                   `json:"apiKey,omitempty"`
+}
+
 type AssistantRunNowRequest struct {
 	AssistantID string `json:"assistantId"`
 	RoutineID   string `json:"routineId,omitempty"`
@@ -73,6 +83,15 @@ type AssistantResolveAttentionRequest struct {
 	Resolution       string                   `json:"resolution"`
 }
 
+type AssistantResolveProposalRequest struct {
+	AssistantID      string                     `json:"assistantId"`
+	ProposalID       string                     `json:"proposalId"`
+	RequestID        string                     `json:"requestId"`
+	ExpectedRevision int64                      `json:"expectedRevision"`
+	Decision         assistant.ProposalDecision `json:"decision"`
+	Resolution       string                     `json:"resolution,omitempty"`
+}
+
 type AssistantResumeRequest struct {
 	RunID     string `json:"runId"`
 	RequestID string `json:"requestId"`
@@ -86,9 +105,15 @@ type AssistantCancelRequest struct {
 
 type AssistantDiagnostic struct {
 	At        time.Time `json:"at" ts_type:"string"`
+	Category  string    `json:"category"`
 	Operation string    `json:"operation"`
 	Message   string    `json:"message"`
 }
+
+const (
+	assistantDiagnosticData    = "data"
+	assistantDiagnosticRuntime = "runtime"
+)
 
 type AssistantListResult struct {
 	Items       []assistant.Assistant `json:"items"`
@@ -117,7 +142,7 @@ func (a *App) AssistantList() (AssistantListResult, error) {
 	}
 	if errors.Is(listErr, assistant.ErrCorrupt) {
 		result.Diagnostics = append(result.Diagnostics, AssistantDiagnostic{
-			At: time.Now(), Operation: "list", Message: listErr.Error(),
+			At: time.Now(), Category: assistantDiagnosticData, Operation: "list", Message: listErr.Error(),
 		})
 		return result, nil
 	}
@@ -240,6 +265,66 @@ func (a *App) AssistantApplyMemory(req AssistantApplyMemoryRequest) (assistant.M
 	return service.store.ApplyMemory(req.AssistantID, req.RequestID, req.ExpectedRevision, req.Patch, time.Now())
 }
 
+func (a *App) AssistantPutChannel(req AssistantPutChannelRequest) (assistant.ChannelBinding, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.ChannelBinding{}, err
+	}
+	req.Channel.ID = strings.TrimSpace(req.Channel.ID)
+	req.Channel.AssistantID = strings.TrimSpace(req.Channel.AssistantID)
+	if req.Channel.ID == "" {
+		req.Channel.ID = assistant.StableID("channel", req.Channel.AssistantID+"/"+req.RequestID)
+	}
+	if req.Channel.Kind == "" {
+		req.Channel.Kind = assistant.ChannelDiscourse
+	}
+	if req.Channel.CollectIntervalSeconds == 0 {
+		req.Channel.CollectIntervalSeconds = 3600
+	}
+	// Credential references are host-owned. Never let the frontend select an
+	// arbitrary environment key; edits retain the existing reference and new
+	// channels receive a deterministic private key.
+	req.Channel.CredentialKey = ""
+	snapshot, err := service.store.Get(req.Channel.AssistantID)
+	if err != nil {
+		return assistant.ChannelBinding{}, err
+	}
+	for _, existing := range snapshot.Channels {
+		if existing.ID == req.Channel.ID {
+			req.Channel.CredentialKey = existing.CredentialKey
+			break
+		}
+	}
+	if req.Channel.CredentialKey == "" {
+		req.Channel.CredentialKey = assistantChannelCredentialKey(req.Channel.AssistantID, req.Channel.ID)
+	}
+	key := req.Channel.CredentialKey
+	apiKey := strings.TrimSpace(req.APIKey)
+	previous := config.ResolveCredential(key)
+	if apiKey == "" && strings.TrimSpace(previous.Value) == "" {
+		return assistant.ChannelBinding{}, errors.New("assistant: Discourse API key is required")
+	}
+	if apiKey != "" {
+		if _, err := config.SetCredential(key, apiKey); err != nil {
+			return assistant.ChannelBinding{}, err
+		}
+	}
+	result, err := service.store.PutChannel(assistant.PutChannelInput{RequestID: req.RequestID, ExpectedRevision: req.ExpectedRevision, Channel: req.Channel, Now: time.Now()})
+	if err != nil && apiKey != "" {
+		if previous.Value != "" {
+			_, _ = config.SetCredential(key, previous.Value)
+		} else {
+			_ = config.RemoveCredential(key)
+		}
+	}
+	return result, err
+}
+
+func assistantChannelCredentialKey(assistantID, channelID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(assistantID) + "/" + strings.TrimSpace(channelID)))
+	return "ASSISTANT_CHANNEL_" + strings.ToUpper(hex.EncodeToString(sum[:12])) + "_API_KEY"
+}
+
 func (a *App) AssistantRunNow(req AssistantRunNowRequest) (assistant.Run, error) {
 	service, err := a.assistantRuntime()
 	if err != nil {
@@ -289,6 +374,17 @@ func (a *App) AssistantResolveAttention(req AssistantResolveAttentionRequest) (a
 		return assistant.AttentionItem{}, err
 	}
 	return *item, nil
+}
+
+func (a *App) AssistantResolveProposal(req AssistantResolveProposalRequest) (assistant.ChangeProposal, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.ChangeProposal{}, err
+	}
+	return service.store.ResolveProposal(assistant.ResolveProposalInput{
+		AssistantID: req.AssistantID, ProposalID: req.ProposalID, RequestID: req.RequestID,
+		ExpectedRevision: req.ExpectedRevision, Decision: req.Decision, Resolution: req.Resolution, Now: time.Now(),
+	})
 }
 
 func (a *App) AssistantResume(req AssistantResumeRequest) (assistant.Run, error) {

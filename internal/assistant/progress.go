@@ -53,7 +53,10 @@ func (s *Store) CompleteRunWithProgress(in CompleteRunInput) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	unlock := s.lockAssistant(assistantID)
+	unlock, err := s.lockAssistant(assistantID)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	agg, err := s.read(assistantID)
 	if err != nil {
@@ -270,6 +273,12 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 		changed = true
 	}
 
+	proposalChanged, err := appendProposals(agg, b.Proposals, runID, now)
+	if err != nil {
+		return "", err
+	}
+	changed = changed || proposalChanged
+
 	// Validate every completion before marking any, so a patch that completes an
 	// upstream and its downstream is order-independent.
 	completeSet := make(map[string]bool, len(b.Complete))
@@ -320,6 +329,13 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 
 	for _, alias := range b.Active {
 		alias = strings.TrimSpace(alias)
+		// A model may report a responsibility as both active and complete in the
+		// same progress block. Completion is the terminal, authoritative state;
+		// treating the stale active marker as a no-op keeps the patch idempotent
+		// and prevents an otherwise valid plan update from being discarded.
+		if completeSet[alias] {
+			continue
+		}
 		respID, err := resolveRespAlias(aliasToID, alias)
 		if err != nil {
 			return "", err

@@ -402,6 +402,7 @@ var Chinese = Messages{
   WorkGround2 init                                         查看如何生成项目记忆（AGENTS.md）
   WorkGround2 doctor [--json]                              输出脱敏的本地诊断信息
   WorkGround2 bot start|doctor|weixin-login                多渠道 IM bot 网关
+  WorkGround2 assistant daemon [--once] [--interval 30s]   运行本机助手调度与执行循环
   WorkGround2 upgrade [--check] [--force]                   自更新到最新版本（也可用：WorkGround2 update）
   WorkGround2 version
   WorkGround2 help

@@ -2,6 +2,9 @@ import { app } from "../../../lib/bridge";
 import type {
   AssistantAttentionItem,
   AssistantCancelInput,
+  AssistantChannel,
+  AssistantChannelInput,
+	AssistantChangeProposal,
   AssistantCreateInput,
   AssistantDeleteInput,
   AssistantMemory,
@@ -9,6 +12,7 @@ import type {
   AssistantRecord,
   AssistantListResult,
   AssistantResolveAttentionInput,
+	AssistantResolveProposalInput,
   AssistantResumeInput,
   AssistantRoutine,
   AssistantRoutineInput,
@@ -57,6 +61,10 @@ export function assistantApplyMemory(input: AssistantMemoryInput): Promise<Assis
   return app.AssistantApplyMemory(input) as Promise<AssistantMemory>;
 }
 
+export function assistantPutChannel(input: AssistantChannelInput): Promise<AssistantChannel> {
+  return app.AssistantPutChannel(input) as Promise<AssistantChannel>;
+}
+
 export function assistantRunNow(input: AssistantRunNowInput): Promise<AssistantRun> {
   return app.AssistantRunNow(input) as Promise<AssistantRun>;
 }
@@ -67,6 +75,10 @@ export function assistantSubmitInput(input: AssistantSubmitInputInput): Promise<
 
 export function assistantResolveAttention(input: AssistantResolveAttentionInput): Promise<AssistantAttentionItem> {
   return app.AssistantResolveAttention(input) as Promise<AssistantAttentionItem>;
+}
+
+export function assistantResolveProposal(input: AssistantResolveProposalInput): Promise<AssistantChangeProposal> {
+	return app.AssistantResolveProposal(input) as Promise<AssistantChangeProposal>;
 }
 
 export function assistantResume(input: AssistantResumeInput): Promise<AssistantRun> {

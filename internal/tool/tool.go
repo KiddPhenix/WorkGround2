@@ -42,6 +42,16 @@ type Previewer interface {
 	Preview(args json.RawMessage) (diff.Change, error)
 }
 
+// PermissionSubjecter lets a first-party tool classify the concrete action
+// behind otherwise coarse tool arguments before the permission gate runs. The
+// returned subject is used only for policy matching and approval scope; Execute
+// still receives the original arguments. Implementations must be read-only,
+// deterministic for the referenced state, and fail closed when that state is
+// stale or unavailable.
+type PermissionSubjecter interface {
+	PermissionSubject(ctx context.Context, args json.RawMessage) (string, error)
+}
+
 // PreviewChange returns the change a writer tool would make for args, or ok=false
 // when there's nothing renderable: t is read-only, doesn't implement Previewer,
 // the preview errored (the edit will likely fail too), or the file is binary.

@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"workground2/internal/assistant"
+	"workground2/internal/config"
 )
 
 func TestAssistantAPICreateAndRunNowAreIdempotent(t *testing.T) {
@@ -51,6 +53,50 @@ func TestAssistantAPICreateAndRunNowAreIdempotent(t *testing.T) {
 	}
 	if run1.ID != run2.ID || run1.Revision != run2.Revision {
 		t.Fatalf("run replay drifted: first=%+v second=%+v", run1, run2)
+	}
+}
+
+func TestAssistantAPIResolveProposalAppliesTypedChange(t *testing.T) {
+	service, store := newAssistantTestRuntime(t, &assistantHostStub{})
+	app := &App{assistant: service}
+	created, err := app.AssistantCreate(AssistantCreateRequest{
+		RequestID: "proposal-api-create",
+		Assistant: assistant.Assistant{Name: "Project helper", Mission: "Keep releases healthy"},
+		Routines:  []assistant.Routine{{Title: "Release check", Prompt: "Inspect changes", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.AssistantRunNow(AssistantRunNowRequest{AssistantID: created.Assistant.ID, RoutineID: created.Routines[0].ID, RequestID: "proposal-api-run"}); err != nil {
+		t.Fatal(err)
+	}
+	run, ok, err := store.Claim("desktop-test", time.Now(), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", run, ok, err)
+	}
+	prompt := "Inspect changes, tests, and release notes"
+	if _, err := store.CompleteRunWithProgress(assistant.CompleteRunInput{
+		RequestID: "proposal-api-complete", RunID: run.ID, LeaseOwner: run.LeaseOwner, LeaseFence: run.LeaseFence,
+		Progress: assistant.ProgressBlock{PlanRevision: 1, Proposals: []assistant.ProposalDecl{{
+			TargetKind: assistant.ProposalTargetRoutine, TargetID: created.Routines[0].ID,
+			Routine: &assistant.RoutineProposalPatch{Prompt: &prompt},
+			Summary: "Expand release checks", Reason: "Run evidence found a gap", Evidence: []string{"release notes were missed"},
+		}}}, Now: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _ := store.Get(created.Assistant.ID)
+	proposal := snapshot.Proposals[0]
+	resolved, err := app.AssistantResolveProposal(AssistantResolveProposalRequest{
+		AssistantID: created.Assistant.ID, ProposalID: proposal.ID, RequestID: "proposal-api-accept",
+		ExpectedRevision: proposal.Revision, Decision: assistant.ProposalAccept, Resolution: "accepted in desktop test",
+	})
+	if err != nil || resolved.State != assistant.ProposalApplied {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	after, _ := store.Get(created.Assistant.ID)
+	if after.Routines[0].Prompt != prompt || after.Proposals[0].State != assistant.ProposalApplied {
+		t.Fatalf("after=%+v", after)
 	}
 }
 
@@ -176,6 +222,23 @@ func TestAssistantListKeepsHealthyItemsAndReportsCorruption(t *testing.T) {
 	if len(result.Diagnostics) == 0 {
 		t.Fatal("corrupt aggregate diagnostic was not returned")
 	}
+	if result.Diagnostics[len(result.Diagnostics)-1].Category != assistantDiagnosticData {
+		t.Fatalf("corrupt aggregate category = %q, want %q", result.Diagnostics[len(result.Diagnostics)-1].Category, assistantDiagnosticData)
+	}
+}
+
+func TestAssistantListClassifiesRuntimeDiagnosticsSeparately(t *testing.T) {
+	service, _ := newAssistantTestRuntime(t, &assistantHostStub{})
+	app := &App{assistant: service}
+	service.recordDiagnostic("progress_apply", errors.New("invalid transition"))
+
+	result, err := app.AssistantList()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 1 || result.Diagnostics[0].Category != assistantDiagnosticRuntime {
+		t.Fatalf("runtime diagnostics = %+v, want one runtime item", result.Diagnostics)
+	}
 }
 
 func TestNewAssistantRuntimeUsesRequestedStoreRoot(t *testing.T) {
@@ -199,6 +262,38 @@ func TestNewAssistantRuntimeUsesRequestedStoreRoot(t *testing.T) {
 	}
 	if matches, err := filepath.Glob(filepath.Join(root, created.Assistant.ID, "*.json")); err != nil || len(matches) == 0 {
 		t.Fatalf("configured store root has no assistant snapshot: matches=%v err=%v", matches, err)
+	}
+}
+
+func TestAssistantPutChannelStoresCredentialOutsideAggregate(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := filepath.Join(t.TempDir(), "assistants")
+	service, err := NewAssistantRuntime(NewApp(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.host = &assistantHostStub{}
+	app := &App{assistant: service}
+	created, err := app.AssistantCreate(AssistantCreateRequest{RequestID: "channel-create", Assistant: assistant.Assistant{Name: "Promo", Mission: "promote"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := app.AssistantPutChannel(AssistantPutChannelRequest{RequestID: "channel-put", Channel: assistant.ChannelBinding{ID: "channel-discourse", AssistantID: created.Assistant.ID, Name: "Forum", Kind: assistant.ChannelDiscourse, BaseURL: "https://community.example.com", Username: "bot", CredentialKey: "MALICIOUS_SHARED_KEY", CollectIntervalSeconds: 3600, Enabled: true}, APIKey: "secret-api-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel.CredentialKey == "" || config.ResolveCredential(channel.CredentialKey).Value != "secret-api-key" {
+		t.Fatalf("credential key=%q", channel.CredentialKey)
+	}
+	if channel.CredentialKey == "MALICIOUS_SHARED_KEY" {
+		t.Fatal("frontend selected the persisted credential key")
+	}
+	data, err := os.ReadFile(filepath.Join(root, created.Assistant.ID, "aggregate.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "secret-api-key") {
+		t.Fatal("aggregate leaked channel API key")
 	}
 }
 

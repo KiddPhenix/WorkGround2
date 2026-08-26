@@ -175,6 +175,91 @@ export interface AssistantOpportunity {
   created_at: string;
 }
 
+export type AssistantProposalTarget = "routine" | "channel";
+export type AssistantProposalState = "pending" | "applied" | "rejected" | "superseded";
+
+export interface AssistantRoutineProposalPatch {
+  prompt?: string;
+  schedule?: AssistantSchedule;
+  enabled?: boolean;
+}
+
+export interface AssistantChannelProposalPatch {
+  collect_interval_seconds?: number;
+  enabled?: boolean;
+}
+
+export interface AssistantChangeProposal {
+  id: string;
+  assistant_id: string;
+  run_id: string;
+  target_kind: AssistantProposalTarget;
+  target_id: string;
+  base_revision: number;
+  routine?: { before: AssistantRoutineProposalPatch; after: AssistantRoutineProposalPatch };
+  channel?: { before: AssistantChannelProposalPatch; after: AssistantChannelProposalPatch };
+  summary: string;
+  reason: string;
+  evidence: string[];
+  state: AssistantProposalState;
+  resolution?: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  resolved_at?: string;
+}
+
+export interface AssistantChannel {
+  id: string;
+  assistant_id: string;
+  name: string;
+  kind: "discourse";
+  base_url: string;
+  username: string;
+  credential_key: string;
+  category_id?: number;
+  collect_interval_seconds: number;
+  enabled: boolean;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssistantChannelAction {
+  id: string;
+  assistant_id: string;
+  channel_id: string;
+  request_id: string;
+  kind: "create_topic" | "reply_topic";
+  title?: string;
+  body: string;
+  external_topic_id?: number;
+  external_post_id?: number;
+  url?: string;
+  state: "executing" | "succeeded" | "failed" | "unknown";
+  error?: string;
+  collect_error?: string;
+  next_collect_at?: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssistantChannelMetric {
+  id: string;
+  assistant_id: string;
+  channel_id: string;
+  action_id: string;
+  topic_id: number;
+  views: number;
+  likes: number;
+  replies: number;
+  views_delta: number;
+  likes_delta: number;
+  reply_delta: number;
+  collected_at: string;
+}
+
 export interface AssistantPlan {
   revision: number;
   responsibilities: AssistantResponsibility[];
@@ -190,11 +275,16 @@ export interface AssistantSnapshot {
   plan: AssistantPlan;
   artifacts: AssistantArtifact[];
   opportunities: AssistantOpportunity[];
+  proposals?: AssistantChangeProposal[];
+  channels: AssistantChannel[];
+  channel_actions: AssistantChannelAction[];
+  channel_metrics: AssistantChannelMetric[];
   updated_at: string;
 }
 
 export interface AssistantDiagnostic {
   at: string;
+  category?: "data" | "runtime";
   operation: string;
   message: string;
 }
@@ -236,6 +326,13 @@ export interface AssistantMemoryInput {
   patch: AssistantMemoryPatch;
 }
 
+export interface AssistantChannelInput {
+  requestId: string;
+  expectedRevision: number;
+  channel: AssistantChannel;
+  apiKey?: string;
+}
+
 export interface AssistantRunNowInput {
   assistantId: string;
   routineId?: string;
@@ -257,6 +354,15 @@ export interface AssistantResolveAttentionInput {
   expectedRevision: number;
   state: "approved" | "rejected" | "cancelled";
   resolution: string;
+}
+
+export interface AssistantResolveProposalInput {
+  assistantId: string;
+  proposalId: string;
+  requestId: string;
+  expectedRevision: number;
+  decision: "accept" | "reject";
+  resolution?: string;
 }
 
 export interface AssistantResumeInput {

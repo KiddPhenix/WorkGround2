@@ -5,7 +5,7 @@ export type AssistantTemplateID = "code" | "general" | "promo";
 
 export interface AssistantTemplateContent {
   id: AssistantTemplateID;
-  available: boolean; // false = phase-4 preview, not selectable
+  available: boolean;
   defaultName: string;
   mission: string;
   policy: AssistantPolicy;
@@ -44,6 +44,14 @@ interface TemplateText {
   releaseTitle: string;
   releasePrompt: string;
   generalName: string;
+  promoName: string;
+  promoMission: string;
+  contentTitle: string;
+  contentPrompt: string;
+  metricsTitle: string;
+  metricsPrompt: string;
+  replyTitle: string;
+  replyPrompt: string;
 }
 
 const texts: Record<Locale, TemplateText> = {
@@ -57,6 +65,14 @@ const texts: Record<Locale, TemplateText> = {
     releaseTitle: "发布准备检查",
     releasePrompt: "检查发布条件是否满足；满足时进入待处理状态并询问是否发布，绝不自行发布。",
     generalName: "通用助手",
+    promoName: "推广助手",
+    promoMission: "持续在已配置社区推广产品，回复用户问题，并根据真实效果改进下一轮策略。",
+    contentTitle: "内容规划与发布",
+    contentPrompt: "结合使命、显式记忆和最近渠道指标，准备最适合当前社区的内容；需要发布时调用渠道发布工具，由冻结的对外发布权限决定自动执行、审批或拒绝。",
+    metricsTitle: "效果复盘",
+    metricsPrompt: "读取已采集的浏览、点赞和回复增量，比较不同内容效果，用 metrics 与 strategy 显式记忆记录结论并调整下一轮方案。",
+    replyTitle: "社区回复",
+    replyPrompt: "检查需要回复的社区讨论，形成有帮助且不过度营销的回复；外发时调用渠道回复工具，由冻结的对外发布权限决定自动执行、审批或拒绝。",
   },
   en: {
     codeName: "Code project assistant",
@@ -68,6 +84,10 @@ const texts: Record<Locale, TemplateText> = {
     releaseTitle: "Release readiness",
     releasePrompt: "Check whether release conditions are met; when they are, ask me before publishing — never publish on its own.",
     generalName: "General assistant",
+    promoName: "Promotion assistant", promoMission: "Continuously promote the product in configured communities, answer questions, and improve the next strategy from real results.",
+    contentTitle: "Plan & publish", contentPrompt: "Use the mission, explicit memory, and recent channel metrics to prepare community-specific content. Use the channel publishing tool; the frozen publishing permission decides whether it runs automatically, asks, or is denied.",
+    metricsTitle: "Review results", metricsPrompt: "Compare collected view, like, and reply deltas. Record conclusions in metrics and strategy memory, then adjust the next approach.",
+    replyTitle: "Community replies", replyPrompt: "Review community discussions that need an answer and prepare a useful, non-spammy reply. Use the channel reply tool; the frozen publishing permission decides whether it runs automatically, asks, or is denied.",
   },
   "zh-TW": {
     codeName: "程式碼專案助手",
@@ -79,6 +99,10 @@ const texts: Record<Locale, TemplateText> = {
     releaseTitle: "發佈準備檢查",
     releasePrompt: "檢查發佈條件是否滿足；滿足時進入待處理狀態並詢問是否發佈，絕不自行發佈。",
     generalName: "通用助手",
+    promoName: "推廣助手", promoMission: "持續在已設定社群推廣產品、回覆問題，並依真實效果改善下一輪策略。",
+    contentTitle: "內容規劃與發佈", contentPrompt: "結合使命、明確記憶與最近渠道指標準備社群內容；發佈時使用渠道工具，由凍結的對外發佈權限決定自動執行、審批或拒絕。",
+    metricsTitle: "效果複盤", metricsPrompt: "比較瀏覽、按讚與回覆增量，以 metrics 與 strategy 記憶記錄結論並調整下一輪。",
+    replyTitle: "社群回覆", replyPrompt: "檢查需要回覆的討論，準備有幫助且不過度行銷的回覆；外發時使用渠道工具，由凍結的對外發佈權限決定自動執行、審批或拒絕。",
   },
 };
 
@@ -107,11 +131,15 @@ export function assistantTemplateContent(locale: Locale): AssistantTemplateConte
     },
     {
       id: "promo",
-      available: false,
-      defaultName: "",
-      mission: "",
-      policy: readOnlyPolicy(),
-      routines: [],
+      available: true,
+      defaultName: t.promoName,
+      mission: t.promoMission,
+      policy: { ...readOnlyPolicy(), network: "allow" },
+      routines: [
+        { title: t.contentTitle, prompt: t.contentPrompt, schedule: clock("daily", "10:00") },
+        { title: t.metricsTitle, prompt: t.metricsPrompt, schedule: clock("daily", "18:00") },
+        { title: t.replyTitle, prompt: t.replyPrompt, schedule: clock("daily", "15:00") },
+      ],
     },
   ];
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,9 +17,13 @@ import (
 
 	"workground2/internal/agent"
 	"workground2/internal/assistant"
+	"workground2/internal/assistantchannel"
+	"workground2/internal/config"
 	"workground2/internal/control"
 	"workground2/internal/event"
+	"workground2/internal/netclient"
 	"workground2/internal/permission"
+	"workground2/internal/tool"
 )
 
 const (
@@ -346,10 +351,13 @@ func (f *assistantInFlight) complete(result assistantTurnResult) {
 // runs in inactive Desktop sessions. The Store lease remains the authority;
 // this map only correlates Controller events while this process is alive.
 type AssistantRuntime struct {
-	store     *assistant.Store
-	scheduler *assistant.Scheduler
-	runner    *assistant.Runner
-	host      assistantSessionHost
+	store       *assistant.Store
+	scheduler   *assistant.Scheduler
+	runner      *assistant.Runner
+	channels    *assistantchannel.Service
+	leader      *assistant.LeaderElector
+	leaderLease assistant.LeaderLease
+	host        assistantSessionHost
 
 	mu       sync.Mutex
 	inflight map[string]*assistantInFlight // tab ID -> run event correlation
@@ -382,8 +390,25 @@ func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
+	leader, err := assistant.NewLeaderElector(root, owner, 90*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	httpClient, err := netclient.NewHTTPClient(cfg.NetworkProxySpec(), netclient.TransportOptions{})
+	if err != nil {
+		return nil, err
+	}
+	channels, err := assistantchannel.New(store, func(key string) string { return config.ResolveCredential(key).Value }, assistantchannel.NewDiscourse(httpClient))
+	if err != nil {
+		return nil, err
+	}
 	return &AssistantRuntime{
 		store: store, scheduler: scheduler, runner: runner,
+		channels: channels, leader: leader,
 		host: appAssistantSessionHost{app: app}, inflight: map[string]*assistantInFlight{},
 		byRun: map[string]*assistantInFlight{}, tick: assistantTickInterval,
 		wake: make(chan struct{}, 1),
@@ -432,6 +457,12 @@ func (r *AssistantRuntime) Stop() {
 		<-done
 	}
 	r.wg.Wait()
+	if r.leader != nil && r.leaderLease.Fence != "" {
+		if err := r.leader.Release(r.leaderLease); err != nil && !errors.Is(err, assistant.ErrLeaderLost) {
+			r.recordDiagnostic("leader_release", err)
+		}
+		r.leaderLease = assistant.LeaderLease{}
+	}
 }
 
 func (r *AssistantRuntime) loop(ctx context.Context) {
@@ -470,6 +501,18 @@ func (r *AssistantRuntime) Wake() {
 
 func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 	now := time.Now()
+	if r.leader != nil {
+		lease, leader, err := r.leader.Acquire(now)
+		if err != nil {
+			r.recordDiagnostic("leader", err)
+			return
+		}
+		if !leader {
+			r.leaderLease = assistant.LeaderLease{}
+			return
+		}
+		r.leaderLease = lease
+	}
 	if err := r.resumeAutoMemoryApprovals(now); err != nil {
 		r.recordDiagnostic("memory_approval_recovery", err)
 		slog.Warn("desktop: assistant memory approval recovery had failures", "err", err)
@@ -477,6 +520,11 @@ func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 	if result, err := r.scheduler.Tick(now); err != nil {
 		r.recordDiagnostic("schedule", err)
 		slog.Error("desktop: assistant schedule tick failed", "err", err, "failures", len(result.Failures))
+	}
+	if r.channels != nil {
+		if _, err := r.channels.CollectDue(ctx); err != nil {
+			r.recordDiagnostic("channel_collect", err)
+		}
 	}
 	for {
 		acquired, err := r.runner.Acquire(time.Now())
@@ -499,6 +547,23 @@ func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 			r.execute(ctx, run)
 		}()
 	}
+}
+
+func (r *AssistantRuntime) Tools(assistantID, executionID string) []tool.Tool {
+	if r == nil {
+		return nil
+	}
+	return assistantchannel.Tools(r.channels, assistantID, executionID)
+}
+
+func (a *App) assistantToolsForTab(tab *WorkspaceTab) []tool.Tool {
+	if a == nil || tab == nil || tab.sessionKind != agent.SessionKindAssistant || a.assistant == nil {
+		return nil
+	}
+	// The Controller is assembled before a Run is claimed. Its durable session
+	// identity still gives outbound intents a stable retry scope without
+	// deduplicating identical content across unrelated Assistant sessions.
+	return a.assistant.Tools(tab.assistantID, tab.SessionID)
 }
 
 func (r *AssistantRuntime) resumeAutoMemoryApprovals(now time.Time) error {
@@ -566,7 +631,7 @@ func (r *AssistantRuntime) recordDiagnostic(operation string, err error) {
 	}
 	r.diagnosticMu.Lock()
 	r.diagnostics = append(r.diagnostics, AssistantDiagnostic{
-		At: time.Now(), Operation: operation, Message: err.Error(),
+		At: time.Now(), Category: assistantDiagnosticRuntime, Operation: operation, Message: err.Error(),
 	})
 	if len(r.diagnostics) > 50 {
 		r.diagnostics = append([]AssistantDiagnostic(nil), r.diagnostics[len(r.diagnostics)-50:]...)
@@ -1020,11 +1085,11 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 	var grants []control.ToolGrant
 	prompt := strings.TrimSpace(run.Prompt)
 	if isDirectInputRun(run) {
-		b.WriteString("你正在执行一个长期助手的独立 Run。本次是用户直接对你说的一段话，遵守冻结的使命和权限；不要修改运行频率或扩大权限。\n\n")
+		b.WriteString("你正在执行一个长期助手的独立 Run。本次是用户直接对你说的一段话，遵守冻结的使命和权限；不要直接修改运行配置或扩大权限。基于证据发现可复用改进时，可通过 <assistant-progress> proposals 提议允许范围内的配置变化，等待用户决定。\n\n")
 		fmt.Fprintf(&b, "助手使命：\n%s\n\n本次用户输入（原文）：\n%s\n\n", run.Mission, prompt)
 		b.WriteString("这段输入可能是任务、督促/PUA、教导、指导、批评、反馈或工作方法改进：是任务就执行；是指导或反馈就据此调整计划与策略。不要要求用户把输入改写成任务，也不要自动改写或美化原文。\n")
 	} else {
-		b.WriteString("你正在执行一个长期助手的独立 Run。只处理本次 Routine，遵守冻结的使命和权限；不要修改运行频率或扩大权限。\n\n")
+		b.WriteString("你正在执行一个长期助手的独立 Run。只处理本次 Routine，遵守冻结的使命和权限；不要直接修改运行配置或扩大权限。基于证据发现可复用改进时，可通过 <assistant-progress> proposals 提议允许范围内的配置变化，等待用户决定。\n\n")
 		if prompt == "" {
 			prompt = "继续推进助手使命，检查当前状态并完成最有价值的下一步。"
 		}
@@ -1053,6 +1118,8 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 			fmt.Fprintf(&b, "- [%s] %s\n", item.Kind, item.Body)
 		}
 	}
+	writeChannelContext(&b, snapshot)
+	writeImprovementContext(&b, snapshot, !isDirectInputRun(run))
 	for _, item := range snapshot.Attention {
 		if item.RunID == run.ID && item.State == assistant.AttentionApproved && item.ResumeToken == run.ResumeToken {
 			switch {
@@ -1077,6 +1144,66 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 	return b.String(), grants, selected, snapshot.Plan.Revision, nil
 }
 
+func writeChannelContext(b *strings.Builder, snapshot assistant.Snapshot) {
+	if len(snapshot.Channels) == 0 {
+		return
+	}
+	b.WriteString("\n已配置社区渠道（外发必须调用渠道工具；冻结的 publish 权限决定自动执行、逐次审批或拒绝）：\n")
+	for _, channel := range snapshot.Channels {
+		fmt.Fprintf(b, "- %s id=%s kind=%s enabled=%t collect_every_seconds=%d base=%s\n", channel.Name, channel.ID, channel.Kind, channel.Enabled, channel.CollectIntervalSeconds, channel.BaseURL)
+	}
+	if len(snapshot.ChannelMetrics) == 0 {
+		return
+	}
+	b.WriteString("\n最近推广效果（渠道权威观测；比较增量后用 metrics/strategy 记忆记录结论）：\n")
+	start := len(snapshot.ChannelMetrics) - 10
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(snapshot.ChannelMetrics); i++ {
+		metric := snapshot.ChannelMetrics[i]
+		fmt.Fprintf(b, "- channel=%s topic=%d views=%d(+%d) likes=%d(+%d) replies=%d(+%d) at=%s\n", metric.ChannelID, metric.TopicID, metric.Views, metric.ViewsDelta, metric.Likes, metric.LikesDelta, metric.Replies, metric.ReplyDelta, metric.CollectedAt.UTC().Format(time.RFC3339))
+	}
+}
+
+// writeImprovementContext exposes only typed proposal targets and current
+// pending proposals. It lives in the dynamic Run prompt, keeping the stable
+// system-prompt prefix cache-safe while preventing repeated recommendations.
+func writeImprovementContext(b *strings.Builder, snapshot assistant.Snapshot, includePrompt bool) {
+	if len(snapshot.Routines) > 0 {
+		b.WriteString("\n可提出改进建议的 Routine（只能提议 prompt / schedule / enabled，不能直接修改）：\n")
+		for _, routine := range snapshot.Routines {
+			schedule, _ := json.Marshal(routine.Schedule)
+			fmt.Fprintf(b, "- id=%s title=%s revision=%d enabled=%t schedule=%s",
+				routine.ID, routine.Title, routine.Revision, routine.Enabled, schedule)
+			if includePrompt {
+				fmt.Fprintf(b, " prompt=%q", truncateUTF8(routine.Prompt, 1500))
+			}
+			b.WriteString("\n")
+		}
+	}
+	pending := make([]assistant.ChangeProposal, 0)
+	for _, proposal := range snapshot.Proposals {
+		if proposal.State == assistant.ProposalPending {
+			pending = append(pending, proposal)
+		}
+	}
+	if len(pending) == 0 {
+		return
+	}
+	b.WriteString("\n已有待用户处理的改进建议（不要重复提出相同目标和值）：\n")
+	for _, proposal := range pending {
+		var after any
+		if proposal.Routine != nil {
+			after = proposal.Routine.After
+		} else if proposal.Channel != nil {
+			after = proposal.Channel.After
+		}
+		patch, _ := json.Marshal(after)
+		fmt.Fprintf(b, "- id=%s target=%s/%s summary=%s after=%s\n", proposal.ID, proposal.TargetKind, proposal.TargetID, proposal.Summary, patch)
+	}
+}
+
 // writeProgressSchema appends a bounded, concrete example of the
 // <assistant-progress> protocol so the model emits well-formed patches.
 func writeProgressSchema(b *strings.Builder) {
@@ -1093,10 +1220,20 @@ func writeProgressSchema(b *strings.Builder) {
   "complete": ["scan"],
   "active": ["fix-tests"],
   "artifacts": [{"resp": "scan", "title": "扫描报告", "kind": "report", "content": "…", "evidence": "…"}],
-  "opportunities": [{"resp": "fix-tests", "reason": "下游已就绪"}]
+  "opportunities": [{"resp": "fix-tests", "reason": "下游已就绪"}],
+  "proposals": [{
+    "target_kind": "routine",
+    "target_id": "routine-release",
+    "routine": {"schedule": {"kind": "daily", "timezone": "Asia/Shanghai", "at": "09:00"}},
+    "summary": "把发布检查调整到工作日上午",
+    "reason": "最近三次下午检查都错过了当天发布窗口",
+    "evidence": ["run-123: 17:30 才发现可发布", "run-127: 18:10 才完成检查"]
+  }]
 }
 
-depends_on 用 alias 引用，省略表示不变，[] 表示清空；同一块内可前向引用，禁止自依赖与环。responsibility 填本次实际推进的 alias，complete/active 填 alias 列表。`)
+depends_on 用 alias 引用，省略表示不变，[] 表示清空；同一块内可前向引用，禁止自依赖与环。responsibility 填本次实际推进的 alias，complete/active 填 alias 列表。
+
+proposals 仅在运行结果或渠道指标提供了具体证据时填写；target_id 必须取上文真实 ID。routine 只允许 prompt / schedule / enabled，channel 只允许 collect_interval_seconds / enabled。每条建议必须有 summary、reason 和 1–16 条 evidence；现有待处理建议不得重复。建议只会进入待用户处理状态，不能声称配置已经修改。禁止通过提案修改使命、权限、Workspace、渠道地址或凭据。`)
 }
 
 // selectReadyResponsibility deterministically picks the one responsibility a
@@ -1168,68 +1305,7 @@ func writePlanContext(b *strings.Builder, plan assistant.Plan, selected *assista
 }
 
 func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
-	safeLocalWrites := []string{"write_file", "edit_file", "multi_edit", "notebook_edit"}
-	localAll := []string{
-		"write_file", "edit_file", "multi_edit", "notebook_edit",
-		"move_file", "delete_range", "delete_symbol", "bash", "run_skill",
-	}
-	networkTools := []string{
-		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll",
-		"browser_tab", "browser_close", "browser_click", "browser_type", "browser_upload", "browser_attach",
-	}
-	networkAllow := []string{
-		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll", "browser_tab", "browser_close",
-	}
-	allow := make([]string, 0, len(safeLocalWrites)+len(networkAllow)+4)
-	deny := make([]string, 0, len(localAll)+len(networkTools))
-	// Assistant memory tools always auto-execute. remember/forget write to the
-	// assistant's bound project memory store (a controlled, versioned store),
-	// not arbitrary files, so they stay Allow even when LocalWrite is
-	// deny/approve; memory is read-only and matches the same intent explicitly.
-	allow = append(allow, "memory", "remember", "forget")
-	// Ask has precedence over Allow. These cover destructive local operations
-	// and browser actions that can publish or disclose data.
-	ask := []string{
-		"delete_range", "delete_symbol",
-		"browser_click", "browser_type", "browser_upload", "browser_attach",
-		"mcp__*",
-	}
-	switch policy.LocalWrite {
-	case assistant.AccessAllow:
-		// bash is a full shell: when the user allows local writes it executes
-		// without a per-command whitelist (read-only and build/test commands
-		// alike), mirroring the file writer auto-execute behaviour.
-		allow = append(allow, safeLocalWrites...)
-		allow = append(allow, "bash")
-		allow = append(allow, "run_skill")
-	case assistant.AccessDeny:
-		deny = append(deny, localAll...)
-	case assistant.AccessApprove:
-		ask = append(ask, "bash", "run_skill")
-	}
-	if policy.Network == assistant.AccessAllow {
-		allow = append(allow, networkAllow...)
-	} else if policy.Network == assistant.AccessDeny {
-		deny = append(deny, networkTools...)
-		deny = append(deny, "mcp__*")
-	}
-	if policy.Network == assistant.AccessApprove {
-		ask = append(ask, networkTools...)
-	}
-	// install_source fetches untrusted content and writes a project capability;
-	// it is allowed only when both frozen dimensions explicitly allow it.
-	switch {
-	case policy.LocalWrite == assistant.AccessDeny || policy.Network == assistant.AccessDeny:
-		deny = append(deny, "install_source")
-	case policy.LocalWrite == assistant.AccessAllow && policy.Network == assistant.AccessAllow:
-		allow = append(allow, "install_source")
-	default:
-		ask = append(ask, "install_source")
-	}
-	// Publish/Delete/Payment/Secrets/Private are deliberately never translated
-	// into Allow or Deny rules here: every concrete writer remains Ask even when
-	// those Assistant fields are configured as allow.
-	return permission.New("ask", allow, ask, deny)
+	return assistant.PermissionPolicy(policy)
 }
 
 func (r *AssistantRuntime) removeInFlight(in *assistantInFlight) {

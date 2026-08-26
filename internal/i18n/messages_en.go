@@ -401,6 +401,7 @@ Usage:
   WorkGround2 init                                         show how to generate project memory (AGENTS.md)
   WorkGround2 doctor [--json]                              print redacted local diagnostics
   WorkGround2 bot start|doctor|weixin-login                multi-channel IM bot gateway
+  WorkGround2 assistant daemon [--once] [--interval 30s]   run the local Assistant scheduling and execution loop
   WorkGround2 upgrade [--check] [--force]                   self-update to the latest release (also: WorkGround2 update)
   WorkGround2 version
   WorkGround2 help
