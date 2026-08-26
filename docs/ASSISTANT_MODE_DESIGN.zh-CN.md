@@ -1,8 +1,8 @@
 # WorkGround2 助手模式设计
 
-> 状态：阶段 1～5 已实现
+> 状态：阶段 1～5 已实现并合入 `main`
 >
-> 分支：`developping/assistant-improvement-proposals+2026-08-26`
+> 来源分支：`developping/assistant-improvement-proposals+2026-08-26`
 >
 > 参考视觉：用户提供的 1487×1058 Desktop 深色时间线设计图
 >
