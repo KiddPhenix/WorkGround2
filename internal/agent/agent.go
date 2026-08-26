@@ -179,6 +179,14 @@ type Gate interface {
 	Check(ctx context.Context, toolName string, args json.RawMessage, readOnly bool) (allow bool, reason string, err error)
 }
 
+// SubjectGate is the optional dynamic-subject extension used by audited
+// first-party tools whose risk depends on the referenced runtime object (for
+// example, a browser click on a link versus a publish button). Ordinary gates
+// continue to use Gate.Check unchanged.
+type SubjectGate interface {
+	CheckSubject(ctx context.Context, toolName, subject string, args json.RawMessage, readOnly bool) (allow bool, reason string, err error)
+}
+
 // PlanModeReadOnlyTrustRequest describes an external read-only hint that plan
 // mode will not trust without a user decision. ToolName is the provider-visible
 // name; ServerName and RawToolName are the MCP identifiers persisted in config.
@@ -2406,10 +2414,26 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 		}
 	}
 	if a.gate != nil {
-		allow, reason, err := a.gate.Check(ctx, call.Name, json.RawMessage(call.Arguments), t.ReadOnly())
+		args := json.RawMessage(call.Arguments)
+		var allow bool
+		var reason string
+		var err error
+		if classifier, ok := t.(tool.PermissionSubjecter); ok {
+			if subjectGate, supported := a.gate.(SubjectGate); supported {
+				var subject string
+				subject, err = classifier.PermissionSubject(ctx, args)
+				if err == nil {
+					allow, reason, err = subjectGate.CheckSubject(ctx, call.Name, subject, args, t.ReadOnly())
+				}
+			} else {
+				allow, reason, err = a.gate.Check(ctx, call.Name, args, t.ReadOnly())
+			}
+		} else {
+			allow, reason, err = a.gate.Check(ctx, call.Name, args, t.ReadOnly())
+		}
 		if err != nil {
 			return toolOutcome{
-				output:  fmt.Sprintf("blocked: %s (%v)", reason, err),
+				output:  fmt.Sprintf("blocked: %s (%v)", firstNonEmpty(reason, "permission classification failed"), err),
 				blocked: true,
 				errMsg:  fmt.Sprintf("blocked: %v", err),
 			}

@@ -413,33 +413,12 @@ func daemonPrompt(snapshot assistant.Snapshot, run assistant.Run) (string, []con
 			}
 		}
 	}
-	b.WriteString("\n外发必须使用 assistant_channel_publish/reply 并等待逐次审批；读取已采集指标用 assistant_channel_metrics。完成后给出结论，并可在末尾输出合法 <assistant-progress> JSON 块。")
+	b.WriteString("\n外发必须使用 assistant_channel_publish/reply；冻结的 publish 权限决定自动执行、逐次审批或拒绝。读取已采集指标用 assistant_channel_metrics。完成后给出结论，并可在末尾输出合法 <assistant-progress> JSON 块。")
 	return b.String(), grants
 }
 
 func daemonPermission(p assistant.Policy) permission.Policy {
-	allow := []string{"memory", "remember", "forget"}
-	ask := []string{"assistant_channel_publish", "assistant_channel_reply", "delete_range", "delete_symbol", "browser_click", "browser_type", "browser_upload", "browser_attach", "mcp__*"}
-	deny := []string{}
-	local := []string{"write_file", "edit_file", "multi_edit", "notebook_edit", "bash", "run_skill"}
-	network := []string{"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll", "browser_tab", "browser_close", "assistant_channel_metrics"}
-	switch p.LocalWrite {
-	case assistant.AccessAllow:
-		allow = append(allow, local...)
-	case assistant.AccessDeny:
-		deny = append(deny, local...)
-	default:
-		ask = append(ask, local...)
-	}
-	switch p.Network {
-	case assistant.AccessAllow:
-		allow = append(allow, network...)
-	case assistant.AccessDeny:
-		deny = append(deny, append(network, "assistant_channel_publish", "assistant_channel_reply", "mcp__*")...)
-	default:
-		ask = append(ask, network...)
-	}
-	return permission.New("ask", allow, ask, deny)
+	return assistant.PermissionPolicy(p)
 }
 
 func compact(in []error) []error {

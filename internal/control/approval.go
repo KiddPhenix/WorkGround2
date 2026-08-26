@@ -116,7 +116,8 @@ func (a *approvalManager) configure(policy permission.Policy, mode string, grant
 func (a *approvalManager) preApproved(tool, subject string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.bypassAllowsLocked(tool) || a.oneShot[exactToolGrant(tool, subject)] || a.sessionGrantAllowsLocked(tool, subject)
+	legacyToolGrant := exactToolGrant(tool, "")
+	return a.bypassAllowsLocked(tool) || a.oneShot[exactToolGrant(tool, subject)] || a.oneShot[legacyToolGrant] || a.sessionGrantAllowsLocked(tool, subject)
 }
 
 // preApprovedForDecision reports whether a prompt can be skipped for a decision
@@ -128,6 +129,11 @@ func (a *approvalManager) preApprovedForDecision(tool, subject string, fresh boo
 	grant := exactToolGrant(tool, subject)
 	if a.oneShot[grant] {
 		delete(a.oneShot, grant)
+		return true
+	}
+	legacyToolGrant := exactToolGrant(tool, "")
+	if subject != "" && a.oneShot[legacyToolGrant] {
+		delete(a.oneShot, legacyToolGrant)
 		return true
 	}
 	if action != nil {

@@ -30,9 +30,9 @@ func (t *channelTool) Name() string {
 }
 func (t *channelTool) Description() string {
 	if t.kind == assistant.ChannelReplyTopic {
-		return "Reply to a configured community topic. This always requires per-action human approval and is durably deduplicated."
+		return "Reply to a configured community topic. The frozen Assistant publish permission decides whether it runs automatically, asks per action, or is denied; delivery is durably deduplicated."
 	}
-	return "Publish a topic to a configured Assistant community channel. This always requires per-action human approval and is durably deduplicated."
+	return "Publish a topic to a configured Assistant community channel. The frozen Assistant publish permission decides whether it runs automatically, asks per action, or is denied; delivery is durably deduplicated."
 }
 func (t *channelTool) Schema() json.RawMessage {
 	if t.kind == assistant.ChannelReplyTopic {

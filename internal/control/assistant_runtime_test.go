@@ -157,6 +157,14 @@ func TestTrySubmitUserTurnWithPolicyBusyDoesNotMutateRuntime(t *testing.T) {
 	close(release)
 }
 
+func TestLegacyEmptyOneShotGrantCoversNewSemanticSubject(t *testing.T) {
+	manager := newApprovalManager(permission.New("ask", nil, []string{"browser_type"}, nil), ToolApprovalAsk, 0)
+	manager.configure(manager.policy, ToolApprovalAsk, []ToolGrant{{Tool: "browser_type"}})
+	if !manager.preApproved("browser_type", "ordinary") {
+		t.Fatal("legacy empty browser_type grant did not cover classified ordinary input")
+	}
+}
+
 type permissionCheckingRunner struct {
 	check  func() (bool, error)
 	result chan permissionCheckResult

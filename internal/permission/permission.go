@@ -373,14 +373,24 @@ func (g *Gate) Check(ctx context.Context, toolName string, args json.RawMessage,
 			readOnly = true
 		}
 	}
-	switch g.Policy.Decide(toolName, readOnly, args) {
+	return g.check(ctx, toolName, Subject(args), args, g.Policy.Decide(toolName, readOnly, args))
+}
+
+// CheckSubject evaluates an audited subject supplied by a first-party tool.
+// It keeps the original args for the approval UI while avoiding model-authored
+// risk labels. The tool must derive subject from authoritative runtime state.
+func (g *Gate) CheckSubject(ctx context.Context, toolName, subject string, args json.RawMessage, readOnly bool) (bool, string, error) {
+	return g.check(ctx, toolName, strings.TrimSpace(subject), args, g.Policy.DecideSubject(toolName, readOnly, subject))
+}
+
+func (g *Gate) check(ctx context.Context, toolName, subject string, args json.RawMessage, decision Decision) (bool, string, error) {
+	switch decision {
 	case Deny:
 		return false, "denied by permission policy — this tool/command is on the deny list. Do not retry it; choose another approach or stop and explain.", nil
 	case Ask:
 		if g.Approver == nil {
 			return true, "", nil // non-interactive: preserve autonomy
 		}
-		subject := Subject(args)
 		allow, remember, approverReason, err := g.approve(ctx, toolName, subject, args)
 		if err != nil {
 			return false, "approval aborted", err

@@ -471,6 +471,56 @@ func TestToolsPassCurrentJobsOwner(t *testing.T) {
 	}
 }
 
+func TestBrowserPermissionSubjectsUseCurrentPageSemantics(t *testing.T) {
+	svc := newFakeService()
+	svc.stateFn = func(_ context.Context, owner string, req browser.StateRequest) (browser.PageState, error) {
+		if owner != "owner-42" || req.Revision == nil || *req.Revision != 7 {
+			return browser.PageState{}, fmt.Errorf("unexpected state request owner=%q revision=%v", owner, req.Revision)
+		}
+		return browser.PageState{Revision: 7, Elements: []browser.Element{
+			{Index: 1, Role: "button", Name: "打开详情"},
+			{Index: 2, Role: "button", Name: "发表回复"},
+			{Index: 3, Role: "button", Name: "删除帖子"},
+			{Index: 4, Role: "button", Name: "立即支付"},
+			{Index: 5, Role: "searchbox", InputType: "search", Name: "搜索"},
+			{Index: 6, Role: "textbox", InputType: "password", Name: "密码"},
+			{Index: 7, Role: "textbox", InputType: "email", Name: "邮箱"},
+		}}, nil
+	}
+	ctx := jobs.WithSession(context.Background(), "owner-42")
+	tools := map[string]interface {
+		PermissionSubject(context.Context, json.RawMessage) (string, error)
+	}{}
+	for _, candidate := range browsertool.NewTools(svc) {
+		if classifier, ok := candidate.(interface {
+			PermissionSubject(context.Context, json.RawMessage) (string, error)
+		}); ok {
+			tools[candidate.Name()] = classifier
+		}
+	}
+	for _, tc := range []struct {
+		tool string
+		args string
+		want string
+	}{
+		{"browser_click", `{"revision":7,"index":1,"request_id":"open"}`, "ordinary"},
+		{"browser_click", `{"revision":7,"index":2,"request_id":"publish"}`, "publish"},
+		{"browser_click", `{"revision":7,"index":3,"request_id":"delete"}`, "delete"},
+		{"browser_click", `{"revision":7,"index":4,"request_id":"pay"}`, "payment"},
+		{"browser_type", `{"revision":7,"index":5,"text":"WorkGround2","press_enter":true,"request_id":"search"}`, "ordinary"},
+		{"browser_type", `{"revision":7,"index":6,"text":"secret","request_id":"secret"}`, "secret"},
+		{"browser_type", `{"revision":7,"index":7,"text":"a@example.com","request_id":"private"}`, "private"},
+		{"browser_type", `{"revision":7,"index":1,"text":"submit","press_enter":true,"request_id":"enter"}`, "publish"},
+	} {
+		t.Run(tc.tool+"/"+tc.want, func(t *testing.T) {
+			got, err := tools[tc.tool].PermissionSubject(ctx, json.RawMessage(tc.args))
+			if err != nil || got != tc.want {
+				t.Fatalf("subject=%q err=%v, want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestWrappedBrowserErrorKeepsStructuredCode(t *testing.T) {
 	svc := newFakeService()
 	svc.stateFn = func(context.Context, string, browser.StateRequest) (browser.PageState, error) {
