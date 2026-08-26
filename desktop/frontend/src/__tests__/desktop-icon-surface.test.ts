@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/desktop-icon-surface.test.ts
 import assert from "node:assert/strict";
-import { createIconSurfaceCoordinator, DESKTOP_ICON_OVERLAY_BOUNDS, desktopIconLayoutBounds, type IconSurfaceBounds } from "../lib/desktopIconSurface";
+import { createIconSurfaceCoordinator, createIconSurfaceLifecycle, DESKTOP_ICON_OVERLAY_BOUNDS, desktopIconLayoutBounds, type IconSurfaceBounds } from "../lib/desktopIconSurface";
 import type { DesktopIconItem, DesktopIconSurfaceInput, DesktopIconSurfaceResult } from "../lib/bridge";
 
 const response = (input: DesktopIconSurfaceInput): DesktopIconSurfaceResult => ({ width: input.width + input.envelope * 2, height: input.height + input.envelope * 2, x: 0, y: 0 });
@@ -87,6 +87,23 @@ async function testConcurrentPrepareCoalescesSingleFlight() {
 	assert.equal(coordinator.current()?.width, 964, "authoritative geometry can never roll back from an out-of-order response");
 }
 
+async function testActivityLifecycleRecreatesDisposedCoordinator() {
+	const calls: DesktopIconSurfaceInput[] = [];
+	const lifecycle = createIconSurfaceLifecycle({
+		apply: async (input) => { calls.push(input); return response(input); },
+	});
+	assert.equal(await lifecycle.prepare(bounds(700, 550)), false, "a hidden Activity cannot mutate the native surface");
+	lifecycle.activate();
+	assert.equal(await lifecycle.prepare(bounds(700, 550)), true);
+	assert.equal(lifecycle.current()?.width, 764);
+	lifecycle.deactivate();
+	assert.equal(lifecycle.current(), null, "hiding Activity releases the old native coordinator");
+	lifecycle.activate();
+	assert.equal(await lifecycle.prepare(bounds(700, 550)), true, "Activity reveal gets a live coordinator instead of the disposed ref");
+	assert.equal(calls.length, 2, "each visible native lifetime independently converges from its authority");
+	lifecycle.dispose();
+}
+
 function item(id: string, row: "top" | "bottom", status: DesktopIconItem["status"] = "idle"): DesktopIconItem {
 	return { id, kind: "task", sourceId: id, title: id, status, unreadCount: 0, notifications: [], position: { row, zone: "running", order: 0 }, revision: id };
 }
@@ -104,4 +121,5 @@ await testFailureDoesNotCommit();
 await testSurfaceOnlyGrows();
 await testInitialNativeSurfaceDoesNotShrink();
 await testConcurrentPrepareCoalescesSingleFlight();
+await testActivityLifecycleRecreatesDisposedCoordinator();
 process.stdout.write("desktop icon surface coordinator tests passed\n");

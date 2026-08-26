@@ -222,9 +222,10 @@ assert.match(component, /if \(exiting \|\| topmostBusy \|\| !topmostLoaded \|\| 
 assert.match(component, /const openMainWindow = async \(\) => \{[\s\S]*if \(exitRequest\.current\) return;[\s\S]*await onOpenMain\(\)/, "open main guards the async exit round-trip and delegates to the root App");
 assert.match(component, /const openSettingsWindow = async \(\) => \{[\s\S]*if \(exitRequest\.current\) return;[\s\S]*await onOpenSettings\(\)/, "open settings reuses the guarded exit-before-open flow");
 assert.doesNotMatch(component, /onOpenSettings\(\)\.catch\(\(cause\) => setError/, "settings never opens through an unguarded inline call");
-assert.match(css, /:root:has\(\.desktop-icon-mode\)\s*\{[^}]*background:\s*transparent;/s, "native icon hit regions must not expose the app root background");
-assert.match(css, /body:has\(\.desktop-icon-mode\),\s*body:has\(\.desktop-icon-mode\) #root\s*\{[^}]*background:\s*transparent\s*!important;/s, "the WebView body and root stay transparent around desktop icons");
-assert.match(css, /body:has\(\.desktop-icon-mode\) \.app[\s\S]*display:\s*none\s*!important/, "MainApp stays mounted in React but is removed from layout and compositing, so no descendant can leak through the transparent surface");
+assert.match(css, /:root\[data-icon-widget="active"\]\s*\{[^}]*background:\s*transparent;/s, "native icon hit regions must not expose the app root background");
+assert.match(css, /:root\[data-icon-widget="active"\] body,\s*:root\[data-icon-widget="active"\] body #root\s*\{[^}]*background:\s*transparent\s*!important;/s, "the WebView body and root stay transparent around desktop icons");
+assert.match(css, /:root\[data-icon-widget="active"\] body \.app[\s\S]*display:\s*none\s*!important/, "MainApp stays mounted in React but is removed from layout and compositing, so no descendant can leak through the transparent surface");
+assert.doesNotMatch(css, /:has\(\.desktop-icon-mode\)/, "Activity-hidden icon DOM cannot affect window mode styling");
 assert.doesNotMatch(component, /widget-mode\.css/, "the icons-only path loads desktop-icon-mode.css alone, so the .app visibility rule must live here");
 assert.match(component, /SetDesktopIconHitRegions/, "frontend reports visible hit rectangles to the native window");
 assert.match(component, /getClientRects\(\)\.length\s*>\s*0/, "popup visibility does not depend on offsetParent semantics");
@@ -326,7 +327,7 @@ assert.match(jobsSource, /There is no front-end flight timeout/, "the module doc
 // Snapshot refresh is event-driven and backend-authoritative. A slow request is
 // shared by every caller, bursts coalesce, and only a 30s recovery read remains.
 assert.match(component, /const refreshPending = useRef<Promise<void> \| null>\(null\);/, "snapshot refresh owns one shared in-flight request");
-assert.match(component, /if \(refreshPending\.current\) return refreshPending\.current;[\s\S]{0,1200}refreshPending\.current = pending;/, "concurrent refresh callers share the current snapshot request");
+assert.match(component, /refreshRequested\.current = true;[\s\S]{0,120}if \(refreshPending\.current\) return refreshPending\.current;[\s\S]{0,500}while \(refreshRequested\.current\)[\s\S]{0,300}refreshPending\.current = pending;/, "concurrent and Activity-reveal callers share one drain and request one converging follow-up");
 assert.match(component, /createDesktopIconSnapshotRefresh\([\s\S]{0,700}subscribeDesktopIconSnapshotRefresh\(coordinator, \[/, "runtime events only wake the shared snapshot coordinator");
 assert.match(component, /onEvent[\s\S]{0,500}onProjectTreeChanged[\s\S]{0,500}onUnreadState[\s\S]{0,500}onCollaborationState[\s\S]{0,500}onCollaborationEvent[\s\S]{0,500}onSessionBackgroundChanged/, "all icon-changing runtime sources wake a refresh");
 assert.match(component, /return \(\) => \{ unsubscribe\(\); coordinator\.dispose\(\); \};/, "unmount removes event subscriptions and timers");
@@ -743,8 +744,8 @@ assert.match(css, /\.desktop-icon-row\s*\{[^}]*flex-wrap:\s*wrap/, "icon rows wr
 // must never erase an action failure (toggle, open main/settings, or the
 // initial always-on-top read) ---
 assert.match(component, /const \[quickError, setQuickError\] = useState\(""\);/, "quick-control failures use their own error channel");
-assert.match(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setError\(next\.error \|\| ""\);/, "snapshot refresh writes only the snapshot error channel");
-assert.doesNotMatch(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setQuickError/, "snapshot refresh never touches the quick-error channel");
+assert.match(component, /const refreshOnce = useCallback\(async \(\) => \{[\s\S]{0,1200}setError\(next\.error \|\| ""\);/, "snapshot refresh writes only the snapshot error channel");
+assert.doesNotMatch(component, /const refreshOnce = useCallback\(async \(\) => \{[\s\S]{0,1200}setQuickError/, "snapshot refresh never touches the quick-error channel");
 assert.match(component, /\(error \|\| quickError \|\| quickJobs\.storageError \|\| routineNotice\) && <div className="desktop-icon-toast" role=\{error \|\| quickError \|\| quickJobs\.storageError \? "alert" : "status"\}/, "the toast surfaces errors together and announces successful routine extraction as status");
 assert.match(component, /\.catch\(\(\) => \{ if \(alive\) \{ setTopmostReadFailed\(true\); setQuickError\(t\("desktopIcon\.topmostReadError"\)\); \} \}\)/, "an initial always-on-top read failure stays visible and never assumes false");
 assert.match(component, /disabled=\{exiting \|\| topmostBusy \|\| !topmostLoaded \|\| topmostReadFailed\}/, "the always-on-top switch stays disabled after a failed initial read and while exiting");

@@ -24,6 +24,9 @@ async function main() {
   const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
   const controllerSource = readFileSync(new URL("../lib/useController.ts", import.meta.url), "utf8");
   const workspaceSource = readFileSync(new URL("../collab/CollaborationWorkspace.tsx", import.meta.url), "utf8");
+	const iconCSS = readFileSync(new URL("../components/widget/desktop-icon-mode.css", import.meta.url), "utf8");
+	const iconModeSource = readFileSync(new URL("../components/widget/DesktopIconMode.tsx", import.meta.url), "utf8");
+	const iconSurfaceSource = readFileSync(new URL("../lib/desktopIconSurface.ts", import.meta.url), "utf8");
 
   // ── Source contract: the reveal intent fires only on a real widget exit ──
   ok(
@@ -53,6 +56,29 @@ async function main() {
       controllerSource.includes("void syncActiveTabFromBackend(false, true).then((tabId) => {"),
     "Activity preserves MainApp while hidden and reactivation re-synchronizes authoritative backend state",
   );
+	ok(
+		/<ReactActivity mode=\{widgetMode \? "visible" : "hidden"\}>[\s\S]{0,500}<DesktopIconMode/.test(appSource),
+		"Activity preserves the last backend-authoritative icon projection across window mode",
+	);
+	ok(
+		!iconCSS.includes(":has(.desktop-icon-mode)") && iconCSS.includes(':root[data-icon-widget="active"] body .app'),
+		"Activity-hidden icon DOM cannot make window mode transparent or hide MainApp",
+	);
+	ok(
+		iconSurfaceSource.includes("createIconSurfaceLifecycle") &&
+		iconSurfaceSource.includes("ref.current?.activate()") &&
+		iconSurfaceSource.includes("ref.current?.deactivate()"),
+		"Activity reveal recreates the native surface coordinator disposed while hidden",
+	);
+	ok(
+		/refreshRequested\.current = true;[\s\S]{0,160}if \(refreshPending\.current\) return refreshPending\.current;/.test(iconModeSource) &&
+		/while \(refreshRequested\.current\)[\s\S]{0,180}await refreshOnceLatest\.current\(\)/.test(iconModeSource),
+		"a reveal joining an old refresh requests one sequential authoritative follow-up",
+	);
+	ok(
+		/regionKey\.current = "";[\s\S]{0,80}regionErrorKey\.current = "";/.test(iconModeSource),
+		"each revealed native surface reinstalls hit regions even when geometry is unchanged",
+	);
 
   // ── Opening a task from the widget collapses the Assistant surface ──
   // The backend emits session:activated(widget-open) only after a successful

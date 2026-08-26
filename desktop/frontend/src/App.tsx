@@ -5598,7 +5598,9 @@ export default function App() {
 	  <ReactActivity mode={widgetMode ? "hidden" : "visible"}>
 	    <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} onDismissWindow={dismissMainWindow} collabDialogSignal={collabDialogSignal} assistantOpenSignal={assistantOpenSignal} />
 	  </ReactActivity>
-	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} onOpenAssistant={openWidgetAssistant} />}
+	  <ReactActivity mode={widgetMode ? "visible" : "hidden"}>
+	    <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} onOpenAssistant={openWidgetAssistant} />
+	  </ReactActivity>
 	</>
   );
 }

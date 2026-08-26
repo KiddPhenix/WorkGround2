@@ -60,7 +60,7 @@ assert.match(bridgeSource, /filter\(\(id\) => id !== "assistant" \|\| settings\.
 // The desktop widget is icons-only: App renders only DesktopIconMode, and the
 // icon mode owns its exit-to-main and settings entries through App callbacks.
 assert.doesNotMatch(appSource, /<WidgetMode/, "App never renders the legacy pager");
-assert.match(appSource, /widgetMode && <DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} onOpenSettings=\{openWidgetSettings\} onOpenMain=\{openWidgetMain\} onOpenAssistant=\{openWidgetAssistant\} \/>/, "widget mode renders only the icon mode, wired to the root App room open/new, settings, open-main, and open-assistant coordination");
+assert.match(appSource, /<ReactActivity mode=\{widgetMode \? "visible" : "hidden"\}>[\s\S]{0,300}<DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} onOpenSettings=\{openWidgetSettings\} onOpenMain=\{openWidgetMain\} onOpenAssistant=\{openWidgetAssistant\} \/>[\s\S]{0,80}<\/ReactActivity>/, "Activity preserves the authoritative icon projection and reveals it immediately in widget mode");
 const iconModeSource = read("../components/widget/DesktopIconMode.tsx");
 const iconCSS = read("../components/widget/desktop-icon-mode.css");
 assert.match(iconModeSource, /onOpenMain: \(\) => Promise<void>/, "icon mode receives an async open-main callback from the root App");

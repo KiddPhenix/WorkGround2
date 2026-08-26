@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { app, type DesktopIconItem, type DesktopIconSurfaceInput, type DesktopIconSurfaceResult } from "./bridge";
 
 export interface IconSurfaceBounds { width: number; height: number; }
@@ -21,6 +21,11 @@ export interface IconSurfaceCoordinator {
 	settle(bounds: IconSurfaceBounds): void;
 	current(): DesktopIconSurfaceResult | null;
 	dispose(): void;
+}
+
+export interface IconSurfaceLifecycle extends IconSurfaceCoordinator {
+	activate(): void;
+	deactivate(): void;
 }
 
 const clean = (value: number) => Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
@@ -130,13 +135,43 @@ export function createIconSurfaceCoordinator(options: IconSurfaceCoordinatorOpti
 	};
 }
 
+// React Activity disconnects effects while preserving refs and state. A raw
+// coordinator becomes permanently disposed after the first hidden transition,
+// so this stable facade owns a fresh coordinator for each visible lifetime.
+// Calls outside an active lifetime fail/no-op explicitly; component layout
+// effects run after activate and converge through the new native authority.
+export function createIconSurfaceLifecycle(options: IconSurfaceCoordinatorOptions): IconSurfaceLifecycle {
+	let active: IconSurfaceCoordinator | null = null;
+	return {
+		activate() {
+			if (!active) active = createIconSurfaceCoordinator(options);
+		},
+		deactivate() {
+			active?.dispose();
+			active = null;
+		},
+		prepare: (bounds) => active?.prepare(bounds) ?? Promise.resolve(false),
+		settle: (bounds) => { active?.settle(bounds); },
+		current: () => active?.current() ?? null,
+		dispose() {
+			active?.dispose();
+			active = null;
+		},
+	};
+}
+
 export function useDesktopIconSurface(onError?: (err: unknown) => void, onApplied?: (result: DesktopIconSurfaceResult) => void): IconSurfaceCoordinator {
-	const ref = useRef<IconSurfaceCoordinator | null>(null);
-	if (ref.current === null) ref.current = createIconSurfaceCoordinator({
+	const callbacks = useRef({ onError, onApplied });
+	callbacks.current = { onError, onApplied };
+	const ref = useRef<IconSurfaceLifecycle | null>(null);
+	if (ref.current === null) ref.current = createIconSurfaceLifecycle({
 		apply: (input) => app.SetDesktopIconSurface(input),
-		onError,
-		onApplied,
+		onError: (cause) => callbacks.current.onError?.(cause),
+		onApplied: (result) => callbacks.current.onApplied?.(result),
 	});
-	useEffect(() => () => ref.current?.dispose(), []);
+	useLayoutEffect(() => {
+		ref.current?.activate();
+		return () => ref.current?.deactivate();
+	}, []);
 	return ref.current;
 }

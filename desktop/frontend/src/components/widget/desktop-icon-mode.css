@@ -1,25 +1,21 @@
-:root[data-icon-widget="active"],
-:root:has(.desktop-icon-mode) {
+:root[data-icon-widget="active"] {
   background: transparent !important;
   background-color: transparent !important;
   color-scheme: dark;
 }
 
 :root[data-icon-widget="active"] body,
-:root[data-icon-widget="active"] body #root,
-body:has(.desktop-icon-mode),
-body:has(.desktop-icon-mode) #root {
+:root[data-icon-widget="active"] body #root {
   overflow: clip;
   background: transparent !important;
   background-color: transparent !important;
 }
 
-/* Icons-only mode keeps MainApp mounted (React state stays alive) but fully
-   hidden, so the transparent surface shows only the desktop behind the window.
-   widget-mode.css normally provides this for the pager; the icons-only path
-   loads only this stylesheet, so the rule is repeated here. */
-body:has(.desktop-icon-mode) .app,
-body:has(.desktop-icon-mode) .app--widget-hidden {
+/* Both app surfaces stay mounted through React Activity. The explicit mode
+   attribute is the authority: a DOM-presence selector would also match the
+   hidden icon tree and incorrectly hide MainApp in window mode. */
+:root[data-icon-widget="active"] body .app,
+:root[data-icon-widget="active"] body .app--widget-hidden {
   display: none !important;
 }
 

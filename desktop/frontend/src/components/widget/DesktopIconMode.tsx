@@ -1490,6 +1490,13 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 			&& current.x === result.x && current.y === result.y ? current : result),
 	);
 	const [overlayReadyKey, setOverlayReadyKey] = useState("");
+	// Activity preserves refs across window mode. Each native icon-surface entry
+	// clears its HRGN, so the prior lifetime's dedupe key must not suppress the
+	// first authoritative hit-region install after reveal.
+	useLayoutEffect(() => {
+		regionKey.current = "";
+		regionErrorKey.current = "";
+	}, []);
 
 	// cancelTransientTimers cancels every scheduled click/hover/preview and the
 	// in-flight drag: a delayed open or preview can never resurrect transient UI
@@ -1511,31 +1518,41 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	// GetDesktopIconSnapshot is the only business-state authority. Events below
 	// merely wake a coalesced refresh; they never maintain a parallel projection.
 	const refreshPending = useRef<Promise<void> | null>(null);
-  const refresh = useCallback(() => {
-		if (refreshPending.current) return refreshPending.current;
-		const pending = (async () => {
-			try {
-				const next = await app.GetDesktopIconSnapshot();
-				const nextItems = visibleDesktopIcons(mergeQuickStartItems(next.items, optimisticItems), roomIconCount);
-				const prepared = await surface.prepare(desktopIconLayoutBounds(nextItems, collapsed, clusterZoom * desktopZoom));
-				if (!prepared) return;
-				setSnapshot((current) => current.revision === next.revision && (current.error || "") === (next.error || "") ? current : next);
-				setSnapshotLoaded(true);
-				setError(next.error || "");
+	const refreshRequested = useRef(false);
+	const refreshOnce = useCallback(async () => {
+		try {
+			const next = await app.GetDesktopIconSnapshot();
+			const nextItems = visibleDesktopIcons(mergeQuickStartItems(next.items, optimisticItems), roomIconCount);
+			const prepared = await surface.prepare(desktopIconLayoutBounds(nextItems, collapsed, clusterZoom * desktopZoom));
+			if (!prepared) return;
+			setSnapshot((current) => current.revision === next.revision && (current.error || "") === (next.error || "") ? current : next);
+			setSnapshotLoaded(true);
+			setError(next.error || "");
 			// Accepted jobs hand off to their real task:task:<tabId> icon the
 			// moment this refreshed snapshot contains it (same render, no
-			// empty-frame gap, no duplicate). Polls never touch other phases,
+			// empty-frame gap, no duplicate). Snapshot refreshes never touch other phases,
 			// and no timer ever evicts an accepted job whose real icon is
 			// filtered/capped out of the snapshot.
-				quickJobs.reconcile(next.items);
-			} catch (cause) {
-				setError(cause instanceof Error ? cause.message : String(cause));
+			quickJobs.reconcile(next.items);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		}
+	}, [collapsed, clusterZoom, desktopZoom, optimisticItems, quickJobs.reconcile, roomIconCount, surface]);
+	const refreshOnceLatest = useRef(refreshOnce);
+	refreshOnceLatest.current = refreshOnce;
+  const refresh = useCallback(() => {
+		refreshRequested.current = true;
+		if (refreshPending.current) return refreshPending.current;
+		const pending = (async () => {
+			while (refreshRequested.current) {
+				refreshRequested.current = false;
+				await refreshOnceLatest.current();
 			}
 		})();
 		refreshPending.current = pending;
 		void pending.finally(() => { if (refreshPending.current === pending) refreshPending.current = null; });
 		return pending;
-	}, [collapsed, clusterZoom, desktopZoom, optimisticItems, quickJobs.reconcile, roomIconCount, surface]);
+	}, []);
 	const refreshLatest = useRef(refresh);
 	refreshLatest.current = refresh;
   useEffect(() => {
