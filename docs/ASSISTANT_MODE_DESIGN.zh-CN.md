@@ -170,14 +170,14 @@ queued -> running -> succeeded
 | 读取项目、分析历史 | 自动允许 |
 | 限定 Workspace 的本地写入 | 使用 Assistant 配置 |
 | 网络查询 | 使用 Assistant 配置 |
-| 对外发帖、回复、私信 | 必须审批 |
+| 对外发帖、回复、私信 | 使用 Assistant 的 `publish` 三态配置；`allow` 自动执行，`approve` 逐次审批，`deny` 拒绝 |
 | 删除、付费、凭据、隐私数据 | 必须逐次审批 |
 | Assistant 记忆读取/写入（`memory` / `remember` / `forget`） | 自动允许 |
 | 项目 Skill 安装（`install_source`） | 仅 `local_write=allow` 且 `network=allow` 时自动允许；任一拒绝则拒绝，其余逐次审批 |
 
-内建记忆工具 `memory`（只读检索）、`remember`、`forget` 在 Assistant Session 中始终自动执行：它们写入的是 Assistant 绑定项目的受控、版本化 memory store，而不是任意文件写入，因此即使 `local_write=deny/approve` 也保持允许，不再生成 `approve_tool:remember` / `approve_tool:forget` 人工待办。Controller 只在当前 turn 的冻结 Policy 没有显式 Allow 时为普通交互 Session 补记忆 Ask 规则，不能再覆盖 Assistant 的显式 Allow；普通 Session 的默认审批保持不变。Runtime 启动及每次调度还会幂等批准并恢复旧版本遗留的记忆工具待办，响应丢失后可安全重放，发布等敏感审批不会被自动处理。工具调用与结果事件、失败显式暴露和现有 memory queue 行为保持不变。
+内建记忆工具 `memory`（只读检索）、`remember`、`forget` 在 Assistant Session 中始终自动执行：它们写入的是 Assistant 绑定项目的受控、版本化 memory store，而不是任意文件写入，因此即使 `local_write=deny/approve` 也保持允许，不再生成 `approve_tool:remember` / `approve_tool:forget` 人工待办。Controller 只在当前 turn 的冻结 Policy 没有显式 Allow 时为普通交互 Session 补记忆 Ask 规则，不能再覆盖 Assistant 的显式 Allow；普通 Session 的默认审批保持不变。Runtime 启动及每次调度还会幂等批准并恢复旧版本遗留的记忆工具待办，响应丢失后可安全重放；发布则严格遵循冻结的 `publish` 三态。工具调用与结果事件、失败显式暴露和现有 memory queue 行为保持不变。
 
-`bash` 是一个完整 shell，权限跟随 `local_write` 三态：`allow` 时自动执行（含只读命令与普通构建/测试命令，不做命令内容白名单），`deny` 时拒绝且不触发审批，`approve` 时保持逐次审批。删除（`delete_range` / `delete_symbol`）、发布/MCP、`move_file`、browser 写动作等既有敏感边界仍按上表审批或拒绝。
+`bash` 是一个完整 shell，权限跟随 `local_write` 三态：`allow` 时自动执行（含只读命令与普通构建/测试命令，不做命令内容白名单），`deny` 时拒绝且不触发审批，`approve` 时保持逐次审批。浏览器工具从当前 page revision 的真实元素语义分类：普通点击/输入随 `network`，发帖、回复、评论、提交、点赞等外部可见动作同时受 `publish` 控制；删除、付费、密码/凭据和私有字段继续逐次审批或拒绝。`browser_type` 的权限类别由目标元素计算，不能由模型在参数里自报。`move_file` 与 MCP 等既有敏感边界保持审批或拒绝。
 
 MCP 工具在阶段 2 统一视为外部边界：`network=deny` 时拒绝，其余网络策略下逐次审批。即使工具声明 `readOnly`，该声明也不能证明它不会把项目内容发送到外部服务；后续只有在引入可信 MCP 能力元数据后，才可对明确的本地只读工具放宽。
 
@@ -405,14 +405,14 @@ type ChannelProposal struct {
 
 - Mission：持续关注项目健康度和发布准备情况。
 - Routine：修改扫描、测试/构建状态、发布准备检查。
-- 默认外部发布必须审批。
+- 默认外部发布为逐次审批；用户可显式改为自动允许或拒绝。
 
 ### 9.2 通用助手
 
 - Mission 和 Routine 由用户填写。
 - 默认只读，写入与网络权限显式选择。
 
-推广助手模板在阶段 4 开放，默认创建内容规划、效果复盘和社区回复三个 Routine。外发动作逐次审批；读取公开效果数据按网络权限执行。
+推广助手模板在阶段 4 开放，默认创建内容规划、效果复盘和社区回复三个 Routine。模板默认逐次审批外发，用户把 `publish` 改为 `allow` 后可自动发帖/回复；读取公开效果数据按网络权限执行。
 
 ## 10. 分期与验收
 
@@ -443,7 +443,7 @@ type ChannelProposal struct {
 
 - 提供类型化 `ChannelBinding`、外发 `ChannelAction`、效果 `ChannelMetric` 和连接器注册表；首个真实连接器为 Discourse，支持创建主题、回复和读取主题浏览/点赞/回复指标。
 - Assistant 聚合只保存稳定凭据引用，API Key 写入 WorkGround2 凭据存储；缺少或失效凭据显式进入诊断/待处理，不在日志、Prompt、Run 摘要和聚合文件回显秘密。
-- 发布/回复工具始终逐次审批。外发前保存 request 指纹与 `executing` receipt；同请求同意图返回原结果，不同意图冲突。网络结果不明时标记 `unknown` 并停止自动重试，人工对账后才能继续。
+- 发布/回复工具遵循冻结的 `publish` 三态。外发前保存 request 指纹与 `executing` receipt；同请求同意图返回原结果，不同意图冲突。网络结果不明时标记 `unknown` 并停止自动重试，人工对账后才能继续。
 - 成功外发进入自动采集队列。采集器按 `next_collect_at` 轮询公开指标，原子追加快照并计算相邻增量；失败使用有界退避且可观察，重复 tick 不重复写入同一采集窗口。
 - 最新渠道、动作与指标快照进入 Assistant 动态上下文。推广 Routine 必须比较效果、用 `metrics`/`strategy` 显式记忆记录结论，再提出下一轮内容；模型输出不能直接改指标权威数据。
 - Desktop 与 `WorkGround2 assistant daemon` 使用同一个可续租 leader lease。只有 leader 调度/领取/采集；follower 保持可观察并周期竞争，lease 过期可接管。Run fence lease 继续作为第二道并发保护；Assistant Store 的每个聚合读改写再使用跨进程 OS 文件锁，允许 follower UI 与 leader 安全地并发保存配置。
@@ -465,7 +465,7 @@ type ChannelProposal struct {
 - 没有 Desktop 或本机 daemon 运行时不会执行任务；宿主恢复后按 `coalesce_latest` 补一次。
 - 长时间 Run 必须持有可续租 lease，应用退出后由恢复逻辑接管。
 - Assistant 动态上下文不能进入稳定 system prompt 前缀。
-- Heartbeat 当前默认 `yolo`，转换时必须映射并提示用户；外部发布仍升级为强制审批。
+- Heartbeat 当前默认 `yolo`，转换时必须映射并提示用户；外部发布默认映射为逐次审批，之后可由用户显式改为自动允许或拒绝。
 - UI 时间线是运行事实的投影，不能用乐观状态冒充已执行结果。
 - 项目路径变化或不存在时进入 `waiting_attention`，保留修复和重新绑定入口。
 

@@ -670,7 +670,7 @@ export function ProposalInbox({ snapshot, busy, act }: { snapshot: AssistantSnap
 
 type Act = (key: string, action: () => Promise<unknown>) => Promise<boolean>;
 
-const ALWAYS_ASK_POLICY: ReadonlySet<keyof AssistantPolicy> = new Set(["publish", "delete", "payment", "secrets", "private_data"]);
+const ALWAYS_ASK_POLICY: ReadonlySet<keyof AssistantPolicy> = new Set(["delete", "payment", "secrets", "private_data"]);
 
 export function OverviewEditor({ snapshot, diagnostics, busy, act, onDelete }: { snapshot: AssistantSnapshot; diagnostics: AssistantDiagnostic[]; busy: string; act: Act; onDelete: () => Promise<void> }) {
   const { locale } = useI18n();

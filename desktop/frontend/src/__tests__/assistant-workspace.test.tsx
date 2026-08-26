@@ -200,7 +200,7 @@ const channelsTab = [...host.querySelectorAll(".assistant-manager nav button")].
 await act(async () => { channelsTab?.click(); });
 ok(host.textContent?.includes("还没有推广渠道") ?? false, "channel manager explains the empty Discourse state");
 ok(host.querySelector('input[type="password"]') !== null, "channel API key uses a secret input and is not projected from the snapshot");
-ok(host.textContent?.includes("逐次审批") ?? false, "channel manager keeps outbound approval explicit");
+ok(host.textContent?.includes("按对外发布权限") ?? false, "channel manager explains that outbound behavior follows publishing permission");
 const proposalsTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("改进建议")) as HTMLButtonElement | undefined;
 await act(async () => { proposalsTab?.click(); });
 ok(host.querySelectorAll(".assistant-proposal").length === 1, "proposal manager renders the durable pending proposal");
@@ -231,6 +231,9 @@ ok(
 );
 ok(host.textContent?.includes("始终逐次审批") ?? false, "high-risk policy copy clarifies per-action approval");
 ok(host.textContent?.includes("排队中和运行中的运行保留旧权限快照") ?? false, "overview explains the frozen policy boundary for queued and running runs");
+const publishGroup = [...host.querySelectorAll(".assistant-policy__options")].find((el) => el.getAttribute("aria-label") === "对外发布") as HTMLElement | undefined;
+const publishAllow = [...(publishGroup?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.trim() === "自动允许") as HTMLButtonElement | undefined;
+ok(publishAllow !== undefined && !publishAllow.classList.contains("is-always-ask"), "publishing allow is a real automatic permission");
 
 const networkGroup = [...host.querySelectorAll(".assistant-policy__options")].find((el) => el.getAttribute("aria-label") === "网络") as HTMLElement | undefined;
 const approveOption = [...(networkGroup?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.trim() === "逐次审批") as HTMLButtonElement | undefined;

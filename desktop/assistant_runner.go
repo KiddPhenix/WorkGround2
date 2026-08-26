@@ -1119,7 +1119,7 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 		}
 	}
 	writeChannelContext(&b, snapshot)
-	writeImprovementContext(&b, snapshot)
+	writeImprovementContext(&b, snapshot, !isDirectInputRun(run))
 	for _, item := range snapshot.Attention {
 		if item.RunID == run.ID && item.State == assistant.AttentionApproved && item.ResumeToken == run.ResumeToken {
 			switch {
@@ -1148,7 +1148,7 @@ func writeChannelContext(b *strings.Builder, snapshot assistant.Snapshot) {
 	if len(snapshot.Channels) == 0 {
 		return
 	}
-	b.WriteString("\n已配置社区渠道（外发必须调用渠道工具并逐次审批）：\n")
+	b.WriteString("\n已配置社区渠道（外发必须调用渠道工具；冻结的 publish 权限决定自动执行、逐次审批或拒绝）：\n")
 	for _, channel := range snapshot.Channels {
 		fmt.Fprintf(b, "- %s id=%s kind=%s enabled=%t collect_every_seconds=%d base=%s\n", channel.Name, channel.ID, channel.Kind, channel.Enabled, channel.CollectIntervalSeconds, channel.BaseURL)
 	}
@@ -1169,13 +1169,17 @@ func writeChannelContext(b *strings.Builder, snapshot assistant.Snapshot) {
 // writeImprovementContext exposes only typed proposal targets and current
 // pending proposals. It lives in the dynamic Run prompt, keeping the stable
 // system-prompt prefix cache-safe while preventing repeated recommendations.
-func writeImprovementContext(b *strings.Builder, snapshot assistant.Snapshot) {
+func writeImprovementContext(b *strings.Builder, snapshot assistant.Snapshot, includePrompt bool) {
 	if len(snapshot.Routines) > 0 {
 		b.WriteString("\n可提出改进建议的 Routine（只能提议 prompt / schedule / enabled，不能直接修改）：\n")
 		for _, routine := range snapshot.Routines {
 			schedule, _ := json.Marshal(routine.Schedule)
-			fmt.Fprintf(b, "- id=%s title=%s revision=%d enabled=%t schedule=%s prompt=%q\n",
-				routine.ID, routine.Title, routine.Revision, routine.Enabled, schedule, truncateUTF8(routine.Prompt, 1500))
+			fmt.Fprintf(b, "- id=%s title=%s revision=%d enabled=%t schedule=%s",
+				routine.ID, routine.Title, routine.Revision, routine.Enabled, schedule)
+			if includePrompt {
+				fmt.Fprintf(b, " prompt=%q", truncateUTF8(routine.Prompt, 1500))
+			}
+			b.WriteString("\n")
 		}
 	}
 	pending := make([]assistant.ChangeProposal, 0)
@@ -1301,71 +1305,7 @@ func writePlanContext(b *strings.Builder, plan assistant.Plan, selected *assista
 }
 
 func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
-	safeLocalWrites := []string{"write_file", "edit_file", "multi_edit", "notebook_edit"}
-	localAll := []string{
-		"write_file", "edit_file", "multi_edit", "notebook_edit",
-		"move_file", "delete_range", "delete_symbol", "bash", "run_skill",
-	}
-	networkTools := []string{
-		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll",
-		"browser_tab", "browser_close", "browser_click", "browser_type", "browser_upload", "browser_attach",
-		"assistant_channel_metrics", "assistant_channel_publish", "assistant_channel_reply",
-	}
-	networkAllow := []string{
-		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll", "browser_tab", "browser_close",
-		"assistant_channel_metrics",
-	}
-	allow := make([]string, 0, len(safeLocalWrites)+len(networkAllow)+4)
-	deny := make([]string, 0, len(localAll)+len(networkTools))
-	// Assistant memory tools always auto-execute. remember/forget write to the
-	// assistant's bound project memory store (a controlled, versioned store),
-	// not arbitrary files, so they stay Allow even when LocalWrite is
-	// deny/approve; memory is read-only and matches the same intent explicitly.
-	allow = append(allow, "memory", "remember", "forget")
-	// Ask has precedence over Allow. These cover destructive local operations
-	// and browser actions that can publish or disclose data.
-	ask := []string{
-		"delete_range", "delete_symbol",
-		"browser_click", "browser_type", "browser_upload", "browser_attach",
-		"assistant_channel_publish", "assistant_channel_reply",
-		"mcp__*",
-	}
-	switch policy.LocalWrite {
-	case assistant.AccessAllow:
-		// bash is a full shell: when the user allows local writes it executes
-		// without a per-command whitelist (read-only and build/test commands
-		// alike), mirroring the file writer auto-execute behaviour.
-		allow = append(allow, safeLocalWrites...)
-		allow = append(allow, "bash")
-		allow = append(allow, "run_skill")
-	case assistant.AccessDeny:
-		deny = append(deny, localAll...)
-	case assistant.AccessApprove:
-		ask = append(ask, "bash", "run_skill")
-	}
-	if policy.Network == assistant.AccessAllow {
-		allow = append(allow, networkAllow...)
-	} else if policy.Network == assistant.AccessDeny {
-		deny = append(deny, networkTools...)
-		deny = append(deny, "mcp__*")
-	}
-	if policy.Network == assistant.AccessApprove {
-		ask = append(ask, networkTools...)
-	}
-	// install_source fetches untrusted content and writes a project capability;
-	// it is allowed only when both frozen dimensions explicitly allow it.
-	switch {
-	case policy.LocalWrite == assistant.AccessDeny || policy.Network == assistant.AccessDeny:
-		deny = append(deny, "install_source")
-	case policy.LocalWrite == assistant.AccessAllow && policy.Network == assistant.AccessAllow:
-		allow = append(allow, "install_source")
-	default:
-		ask = append(ask, "install_source")
-	}
-	// Publish/Delete/Payment/Secrets/Private are deliberately never translated
-	// into Allow or Deny rules here: every concrete writer remains Ask even when
-	// those Assistant fields are configured as allow.
-	return permission.New("ask", allow, ask, deny)
+	return assistant.PermissionPolicy(policy)
 }
 
 func (r *AssistantRuntime) removeInFlight(in *assistantInFlight) {
