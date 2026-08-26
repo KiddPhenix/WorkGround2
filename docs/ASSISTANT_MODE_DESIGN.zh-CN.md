@@ -1,12 +1,12 @@
 # WorkGround2 助手模式设计
 
-> 状态：阶段 1～3 已实现，阶段 4 实现中
+> 状态：阶段 1～4 已实现，阶段 5 实现中
 >
-> 分支：`developping/assistant-mode+2026-08-17`
+> 分支：`developping/assistant-improvement-proposals+2026-08-26`
 >
 > 参考视觉：用户提供的 1487×1058 Desktop 深色时间线设计图
 >
-> 实现范围：阶段 1～4
+> 实现范围：阶段 1～5
 
 ## 1. 功能定义
 
@@ -42,7 +42,7 @@ Assistant = Mission + Plan + Routines + Memory + Policy + Runs
 - 围绕长期推广使命执行多个日常 Routine。
 - 记录渠道、内容、回复、效果和下一轮策略。
 - 对外发帖、私信、删除、付费等动作进入持久审批。
-- 阶段 3 只完成模型、收件箱和扩展接口；真正外部渠道接入属于阶段 4，不在本次范围。
+- 阶段 4 已接通首个真实外部渠道；阶段 5 把效果复盘收敛为可审批、可审计的配置改进提案。
 
 ## 3. 设计原则
 
@@ -247,6 +247,49 @@ type Opportunity struct {
 
 `CompleteRunWithProgress` 是唯一收敛的进度写入：以调用方 request ID/指纹幂等，做环校验、依赖重算、stale revision 拒绝，并把「Run 完成 + 计划/证据变化」连同内嵌 request receipt 一起写入单一 `aggregate.json` 的原子替换（临时文件 + rename），要么全部提交要么全部不提交，崩溃后重放返回原结果。旧快照在读取时惰性归一化为空计划，无需迁移。
 
+### 4.7 持续改进提案
+
+阶段 5 将“根据效果不断改进”建模为持久 `ChangeProposal`，而非让模型直接改运行配置：
+
+```go
+type ChangeProposal struct {
+    ID, AssistantID, RunID string
+    TargetKind             ProposalTarget // routine / channel
+    TargetID               string
+    BaseRevision           int64
+    Routine                *RoutineProposal
+    Channel                *ChannelProposal
+    Summary, Reason        string
+    Evidence               []string
+    State                  ProposalState // pending / applied / rejected / superseded
+    Resolution             string
+    Revision               int64
+    CreatedAt, UpdatedAt   time.Time
+}
+
+type RoutineProposal struct {
+    Prompt   *string
+    Schedule *Schedule
+    Enabled  *bool
+}
+
+type ChannelProposal struct {
+    CollectIntervalSeconds *int64
+    Enabled                *bool
+}
+```
+
+模型在成功 Run 的 `<assistant-progress>` 中声明 `proposals`。Store 在同一次 `CompleteRunWithProgress` 原子提交中解析目标、冻结 `BaseRevision` 与变更前值，并生成由来源 Run、序号和内容指纹决定的稳定 ID。重复提交不产生重复提案。提案只接受上下文中真实存在、属于当前 Assistant 的 Routine 或 Channel ID；单条提案只能修改一种目标，空补丁、无变化补丁和越界值直接拒绝，避免把自然语言当作隐式配置协议。
+
+用户处理提案使用独立 request ID 和 proposal revision：
+
+- **接受**：目标 revision 仍等于 `BaseRevision` 时，在一个聚合原子写入中应用完整补丁并把提案置为 `applied`；响应丢失后可重放同一 receipt。
+- **目标已达到建议值**：即使 revision 已变化，也按幂等成功收敛为 `applied`，不重复修改目标。
+- **目标发生冲突变化**：不覆盖用户的新配置，将提案置为 `superseded` 并保存显式原因；后续 Run 可基于新快照提出新提案。
+- **拒绝**：只关闭提案并记录用户说明，不修改目标。
+
+阶段 5 的提案边界只覆盖 Routine 的 Prompt / Schedule / Enabled 和 Channel 的采集间隔 / Enabled。Mission、Policy、Workspace、渠道地址和凭据均不可通过提案修改；尤其权限不能由助手提案或批准链路自行扩大。策略文字仍进入显式 `strategy` / `metrics` 记忆，避免再造一套泛化规则引擎。
+
 ## 5. 存储与恢复
 
 实际存储是每个 Assistant 一个聚合文件，没有独立 journal：
@@ -259,7 +302,7 @@ type Opportunity struct {
 
 要求：
 
-- 每个 Assistant 的全部状态（Assistant、Routine、Memory、Run、Attention、Plan、Artifact、Opportunity）连同 request receipt 一起保存在单一 `aggregate.json` 中。
+- 每个 Assistant 的全部状态（Assistant、Routine、Memory、Run、Attention、Plan、Artifact、Opportunity、ChangeProposal）连同 request receipt 一起保存在单一 `aggregate.json` 中。
 - 每次变更使用临时文件 + rename 原子替换 `aggregate.json`；request receipt 内嵌其中，崩溃后重放返回原结果，不另设 journal。
 - Store 内部以 revision 做比较交换，拒绝迟到更新。
 - occurrence key 使用 `assistantId/routineId/scheduledFor` 确定性生成。
@@ -274,7 +317,7 @@ type Opportunity struct {
 3. Desktop 宿主创建后台 Topic/Session，但不改变用户当前活动页。
 4. 组装动态上下文：使命、Routine、记忆快照、当前责任图和确定性的 ready/active 责任、权限和当前时间。
 5. 通过现有 Controller 提交普通用户 Turn；需要长推进时使用 Goal 能力。
-6. 成功后解析并脱敏 `<assistant-progress>` 块，用 `CompleteRunWithProgress` 原子提交 Run 结果 + 计划/证据变化；stale `plan_revision` 或 alias/objective 冲突以最新 Plan 有界 rebase 重试，仍无法应用的进度元数据记录 diagnostic 后丢弃、Run 照常成功落盘。
+6. 成功后解析并脱敏 `<assistant-progress>` 块，用 `CompleteRunWithProgress` 原子提交 Run 结果 + 计划/证据/改进提案变化；stale `plan_revision` 或 alias/objective 冲突以最新 Plan 有界 rebase 重试，仍无法应用的进度元数据记录 diagnostic 后丢弃、Run 照常成功落盘。
 7. Store 原子提交结果；其它失败根据错误分类进入 retry 或 attention。
 8. UI 订阅快照变化，不由网络回包直接操作 Panel。
 
@@ -318,7 +361,7 @@ type Opportunity struct {
 
 - 左侧项目树：展示项目绑定助手；全局助手进入全局分组。
 - 时间线首页：今日已做、学到的记忆、下一次计划和“对助手说”快速入口。
-- 管理抽屉：概览、例行任务、记忆、运行记录、权限。
+- 管理抽屉：概览、责任计划、例行任务、记忆、渠道、改进建议、运行记录、权限与待处理。
 - 创建/编辑向导：模板、使命、项目、Routine、频率、可选首个“先学习一下再干”任务、权限确认。
 - 待处理收件箱：审批、连续失败、缺少用户输入。
 
@@ -339,6 +382,7 @@ type Opportunity struct {
 - 时间线与运行记录复用普通会话 Markdown 图片链路：远程图片可直接预览、点击放大，尺寸受正文列约束；无法访问的图片显式显示失败占位。结果中的“取证证据”“证据”“说明”“来源”等独立 Markdown 章节默认折叠，结论正文保持展开，代码围栏内的同名文本不参与折叠。
 - 时间线 Run 标题表达实际工作内容：直接输入取规范化原文的有界摘要，Routine Run 取 Routine 名称，continue-mission 使用明确意图回退；运行状态只由相邻徽标表达，避免“本次运行正在工作/失败/已完成”占用标题。
 - 批准、拒绝和重试 AttentionItem。
+- 查看待处理与历史改进提案，比较变更前后值，接受或拒绝；待处理数量在助手顶栏和管理导航保持一致。
 - 时间线自动刷新，迟到旧 revision 不覆盖新状态。
 - 窄屏下侧栏可折叠，管理抽屉变为全宽层。
 
@@ -405,9 +449,20 @@ type Opportunity struct {
 - Desktop 与 `WorkGround2 assistant daemon` 使用同一个可续租 leader lease。只有 leader 调度/领取/采集；follower 保持可观察并周期竞争，lease 过期可接管。Run fence lease 继续作为第二道并发保护；Assistant Store 的每个聚合读改写再使用跨进程 OS 文件锁，允许 follower UI 与 leader 安全地并发保存配置。
 - daemon 使用与 Desktop 相同的 Assistant Store、Controller、权限和恢复规则，可通过 `WorkGround2 assistant daemon` 作为本机后台进程或系统服务常驻；`--once` 可执行一次调度/采集/运行检查，不产生第二套状态源。
 
+### 阶段 5：持续改进提案闭环
+
+状态：实现中（2026-08-26）。
+
+- `<assistant-progress>` 增加类型化 `proposals`；成功 Run、Plan 进度和提案在一次聚合写入中提交，解析失败不留下半完成配置。
+- 提案只覆盖 Routine Prompt / Schedule / Enabled 与 Channel 采集间隔 / Enabled；Store 捕获基线 revision 和变更前值，禁止修改 Mission、Policy、Workspace、渠道地址或凭据。
+- 提供幂等 `ResolveProposal`：接受时 CAS 原子应用；目标已满足则幂等收敛；目标被用户改过则显式 `superseded`，不覆盖新配置；拒绝只关闭提案。
+- 动态上下文包含现有待处理提案，防止模型重复建议；效果复盘提示要求用指标与证据解释建议，不能宣称未批准的配置已生效。
+- Desktop 增加“改进建议”页、待处理计数、前后值对比、接受/拒绝与终态历史；迟到 revision 不覆盖新状态，失败保留可重试入口。
+- 单元测试覆盖协议解析、无变化/越界拒绝、原子创建、幂等重放、CAS 接受、已达目标、冲突淘汰、拒绝、重启恢复和 UI 主交互；通过 Go 全量测试/vet、Frontend test/typecheck/build 与 Desktop 构建。
+
 ## 11. 风险与约束
 
-- Desktop 关闭时阶段 1～3 不执行任务；重启后按 `coalesce_latest` 补一次。
+- 没有 Desktop 或本机 daemon 运行时不会执行任务；宿主恢复后按 `coalesce_latest` 补一次。
 - 长时间 Run 必须持有可续租 lease，应用退出后由恢复逻辑接管。
 - Assistant 动态上下文不能进入稳定 system prompt 前缀。
 - Heartbeat 当前默认 `yolo`，转换时必须映射并提示用户；外部发布仍升级为强制审批。
@@ -420,10 +475,11 @@ type Opportunity struct {
 internal/assistant/                     核心领域、Store、Scheduler、Runner
 internal/assistant/plan.go              责任图、进度块与解析/脱敏
 internal/assistant/progress.go          CompleteRunWithProgress 与依赖/环校验
+internal/assistant/proposal.go          改进提案校验、CAS 处理与目标应用
 desktop/assistant_app.go                Desktop 宿主与 Wails API
 desktop/assistant_runner.go             Controller/Session 执行适配与进度注入/应用
-desktop/frontend/src/custom/features/assistant/  助手工作区、计划页、抽屉、编辑器
+desktop/frontend/src/custom/features/assistant/  助手工作区、计划/提案页、抽屉、编辑器
 desktop/frontend/src/App.tsx            一级入口和表面切换
 desktop/heartbeat.go                    兼容与转换来源
-Codex/KnowledgeBase/FeatureMap.md        功能状态
+PROJECT_FEATURE_MAP.md                  功能状态
 ```
