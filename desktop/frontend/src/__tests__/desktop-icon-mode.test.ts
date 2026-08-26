@@ -323,13 +323,14 @@ assert.match(jobsSource, /return item\.status === "failed" \? t\("desktopIcon\.j
 // no front-end flight timeout / no accepted-grace eviction (#2, #3)
 assert.doesNotMatch(jobsSource, /flightTimeoutMs|acceptedGraceMs|QUICK_JOB_FLIGHT_TIMEOUT|QUICK_JOB_ACCEPTED_GRACE|后台发送超时/, "the front end has no flight timeout and no accepted-grace timer");
 assert.match(jobsSource, /There is no front-end flight timeout/, "the module documents why the queued backend call is never fenced");
-// Single-flight polling (#4): a slow snapshot request is shared by every
-// caller, and the next one-second delay starts only after it finishes. Stable
-// snapshots reuse the current React state so idle polling does not repaint.
-assert.match(component, /const refreshPending = useRef<Promise<void> \| null>\(null\);/, "snapshot polling owns one shared in-flight request");
+// Snapshot refresh is event-driven and backend-authoritative. A slow request is
+// shared by every caller, bursts coalesce, and only a 30s recovery read remains.
+assert.match(component, /const refreshPending = useRef<Promise<void> \| null>\(null\);/, "snapshot refresh owns one shared in-flight request");
 assert.match(component, /if \(refreshPending\.current\) return refreshPending\.current;[\s\S]{0,1200}refreshPending\.current = pending;/, "concurrent refresh callers share the current snapshot request");
-assert.match(component, /await refresh\(\);[\s\S]{0,100}window\.setTimeout\(\(\) => void poll\(\), 1000\)/, "the next poll is scheduled one second after the current request completes");
-assert.doesNotMatch(component, /setInterval\(\(\) => void refresh\(\), 1000\)/, "snapshot polling never creates overlapping interval requests");
+assert.match(component, /createDesktopIconSnapshotRefresh\([\s\S]{0,700}subscribeDesktopIconSnapshotRefresh\(coordinator, \[/, "runtime events only wake the shared snapshot coordinator");
+assert.match(component, /onEvent[\s\S]{0,500}onProjectTreeChanged[\s\S]{0,500}onUnreadState[\s\S]{0,500}onCollaborationState[\s\S]{0,500}onCollaborationEvent[\s\S]{0,500}onSessionBackgroundChanged/, "all icon-changing runtime sources wake a refresh");
+assert.match(component, /return \(\) => \{ unsubscribe\(\); coordinator\.dispose\(\); \};/, "unmount removes event subscriptions and timers");
+assert.doesNotMatch(component, /setTimeout\(\(\) => void poll\(\), 1000\)|setInterval\(\(\) => void refresh\(\), 1000\)/, "the one-second full snapshot poll is gone");
 assert.match(component, /current\.revision === next\.revision && \(current\.error \|\| ""\) === \(next\.error \|\| ""\) \? current : next/, "an unchanged snapshot reuses React state and avoids an idle repaint");
 // process-level shared runner (#1): every mount shares one runner and one
 // in-flight registry, with safe subscribe/unsubscribe.
@@ -738,12 +739,12 @@ assert.doesNotMatch(quickRule, /position:\s*absolute/, "the quick toolbar render
 assert.match(css, /\.desktop-icon-grid\s*\{[^}]*max-width:\s*var\(--cluster-max-width, calc\(\(100vw - 36px\) \/ var\(--cluster-zoom, 1\)\)\);/, "the unscaled grid width is the computed desktopZoom-aware cluster max-width with a static calc fallback");
 assert.match(css, /\.desktop-icon-row\s*\{[^}]*flex-wrap:\s*wrap/, "icon rows wrap instead of clipping when the scaled cluster is narrow");
 
-// --- quick-control failures use their own error channel: the 1s snapshot
-// poll must never erase an action failure (toggle, open main/settings, or the
+// --- quick-control failures use their own error channel: snapshot refreshes
+// must never erase an action failure (toggle, open main/settings, or the
 // initial always-on-top read) ---
 assert.match(component, /const \[quickError, setQuickError\] = useState\(""\);/, "quick-control failures use their own error channel");
-assert.match(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setError\(next\.error \|\| ""\);/, "the 1s snapshot poll writes only the snapshot error channel");
-assert.doesNotMatch(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setQuickError/, "the snapshot poll never touches the quick-error channel");
+assert.match(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setError\(next\.error \|\| ""\);/, "snapshot refresh writes only the snapshot error channel");
+assert.doesNotMatch(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setQuickError/, "snapshot refresh never touches the quick-error channel");
 assert.match(component, /\(error \|\| quickError \|\| quickJobs\.storageError \|\| routineNotice\) && <div className="desktop-icon-toast" role=\{error \|\| quickError \|\| quickJobs\.storageError \? "alert" : "status"\}/, "the toast surfaces errors together and announces successful routine extraction as status");
 assert.match(component, /\.catch\(\(\) => \{ if \(alive\) \{ setTopmostReadFailed\(true\); setQuickError\(t\("desktopIcon\.topmostReadError"\)\); \} \}\)/, "an initial always-on-top read failure stays visible and never assumes false");
 assert.match(component, /disabled=\{exiting \|\| topmostBusy \|\| !topmostLoaded \|\| topmostReadFailed\}/, "the always-on-top switch stays disabled after a failed initial read and while exiting");

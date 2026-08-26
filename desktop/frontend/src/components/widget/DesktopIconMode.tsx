@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { AtSign, Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, Pencil, Pin, PinOff, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
-import { app, type DailyRoutine, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconDelegation, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type DesktopIconSurfaceResult, type ExternalRunSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
+import { app, onCollaborationEvent, onCollaborationState, onEvent, onProjectTreeChanged, onReady, onSessionActivated, onSessionBackgroundChanged, onUnreadState, type DailyRoutine, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconDelegation, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type DesktopIconSurfaceResult, type ExternalRunSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import type { QuestionAnswer } from "../../lib/types";
 import { asArray } from "../../lib/array";
 import { AgentIcon } from "../agent-icon/AgentIcon";
@@ -33,6 +33,7 @@ import { canRenameTaskIcon } from "./desktopIconRename";
 import { WorkspaceMatteIcon } from "./WorkspaceMatteIcon";
 import { useT, t, type DictKey } from "../../lib/i18n";
 import { DESKTOP_ICON_OVERLAY_BOUNDS, desktopIconLayoutBounds, useDesktopIconSurface } from "../../lib/desktopIconSurface";
+import { createDesktopIconSnapshotRefresh, desktopIconEventWakesSnapshot, SNAPSHOT_EVENT_DEBOUNCE_MS, SNAPSHOT_RECOVERY_MS, subscribeDesktopIconSnapshotRefresh } from "./desktopIconSnapshotRefresh";
 import "./desktop-icon-mode.css";
 
 const QUICK_WORKSPACE_KEY = "wg2.icon-widget-workspace";
@@ -1507,9 +1508,8 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		setActiveID(""); setActiveNoticeID(""); setPreviewID(""); setMenuID(""); setRenamingID(""); setRenameDraft(""); setWorkspaceIconRoot(""); setPopupAnchorID(""); setDraggingID(""); setDragPreview(null); setAnchorMenuOpen(false); setQuickOpen(false);
 	}, [cancelTransientTimers]);
 
-	// Share one in-flight snapshot request across every caller. Polling waits for
-	// completion before starting its one-second delay, so a slow backend can
-	// reduce the refresh rate but can never build an unbounded request queue.
+	// GetDesktopIconSnapshot is the only business-state authority. Events below
+	// merely wake a coalesced refresh; they never maintain a parallel projection.
 	const refreshPending = useRef<Promise<void> | null>(null);
   const refresh = useCallback(() => {
 		if (refreshPending.current) return refreshPending.current;
@@ -1536,17 +1536,29 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		void pending.finally(() => { if (refreshPending.current === pending) refreshPending.current = null; });
 		return pending;
 	}, [collapsed, clusterZoom, desktopZoom, optimisticItems, quickJobs.reconcile, roomIconCount, surface]);
+	const refreshLatest = useRef(refresh);
+	refreshLatest.current = refresh;
   useEffect(() => {
-		let stopped = false;
-		let timer = 0;
-		const poll = async () => {
-			await refresh();
-			if (!stopped) timer = window.setTimeout(() => void poll(), 1000);
-		};
-		void poll();
+		const coordinator = createDesktopIconSnapshotRefresh(
+			() => refreshLatest.current(),
+			windowTimerHost,
+			SNAPSHOT_EVENT_DEBOUNCE_MS,
+			SNAPSHOT_RECOVERY_MS,
+		);
+		const unsubscribe = subscribeDesktopIconSnapshotRefresh(coordinator, [
+			(wake) => onEvent((event) => { if (desktopIconEventWakesSnapshot(event.kind)) wake(); }),
+			(wake) => onProjectTreeChanged(wake),
+			(wake) => onUnreadState(() => wake()),
+			(wake) => onCollaborationState(() => wake()),
+			(wake) => onCollaborationEvent(() => wake()),
+			(wake) => onSessionBackgroundChanged(wake),
+			(wake) => onReady(() => wake()),
+			(wake) => onSessionActivated(() => wake()),
+		]);
+		coordinator.start();
 		void app.ListWidgetWorkspaces().then(setWorkspaces).catch(() => {});
-		return () => { stopped = true; window.clearTimeout(timer); };
-	}, [refresh]);
+		return () => { unsubscribe(); coordinator.dispose(); };
+	}, []);
 	useEffect(() => {
 		if (!snapshotLoaded) return;
 		setRoomPopupState((current) => reconcileRoomPopups(current, snapshot.items, roomNotificationMode));
