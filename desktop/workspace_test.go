@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -91,11 +92,33 @@ func TestProjectIconRoundTripAndFallback(t *testing.T) {
 	if got := projectIcon(root); got != "delegate" {
 		t.Fatalf("generated matte projectIcon = %q, want delegate", got)
 	}
+	if err := setProjectIcon(root, " ROBOT "); err != nil {
+		t.Fatalf("set expanded matte project icon: %v", err)
+	}
+	if got := projectIcon(root); got != "robot" {
+		t.Fatalf("expanded matte projectIcon = %q, want robot", got)
+	}
 	if err := setProjectIcon(root, "unknown"); err != nil {
 		t.Fatalf("reset invalid project icon: %v", err)
 	}
 	if got := projectIcon(root); got != "" {
 		t.Fatalf("invalid icon should fall back to dot, stored value = %q", got)
+	}
+}
+
+func TestProjectIconCatalogMatchesFrontend(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("frontend", "src", "lib", "projectIcons.ts"))
+	if err != nil {
+		t.Fatalf("read frontend project icon catalog: %v", err)
+	}
+	matches := regexp.MustCompile(`\{ key: "([a-z0-9]+)"`).FindAllStringSubmatch(string(source), -1)
+	if len(matches) == 0 {
+		t.Fatal("frontend project icon catalog is empty or its shape changed")
+	}
+	for _, match := range matches {
+		if got, want := normalizeProjectIcon(match[1]), match[1]; got != want {
+			t.Errorf("frontend project icon %q normalizes to %q", want, got)
+		}
 	}
 }
 
@@ -117,13 +140,13 @@ func TestSetProjectIconUpdatesProjectTree(t *testing.T) {
 	}
 
 	app := NewApp()
-	if err := app.SetProjectIcon(root, "bookmark"); err != nil {
+	if err := app.SetProjectIcon(root, "robot"); err != nil {
 		t.Fatalf("SetProjectIcon: %v", err)
 	}
 	for _, node := range app.ListProjectTree() {
 		if node.Root == normalizeProjectRoot(root) {
-			if node.ProjectIcon != "bookmark" {
-				t.Fatalf("project tree icon = %q, want bookmark", node.ProjectIcon)
+			if node.ProjectIcon != "robot" {
+				t.Fatalf("project tree icon = %q, want robot", node.ProjectIcon)
 			}
 			return
 		}

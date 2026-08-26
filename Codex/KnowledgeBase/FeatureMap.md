@@ -10,6 +10,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| Workspace 新图标保存恢复 | `done` | `developping/workspace-icon-catalog-sync+2026-08-26` | `Codex` | `desktop/tabs.go`、`desktop/workspace_test.go` | 调整功能：修复前端新增 60 个 Workspace 图标后端仍按旧白名单归一化为空、保存后重载回默认图标的问题；后端现支持全部 94 个哑光键，并增加前端目录到 Go 规范化器的跨目录契约。新图标持久化、项目树回读、Room 共用规范化、未知键回退专项及 Desktop vet 通过。 |
 | Room 与助手默认入口图标 | `done` | `developping/room-assistant-default-icons+2026-08-26` | `Codex` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、相关契约测试 | 调整功能：未单独配置的 Room 默认显示现有 `social.png` 哑光图标，图标选择器同步预览该默认值；助手固定入口默认显示现有 `robot.png`。保留 Rooms 管理入口、自定义 Room 图标和持久化兼容。TypeScript、独立默认图标契约与生产构建通过；完整小组件契约受既有第 224 行 CSS 透明选择器断言提前中断。截图指定现有资源，按多媒体规则不使用 WorkGround2 Worker。 |
 | Workspace / Room 内置图标扩充 | `done` | `developping/workspace-room-icon-library+2026-08-26` | `Codex` | `desktop/frontend/src/assets/workspace-icons-matte-v1`、`projectIcons.ts`、`WorkspaceMatteIcon.tsx`、相关测试 | 调整功能：沿用现有哑光风格新增 60 个互不重复的 Workspace / Room 可选图标，总数由 34 增至 94；全部新增资源为 1024×1024 ARGB 且四角透明，类型检查、94 项图标契约与生产构建通过。`test:widget-icons` 受既有第 224 行 CSS 透明选择器契约失败拦截，未修改该无关基线。多模态素材生成按 Skill 规则不使用 WorkGround2 Worker。 |
 | Assistant 创建工作区选择与新建 | `done` | `developping/assistant-workspace-picker+2026-08-25` | `Codex + WorkGround2` | `desktop/assistant_app.go`、`desktop/frontend/src/custom/features/assistant`、相关测试 | 长期助手创建表单保留手输，并新增原生目录选择与受控新建文件夹；选择取消不改值，新建校验父目录边界、重复创建幂等、失败显式保留输入，目录操作同步互斥且可重试。Assistant 前端 191 项、TypeScript、生产构建、Desktop Assistant 专项、vet 与独立 Go build 通过。 |

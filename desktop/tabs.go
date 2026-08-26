@@ -5063,7 +5063,14 @@ func normalizeProjectIcon(icon string) string {
 		"browser", "build", "cmd", "cpp", "csharp", "dart", "data", "database",
 		"delegate", "design", "discussion", "document", "edit", "folder", "game", "go", "java",
 		"javascript", "music", "php", "presentation", "publish", "python", "react",
-		"new", "research", "run", "rust", "sport", "sync", "test", "typescript", "unity", "video":
+		"new", "research", "run", "rust", "sport", "sync", "test", "typescript", "unity", "video",
+		"ai", "analytics", "android", "api", "archive", "audio", "automation", "backend", "backup",
+		"blockchain", "book", "bug", "calendar", "camera", "cloud", "commerce", "container", "dashboard",
+		"deploy", "devops", "email", "finance", "frontend", "globe", "hardware", "health", "image", "ios",
+		"kotlin", "lightbulb", "linux", "lock", "lua", "markdown", "mobile", "network", "note", "notification",
+		"package", "performance", "planning", "plugin", "qa", "report", "robot", "rocket", "science", "security",
+		"server", "settings", "shopping", "social", "spreadsheet", "support", "travel", "user", "vault", "web",
+		"workflow", "writing":
 		return icon
 	default:
 		// Empty and unknown values preserve the backwards-compatible dot icon.
