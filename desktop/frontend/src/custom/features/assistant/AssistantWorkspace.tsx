@@ -114,6 +114,12 @@ function lifecycleLabel(assistant: AssistantRecord, copy: ReturnType<typeof assi
   return copy.awake;
 }
 
+export function assistantDiagnosticWarning(diagnostics: AssistantDiagnostic[], copy: ReturnType<typeof assistantCopy>) {
+  if (diagnostics.some((item) => item.category === "data" || item.operation === "list")) return copy.partialWarning;
+  if (diagnostics.some((item) => item.operation === "progress_apply" || item.operation === "progress_parse")) return copy.progressWarning;
+  return copy.runtimeWarning;
+}
+
 function useAssistantData(focusAssistantID?: string) {
   const [assistants, setAssistants] = useState<AssistantRecord[]>([]);
   const [diagnostics, setDiagnostics] = useState<AssistantDiagnostic[]>([]);
@@ -325,7 +331,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
       {data.diagnostics.length > 0 && (
         <div className="assistant-diagnostic" role="status">
           <AlertCircle size={14} aria-hidden="true" />
-          <span>{copy.partialWarning}</span>
+          <span>{assistantDiagnosticWarning(data.diagnostics, copy)}</span>
           <button type="button" onClick={() => setManageTab("overview")}>{copy.viewDetails}</button>
         </div>
       )}

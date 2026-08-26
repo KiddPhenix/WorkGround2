@@ -630,7 +630,7 @@ func (r *AssistantRuntime) recordDiagnostic(operation string, err error) {
 	}
 	r.diagnosticMu.Lock()
 	r.diagnostics = append(r.diagnostics, AssistantDiagnostic{
-		At: time.Now(), Operation: operation, Message: err.Error(),
+		At: time.Now(), Category: assistantDiagnosticRuntime, Operation: operation, Message: err.Error(),
 	})
 	if len(r.diagnostics) > 50 {
 		r.diagnostics = append([]AssistantDiagnostic(nil), r.diagnostics[len(r.diagnostics)-50:]...)

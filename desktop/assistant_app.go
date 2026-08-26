@@ -96,9 +96,15 @@ type AssistantCancelRequest struct {
 
 type AssistantDiagnostic struct {
 	At        time.Time `json:"at" ts_type:"string"`
+	Category  string    `json:"category"`
 	Operation string    `json:"operation"`
 	Message   string    `json:"message"`
 }
+
+const (
+	assistantDiagnosticData    = "data"
+	assistantDiagnosticRuntime = "runtime"
+)
 
 type AssistantListResult struct {
 	Items       []assistant.Assistant `json:"items"`
@@ -127,7 +133,7 @@ func (a *App) AssistantList() (AssistantListResult, error) {
 	}
 	if errors.Is(listErr, assistant.ErrCorrupt) {
 		result.Diagnostics = append(result.Diagnostics, AssistantDiagnostic{
-			At: time.Now(), Operation: "list", Message: listErr.Error(),
+			At: time.Now(), Category: assistantDiagnosticData, Operation: "list", Message: listErr.Error(),
 		})
 		return result, nil
 	}

@@ -177,6 +177,23 @@ func TestAssistantListKeepsHealthyItemsAndReportsCorruption(t *testing.T) {
 	if len(result.Diagnostics) == 0 {
 		t.Fatal("corrupt aggregate diagnostic was not returned")
 	}
+	if result.Diagnostics[len(result.Diagnostics)-1].Category != assistantDiagnosticData {
+		t.Fatalf("corrupt aggregate category = %q, want %q", result.Diagnostics[len(result.Diagnostics)-1].Category, assistantDiagnosticData)
+	}
+}
+
+func TestAssistantListClassifiesRuntimeDiagnosticsSeparately(t *testing.T) {
+	service, _ := newAssistantTestRuntime(t, &assistantHostStub{})
+	app := &App{assistant: service}
+	service.recordDiagnostic("progress_apply", errors.New("invalid transition"))
+
+	result, err := app.AssistantList()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 1 || result.Diagnostics[0].Category != assistantDiagnosticRuntime {
+		t.Fatalf("runtime diagnostics = %+v, want one runtime item", result.Diagnostics)
+	}
 }
 
 func TestNewAssistantRuntimeUsesRequestedStoreRoot(t *testing.T) {

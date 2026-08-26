@@ -455,6 +455,43 @@ func TestStoreCompleteRunCompletesDownstreamAndUpstreamInOnePatch(t *testing.T) 
 	}
 }
 
+func TestStoreCompleteRunCompletionDominatesSamePatchActivation(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-1")
+	run := mustClaimRun(t, store)
+
+	if _, err := store.CompleteRunWithProgress(CompleteRunInput{
+		RequestID: "progress-complete-active", RunID: run.ID, LeaseOwner: "worker-a", LeaseFence: run.LeaseFence,
+		Summary: "learned",
+		Progress: ProgressBlock{
+			PlanRevision:   1,
+			Responsibility: "learn-skills",
+			Responsibilities: []RespDecl{
+				{Alias: "learn-skills", Objective: "learn the required skills"},
+				{Alias: "promote", Objective: "promote the product", DependsOn: []string{"learn-skills"}},
+			},
+			Active:   []string{"learn-skills"},
+			Complete: []string{"learn-skills"},
+		},
+		Now: testEpoch.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := store.Get("helper-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	learn, promote := findRespByAlias(snapshot, "learn-skills"), findRespByAlias(snapshot, "promote")
+	if learn == nil || learn.Status != RespDone {
+		t.Fatalf("completed responsibility = %+v, want done", learn)
+	}
+	if promote == nil || promote.Status != RespReady {
+		t.Fatalf("dependent responsibility = %+v, want ready", promote)
+	}
+}
+
 func TestStoreCompleteRunUpdatesExistingDependenciesReversibly(t *testing.T) {
 	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
 	mustCreate(t, store, "helper-a")

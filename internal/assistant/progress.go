@@ -323,6 +323,13 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 
 	for _, alias := range b.Active {
 		alias = strings.TrimSpace(alias)
+		// A model may report a responsibility as both active and complete in the
+		// same progress block. Completion is the terminal, authoritative state;
+		// treating the stale active marker as a no-op keeps the patch idempotent
+		// and prevents an otherwise valid plan update from being discarded.
+		if completeSet[alias] {
+			continue
+		}
 		respID, err := resolveRespAlias(aliasToID, alias)
 		if err != nil {
 			return "", err

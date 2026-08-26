@@ -4,7 +4,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { AssistantSidebarEntry, AssistantWorkspace, AttentionInbox, OverviewEditor } from "../custom/features/assistant/AssistantWorkspace";
+import { AssistantSidebarEntry, AssistantWorkspace, AttentionInbox, OverviewEditor, assistantDiagnosticWarning } from "../custom/features/assistant/AssistantWorkspace";
+import { assistantCopy } from "../custom/features/assistant/assistant.copy";
 import { assistantGet } from "../custom/features/assistant/assistant.bridge";
 import type { AssistantSnapshot } from "../custom/features/assistant/assistant.types";
 import { LocaleProvider } from "../lib/i18n";
@@ -54,6 +55,15 @@ ok(host.querySelector("#assistant-handoff-input") !== null, "quick handoff input
 ok(host.querySelector("#assistant-handoff-input")?.getAttribute("placeholder") === "对助手说…", "handoff input prompts a message to the assistant");
 ok(host.textContent?.includes("输入会被记录") ?? false, "handoff dock states that the input will be recorded");
 ok(host.querySelectorAll(".assistant-event").length >= 2, "timeline renders run and memory events");
+const zhCopy = assistantCopy("zh-CN");
+ok(
+  assistantDiagnosticWarning([{ at: "", category: "runtime", operation: "progress_apply", message: "invalid transition" }], zhCopy) === "上次运行已完成，但计划进度未能更新。",
+  "progress diagnostics are not mislabeled as unreadable Assistant data",
+);
+ok(
+  assistantDiagnosticWarning([{ at: "", category: "data", operation: "list", message: "corrupt aggregate" }], zhCopy) === "部分助手数据无法读取，健康助手仍可正常使用。",
+  "data diagnostics retain the partial-read warning",
+);
 
 // ── Handoff dock: a real top dock outside and before the scrolling timeline ──
 const scrollBox = host.querySelector(".assistant-workspace__scroll");

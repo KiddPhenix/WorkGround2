@@ -249,6 +249,7 @@ export interface AssistantSnapshot {
 
 export interface AssistantDiagnostic {
   at: string;
+  category?: "data" | "runtime";
   operation: string;
   message: string;
 }
