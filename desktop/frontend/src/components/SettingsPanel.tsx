@@ -57,7 +57,36 @@ import { getSuccessPreference, setSuccessPreference, getAttentionPreference, set
 import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
 import { CopyButton } from "./CopyButton";
-const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "ai", "mcp", "skills", "plugins", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "widget", "global", "about"];
+type SettingsGroupId = "aiConfig" | "aiTools" | "advanced";
+type SettingsNavEntry =
+  | { kind: "leaf"; tab: SettingsTab }
+  | { kind: "group"; id: SettingsGroupId; tabs: SettingsTab[] };
+
+// SETTINGS_NAV is the grouped left-column navigation. SettingsTab stays the
+// leaf-page / deep-link protocol; nine top-level entries present three composite
+// groups (expanded inline) and six direct entries.
+const SETTINGS_NAV: SettingsNavEntry[] = [
+  { kind: "leaf", tab: "general" },
+  { kind: "group", id: "aiConfig", tabs: ["models", "memory", "global"] },
+  { kind: "group", id: "aiTools", tabs: ["ai", "skills", "plugins", "mcp"] },
+  { kind: "leaf", tab: "bots" },
+  { kind: "leaf", tab: "widget" },
+  { kind: "leaf", tab: "appearance" },
+  { kind: "leaf", tab: "shortcuts" },
+  { kind: "group", id: "advanced", tabs: ["permissions", "sandbox", "network", "hooks"] },
+  { kind: "leaf", tab: "about" },
+];
+
+function settingsGroupForTab(tab: SettingsTab): SettingsGroupId | null {
+  for (const entry of SETTINGS_NAV) {
+    if (entry.kind === "group" && entry.tabs.includes(tab)) return entry.id;
+  }
+  return null;
+}
+
+function settingsGroupEntry(id: SettingsGroupId): Extract<SettingsNavEntry, { kind: "group" }> | undefined {
+  return SETTINGS_NAV.find((entry): entry is Extract<SettingsNavEntry, { kind: "group" }> => entry.kind === "group" && entry.id === id);
+}
 export type SettingsInitialFocus = { target: "bot-allowlist"; connectionId?: string };
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
@@ -101,6 +130,24 @@ export function SettingsPanel({
   const [customFontName, setCustomFontNameState] = useState<string>(getCustomFontName());
   const [customMonoFontName, setCustomMonoFontNameState] = useState<string>(getCustomMonoFontName());
   const [tab, setTab] = useState<SettingsTab>(initialTab === "providers" ? "models" : initialTab ?? "general");
+  const [groupLastTab, setGroupLastTab] = useState<Record<SettingsGroupId, SettingsTab>>(() => ({
+    aiConfig: "models",
+    aiTools: "ai",
+    advanced: "permissions",
+  }));
+  const expandedGroup = settingsGroupForTab(tab);
+  const selectTab = useCallback((id: SettingsTab) => {
+    const normalized = id === "providers" ? "models" : id;
+    setTab(normalized);
+    const group = settingsGroupForTab(normalized);
+    if (group) setGroupLastTab((prev) => (prev[group] === normalized ? prev : { ...prev, [group]: normalized }));
+  }, []);
+  const openGroup = useCallback((group: SettingsGroupId) => {
+    const entry = settingsGroupEntry(group);
+    const next = groupLastTab[group] ?? entry?.tabs[0] ?? "general";
+    setTab(next);
+    setGroupLastTab((prev) => (prev[group] === next ? prev : { ...prev, [group]: next }));
+  }, [groupLastTab]);
   // Play the modal exit animation, then let the parent unmount us.
   const { status, requestClose } = useDeferredClose(onClose, 240);
 
@@ -121,8 +168,8 @@ export function SettingsPanel({
   }, []);
   useEffect(() => {
     void reload();
-    if (initialTab) setTab(initialTab === "providers" ? "models" : initialTab);
-  }, [initialTab, reload]);
+    if (initialTab) selectTab(initialTab);
+  }, [initialTab, reload, selectTab]);
   useEffect(() => {
     if (!s) return;
     const nextTheme = normalizeThemePreference(s.desktopTheme);
@@ -204,16 +251,47 @@ export function SettingsPanel({
 
         <div className="settings-center">
           <nav className="settings-center__nav" aria-label={t("settings.title")}>
-            {SETTINGS_TABS.map((id) => (
-              <button
-                key={id}
-                className={`settings-center__navitem${tab === id ? " settings-center__navitem--active" : ""}`}
-                onClick={() => setTab(id)}
-              >
-                <span>{settingsTabLabel(id, t)}</span>
-                {s && <small>{settingsTabMeta(id, s, t)}</small>}
-              </button>
-            ))}
+            {SETTINGS_NAV.map((entry) =>
+              entry.kind === "leaf" ? (
+                <button
+                  key={entry.tab}
+                  className={`settings-center__navitem${tab === entry.tab ? " settings-center__navitem--active" : ""}`}
+                  aria-current={tab === entry.tab ? "page" : undefined}
+                  onClick={() => selectTab(entry.tab)}
+                >
+                  <span>{settingsTabLabel(entry.tab, t)}</span>
+                </button>
+              ) : (
+                <div key={entry.id} className="settings-center__group">
+                  <button
+                    className="settings-center__navitem settings-center__navitem--group"
+                    aria-expanded={expandedGroup === entry.id}
+                    onClick={() => openGroup(entry.id)}
+                  >
+                    <span>{settingsGroupLabel(entry.id, t)}</span>
+                    <ChevronDown
+                      size={15}
+                      aria-hidden="true"
+                      className={`settings-center__group-chevron${expandedGroup === entry.id ? " settings-center__group-chevron--open" : ""}`}
+                    />
+                  </button>
+                  {expandedGroup === entry.id && (
+                    <div className="settings-center__group-children" role="group">
+                      {entry.tabs.map((leaf) => (
+                        <button
+                          key={leaf}
+                          className={`settings-center__navitem settings-center__navitem--child${tab === leaf ? " settings-center__navitem--active" : ""}`}
+                          aria-current={tab === leaf ? "page" : undefined}
+                          onClick={() => selectTab(leaf)}
+                        >
+                          <span>{settingsTabLabel(leaf, t)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ),
+            )}
           </nav>
           <main className="settings-center__content">
             {needsSettings && settingsLoadFailed && (
@@ -551,47 +629,14 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
   }
 }
 
-function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof useT>): string {
-  switch (id) {
-    case "models":
-      return settingsModelMeta(s, t);
-    case "general":
-      return closeBehaviorLabel(normalizeCloseBehavior(s.closeBehavior), t);
-    case "providers":
-      return t("settings.providerCount", { n: s.providers.length });
-    case "bots":
-      return botSettingsMeta(s.bot, t);
-    case "ai":
-      return t("settings.tabSub.ai");
-    case "global":
-      return t("settings.tabSub.global");
-    case "mcp":
-      return t("caps.connectorsTab");
-    case "skills":
-      return t("caps.skillsTab");
-    case "plugins":
-      return t("settings.tabSub.plugins");
-    case "memory":
-      return t("settings.tabSub.memory");
-    case "hooks":
-      return t("settings.tabSub.hooks");
-    case "shortcuts":
-      return t("settings.tabSub.shortcuts");
-    case "network":
-      return proxyModeLabel(normalizeProxyMode(s.network.proxyMode), t);
-    case "permissions":
-      return permissionModeLabel(s.permissions.mode, t);
-    case "sandbox":
-      return sandboxModeLabel(s.sandbox.bash, t);
-    case "appearance":
-      return t("settings.appearanceMeta");
-    case "widget":
-      return t("settings.pageDesc.widget");
-    case "updates":
-      return t("settings.updatesMeta");
-    default:
-      return "";
-  }
+const SETTINGS_GROUP_LABELS: Record<SettingsGroupId, DictKey> = {
+  aiConfig: "settings.group.aiConfig",
+  aiTools: "settings.group.aiTools",
+  advanced: "settings.group.advanced",
+};
+
+function settingsGroupLabel(id: SettingsGroupId, t: ReturnType<typeof useT>): string {
+  return t(SETTINGS_GROUP_LABELS[id]);
 }
 
 function settingsModelMeta(s: SettingsView, t: ReturnType<typeof useT>): string {
@@ -602,14 +647,6 @@ function settingsModelMeta(s: SettingsView, t: ReturnType<typeof useT>): string 
   const model = modelParts.join("/") || ref;
   const providerView = s.providers.find((p) => p.name === provider);
   return `${modelProviderLabel(provider, providerView, t)} · ${model}`;
-}
-
-function botSettingsMeta(bot: BotSettingsView, t: ReturnType<typeof useT>): string {
-  const normalized = normalizeBotSettings(bot);
-  const connections = normalized.connections.length + (qqBotAdded(normalized.qq) ? 1 : 0);
-  if (connections === 0) return t("settings.botNoConnections");
-  if (!normalized.enabled) return t("settings.botDisabledWithConnections", { n: connections });
-  return t("settings.botConnectionCount", { n: connections });
 }
 
 function ShortcutsSection() {
@@ -1144,21 +1181,6 @@ function normalizeStatusBarStyle(style: string | undefined): StatusBarStyle {
 
 function closeBehaviorLabel(mode: CloseBehavior, t: ReturnType<typeof useT>): string {
   return mode === "quit" ? t("settings.closeBehavior.quit") : t("settings.closeBehavior.background");
-}
-
-function permissionModeLabel(mode: string, t: ReturnType<typeof useT>): string {
-  switch (mode) {
-    case "allow":
-      return t("settings.modeAllowShort");
-    case "deny":
-      return t("settings.modeDenyShort");
-    default:
-      return t("settings.modeAskShort");
-  }
-}
-
-function sandboxModeLabel(mode: string, t: ReturnType<typeof useT>): string {
-  return mode === "off" ? t("settings.bashOffShort") : t("settings.bashEnforceShort");
 }
 
 function reasoningProtocolLabel(protocol: string, t: ReturnType<typeof useT>): string {

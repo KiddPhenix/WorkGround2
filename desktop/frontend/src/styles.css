@@ -14259,6 +14259,45 @@ body > .mermaid-diagram--fullscreen {
   font-family: inherit;
 }
 
+.settings-center__navitem--group {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.settings-center__navitem--group span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-center__group-chevron {
+  flex: none;
+  color: var(--fg-dim);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.settings-center__group-chevron--open {
+  transform: rotate(180deg);
+}
+
+.settings-center__group-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 14px;
+  margin-top: 2px;
+}
+
+.settings-center__navitem--child {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.settings-center__navitem--child span {
+  font-weight: 550;
+}
+
 .settings-center__content {
   min-width: 0;
   overflow-x: hidden;
