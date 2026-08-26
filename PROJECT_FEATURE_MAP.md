@@ -279,6 +279,13 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 - Source: verified-by-search
 - Updated: 2026-08-20
 
+### 桌面内置图标资源
+- Location: `desktop/frontend/src/lib/projectIcons.ts`, `desktop/frontend/src/components/widget/WorkspaceMatteIcon.tsx`, `desktop/frontend/src/assets/workspace-icons-matte-v1`, `desktop/frontend/src/assets/agent-icon`, `desktop/frontend/src/lib/agentIcon/assets.ts`
+- Summary: Workspace/Room 使用 94 枚哑光 PNG 图标（原有 34 枚，新增 60 枚）并保留 5 个 Lucide 兼容键；Agent 图标由 manifest 驱动的边框、头饰、眼睛状态和任务工具图层组合，`workspace-icons-v1` 与 `workspace-icons-final` 当前无代码引用。
+- Keywords: projectIcons, WorkspaceMatteIcon, workspace-icons-matte-v1, agent-icon, agentManifest, 内置图标
+- Source: verified-by-search
+- Updated: 2026-08-26
+
 ### 桌面设置
 - Location: `desktop/settings_app.go`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales`, `internal/config/edit.go`, `internal/config/render.go`
 - Summary: Desktop 设置的 Go 绑定、React 面板、多语言文案和配置读写入口位于这些位置。

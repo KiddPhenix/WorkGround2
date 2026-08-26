@@ -848,11 +848,11 @@ assert.match(css, /\.desktop-icon__matte[^}]*object-fit:\s*contain/, "matte bitm
 
 // --- workspace manager pure logic: authoritative rows + two-step delete ---
 // Legacy and matte project icons share one stable key contract; an unknown key
-// ("rocket") and a missing key both normalize to the folder fallback "".
+// ("unknown-icon") and a missing key both normalize to the folder fallback "".
 const tree: ProjectNode[] = [
   { key: "global_folder", kind: "global_folder", label: "Global", root: "~" },
   { key: "project_a", kind: "project", label: "Alpha", root: "~/projects/alpha", pinned: true, projectIcon: "star" },
-  { key: "project_b", kind: "project", label: "Beta", root: "~/projects/beta", projectIcon: "rocket" },
+  { key: "project_b", kind: "project", label: "Beta", root: "~/projects/beta", projectIcon: "unknown-icon" },
   { key: "project_c", kind: "project", label: "", root: "~/projects/gamma", projectIcon: "python" },
   { key: "orphan", kind: "topic", label: "topic", root: "~/projects/alpha", topicId: "t1" },
 ];
@@ -861,10 +861,12 @@ assert.deepEqual(projectWorkspaceRows(tree), [
   { root: "~/projects/beta", label: "Beta", pinned: false, icon: "" },
   { root: "~/projects/gamma", label: "~/projects/gamma", pinned: false, icon: "python" },
 ], "rows project only authoritative project nodes, keep the backend tree order, and normalize real/unknown icon keys to the ProjectTree contract");
-assert.equal(WORKSPACE_MATTE_ICON_OPTIONS.length, 34, "the typed catalog exposes every PNG in workspace-icons-matte-v1, including generated new and delegate assets");
+assert.equal(WORKSPACE_MATTE_ICON_OPTIONS.length, 94, "the typed catalog exposes the original 34 matte icons plus 60 generated Workspace and Room choices");
+assert.equal(new Set(WORKSPACE_MATTE_ICON_OPTIONS.map((option) => option.key)).size, 94, "the matte icon catalog has no duplicate keys");
 assert.equal(isWorkspaceMatteIcon("typescript"), true, "matte icon lookup accepts a catalog key");
+assert.equal(isWorkspaceMatteIcon("rocket"), true, "new matte icon keys are accepted by the shared Workspace and Room contract");
 assert.equal(projectIconKey(" PYTHON "), "python", "matte project icons normalize case and whitespace");
-assert.equal(projectIconKey("rocket"), "", "unknown project icons still degrade safely to the legacy folder fallback");
+assert.equal(projectIconKey("unknown-icon"), "", "unknown project icons still degrade safely to the legacy folder fallback");
 assert.deepEqual(projectWorkspaceRows([{ key: "global_folder", kind: "global_folder", label: "Global" }]), [], "a tree without project nodes yields an empty list");
 assert.deepEqual(deleteConfirmNext(null, "a"), { armed: "a", confirmed: false }, "the first delete click arms the row");
 assert.deepEqual(deleteConfirmNext("a", "a"), { armed: null, confirmed: true }, "the second click on the same row confirms");
