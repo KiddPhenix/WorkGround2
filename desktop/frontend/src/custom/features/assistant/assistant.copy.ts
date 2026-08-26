@@ -187,6 +187,21 @@ const zh = {
   opportunities: "机会与提案",
   noArtifacts: "还没有证据或产物。",
   noOpportunities: "还没有机会或提案。",
+  runnerJobs: "Runner 任务",
+  reflection: "反思摘要",
+  reflectionEmpty: "还没有反思结论。",
+  ideate: "脑洞一下",
+  ideaIntro: "脑洞会暂时放下既有策略，重新审视使命与路径。它只能被接受为策略记忆或新责任候选，不会改使命、权限或执行外部动作。",
+  ideaPending: "待确认",
+  ideaAccepted: "已接受",
+  ideaRejected: "已拒绝",
+  ideaSuperseded: "已淘汰",
+  acceptIdea: "接受",
+  rejectIdea: "拒绝",
+  retryJob: "重试",
+  stopJob: "停止",
+  classificationFailed: "分类失败，输入已保留，可重试。",
+  reflectionFailed: "反思失败，将按退避自动重试。",
 };
 
 const en: typeof zh = {
@@ -230,6 +245,7 @@ const en: typeof zh = {
   plan: "Plan", planEmpty: "No responsibilities yet. The assistant records responsibilities, dependencies, and evidence here as it works its mission.",
   responsibility: "Responsibility", status: "Status", doneCriteria: "Done criteria", nextAction: "Next action", dependsOn: "Depends on", blockReason: "Blocked reason",
   artifacts: "Artifacts & evidence", opportunities: "Opportunities & proposals", noArtifacts: "No artifacts or evidence yet.", noOpportunities: "No opportunities or proposals yet.",
+  runnerJobs: "Runner jobs", reflection: "Reflection", reflectionEmpty: "No reflection yet.", ideate: "Brainstorm", ideaIntro: "Brainstorming temporarily drops existing strategy assumptions to re-examine mission and path. It can only be accepted as strategy memory or a responsibility candidate — never changes mission, permissions, or runs external actions.", ideaPending: "Pending", ideaAccepted: "Accepted", ideaRejected: "Rejected", ideaSuperseded: "Superseded", acceptIdea: "Accept", rejectIdea: "Reject", retryJob: "Retry", stopJob: "Stop", classificationFailed: "Classification failed; your input is kept and can be retried.", reflectionFailed: "Reflection failed; it will retry with bounded backoff.",
 };
 
 const zhTW: typeof zh = { ...zh, entry: "助手", newAssistant: "新增助手", memory: "明確記憶", history: "執行記錄", attention: "待處理", save: "儲存", sendShortcut: "傳送", workspacePick: "選擇既有工作區", workspaceNew: "從資料夾新增", workspaceChooseTitle: "選擇既有工作區", workspaceChooseBody: "從 WorkGround2 已登記的專案工作區中選擇；未登記的目錄請用「從資料夾新增」。", workspaceChooseLoading: "正在讀取工作區列表…", workspaceChooseEmpty: "尚無已登記的工作區。", workspaceChooseFailed: "工作區列表讀取失敗", workspaceNewHint: "在資料夾選擇器中新增或選擇目錄，作為該助手的工作區。" };

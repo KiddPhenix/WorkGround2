@@ -371,6 +371,13 @@
 
 .assistant-event__body .assistant-event__error { color: #e98975; }
 
+/* Runner jobs and idea proposals inside the timeline. */
+.assistant-jobs { list-style: none; margin: 12px 0 0; padding: 0; }
+.assistant-jobs li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; font-size: 13px; color: #b6b1a9; }
+.assistant-jobs__name { font-weight: 600; color: #e3ded6; }
+.assistant-idea { margin-top: 12px; padding: 10px 12px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; font-size: 14px; }
+.assistant-idea__actions { display: flex; gap: 8px; margin-top: 8px; }
+
 /* Run summary — restrained Markdown prose, sized independently from the
    oversized timeline headings and kept from overflowing the narrow column. */
 .assistant-event__prompt {

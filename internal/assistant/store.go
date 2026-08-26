@@ -37,6 +37,11 @@ type Snapshot struct {
 	Channels       []ChannelBinding `json:"channels"`
 	ChannelActions []ChannelAction  `json:"channel_actions"`
 	ChannelMetrics []ChannelMetric  `json:"channel_metrics"`
+	Dispatches     []Dispatch       `json:"dispatches"`
+	Jobs           []RunnerJob      `json:"jobs"`
+	ContextPacks   []ContextPack    `json:"context_packs"`
+	Ideas          []IdeaProposal   `json:"ideas"`
+	Ideation       Ideation         `json:"ideation,omitempty"`
 	Receipts       []RequestReceipt `json:"receipts"`
 	UpdatedAt      time.Time        `json:"updated_at" ts_type:"string"`
 }
@@ -70,6 +75,11 @@ type aggregate struct {
 	Channels       []ChannelBinding          `json:"channels"`
 	ChannelActions []ChannelAction           `json:"channel_actions"`
 	ChannelMetrics []ChannelMetric           `json:"channel_metrics"`
+	Dispatches     []Dispatch                `json:"dispatches"`
+	Jobs           []RunnerJob               `json:"jobs"`
+	ContextPacks   []ContextPack             `json:"context_packs"`
+	Ideas          []IdeaProposal            `json:"ideas"`
+	Ideation       Ideation                  `json:"ideation,omitempty"`
 	Requests       map[string]requestReceipt `json:"requests"`
 	Occurrences    map[string]string         `json:"occurrences"`
 	UpdatedAt      time.Time                 `json:"updated_at"`
@@ -1970,6 +1980,18 @@ func (s *Store) read(assistantID string) (*aggregate, error) {
 	if agg.ChannelMetrics == nil {
 		agg.ChannelMetrics = []ChannelMetric{}
 	}
+	if agg.Dispatches == nil {
+		agg.Dispatches = []Dispatch{}
+	}
+	if agg.Jobs == nil {
+		agg.Jobs = []RunnerJob{}
+	}
+	if agg.ContextPacks == nil {
+		agg.ContextPacks = []ContextPack{}
+	}
+	if agg.Ideas == nil {
+		agg.Ideas = []IdeaProposal{}
+	}
 	if err := validateAggregate(&agg); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrCorrupt, assistantID, err)
 	}
@@ -2103,6 +2125,7 @@ func snapshotOf(agg *aggregate) Snapshot {
 		Plan: clonePlan(agg.Plan), Artifacts: clone(agg.Artifacts), Opportunities: clone(agg.Opportunities),
 		Proposals: clone(agg.Proposals),
 		Channels:  clone(agg.Channels), ChannelActions: clone(agg.ChannelActions), ChannelMetrics: clone(agg.ChannelMetrics),
+		Dispatches: clone(agg.Dispatches), Jobs: clone(agg.Jobs), ContextPacks: clone(agg.ContextPacks), Ideas: clone(agg.Ideas), Ideation: agg.Ideation,
 		Receipts: receipts, UpdatedAt: agg.UpdatedAt,
 	}
 }
@@ -2453,6 +2476,52 @@ func validateAggregate(agg *aggregate) error {
 			return fmt.Errorf("assistant: duplicate proposal %s", proposal.ID)
 		}
 		proposalIDs[proposal.ID] = true
+	}
+	dispatchIDs := map[string]bool{}
+	for _, dispatch := range agg.Dispatches {
+		if err := validateDispatch(dispatch); err != nil {
+			return err
+		}
+		if dispatch.AssistantID != agg.Assistant.ID || dispatchIDs[dispatch.ID] {
+			return fmt.Errorf("assistant: invalid or duplicate dispatch %s", dispatch.ID)
+		}
+		dispatchIDs[dispatch.ID] = true
+	}
+	jobIDs := map[string]bool{}
+	for _, job := range agg.Jobs {
+		if err := validateJob(job); err != nil {
+			return err
+		}
+		if job.AssistantID != agg.Assistant.ID || !dispatchIDs[job.DispatchID] || jobIDs[job.ID] {
+			return fmt.Errorf("assistant: invalid or duplicate job %s", job.ID)
+		}
+		if job.State != JobRunning && (job.LeaseOwner != "" || !job.LeaseUntil.IsZero()) {
+			return fmt.Errorf("non-running job %s retains a lease", job.ID)
+		}
+		if job.State == JobRetryWait && job.RetryAt.IsZero() {
+			return fmt.Errorf("retry job %s has no retry time", job.ID)
+		}
+		jobIDs[job.ID] = true
+	}
+	packIDs := map[string]bool{}
+	for _, pack := range agg.ContextPacks {
+		if err := validateContextPack(pack); err != nil {
+			return err
+		}
+		if pack.AssistantID != agg.Assistant.ID || !dispatchIDs[pack.DispatchID] || packIDs[pack.ID] {
+			return fmt.Errorf("assistant: invalid or duplicate context pack %s", pack.ID)
+		}
+		packIDs[pack.ID] = true
+	}
+	ideaIDs := map[string]bool{}
+	for _, idea := range agg.Ideas {
+		if err := validateIdeaProposal(idea); err != nil {
+			return err
+		}
+		if idea.AssistantID != agg.Assistant.ID || ideaIDs[idea.ID] {
+			return fmt.Errorf("assistant: invalid or duplicate idea %s", idea.ID)
+		}
+		ideaIDs[idea.ID] = true
 	}
 	for requestID, receipt := range agg.Requests {
 		if err := validateRequestID(requestID); err != nil {

@@ -159,8 +159,36 @@ func newAssistantTestRuntime(t *testing.T, host *assistantHostStub) (*AssistantR
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
+	jobRunner, err := assistant.NewJobRunner(store, "desktop-test", 2*time.Second)
+	if err != nil {
+		t.Fatalf("NewJobRunner: %v", err)
+	}
+	roleModel := assistant.RoleModelFunc(func(_ context.Context, prompt string) (string, error) {
+		switch {
+		case strings.Contains(prompt, "Reflector"):
+			return `{"conclusion":"done","evidence":["tests passed"]}`, nil
+		case strings.Contains(prompt, "Ideator"):
+			return `{"summary":"换个发布策略"}`, nil
+		default:
+			return `{"kind":"task","reply":"收到，我来处理。","jobs":[{"name":"execute","kind":"task","prompt":"请扫描项目最近修改并跑测试"}]}`, nil
+		}
+	})
+	dispatcher, err := assistant.NewDispatcher(store, roleModel)
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	reflector, err := assistant.NewReflector(store, roleModel)
+	if err != nil {
+		t.Fatalf("NewReflector: %v", err)
+	}
+	ideator, err := assistant.NewIdeator(store, roleModel)
+	if err != nil {
+		t.Fatalf("NewIdeator: %v", err)
+	}
 	service := &AssistantRuntime{
-		store: store, scheduler: scheduler, runner: runner, host: host,
+		store: store, scheduler: scheduler, runner: runner,
+		jobRunner: jobRunner, dispatcher: dispatcher, reflector: reflector, ideator: ideator,
+		host:     host,
 		inflight: map[string]*assistantInFlight{}, byRun: map[string]*assistantInFlight{}, tick: 10 * time.Millisecond,
 	}
 	host.runtime, host.store = service, store

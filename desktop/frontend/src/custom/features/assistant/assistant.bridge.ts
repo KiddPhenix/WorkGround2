@@ -3,23 +3,32 @@ import type { ProjectNode } from "../../../lib/types";
 import type {
   AssistantAttentionItem,
   AssistantCancelInput,
+  AssistantCancelJobInput,
   AssistantChannel,
   AssistantChannelInput,
 	AssistantChangeProposal,
   AssistantCreateInput,
   AssistantDeleteInput,
+  AssistantDispatch,
+  AssistantIdeateInput,
+  AssistantIdeaProposal,
   AssistantMemory,
   AssistantMemoryInput,
   AssistantRecord,
   AssistantListResult,
   AssistantResolveAttentionInput,
-	AssistantResolveProposalInput,
+	AssistantResolveIdeaInput,
+  AssistantResolveProposalInput,
   AssistantResumeInput,
+  AssistantRetryDispatchInput,
+  AssistantRetryJobInput,
   AssistantRoutine,
   AssistantRoutineInput,
   AssistantRun,
   AssistantRunNowInput,
+  AssistantRunnerJob,
   AssistantSnapshot,
+  AssistantSubmitInput,
   AssistantSubmitInputInput,
   AssistantUpdateInput,
 } from "./assistant.types";
@@ -88,6 +97,30 @@ export function assistantResume(input: AssistantResumeInput): Promise<AssistantR
 
 export function assistantCancel(input: AssistantCancelInput): Promise<AssistantRun> {
   return app.AssistantCancel(input) as Promise<AssistantRun>;
+}
+
+export function assistantSubmit(input: AssistantSubmitInput): Promise<AssistantDispatch> {
+  return app.AssistantSubmit(input) as Promise<AssistantDispatch>;
+}
+
+export function assistantRetryDispatch(input: AssistantRetryDispatchInput): Promise<AssistantDispatch> {
+  return app.AssistantRetryDispatch(input.assistantId, input.dispatchId, input.requestId) as Promise<AssistantDispatch>;
+}
+
+export function assistantIdeate(input: AssistantIdeateInput): Promise<AssistantIdeaProposal> {
+  return app.AssistantIdeate(input) as Promise<AssistantIdeaProposal>;
+}
+
+export function assistantResolveIdea(input: AssistantResolveIdeaInput): Promise<AssistantIdeaProposal> {
+  return app.AssistantResolveIdea(input) as Promise<AssistantIdeaProposal>;
+}
+
+export function assistantRetryJob(input: AssistantRetryJobInput): Promise<AssistantRunnerJob> {
+  return app.AssistantRetryJob(input) as Promise<AssistantRunnerJob>;
+}
+
+export function assistantCancelJob(input: AssistantCancelJobInput): Promise<AssistantRunnerJob> {
+  return app.AssistantCancelJob(input) as Promise<AssistantRunnerJob>;
 }
 
 export function assistantPickWorkspace(defaultDir = ""): Promise<string> {

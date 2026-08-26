@@ -351,9 +351,14 @@ func (f *assistantInFlight) complete(result assistantTurnResult) {
 // runs in inactive Desktop sessions. The Store lease remains the authority;
 // this map only correlates Controller events while this process is alive.
 type AssistantRuntime struct {
+	app         *App
 	store       *assistant.Store
 	scheduler   *assistant.Scheduler
 	runner      *assistant.Runner
+	jobRunner   *assistant.JobRunner
+	dispatcher  *assistant.Dispatcher
+	reflector   *assistant.Reflector
+	ideator     *assistant.Ideator
 	channels    *assistantchannel.Service
 	leader      *assistant.LeaderElector
 	leaderLease assistant.LeaderLease
@@ -390,6 +395,25 @@ func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
+	jobRunner, err := assistant.NewJobRunner(store, owner, assistantLeaseTTL)
+	if err != nil {
+		return nil, err
+	}
+	roleModel := assistant.RoleModelFunc(func(ctx context.Context, prompt string) (string, error) {
+		return app.runRoleCompletion(ctx, prompt)
+	})
+	dispatcher, err := assistant.NewDispatcher(store, roleModel)
+	if err != nil {
+		return nil, err
+	}
+	reflector, err := assistant.NewReflector(store, roleModel)
+	if err != nil {
+		return nil, err
+	}
+	ideator, err := assistant.NewIdeator(store, roleModel)
+	if err != nil {
+		return nil, err
+	}
 	leader, err := assistant.NewLeaderElector(root, owner, 90*time.Second)
 	if err != nil {
 		return nil, err
@@ -407,7 +431,8 @@ func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
 		return nil, err
 	}
 	return &AssistantRuntime{
-		store: store, scheduler: scheduler, runner: runner,
+		app: app, store: store, scheduler: scheduler, runner: runner,
+		jobRunner: jobRunner, dispatcher: dispatcher, reflector: reflector, ideator: ideator,
 		channels: channels, leader: leader,
 		host: appAssistantSessionHost{app: app}, inflight: map[string]*assistantInFlight{},
 		byRun: map[string]*assistantInFlight{}, tick: assistantTickInterval,
@@ -526,6 +551,9 @@ func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 			r.recordDiagnostic("channel_collect", err)
 		}
 	}
+	if err := r.processDispatches(ctx); err != nil {
+		r.recordDiagnostic("dispatch", err)
+	}
 	for {
 		acquired, err := r.runner.Acquire(time.Now())
 		if err != nil {
@@ -538,13 +566,35 @@ func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 			slog.Warn("desktop: assistant recovery diagnostic", "detail", diagnostic)
 		}
 		if acquired.Run == nil {
-			return
+			break
 		}
 		run := *acquired.Run
 		r.wg.Add(1)
 		go func() {
 			defer r.wg.Done()
 			r.execute(ctx, run)
+		}()
+	}
+	for {
+		acquired, err := r.jobRunner.Acquire(time.Now())
+		if err != nil {
+			r.recordDiagnostic("job_acquire", err)
+			slog.Error("desktop: assistant job acquire failed", "err", err)
+			return
+		}
+		for _, diagnostic := range acquired.Diagnostics {
+			r.recordDiagnostic("recovery", errors.New(diagnostic))
+			slog.Warn("desktop: assistant job recovery diagnostic", "detail", diagnostic)
+		}
+		if acquired.Job == nil {
+			break
+		}
+		job := *acquired.Job
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			r.executeJob(ctx, job)
+			_ = r.reflectReadyOf(ctx, job.AssistantID)
 		}()
 	}
 }

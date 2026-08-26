@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -368,5 +369,55 @@ func TestCreateAssistantWorkspaceCreatesAndIsIdempotent(t *testing.T) {
 	}
 	if got, err := app.CreateAssistantWorkspace(parent, "occupied"); err == nil {
 		t.Fatalf("CreateAssistantWorkspace over a file = %q, want error", got)
+	}
+}
+
+func TestAssistantAPISubmitDispatchIdeateFlow(t *testing.T) {
+	service, store := newAssistantTestRuntime(t, &assistantHostStub{})
+	app := &App{assistant: service}
+	created, err := app.AssistantCreate(AssistantCreateRequest{
+		RequestID: "dispatch-create",
+		Assistant: assistant.Assistant{Name: "Project helper", Mission: "Keep releases healthy"},
+		Routines:  []assistant.Routine{{Title: "Scan", Prompt: "Inspect changes", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch, err := app.AssistantSubmit(AssistantSubmitRequest{AssistantID: created.Assistant.ID, RequestID: "dispatch-1", Input: "请扫描项目最近修改并跑测试"})
+	if err != nil {
+		t.Fatalf("AssistantSubmit: %v", err)
+	}
+	if dispatch.State != assistant.DispatchClassified || dispatch.Kind != assistant.DispatchTask {
+		t.Fatalf("expected classified task, got %+v", dispatch)
+	}
+	replay, err := app.AssistantSubmit(AssistantSubmitRequest{AssistantID: created.Assistant.ID, RequestID: "dispatch-1", Input: "请扫描项目最近修改并跑测试"})
+	if err != nil || replay.ID != dispatch.ID {
+		t.Fatalf("submit replay drifted: %+v err=%v", replay, err)
+	}
+	snapshot, _ := store.Get(created.Assistant.ID)
+	if len(snapshot.Dispatches) != 1 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].State != assistant.JobQueued {
+		t.Fatalf("expected one dispatch and one queued job, got %d dispatches %d jobs", len(snapshot.Dispatches), len(snapshot.Jobs))
+	}
+	job, ok, err := store.ClaimJob("desktop-test", time.Now(), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("ClaimJob: job=%+v ok=%v err=%v", job, ok, err)
+	}
+	if _, err := store.FinishJob(assistant.FinishJobInput{RequestID: "finish-dispatch-1", JobID: job.ID, LeaseOwner: job.LeaseOwner, LeaseFence: job.LeaseFence, Summary: "测试通过", Now: time.Now()}); err != nil {
+		t.Fatalf("FinishJob: %v", err)
+	}
+	if _, err := service.reflector.Reflect(context.Background(), created.Assistant.ID, dispatch.ID, "reflect-dispatch-1", time.Now()); err != nil {
+		t.Fatalf("Reflect: %v", err)
+	}
+	idea, err := app.AssistantIdeate(AssistantIdeateRequest{AssistantID: created.Assistant.ID, RequestID: "idea-1"})
+	if err != nil || idea.State != assistant.IdeaPending {
+		t.Fatalf("AssistantIdeate: %+v err=%v", idea, err)
+	}
+	resolved, err := app.AssistantResolveIdea(AssistantResolveIdeaRequest{AssistantID: created.Assistant.ID, IdeaID: idea.ID, RequestID: "resolve-idea-1", ExpectedRevision: idea.Revision, Decision: assistant.IdeaAccept, Resolution: "ok"})
+	if err != nil || resolved.State != assistant.IdeaAccepted {
+		t.Fatalf("AssistantResolveIdea: %+v err=%v", resolved, err)
+	}
+	snapshot, _ = store.Get(created.Assistant.ID)
+	if len(snapshot.ContextPacks) != 1 || len(snapshot.Ideas) != 1 {
+		t.Fatalf("expected one context pack and one idea, got %d packs %d ideas", len(snapshot.ContextPacks), len(snapshot.Ideas))
 	}
 }

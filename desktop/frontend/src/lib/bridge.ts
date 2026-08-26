@@ -31,6 +31,14 @@ import type {
   AssistantSnapshot,
   AssistantSubmitInputInput,
   AssistantUpdateInput,
+  AssistantDispatch,
+  AssistantDispatchKind,
+  AssistantIdeateInput,
+  AssistantIdeaProposal,
+  AssistantResolveIdeaInput,
+  AssistantRetryJobInput,
+  AssistantCancelJobInput,
+  AssistantRunnerJob,
 } from "../custom/features/assistant/assistant.types";
 import type {
   CollaborationActionResult,
@@ -539,6 +547,12 @@ export interface AppBindings extends WailsWorkBindings {
   AssistantPutChannel(input: AssistantChannelInput): Promise<AssistantChannel>;
   AssistantRunNow(input: AssistantRunNowInput): Promise<AssistantRun>;
   AssistantSubmitInput(input: AssistantSubmitInputInput): Promise<AssistantRun>;
+  AssistantSubmit(input: AssistantSubmitInputInput): Promise<AssistantDispatch>;
+  AssistantRetryDispatch(assistantId: string, dispatchId: string, requestId: string): Promise<AssistantDispatch>;
+  AssistantIdeate(input: AssistantIdeateInput): Promise<AssistantIdeaProposal>;
+  AssistantResolveIdea(input: AssistantResolveIdeaInput): Promise<AssistantIdeaProposal>;
+  AssistantRetryJob(input: AssistantRetryJobInput): Promise<AssistantRunnerJob>;
+  AssistantCancelJob(input: AssistantCancelJobInput): Promise<AssistantRunnerJob>;
   AssistantResolveAttention(input: AssistantResolveAttentionInput): Promise<AssistantAttentionItem>;
   AssistantResolveProposal(input: AssistantResolveProposalInput): Promise<AssistantChangeProposal>;
   AssistantResume(input: AssistantResumeInput): Promise<AssistantRun>;
@@ -5280,6 +5294,111 @@ function makeMockApp(): AppBindings {
         touchAssistantSnapshot(snapshot);
       }, 900);
       return cloneAssistant(run);
+    },
+    async AssistantSubmit(input: AssistantSubmitInputInput) {
+      const snapshot = findAssistantSnapshot(input.assistantId);
+      const text = input.input.trim();
+      if (!text) throw new Error("assistant: direct input must not be empty");
+      const existing = snapshot.dispatches?.find((item) => item.request_id === input.requestId);
+      if (existing) {
+        if (existing.input !== text) throw new Error("assistant: request id replay has different direct input");
+        return cloneAssistant(existing);
+      }
+      const now = new Date().toISOString();
+      const kind: AssistantDispatchKind = text.includes("?") || text.includes("？") ? "question" : "task";
+      const dispatch: AssistantDispatch = {
+        id: `dispatch-${Date.now()}`, assistant_id: snapshot.assistant.id, request_id: input.requestId,
+        input: text, kind, reply: kind === "question" ? "这是一个问题，我会在下一条结论中回答。" : "收到，我来处理。",
+        state: "classified", revision: 1, created_at: now, updated_at: now, classified_at: now,
+      };
+      snapshot.dispatches = [dispatch, ...(snapshot.dispatches ?? [])];
+      if (kind === "task") {
+        const job: AssistantRunnerJob = {
+          id: `job-${Date.now()}`, assistant_id: snapshot.assistant.id, dispatch_id: dispatch.id,
+          name: "execute", kind: "task", prompt: text, state: "queued", attempt: 0, max_attempts: 3,
+          policy: snapshot.assistant.policy, scope: snapshot.assistant.scope, revision: 1, created_at: now, updated_at: now,
+        };
+        snapshot.jobs = [job, ...(snapshot.jobs ?? [])];
+        window.setTimeout(() => {
+          job.state = "succeeded"; job.started_at = now; job.finished_at = new Date().toISOString();
+          job.summary = "已完成任务。"; job.revision += 1; job.updated_at = job.finished_at;
+          dispatch.state = "reflected";
+          snapshot.context_packs = [{ id: `pack-${dispatch.id}`, assistant_id: snapshot.assistant.id, dispatch_id: dispatch.id, revision: snapshot.revision, conclusion: "已完成本输入的所有 Runner Job。", bound_job_ids: [job.id], created_at: new Date().toISOString() }, ...(snapshot.context_packs ?? [])];
+          touchAssistantSnapshot(snapshot);
+        }, 900);
+      }
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(dispatch);
+    },
+    async AssistantRetryDispatch(assistantId: string, dispatchId: string) {
+      const snapshot = findAssistantSnapshot(assistantId);
+      const dispatch = (snapshot.dispatches ?? []).find((item) => item.id === dispatchId);
+      if (!dispatch) throw new Error("该输入已不存在");
+      if (dispatch.state === "classified" || dispatch.state === "reflected") return cloneAssistant(dispatch);
+      const now = new Date().toISOString();
+      dispatch.kind = dispatch.input.includes("?") || dispatch.input.includes("？") ? "question" : "task";
+      dispatch.reply = dispatch.kind === "question" ? "这是一个问题，我会在下一条结论中回答。" : "收到，我来处理。";
+      dispatch.state = "classified";
+      dispatch.error = undefined;
+      dispatch.retry_at = undefined;
+      dispatch.classified_at = now;
+      dispatch.revision += 1;
+      dispatch.updated_at = now;
+      if (dispatch.kind === "task") {
+        const job: AssistantRunnerJob = {
+          id: `job-${Date.now()}`, assistant_id: snapshot.assistant.id, dispatch_id: dispatch.id,
+          name: "execute", kind: "task", prompt: dispatch.input, state: "queued", attempt: 0, max_attempts: 3,
+          policy: snapshot.assistant.policy, scope: snapshot.assistant.scope, revision: 1, created_at: now, updated_at: now,
+        };
+        snapshot.jobs = [job, ...(snapshot.jobs ?? [])];
+      }
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(dispatch);
+    },
+    async AssistantIdeate(input: AssistantIdeateInput) {
+      const snapshot = findAssistantSnapshot(input.assistantId);
+      const now = new Date().toISOString();
+      const idea: AssistantIdeaProposal = {
+        id: `idea-${Date.now()}`, assistant_id: snapshot.assistant.id, request_id: input.requestId,
+        trigger: "manual", summary: "定期审视使命与路径，寻找下一个值得推进的方向。", state: "pending",
+        revision: 1, created_at: now, updated_at: now,
+      };
+      snapshot.ideas = [idea, ...(snapshot.ideas ?? [])];
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(idea);
+    },
+    async AssistantResolveIdea(input: AssistantResolveIdeaInput) {
+      const snapshot = findAssistantSnapshot(input.assistantId);
+      const idea = (snapshot.ideas ?? []).find((item) => item.id === input.ideaId);
+      if (!idea) throw new Error("脑洞提案已不存在");
+      if (idea.revision !== input.expectedRevision) throw new Error("脑洞提案已更新，请刷新后重试");
+      if (idea.state !== "pending") throw new Error("脑洞提案已经处理");
+      idea.state = input.decision === "accept" ? "accepted" : "rejected";
+      idea.resolution = input.resolution;
+      idea.revision += 1;
+      idea.updated_at = new Date().toISOString();
+      idea.resolved_at = idea.updated_at;
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(idea);
+    },
+    async AssistantRetryJob(input: AssistantRetryJobInput) {
+      const snapshot = mockAssistantSnapshots.find((item) => (item.jobs ?? []).some((job) => job.id === input.jobId));
+      if (!snapshot) throw new Error("Job 已不存在");
+      const job = (snapshot.jobs ?? []).find((item) => item.id === input.jobId);
+      if (!job) throw new Error("Job 已不存在");
+      job.state = "queued"; job.error = undefined; job.retry_at = undefined; job.finished_at = undefined;
+      job.revision += 1; job.updated_at = new Date().toISOString();
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(job);
+    },
+    async AssistantCancelJob(input: AssistantCancelJobInput) {
+      const snapshot = mockAssistantSnapshots.find((item) => (item.jobs ?? []).some((job) => job.id === input.jobId));
+      if (!snapshot) throw new Error("Job 已不存在");
+      const job = (snapshot.jobs ?? []).find((item) => item.id === input.jobId);
+      if (!job) throw new Error("Job 已不存在");
+      job.state = "cancelled"; job.finished_at = new Date().toISOString(); job.revision += 1; job.updated_at = job.finished_at;
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(job);
     },
     async AssistantResolveAttention(input: AssistantResolveAttentionInput) {
       const snapshot = findAssistantSnapshot(input.assistantId);
