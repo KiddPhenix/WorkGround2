@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { AtSign, Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, MessageCircle, Pencil, Pin, PinOff, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
+import { AtSign, Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, Pencil, Pin, PinOff, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
 import { app, type DailyRoutine, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconDelegation, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type ExternalRunSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import type { QuestionAnswer } from "../../lib/types";
 import { asArray } from "../../lib/array";
@@ -282,7 +282,7 @@ function itemGlyph(item: DesktopIconItem, agentViewModel?: AgentIconViewModel) {
   if (item.kind === "task") return agentViewModel ? <AgentIcon viewModel={agentViewModel} /> : <Bot />;
   if (item.kind === "external" || item.sourceId === "dsh") return <SquareTerminal />;
   if (item.kind === "workspace") return <WorkspaceMatteIcon icon={isWorkspaceMatteIcon(item.icon) ? item.icon : "folder"} className="desktop-icon__matte" />;
-  if (item.sourceId === "assistant") return <Bot aria-hidden="true" />;
+  if (item.sourceId === "assistant") return <WorkspaceMatteIcon icon="robot" className="desktop-icon__matte" />;
   const fixedIcon: Record<string, WorkspaceMatteIconKey> = {
     new: "new",
     workspace: "folder",
@@ -902,7 +902,7 @@ function WorkspaceGlyph({ icon, size = 16 }: { icon: ProjectIconKey; size?: numb
   }
 }
 
-// A Room with no explicit preference keeps the familiar discussion glyph;
+// A Room with no explicit preference uses the shared social matte asset;
 // configured values share the workspace icon catalog and legacy compatibility.
 function RoomGlyph({ icon, size = 16, matteClassName = "desktop-icon-popup__workspace-matte" }: { icon: ProjectIconKey; size?: number; matteClassName?: string }) {
   if (isWorkspaceMatteIcon(icon)) return <WorkspaceMatteIcon icon={icon} className={matteClassName} />;
@@ -912,7 +912,7 @@ function RoomGlyph({ icon, size = 16, matteClassName = "desktop-icon-popup__work
     case "code": return <Code2 size={size} aria-hidden="true" />;
     case "terminal": return <SquareTerminal size={size} aria-hidden="true" />;
     case "bolt": return <Zap size={size} aria-hidden="true" />;
-    default: return <MessageCircle size={size} aria-hidden="true" />;
+    default: return <WorkspaceMatteIcon icon="social" className={matteClassName} />;
   }
 }
 
@@ -1278,7 +1278,7 @@ function RoomsManager({ roomIconCount, onRoomIconCountChange, notificationMode, 
         : armed === row.topicId
           ? <div className="desktop-icon-popup__workspace-actions desktop-icon-popup__workspace-actions--confirm"><span className="desktop-icon-popup__workspace-warn">移入回收站“{row.label}”？</span><button type="button" className="danger" disabled={deleting === row.topicId} onClick={() => void confirmTrash(row)}>{deleting === row.topicId ? "移入中…" : "确认移入"}</button><button type="button" className="subtle" disabled={deleting === row.topicId} onClick={() => setArmed(null)}>取消</button></div>
           : <><div className="desktop-icon-popup__workspace-actions"><button type="button" className="desktop-icon-popup__room-open" disabled={opening === row.topicId || iconBusy} onClick={() => void open(row)}>{opening === row.topicId ? "打开中…" : "打开"}</button><button type="button" className="subtle" disabled={renamingBusy || iconBusy} onClick={() => startRename(row)}><Pencil aria-hidden="true" />重命名</button><button type="button" className={`subtle${iconEditing === row.topicId ? " is-active" : ""}`} disabled={iconBusy} aria-expanded={iconEditing === row.topicId} onClick={() => setIconEditing((current) => current === row.topicId ? null : row.topicId)}>修改图标</button><button type="button" className="subtle desktop-icon-popup__workspace-delete" disabled={iconBusy} onClick={() => requestTrash(row)}><Trash2 aria-hidden="true" />移入回收站</button></div>
-            {iconEditing === row.topicId && <div className="desktop-icon-popup__workspace-icons" role="group" aria-label={`为 ${row.label} 选择图标`} aria-busy={iconBusy}><button type="button" className={row.icon === "" ? "is-selected" : ""} aria-pressed={row.icon === ""} aria-label="默认 Room 图标" title="默认 Room 图标" disabled={iconBusy} onClick={() => void chooseIcon(row, "")}><MessageCircle /></button>{WORKSPACE_MATTE_ICON_OPTIONS.map((option) => <button key={option.key} type="button" className={row.icon === option.key ? "is-selected" : ""} aria-pressed={row.icon === option.key} aria-label={option.label} title={option.label} disabled={iconBusy} onClick={() => void chooseIcon(row, option.key)}><WorkspaceMatteIcon icon={option.key} /></button>)}</div>}</>}
+            {iconEditing === row.topicId && <div className="desktop-icon-popup__workspace-icons" role="group" aria-label={`为 ${row.label} 选择图标`} aria-busy={iconBusy}><button type="button" className={row.icon === "" ? "is-selected" : ""} aria-pressed={row.icon === ""} aria-label="默认 Room 图标" title="默认 Room 图标" disabled={iconBusy} onClick={() => void chooseIcon(row, "")}><WorkspaceMatteIcon icon="social" /></button>{WORKSPACE_MATTE_ICON_OPTIONS.map((option) => <button key={option.key} type="button" className={row.icon === option.key ? "is-selected" : ""} aria-pressed={row.icon === option.key} aria-label={option.label} title={option.label} disabled={iconBusy} onClick={() => void chooseIcon(row, option.key)}><WorkspaceMatteIcon icon={option.key} /></button>)}</div>}</>}
     </div>)}</div>}
     <div className="desktop-icon-popup__workspace-pins desktop-icon-popup__room-pins">
       <div className="desktop-icon-popup__workspace-count desktop-icon-popup__room-count">

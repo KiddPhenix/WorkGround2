@@ -1042,9 +1042,9 @@ assert.match(component, /deleteConfirmNext\(armed, row\.topicId\)[\s\S]+next\.co
 assert.match(component, /app\.TrashTopic\(row\.topicId\)[\s\S]+setArmed\(null\)[\s\S]+await reload\(\)/, "trash calls the backend only on the confirmed step, then clears the arm and reloads");
 assert.doesNotMatch(component, /TrashTopic[\s\S]{0,60}setRows/, "trash never optimistically removes the row before the backend confirms");
 assert.match(component, /await app\.SetDesktopRoomIcon\(row\.topicId, icon\)[\s\S]{0,100}await reload\(\)[\s\S]{0,100}await onChanged\(\)[\s\S]{0,100}setIconEditing\(null\)/, "Room icon assignment persists, reloads and refreshes before closing the palette");
-assert.match(component, /默认 Room 图标[\s\S]{0,260}WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]{0,400}<WorkspaceMatteIcon icon=\{option\.key\}/, "Room icon palette exposes default discussion plus the shared matte catalog");
+assert.match(component, /默认 Room 图标[\s\S]{0,260}<WorkspaceMatteIcon icon="social" \/>[\s\S]{0,260}WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]{0,400}<WorkspaceMatteIcon icon=\{option\.key\}/, "Room icon palette previews the social matte default before the shared matte catalog");
 assert.match(component, /Keep the palette open[\s\S]{0,220}setError\(cause instanceof Error \? cause\.message : String\(cause\)\)/, "a Room icon failure keeps the palette open for retry");
-assert.match(component, /function RoomGlyph[\s\S]+isWorkspaceMatteIcon\(icon\)[\s\S]+default: return <MessageCircle/, "Room rows preserve the default discussion glyph while rendering configured matte or legacy icons");
+assert.match(component, /function RoomGlyph[\s\S]+isWorkspaceMatteIcon\(icon\)[\s\S]+default: return <WorkspaceMatteIcon icon="social" className=\{matteClassName\}/, "Room rows use the social matte asset by default while preserving configured matte and legacy icons");
 assert.match(component, /<RoomGlyph icon=\{row\.icon\}/, "Room rows and slots render their configured glyph instead of raw icon text");
 assert.match(component, /desktop-icon-popup__workspaces desktop-icon-popup__rooms/, "RoomsManager reuses the WorkspaceManager layout and marks its own popup root");
 assert.match(component, /onClick=\{onNewRoom\}>新增<\/button>/, "the Rooms header 新增 delegates to the root App coordination callback");
@@ -1431,7 +1431,7 @@ assert.equal(
 {
   const mode = readFileSync(resolve(testDir, "../components/widget/DesktopIconMode.tsx"), "utf8");
   assert.match(mode, /if \(item\.kind === "task"\) return agentViewModel \? <AgentIcon viewModel=\{agentViewModel\} \/> : <Bot \/>;/, "task branch renders AgentIcon for real tasks, Bot for QuickStart");
-  assert.match(mode, /if \(item\.sourceId === "assistant"\) return <Bot aria-hidden="true" \/>;/, "the assistant fixed entry renders the Bot glyph with an explicit aria-hidden marker");
+  assert.match(mode, /if \(item\.sourceId === "assistant"\) return <WorkspaceMatteIcon icon="robot" className="desktop-icon__matte" \/>;/, "the assistant fixed entry renders the robot matte asset");
   assert.match(mode, /if \(item\.kind === "person"\) return agentViewModel \? <AgentIcon viewModel=\{agentViewModel\} \/> : <Users \/>;/, "resolved personal IM rows render the corresponding session AgentIcon with a safe Users fallback");
   assert.match(mode, /!agentIcon && \(item\.status === "running" \|\| item\.status === "thinking"\)/, "old running/thinking motion corners are suppressed for Agent Icon items");
   assert.match(mode, /!agentIcon && statusGlyph\(item\)/, "old status glyph overlay is suppressed for Agent Icon items");
