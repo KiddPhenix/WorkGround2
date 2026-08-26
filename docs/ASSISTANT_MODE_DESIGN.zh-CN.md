@@ -1,12 +1,12 @@
 # WorkGround2 助手模式设计
 
-> 状态：阶段 1～5 已实现并合入 `main`
+> 状态：阶段 1～5 已实现并合入 `main`；阶段 6（角色化调度、反思与脑洞）已在本分支实现。
 >
 > 来源分支：`developping/assistant-improvement-proposals+2026-08-26`
 >
 > 参考视觉：用户提供的 1487×1058 Desktop 深色时间线设计图
 >
-> 实现范围：阶段 1～5
+> 实现范围：阶段 1～6
 
 ## 1. 功能定义
 
@@ -462,7 +462,7 @@ type ChannelProposal struct {
 
 ### 阶段 6：角色化调度、反思与脑洞
 
-状态：实现中（2026-08-27）。
+状态：已实现（2026-08-27，本分支）。
 
 每个 Assistant 固定拥有一个 Dispatcher、最多三个并行 Runner、一个 Reflector 和一个低频 Ideator。角色是持久业务阶段，不依赖某个 Panel 或 Session 的生命周期：
 
@@ -490,9 +490,17 @@ internal/assistant/                     核心领域、Store、Scheduler、Runne
 internal/assistant/plan.go              责任图、进度块与解析/脱敏
 internal/assistant/progress.go          CompleteRunWithProgress 与依赖/环校验
 internal/assistant/proposal.go          改进提案校验、CAS 处理与目标应用
-desktop/assistant_app.go                Desktop 宿主与 Wails API
+internal/assistant/dispatch.go          Dispatch / RunnerJob / ContextPack / IdeaProposal 模型与校验
+internal/assistant/dispatch_store.go    OpenDispatch / Classify / Fail / Reflect / OpenIdea / ResolveIdea
+internal/assistant/job_store.go         Job 领取/续租/完成/失败/取消/重试/恢复（三并发上限）
+internal/assistant/dispatcher.go        Dispatcher 经真实模型分类编排（失败显式可重试）
+internal/assistant/reflector.go         Reflector 经真实模型 once 反思 + 有界 ContextPack 归属过滤
+internal/assistant/ideator.go           Ideator 经真实模型 5 次/7 天门控与手动入口
+internal/assistant/role_protocol.go     RoleModel 接口、受限 JSON 协议、严格解析/校验、角色提示词与退避
+desktop/assistant_app.go                Desktop 宿主与 Wails API（含 Dispatch/RetryDispatch/Ideate/ResolveIdea/Job）
 desktop/assistant_runner.go             Controller/Session 执行适配与进度注入/应用
-desktop/frontend/src/custom/features/assistant/  助手工作区、计划/提案页、抽屉、编辑器
+desktop/assistant_dispatch.go           Desktop 无头 Job 执行、分类/反思/脑洞推进
+desktop/frontend/src/custom/features/assistant/  助手工作区、计划/提案页、抽屉、编辑器、时间线
 desktop/frontend/src/App.tsx            一级入口和表面切换
 desktop/heartbeat.go                    兼容与转换来源
 PROJECT_FEATURE_MAP.md                  功能状态

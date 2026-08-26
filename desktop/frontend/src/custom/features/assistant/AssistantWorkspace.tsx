@@ -29,23 +29,28 @@ import { AssistantMarkdown } from "./AssistantMarkdown";
 import {
   assistantApplyMemory,
   assistantCancel,
+  assistantCancelJob,
   assistantCreate,
   assistantDelete,
   assistantGet,
+  assistantIdeate,
   assistantList,
   assistantListWorkspaces,
   assistantPickWorkspace,
   assistantPutChannel,
   assistantPutRoutine,
   assistantResolveAttention,
+	assistantResolveIdea,
 	assistantResolveProposal,
   assistantResume,
+  assistantRetryDispatch,
+  assistantRetryJob,
   assistantRunNow,
-  assistantSubmitInput,
+  assistantSubmit,
   assistantUpdate,
 } from "./assistant.bridge";
 import { assistantCopy } from "./assistant.copy";
-import { attentionInboxAction, attentionRejectResolution, attentionResolution, formatAssistantDate, formatTimelineTime, responsibilityLabel, responsibilityStatusLabel, runHistoryAction, runStateLabel, scheduleLabel, timelineEntries } from "./assistant.model";
+import { attentionInboxAction, attentionRejectResolution, attentionResolution, dispatchStateLabel, formatAssistantDate, formatTimelineTime, ideaStateLabel, jobStateLabel, responsibilityLabel, responsibilityStatusLabel, runHistoryAction, runStateLabel, scheduleLabel, timelineEntries } from "./assistant.model";
 import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, completeAssistantRequest, pendingAssistantRequest, runAssistantApproval, runAssistantCASMutation, runAssistantMutation, runAssistantOutcome, runAssistantRejection, runAssistantResume } from "./assistant.requests";
 import { assistantTemplate, assistantTemplateContent, templateRoutine, templateRoutines, type AssistantTemplateID } from "./assistant.templates";
 import {
@@ -248,7 +253,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
     setBusy("handoff");
     const intentKey = assistantIntentKey("handoff", data.snapshot.assistant.id, prompt);
     try {
-      await assistantSubmitInput({ assistantId: data.snapshot.assistant.id, requestId: pendingAssistantRequest(intentKey), input: prompt, maxAttempts: 3 });
+      await assistantSubmit({ assistantId: data.snapshot.assistant.id, requestId: pendingAssistantRequest(intentKey), input: prompt });
       completeAssistantRequest(intentKey);
       setHandoff("");
       setHandoffNotice(true);
@@ -262,6 +267,84 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+
+  const ideate = useCallback(async () => {
+    if (!data.snapshot || busy) return;
+    setBusy("ideate");
+    const intentKey = assistantIntentKey("ideate", data.snapshot.assistant.id);
+    try {
+      await assistantIdeate({ assistantId: data.snapshot.assistant.id, requestId: pendingAssistantRequest(intentKey) });
+      completeAssistantRequest(intentKey);
+      await data.refresh();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : copy.error, "error");
+    } finally {
+      setBusy("");
+    }
+  }, [busy, copy.error, data, showToast]);
+
+  const resolveIdea = useCallback(async (ideaID: string, revision: number, decision: "accept" | "reject") => {
+    if (!data.snapshot || busy) return;
+    const assistantID = data.snapshot.assistant.id;
+    setBusy(`idea-${ideaID}`);
+    const key = assistantMutationKey(`idea-${decision}`, assistantID, ideaID, decision);
+    try {
+      await runAssistantCASMutation(key, revision, ({ requestId, expectedRevision }) => assistantResolveIdea({
+        assistantId: assistantID, ideaId: ideaID, requestId, expectedRevision, decision,
+        resolution: decision === "accept" ? "accepted from Desktop" : "rejected from Desktop",
+      }));
+      await data.refresh();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : copy.error, "error");
+    } finally {
+      setBusy("");
+    }
+  }, [busy, copy.error, data, showToast]);
+
+  const retryClassification = useCallback(async (dispatchID: string) => {
+    if (!data.snapshot || busy) return;
+    setBusy(`dispatch-${dispatchID}`);
+    const intentKey = assistantIntentKey("dispatch-retry", data.snapshot.assistant.id, dispatchID);
+    try {
+      await assistantRetryDispatch({ assistantId: data.snapshot.assistant.id, dispatchId: dispatchID, requestId: pendingAssistantRequest(intentKey) });
+      completeAssistantRequest(intentKey);
+      await data.refresh();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : copy.error, "error");
+    } finally {
+      setBusy("");
+    }
+  }, [busy, copy.error, data, showToast]);
+
+  const retryJob = useCallback(async (jobID: string) => {
+    if (!data.snapshot || busy) return;
+    setBusy(`job-${jobID}`);
+    const intentKey = assistantIntentKey("job-retry", data.snapshot.assistant.id, jobID);
+    try {
+      await assistantRetryJob({ jobId: jobID, requestId: pendingAssistantRequest(intentKey) });
+      completeAssistantRequest(intentKey);
+      await data.refresh();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : copy.error, "error");
+    } finally {
+      setBusy("");
+    }
+  }, [busy, copy.error, data, showToast]);
+
+  const cancelJob = useCallback(async (jobID: string) => {
+    if (!data.snapshot || busy) return;
+    setBusy(`job-${jobID}`);
+    const intentKey = assistantIntentKey("job-cancel", data.snapshot.assistant.id, jobID);
+    try {
+      await assistantCancelJob({ jobId: jobID, requestId: pendingAssistantRequest(intentKey), reason: "cancelled from Desktop" });
+      completeAssistantRequest(intentKey);
+      await data.refresh();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : copy.error, "error");
+    } finally {
+      setBusy("");
+    }
+  }, [busy, copy.error, data, showToast]);
 
   const resizeHandoff = useCallback(() => {
     const element = textareaRef.current;
@@ -324,6 +407,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
         <div className="assistant-workspace__actions">
 		  {openProposals > 0 && <button className="assistant-proposal-chip" type="button" title={copy.proposals} aria-label={`${copy.proposals} ${openProposals}`} onClick={() => setManageTab("proposals")}><Lightbulb size={14} />{openProposals}</button>}
           {openAttention > 0 && <button className="assistant-attention-chip" type="button" onClick={() => setManageTab("attention")}><AlertCircle size={14} />{openAttention}</button>}
+          <button className="assistant-icon-button" type="button" aria-label={copy.ideate} title={copy.ideate} disabled={Boolean(busy)} onClick={() => void ideate()}><Lightbulb size={17} /></button>
           <button className="assistant-icon-button" type="button" aria-label={copy.newAssistant} title={copy.newAssistant} onClick={() => setCreating(true)}><Plus size={17} /></button>
           <button className="assistant-icon-button" type="button" aria-label={copy.manage} title={copy.manage} onClick={() => setManageTab("overview")}><Settings2 size={17} /></button>
         </div>
@@ -411,6 +495,49 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
                   entry.detail && entry.detail !== entry.title ? <p>{entry.detail}</p> : null
                 )}
                 {entry.run?.error && entry.run.error.message.trim() !== entry.run.summary?.trim() && <p className="assistant-event__error">{entry.run.error.message}</p>}
+                {entry.kind === "dispatch" && entry.dispatch ? (() => {
+                  const dispatch = entry.dispatch;
+                  const stateClass = dispatch.state === "classification_failed" ? "failed" : dispatch.state;
+                  return (
+                    <>
+                      <span className={`assistant-run-state assistant-run-state--${stateClass}`}>{dispatchStateLabel(dispatch.state, locale)}</span>
+                      {dispatch.state === "classification_failed" ? <p className="assistant-event__error">{copy.classificationFailed}<button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void retryClassification(dispatch.id)}><RefreshCw size={13} />{copy.retry}</button></p> : null}
+                      {dispatch.state === "reflection_failed" ? <p className="assistant-event__error">{copy.reflectionFailed}</p> : null}
+                      {dispatch.reply ? <p>{dispatch.reply}</p> : null}
+                      {entry.prompt ? <div className="assistant-event__prompt"><span>{copy.youSaid}</span><p>{entry.prompt}</p></div> : null}
+                      {entry.jobs && entry.jobs.length > 0 ? (
+                        <ul className="assistant-jobs">
+                          {entry.jobs.map((job) => (
+                            <li key={job.id}>
+                              <span className={`assistant-run-state assistant-run-state--${job.state}`}>{jobStateLabel(job.state, locale)}</span>
+                              <span className="assistant-jobs__name">{job.name}</span>
+                              {job.state === "failed" || job.state === "cancelled" || job.state === "waiting_attention" ? (
+                                <button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void retryJob(job.id)}><RefreshCw size={13} />{copy.retryJob}</button>
+                              ) : null}
+                              {job.state === "queued" || job.state === "running" || job.state === "retry_wait" ? (
+                                <button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void cancelJob(job.id)}><X size={13} />{copy.stopJob}</button>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {entry.pack ? <div className="assistant-event__summary"><strong>{copy.reflection}：</strong><AssistantMarkdown text={entry.pack.conclusion} /></div> : null}
+                    </>
+                  );
+                })() : null}
+                {entry.kind === "idea" && entry.idea ? (() => {
+                  const idea = entry.idea;
+                  return (
+                    <div className="assistant-idea">
+                      <span className="assistant-run-state assistant-run-state--waiting_approval">{ideaStateLabel(idea.state, locale)}</span>
+                      {idea.rationale ? <p>{idea.rationale}</p> : null}
+                      <div className="assistant-idea__actions">
+                        <button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void resolveIdea(idea.id, idea.revision, "accept")}><Check size={13} />{copy.acceptIdea}</button>
+                        <button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void resolveIdea(idea.id, idea.revision, "reject")}><X size={13} />{copy.rejectIdea}</button>
+                      </div>
+                    </div>
+                  );
+                })() : null}
                 {entry.kind === "next" && entry.routine && (
                   <button type="button" className="assistant-text-action" onClick={() => setManageTab("routines")}>{copy.changeTime}<ChevronRight size={13} /></button>
                 )}

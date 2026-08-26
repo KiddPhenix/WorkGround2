@@ -1,10 +1,24 @@
 import type { AssistantCopy } from "./assistant.copy";
-import type { AssistantAttentionItem, AssistantMemoryItem, AssistantResponsibility, AssistantRoutine, AssistantRun, AssistantSnapshot } from "./assistant.types";
+import type {
+  AssistantAttentionItem,
+  AssistantContextPack,
+  AssistantDispatch,
+  AssistantDispatchKind,
+  AssistantIdeaProposal,
+  AssistantIdeaState,
+  AssistantJobState,
+  AssistantMemoryItem,
+  AssistantResponsibility,
+  AssistantRoutine,
+  AssistantRun,
+  AssistantRunnerJob,
+  AssistantSnapshot,
+} from "./assistant.types";
 
 export interface AssistantTimelineEntry {
   id: string;
   at: Date;
-  kind: "run" | "memory" | "next";
+  kind: "run" | "memory" | "next" | "dispatch" | "idea";
   title: string;
   detail?: string;
   // prompt carries the original direct input text for a direct-input run; it is
@@ -13,6 +27,10 @@ export interface AssistantTimelineEntry {
   run?: AssistantRun;
   memory?: AssistantMemoryItem;
   routine?: AssistantRoutine;
+  dispatch?: AssistantDispatch;
+  jobs?: AssistantRunnerJob[];
+  pack?: AssistantContextPack;
+  idea?: AssistantIdeaProposal;
 }
 
 function validDate(value?: string): Date | null {
@@ -41,6 +59,53 @@ export function runStateLabel(state: AssistantRun["state"], locale: string): str
     waiting_attention: ["Attention needed", "需要处理"],
     failed: ["Failed", "失败"],
     cancelled: ["Cancelled", "已取消"],
+  };
+  return labels[state][locale === "en" ? 0 : 1];
+}
+
+export function dispatchKindLabel(kind: AssistantDispatchKind | undefined, locale: string): string {
+  const labels: Record<AssistantDispatchKind, [string, string]> = {
+    task: ["Task", "任务"],
+    question: ["Question", "问题"],
+    feedback: ["Feedback", "反馈"],
+    improvement: ["Improvement", "改进"],
+    correction: ["Correction", "更正"],
+    control: ["Control", "控制"],
+  };
+  if (!kind) return locale === "en" ? "Unclassified" : "未分类";
+  return labels[kind][locale === "en" ? 0 : 1];
+}
+
+export function jobStateLabel(state: AssistantJobState, locale: string): string {
+  const labels: Record<AssistantJobState, [string, string]> = {
+    queued: ["Queued", "已排队"],
+    running: ["Running", "进行中"],
+    succeeded: ["Succeeded", "已完成"],
+    retry_wait: ["Retry scheduled", "等待重试"],
+    waiting_attention: ["Attention needed", "需要处理"],
+    failed: ["Failed", "失败"],
+    cancelled: ["Cancelled", "已取消"],
+  };
+  return labels[state][locale === "en" ? 0 : 1];
+}
+
+export function ideaStateLabel(state: AssistantIdeaState, locale: string): string {
+  const labels: Record<AssistantIdeaState, [string, string]> = {
+    pending: ["Pending", "待确认"],
+    accepted: ["Accepted", "已接受"],
+    rejected: ["Rejected", "已拒绝"],
+    superseded: ["Superseded", "已淘汰"],
+  };
+  return labels[state][locale === "en" ? 0 : 1];
+}
+
+export function dispatchStateLabel(state: AssistantDispatch["state"], locale: string): string {
+  const labels: Record<AssistantDispatch["state"], [string, string]> = {
+    pending_classification: ["Classifying", "分类中"],
+    classified: ["Classified", "已分类"],
+    classification_failed: ["Classification failed", "分类失败"],
+    reflected: ["Reflected", "已反思"],
+    reflection_failed: ["Reflection failed", "反思失败"],
   };
   return labels[state][locale === "en" ? 0 : 1];
 }
@@ -184,6 +249,37 @@ export function timelineEntries(snapshot: AssistantSnapshot, day: Date, locale: 
       routine,
     });
   }
+  const dispatchJobs = new Map<string, AssistantRunnerJob[]>();
+  for (const job of snapshot.jobs ?? []) {
+    const list = dispatchJobs.get(job.dispatch_id) ?? [];
+    list.push(job);
+    dispatchJobs.set(job.dispatch_id, list);
+  }
+  const dispatchPacks = new Map<string, AssistantContextPack>();
+  for (const pack of snapshot.context_packs ?? []) dispatchPacks.set(pack.dispatch_id, pack);
+  for (const dispatch of snapshot.dispatches ?? []) {
+    const at = validDate(dispatch.classified_at) ?? validDate(dispatch.created_at);
+    if (!at || !sameDay(at)) continue;
+    const jobs = dispatchJobs.get(dispatch.id) ?? [];
+    const pack = dispatchPacks.get(dispatch.id);
+    entries.push({
+      id: `dispatch-${dispatch.id}`,
+      at,
+      kind: "dispatch",
+      title: dispatch.kind ? dispatchKindLabel(dispatch.kind, locale) : dispatchStateLabel(dispatch.state, locale),
+      detail: dispatch.reply,
+      prompt: dispatch.input,
+      dispatch,
+      jobs,
+      pack,
+    });
+  }
+  for (const idea of snapshot.ideas ?? []) {
+    if (idea.state !== "pending") continue;
+    const at = validDate(idea.created_at);
+    if (!at || !sameDay(at)) continue;
+    entries.push({ id: `idea-${idea.id}`, at, kind: "idea", title: idea.summary, detail: idea.rationale, idea });
+  }
   for (const memory of snapshot.memory.items) {
     const at = validDate(memory.updated_at) ?? validDate(memory.created_at);
     if (!at || !sameDay(at)) continue;
@@ -196,7 +292,7 @@ export function timelineEntries(snapshot: AssistantSnapshot, day: Date, locale: 
     .filter((item): item is { routine: AssistantRoutine; at: Date } => item.at !== null)
     .sort((a, b) => a.at.getTime() - b.at.getTime())[0];
   if (next) entries.push({ id: `next-${next.routine.id}`, at: next.at, kind: "next", title: `${copy.next}，${next.routine.title}`, detail: scheduleLabel(next.routine, copy), routine: next.routine });
-  const kindOrder: Record<AssistantTimelineEntry["kind"], number> = { run: 0, memory: 1, next: 2 };
+  const kindOrder: Record<AssistantTimelineEntry["kind"], number> = { run: 0, dispatch: 1, idea: 2, memory: 3, next: 4 };
   return entries.sort((a, b) =>
     b.at.getTime() - a.at.getTime()
     || kindOrder[a.kind] - kindOrder[b.kind]

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -103,6 +104,43 @@ type AssistantCancelRequest struct {
 	Reason    string `json:"reason"`
 }
 
+// AssistantSubmitRequest routes a direct user input through the Dispatcher:
+// it persists a Dispatch, classifies it, and creates zero or more Runner Jobs.
+type AssistantSubmitRequest struct {
+	AssistantID string `json:"assistantId"`
+	RequestID   string `json:"requestId"`
+	Input       string `json:"input"`
+}
+
+// AssistantIdeateRequest triggers a manual ideation.
+type AssistantIdeateRequest struct {
+	AssistantID string `json:"assistantId"`
+	RequestID   string `json:"requestId"`
+}
+
+// AssistantResolveIdeaRequest accepts or rejects a pending idea proposal.
+type AssistantResolveIdeaRequest struct {
+	AssistantID      string                 `json:"assistantId"`
+	IdeaID           string                 `json:"ideaId"`
+	RequestID        string                 `json:"requestId"`
+	ExpectedRevision int64                  `json:"expectedRevision"`
+	Decision         assistant.IdeaDecision `json:"decision"`
+	Resolution       string                 `json:"resolution,omitempty"`
+}
+
+// AssistantRetryJobRequest re-queues a failed/cancelled/waiting Job.
+type AssistantRetryJobRequest struct {
+	JobID     string `json:"jobId"`
+	RequestID string `json:"requestId"`
+}
+
+// AssistantCancelJobRequest cancels a Job.
+type AssistantCancelJobRequest struct {
+	JobID     string `json:"jobId"`
+	RequestID string `json:"requestId"`
+	Reason    string `json:"reason"`
+}
+
 type AssistantDiagnostic struct {
 	At        time.Time `json:"at" ts_type:"string"`
 	Category  string    `json:"category"`
@@ -128,6 +166,13 @@ func (a *App) assistantRuntime() (*AssistantRuntime, error) {
 		return nil, fmt.Errorf("assistant runtime unavailable: %w", a.assistantErr)
 	}
 	return nil, errors.New("assistant runtime is not started")
+}
+
+func (a *App) assistantContext() context.Context {
+	if a != nil && a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
 }
 
 func (a *App) AssistantList() (AssistantListResult, error) {
@@ -413,6 +458,102 @@ func (a *App) AssistantCancel(req AssistantCancelRequest) (assistant.Run, error)
 	}
 	service.CancelRun(req.RunID)
 	return *run, nil
+}
+
+// AssistantSubmit routes a direct input through the Dispatcher. The returned
+// Dispatch carries a durable state: classified, reflected, or
+// classification_failed (retryable). It never pretends an unclassified input
+// was executed.
+func (a *App) AssistantSubmit(req AssistantSubmitRequest) (assistant.Dispatch, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.Dispatch{}, err
+	}
+	input := strings.TrimSpace(req.Input)
+	if input == "" {
+		return assistant.Dispatch{}, errors.New("assistant: direct input must not be empty")
+	}
+	dispatch, err := service.dispatcher.Dispatch(a.assistantContext(), assistant.OpenDispatchInput{
+		AssistantID: req.AssistantID, RequestID: req.RequestID, Input: input, Now: time.Now(),
+	})
+	if err != nil {
+		return assistant.Dispatch{}, err
+	}
+	service.Wake()
+	return dispatch, nil
+}
+
+// AssistantRetryDispatch re-runs classification for a Dispatch stuck in
+// pending_classification or classification_failed. It returns the classified
+// Dispatch, or an explicit error so the UI can surface a retryable failure.
+func (a *App) AssistantRetryDispatch(assistantID, dispatchID, requestID string) (assistant.Dispatch, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.Dispatch{}, err
+	}
+	dispatch, err := service.dispatcher.RetryDispatch(a.assistantContext(), assistantID, dispatchID, time.Now())
+	if err != nil {
+		return assistant.Dispatch{}, err
+	}
+	service.Wake()
+	return dispatch, nil
+}
+
+// AssistantIdeate triggers a manual ideation and returns the pending proposal.
+func (a *App) AssistantIdeate(req AssistantIdeateRequest) (assistant.IdeaProposal, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.IdeaProposal{}, err
+	}
+	idea, err := service.ideator.Ideate(a.assistantContext(), assistant.OpenIdeaInput{
+		AssistantID: req.AssistantID, RequestID: req.RequestID,
+		Trigger: assistant.IdeaTriggerManual, Now: time.Now(),
+	})
+	if err != nil {
+		return assistant.IdeaProposal{}, err
+	}
+	service.Wake()
+	return idea, nil
+}
+
+// AssistantResolveIdea accepts or rejects a pending idea proposal.
+func (a *App) AssistantResolveIdea(req AssistantResolveIdeaRequest) (assistant.IdeaProposal, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.IdeaProposal{}, err
+	}
+	return service.store.ResolveIdea(assistant.ResolveIdeaInput{
+		AssistantID: req.AssistantID, IdeaID: req.IdeaID, RequestID: req.RequestID,
+		ExpectedRevision: req.ExpectedRevision, Decision: req.Decision, Resolution: req.Resolution, Now: time.Now(),
+	})
+}
+
+// AssistantRetryJob re-queues a failed/cancelled/waiting Job.
+func (a *App) AssistantRetryJob(req AssistantRetryJobRequest) (assistant.RunnerJob, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.RunnerJob{}, err
+	}
+	job, err := service.store.RetryJob(assistant.RetryJobInput{JobID: req.JobID, RequestID: req.RequestID, Now: time.Now()})
+	if err != nil {
+		return assistant.RunnerJob{}, err
+	}
+	service.Wake()
+	return *job, nil
+}
+
+// AssistantCancelJob cancels a Job.
+func (a *App) AssistantCancelJob(req AssistantCancelJobRequest) (assistant.RunnerJob, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.RunnerJob{}, err
+	}
+	job, err := service.store.CancelJob(assistant.CancelJobInput{JobID: req.JobID, RequestID: req.RequestID, Reason: req.Reason, Now: time.Now()})
+	if err != nil {
+		return assistant.RunnerJob{}, err
+	}
+	service.Wake()
+	return *job, nil
 }
 
 // PickAssistantWorkspace opens a native directory chooser for the create dialog

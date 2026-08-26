@@ -30,14 +30,18 @@ type Options struct {
 	Stderr           io.Writer
 }
 type Runtime struct {
-	store     *assistant.Store
-	scheduler *assistant.Scheduler
-	runner    *assistant.Runner
-	leader    *assistant.LeaderElector
-	channels  *assistantchannel.Service
-	opts      Options
-	leaseMu   sync.Mutex
-	lease     assistant.LeaderLease
+	store      *assistant.Store
+	scheduler  *assistant.Scheduler
+	runner     *assistant.Runner
+	jobRunner  *assistant.JobRunner
+	dispatcher *assistant.Dispatcher
+	reflector  *assistant.Reflector
+	ideator    *assistant.Ideator
+	leader     *assistant.LeaderElector
+	channels   *assistantchannel.Service
+	opts       Options
+	leaseMu    sync.Mutex
+	lease      assistant.LeaderLease
 }
 
 func New(opts Options) (*Runtime, error) {
@@ -63,6 +67,25 @@ func New(opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	jobRunner, err := assistant.NewJobRunner(store, owner, leaseTTL)
+	if err != nil {
+		return nil, err
+	}
+	roleModel := assistant.RoleModelFunc(func(ctx context.Context, prompt string) (string, error) {
+		return runRoleCompletion(ctx, opts.Model, opts.Stderr, prompt)
+	})
+	dispatcher, err := assistant.NewDispatcher(store, roleModel)
+	if err != nil {
+		return nil, err
+	}
+	reflector, err := assistant.NewReflector(store, roleModel)
+	if err != nil {
+		return nil, err
+	}
+	ideator, err := assistant.NewIdeator(store, roleModel)
+	if err != nil {
+		return nil, err
+	}
 	leader, err := assistant.NewLeaderElector(opts.StoreRoot, owner, 90*time.Second)
 	if err != nil {
 		return nil, err
@@ -79,7 +102,7 @@ func New(opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{store: store, scheduler: scheduler, runner: runner, leader: leader, channels: channels, opts: opts}, nil
+	return &Runtime{store: store, scheduler: scheduler, runner: runner, jobRunner: jobRunner, dispatcher: dispatcher, reflector: reflector, ideator: ideator, leader: leader, channels: channels, opts: opts}, nil
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -112,6 +135,9 @@ func (r *Runtime) RunOnce(ctx context.Context) error {
 	_, scheduleErr := r.scheduler.Tick(time.Now())
 	_, collectErr := r.channels.CollectDue(workCtx)
 	issues := []error{scheduleErr, collectErr}
+	if err := r.processDispatches(workCtx); err != nil {
+		issues = append(issues, err)
+	}
 	for {
 		acquired, err := r.runner.Acquire(time.Now())
 		if err != nil {
@@ -126,6 +152,24 @@ func (r *Runtime) RunOnce(ctx context.Context) error {
 			issues = append(issues, err)
 		}
 		issues = append(issues, stopRunLease())
+	}
+	for {
+		acquired, err := r.jobRunner.Acquire(time.Now())
+		if err != nil {
+			issues = append(issues, err)
+			break
+		}
+		if acquired.Job == nil {
+			break
+		}
+		jobCtx, stopJobLease := r.keepJobLease(workCtx, *acquired.Job)
+		if err := r.executeJob(jobCtx, *acquired.Job); err != nil {
+			issues = append(issues, err)
+		}
+		issues = append(issues, stopJobLease())
+		if err := r.reflectReadyOf(jobCtx, acquired.Job.AssistantID); err != nil {
+			issues = append(issues, err)
+		}
 	}
 	issues = append(issues, stopRenew())
 	return errors.Join(compact(issues)...)

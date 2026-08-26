@@ -267,6 +267,96 @@ export interface AssistantPlan {
   responsibilities: AssistantResponsibility[];
 }
 
+export type AssistantDispatchKind = "task" | "question" | "feedback" | "improvement" | "correction" | "control";
+export type AssistantDispatchState = "pending_classification" | "classified" | "classification_failed" | "reflected" | "reflection_failed";
+
+export interface AssistantDispatch {
+  id: string;
+  assistant_id: string;
+  request_id: string;
+  input: string;
+  kind?: AssistantDispatchKind;
+  reply?: string;
+  state: AssistantDispatchState;
+  error?: AssistantRunError;
+  retry_at?: string;
+  classification_attempt?: number;
+  reflection_attempt?: number;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  classified_at?: string;
+}
+
+export type AssistantJobState = "queued" | "running" | "succeeded" | "retry_wait" | "waiting_attention" | "failed" | "cancelled";
+
+export interface AssistantRunnerJob {
+  id: string;
+  assistant_id: string;
+  dispatch_id: string;
+  name: string;
+  kind: AssistantDispatchKind;
+  target?: string;
+  prompt: string;
+  scope?: AssistantScope;
+  workspace_root?: string;
+  policy: AssistantPolicy;
+  context_pack_revision?: number;
+  state: AssistantJobState;
+  attempt: number;
+  max_attempts: number;
+  lease_owner?: string;
+  lease_fence?: number;
+  lease_until?: string;
+  retry_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  summary?: string;
+  error?: AssistantRunError;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssistantContextPack {
+  id: string;
+  assistant_id: string;
+  dispatch_id: string;
+  revision: number;
+  conclusion: string;
+  evidence?: string[];
+  failures?: string[];
+  strategies?: string[];
+  open_loops?: string[];
+  runner_context?: string;
+  bound_job_ids?: string[];
+  created_at: string;
+}
+
+export type AssistantIdeaTrigger = "manual" | "cadence";
+export type AssistantIdeaState = "pending" | "accepted" | "rejected" | "superseded";
+export type AssistantIdeaDecision = "accept" | "reject";
+
+export interface AssistantIdeaProposal {
+  id: string;
+  assistant_id: string;
+  request_id: string;
+  trigger: AssistantIdeaTrigger;
+  summary: string;
+  rationale?: string;
+  strategy_memory?: string;
+  responsibility?: string;
+  objective?: string;
+  done_criteria?: string;
+  next_action?: string;
+  state: AssistantIdeaState;
+  resolution?: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  resolved_at?: string;
+}
+
 export interface AssistantSnapshot {
   revision: number;
   assistant: AssistantRecord;
@@ -281,6 +371,10 @@ export interface AssistantSnapshot {
   channels: AssistantChannel[];
   channel_actions: AssistantChannelAction[];
   channel_metrics: AssistantChannelMetric[];
+  dispatches?: AssistantDispatch[];
+  jobs?: AssistantRunnerJob[];
+  context_packs?: AssistantContextPack[];
+  ideas?: AssistantIdeaProposal[];
   updated_at: string;
 }
 
@@ -374,6 +468,43 @@ export interface AssistantResumeInput {
 
 export interface AssistantCancelInput {
   runId: string;
+  requestId: string;
+  reason: string;
+}
+
+export interface AssistantSubmitInput {
+  assistantId: string;
+  requestId: string;
+  input: string;
+}
+
+export interface AssistantRetryDispatchInput {
+  assistantId: string;
+  dispatchId: string;
+  requestId: string;
+}
+
+export interface AssistantIdeateInput {
+  assistantId: string;
+  requestId: string;
+}
+
+export interface AssistantResolveIdeaInput {
+  assistantId: string;
+  ideaId: string;
+  requestId: string;
+  expectedRevision: number;
+  decision: AssistantIdeaDecision;
+  resolution?: string;
+}
+
+export interface AssistantRetryJobInput {
+  jobId: string;
+  requestId: string;
+}
+
+export interface AssistantCancelJobInput {
+  jobId: string;
   requestId: string;
   reason: string;
 }
