@@ -33,6 +33,7 @@ type Snapshot struct {
 	Plan           Plan             `json:"plan"`
 	Artifacts      []Artifact       `json:"artifacts"`
 	Opportunities  []Opportunity    `json:"opportunities"`
+	Proposals      []ChangeProposal `json:"proposals"`
 	Channels       []ChannelBinding `json:"channels"`
 	ChannelActions []ChannelAction  `json:"channel_actions"`
 	ChannelMetrics []ChannelMetric  `json:"channel_metrics"`
@@ -65,6 +66,7 @@ type aggregate struct {
 	Plan           Plan                      `json:"plan"`
 	Artifacts      []Artifact                `json:"artifacts"`
 	Opportunities  []Opportunity             `json:"opportunities"`
+	Proposals      []ChangeProposal          `json:"proposals"`
 	Channels       []ChannelBinding          `json:"channels"`
 	ChannelActions []ChannelAction           `json:"channel_actions"`
 	ChannelMetrics []ChannelMetric           `json:"channel_metrics"`
@@ -246,7 +248,7 @@ func (s *Store) Create(in CreateInput) (Snapshot, error) {
 	agg := &aggregate{
 		Version: aggregateVersion, Revision: 1, Assistant: a, Routines: routines,
 		Memory: Memory{Revision: 1, Items: []MemoryItem{}}, Runs: []Run{}, Attention: []AttentionItem{},
-		Plan: emptyPlan(), Artifacts: []Artifact{}, Opportunities: []Opportunity{},
+		Plan: emptyPlan(), Artifacts: []Artifact{}, Opportunities: []Opportunity{}, Proposals: []ChangeProposal{},
 		Channels: []ChannelBinding{}, ChannelActions: []ChannelAction{}, ChannelMetrics: []ChannelMetric{},
 		Requests: map[string]requestReceipt{}, Occurrences: map[string]string{}, UpdatedAt: now,
 	}
@@ -1956,6 +1958,9 @@ func (s *Store) read(assistantID string) (*aggregate, error) {
 	if agg.Opportunities == nil {
 		agg.Opportunities = []Opportunity{}
 	}
+	if agg.Proposals == nil {
+		agg.Proposals = []ChangeProposal{}
+	}
 	if agg.Channels == nil {
 		agg.Channels = []ChannelBinding{}
 	}
@@ -2096,7 +2101,8 @@ func snapshotOf(agg *aggregate) Snapshot {
 		Revision: agg.Revision, Assistant: agg.Assistant, Routines: agg.Routines,
 		Memory: agg.Memory, Runs: agg.Runs, Attention: agg.Attention,
 		Plan: clonePlan(agg.Plan), Artifacts: clone(agg.Artifacts), Opportunities: clone(agg.Opportunities),
-		Channels: clone(agg.Channels), ChannelActions: clone(agg.ChannelActions), ChannelMetrics: clone(agg.ChannelMetrics),
+		Proposals: clone(agg.Proposals),
+		Channels:  clone(agg.Channels), ChannelActions: clone(agg.ChannelActions), ChannelMetrics: clone(agg.ChannelMetrics),
 		Receipts: receipts, UpdatedAt: agg.UpdatedAt,
 	}
 }
@@ -2157,6 +2163,15 @@ func channelIndex(agg *aggregate, id string) int {
 func channelActionIndex(agg *aggregate, id string) int {
 	for i := range agg.ChannelActions {
 		if agg.ChannelActions[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func proposalIndex(agg *aggregate, id string) int {
+	for i := range agg.Proposals {
+		if agg.Proposals[i].ID == id {
 			return i
 		}
 	}
@@ -2428,6 +2443,16 @@ func validateAggregate(agg *aggregate) error {
 			return fmt.Errorf("assistant: invalid channel metric %s", metric.ID)
 		}
 		metricIDs[metric.ID] = true
+	}
+	proposalIDs := map[string]bool{}
+	for _, proposal := range agg.Proposals {
+		if err := validateProposal(agg, proposal); err != nil {
+			return err
+		}
+		if proposalIDs[proposal.ID] {
+			return fmt.Errorf("assistant: duplicate proposal %s", proposal.ID)
+		}
+		proposalIDs[proposal.ID] = true
 	}
 	for requestID, receipt := range agg.Requests {
 		if err := validateRequestID(requestID); err != nil {

@@ -273,6 +273,12 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 		changed = true
 	}
 
+	proposalChanged, err := appendProposals(agg, b.Proposals, runID, now)
+	if err != nil {
+		return "", err
+	}
+	changed = changed || proposalChanged
+
 	// Validate every completion before marking any, so a patch that completes an
 	// upstream and its downstream is order-independent.
 	completeSet := make(map[string]bool, len(b.Complete))

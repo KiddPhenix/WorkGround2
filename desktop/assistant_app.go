@@ -83,6 +83,15 @@ type AssistantResolveAttentionRequest struct {
 	Resolution       string                   `json:"resolution"`
 }
 
+type AssistantResolveProposalRequest struct {
+	AssistantID      string                     `json:"assistantId"`
+	ProposalID       string                     `json:"proposalId"`
+	RequestID        string                     `json:"requestId"`
+	ExpectedRevision int64                      `json:"expectedRevision"`
+	Decision         assistant.ProposalDecision `json:"decision"`
+	Resolution       string                     `json:"resolution,omitempty"`
+}
+
 type AssistantResumeRequest struct {
 	RunID     string `json:"runId"`
 	RequestID string `json:"requestId"`
@@ -365,6 +374,17 @@ func (a *App) AssistantResolveAttention(req AssistantResolveAttentionRequest) (a
 		return assistant.AttentionItem{}, err
 	}
 	return *item, nil
+}
+
+func (a *App) AssistantResolveProposal(req AssistantResolveProposalRequest) (assistant.ChangeProposal, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.ChangeProposal{}, err
+	}
+	return service.store.ResolveProposal(assistant.ResolveProposalInput{
+		AssistantID: req.AssistantID, ProposalID: req.ProposalID, RequestID: req.RequestID,
+		ExpectedRevision: req.ExpectedRevision, Decision: req.Decision, Resolution: req.Resolution, Now: time.Now(),
+	})
 }
 
 func (a *App) AssistantResume(req AssistantResumeRequest) (assistant.Run, error) {

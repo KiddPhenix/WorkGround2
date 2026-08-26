@@ -977,6 +977,43 @@ func TestAssistantPromptForInjectsResponsibilityGraph(t *testing.T) {
 	}
 }
 
+func TestAssistantPromptForInjectsTypedProposalTargetsAndPendingDedupContext(t *testing.T) {
+	host := &assistantHostStub{}
+	service, store := newAssistantTestRuntime(t, host)
+	snapshot, _ := createAssistantRun(t, store, "proposal-context")
+	claimed, ok, err := store.Claim("desktop-test", time.Now(), 2*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v ok=%v", err, ok)
+	}
+	newPrompt := "Inspect tests, release notes, and publish readiness"
+	if _, err := store.CompleteRunWithProgress(assistant.CompleteRunInput{
+		RequestID: "seed-proposal", RunID: claimed.ID, LeaseOwner: "desktop-test", LeaseFence: claimed.LeaseFence,
+		Progress: assistant.ProgressBlock{PlanRevision: 1, Proposals: []assistant.ProposalDecl{{
+			TargetKind: assistant.ProposalTargetRoutine, TargetID: snapshot.Routines[0].ID,
+			Routine: &assistant.RoutineProposalPatch{Prompt: &newPrompt},
+			Summary: "Expand release checks", Reason: "The last run missed release notes", Evidence: []string{"run summary omitted release notes"},
+		}}}, Now: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Trigger(assistant.TriggerInput{
+		AssistantID: snapshot.Assistant.ID, RoutineID: snapshot.Routines[0].ID,
+		RequestID: "run-proposal-context-second", Trigger: assistant.TriggerManual, Now: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, _, _, _, err := service.promptFor(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{snapshot.Routines[0].ID, "可提出改进建议的 Routine", "已有待用户处理的改进建议", "Expand release checks", `"proposals"`, "不能声称配置已经修改", "禁止通过提案修改使命、权限、Workspace、渠道地址或凭据"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("proposal prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
 func TestAssistantPromptForDirectInputUsesUserInputSemantics(t *testing.T) {
 	host := &assistantHostStub{}
 	service, store := newAssistantTestRuntime(t, host)

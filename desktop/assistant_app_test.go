@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"workground2/internal/assistant"
 	"workground2/internal/config"
@@ -52,6 +53,50 @@ func TestAssistantAPICreateAndRunNowAreIdempotent(t *testing.T) {
 	}
 	if run1.ID != run2.ID || run1.Revision != run2.Revision {
 		t.Fatalf("run replay drifted: first=%+v second=%+v", run1, run2)
+	}
+}
+
+func TestAssistantAPIResolveProposalAppliesTypedChange(t *testing.T) {
+	service, store := newAssistantTestRuntime(t, &assistantHostStub{})
+	app := &App{assistant: service}
+	created, err := app.AssistantCreate(AssistantCreateRequest{
+		RequestID: "proposal-api-create",
+		Assistant: assistant.Assistant{Name: "Project helper", Mission: "Keep releases healthy"},
+		Routines:  []assistant.Routine{{Title: "Release check", Prompt: "Inspect changes", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.AssistantRunNow(AssistantRunNowRequest{AssistantID: created.Assistant.ID, RoutineID: created.Routines[0].ID, RequestID: "proposal-api-run"}); err != nil {
+		t.Fatal(err)
+	}
+	run, ok, err := store.Claim("desktop-test", time.Now(), time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", run, ok, err)
+	}
+	prompt := "Inspect changes, tests, and release notes"
+	if _, err := store.CompleteRunWithProgress(assistant.CompleteRunInput{
+		RequestID: "proposal-api-complete", RunID: run.ID, LeaseOwner: run.LeaseOwner, LeaseFence: run.LeaseFence,
+		Progress: assistant.ProgressBlock{PlanRevision: 1, Proposals: []assistant.ProposalDecl{{
+			TargetKind: assistant.ProposalTargetRoutine, TargetID: created.Routines[0].ID,
+			Routine: &assistant.RoutineProposalPatch{Prompt: &prompt},
+			Summary: "Expand release checks", Reason: "Run evidence found a gap", Evidence: []string{"release notes were missed"},
+		}}}, Now: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _ := store.Get(created.Assistant.ID)
+	proposal := snapshot.Proposals[0]
+	resolved, err := app.AssistantResolveProposal(AssistantResolveProposalRequest{
+		AssistantID: created.Assistant.ID, ProposalID: proposal.ID, RequestID: "proposal-api-accept",
+		ExpectedRevision: proposal.Revision, Decision: assistant.ProposalAccept, Resolution: "accepted in desktop test",
+	})
+	if err != nil || resolved.State != assistant.ProposalApplied {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	after, _ := store.Get(created.Assistant.ID)
+	if after.Routines[0].Prompt != prompt || after.Proposals[0].State != assistant.ProposalApplied {
+		t.Fatalf("after=%+v", after)
 	}
 }
 

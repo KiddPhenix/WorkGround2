@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1084,11 +1085,11 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 	var grants []control.ToolGrant
 	prompt := strings.TrimSpace(run.Prompt)
 	if isDirectInputRun(run) {
-		b.WriteString("你正在执行一个长期助手的独立 Run。本次是用户直接对你说的一段话，遵守冻结的使命和权限；不要修改运行频率或扩大权限。\n\n")
+		b.WriteString("你正在执行一个长期助手的独立 Run。本次是用户直接对你说的一段话，遵守冻结的使命和权限；不要直接修改运行配置或扩大权限。基于证据发现可复用改进时，可通过 <assistant-progress> proposals 提议允许范围内的配置变化，等待用户决定。\n\n")
 		fmt.Fprintf(&b, "助手使命：\n%s\n\n本次用户输入（原文）：\n%s\n\n", run.Mission, prompt)
 		b.WriteString("这段输入可能是任务、督促/PUA、教导、指导、批评、反馈或工作方法改进：是任务就执行；是指导或反馈就据此调整计划与策略。不要要求用户把输入改写成任务，也不要自动改写或美化原文。\n")
 	} else {
-		b.WriteString("你正在执行一个长期助手的独立 Run。只处理本次 Routine，遵守冻结的使命和权限；不要修改运行频率或扩大权限。\n\n")
+		b.WriteString("你正在执行一个长期助手的独立 Run。只处理本次 Routine，遵守冻结的使命和权限；不要直接修改运行配置或扩大权限。基于证据发现可复用改进时，可通过 <assistant-progress> proposals 提议允许范围内的配置变化，等待用户决定。\n\n")
 		if prompt == "" {
 			prompt = "继续推进助手使命，检查当前状态并完成最有价值的下一步。"
 		}
@@ -1118,6 +1119,7 @@ func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolG
 		}
 	}
 	writeChannelContext(&b, snapshot)
+	writeImprovementContext(&b, snapshot)
 	for _, item := range snapshot.Attention {
 		if item.RunID == run.ID && item.State == assistant.AttentionApproved && item.ResumeToken == run.ResumeToken {
 			switch {
@@ -1148,7 +1150,7 @@ func writeChannelContext(b *strings.Builder, snapshot assistant.Snapshot) {
 	}
 	b.WriteString("\n已配置社区渠道（外发必须调用渠道工具并逐次审批）：\n")
 	for _, channel := range snapshot.Channels {
-		fmt.Fprintf(b, "- %s id=%s kind=%s enabled=%t base=%s\n", channel.Name, channel.ID, channel.Kind, channel.Enabled, channel.BaseURL)
+		fmt.Fprintf(b, "- %s id=%s kind=%s enabled=%t collect_every_seconds=%d base=%s\n", channel.Name, channel.ID, channel.Kind, channel.Enabled, channel.CollectIntervalSeconds, channel.BaseURL)
 	}
 	if len(snapshot.ChannelMetrics) == 0 {
 		return
@@ -1161,6 +1163,40 @@ func writeChannelContext(b *strings.Builder, snapshot assistant.Snapshot) {
 	for i := start; i < len(snapshot.ChannelMetrics); i++ {
 		metric := snapshot.ChannelMetrics[i]
 		fmt.Fprintf(b, "- channel=%s topic=%d views=%d(+%d) likes=%d(+%d) replies=%d(+%d) at=%s\n", metric.ChannelID, metric.TopicID, metric.Views, metric.ViewsDelta, metric.Likes, metric.LikesDelta, metric.Replies, metric.ReplyDelta, metric.CollectedAt.UTC().Format(time.RFC3339))
+	}
+}
+
+// writeImprovementContext exposes only typed proposal targets and current
+// pending proposals. It lives in the dynamic Run prompt, keeping the stable
+// system-prompt prefix cache-safe while preventing repeated recommendations.
+func writeImprovementContext(b *strings.Builder, snapshot assistant.Snapshot) {
+	if len(snapshot.Routines) > 0 {
+		b.WriteString("\n可提出改进建议的 Routine（只能提议 prompt / schedule / enabled，不能直接修改）：\n")
+		for _, routine := range snapshot.Routines {
+			schedule, _ := json.Marshal(routine.Schedule)
+			fmt.Fprintf(b, "- id=%s title=%s revision=%d enabled=%t schedule=%s prompt=%q\n",
+				routine.ID, routine.Title, routine.Revision, routine.Enabled, schedule, truncateUTF8(routine.Prompt, 1500))
+		}
+	}
+	pending := make([]assistant.ChangeProposal, 0)
+	for _, proposal := range snapshot.Proposals {
+		if proposal.State == assistant.ProposalPending {
+			pending = append(pending, proposal)
+		}
+	}
+	if len(pending) == 0 {
+		return
+	}
+	b.WriteString("\n已有待用户处理的改进建议（不要重复提出相同目标和值）：\n")
+	for _, proposal := range pending {
+		var after any
+		if proposal.Routine != nil {
+			after = proposal.Routine.After
+		} else if proposal.Channel != nil {
+			after = proposal.Channel.After
+		}
+		patch, _ := json.Marshal(after)
+		fmt.Fprintf(b, "- id=%s target=%s/%s summary=%s after=%s\n", proposal.ID, proposal.TargetKind, proposal.TargetID, proposal.Summary, patch)
 	}
 }
 
@@ -1180,10 +1216,20 @@ func writeProgressSchema(b *strings.Builder) {
   "complete": ["scan"],
   "active": ["fix-tests"],
   "artifacts": [{"resp": "scan", "title": "扫描报告", "kind": "report", "content": "…", "evidence": "…"}],
-  "opportunities": [{"resp": "fix-tests", "reason": "下游已就绪"}]
+  "opportunities": [{"resp": "fix-tests", "reason": "下游已就绪"}],
+  "proposals": [{
+    "target_kind": "routine",
+    "target_id": "routine-release",
+    "routine": {"schedule": {"kind": "daily", "timezone": "Asia/Shanghai", "at": "09:00"}},
+    "summary": "把发布检查调整到工作日上午",
+    "reason": "最近三次下午检查都错过了当天发布窗口",
+    "evidence": ["run-123: 17:30 才发现可发布", "run-127: 18:10 才完成检查"]
+  }]
 }
 
-depends_on 用 alias 引用，省略表示不变，[] 表示清空；同一块内可前向引用，禁止自依赖与环。responsibility 填本次实际推进的 alias，complete/active 填 alias 列表。`)
+depends_on 用 alias 引用，省略表示不变，[] 表示清空；同一块内可前向引用，禁止自依赖与环。responsibility 填本次实际推进的 alias，complete/active 填 alias 列表。
+
+proposals 仅在运行结果或渠道指标提供了具体证据时填写；target_id 必须取上文真实 ID。routine 只允许 prompt / schedule / enabled，channel 只允许 collect_interval_seconds / enabled。每条建议必须有 summary、reason 和 1–16 条 evidence；现有待处理建议不得重复。建议只会进入待用户处理状态，不能声称配置已经修改。禁止通过提案修改使命、权限、Workspace、渠道地址或凭据。`)
 }
 
 // selectReadyResponsibility deterministically picks the one responsibility a

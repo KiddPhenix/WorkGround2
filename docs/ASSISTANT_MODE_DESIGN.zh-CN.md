@@ -283,7 +283,7 @@ type ChannelProposal struct {
 
 用户处理提案使用独立 request ID 和 proposal revision：
 
-- **接受**：目标 revision 仍等于 `BaseRevision` 时，在一个聚合原子写入中应用完整补丁并把提案置为 `applied`；响应丢失后可重放同一 receipt。
+- **接受**：目标 revision 仍等于 `BaseRevision` 时，在一个聚合原子写入中应用完整补丁并把提案置为 `applied`；响应丢失后可重放同一 receipt。若 revision 只因调度进度或其它未触及字段变化，但提案涉及的字段仍等于冻结基线，则允许按字段兼容合并，保留其它新值。
 - **目标已达到建议值**：即使 revision 已变化，也按幂等成功收敛为 `applied`，不重复修改目标。
 - **目标发生冲突变化**：不覆盖用户的新配置，将提案置为 `superseded` 并保存显式原因；后续 Run 可基于新快照提出新提案。
 - **拒绝**：只关闭提案并记录用户说明，不修改目标。
@@ -455,7 +455,7 @@ type ChannelProposal struct {
 
 - `<assistant-progress>` 增加类型化 `proposals`；成功 Run、Plan 进度和提案在一次聚合写入中提交，解析失败不留下半完成配置。
 - 提案只覆盖 Routine Prompt / Schedule / Enabled 与 Channel 采集间隔 / Enabled；Store 捕获基线 revision 和变更前值，禁止修改 Mission、Policy、Workspace、渠道地址或凭据。
-- 提供幂等 `ResolveProposal`：接受时 CAS 原子应用；目标已满足则幂等收敛；目标被用户改过则显式 `superseded`，不覆盖新配置；拒绝只关闭提案。
+- 提供幂等 `ResolveProposal`：接受时以 revision + 触及字段基线做 CAS/兼容合并并原子应用；目标已满足则幂等收敛；目标的同字段被用户改过则显式 `superseded`，不覆盖新配置；拒绝只关闭提案。
 - 动态上下文包含现有待处理提案，防止模型重复建议；效果复盘提示要求用指标与证据解释建议，不能宣称未批准的配置已生效。
 - Desktop 增加“改进建议”页、待处理计数、前后值对比、接受/拒绝与终态历史；迟到 revision 不覆盖新状态，失败保留可重试入口。
 - 单元测试覆盖协议解析、无变化/越界拒绝、原子创建、幂等重放、CAS 接受、已达目标、冲突淘汰、拒绝、重启恢复和 UI 主交互；通过 Go 全量测试/vet、Frontend test/typecheck/build 与 Desktop 构建。
