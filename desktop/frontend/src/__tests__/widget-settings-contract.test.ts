@@ -14,7 +14,7 @@ const widgetModeSource = read("../components/widget/WidgetMode.tsx");
 const composerSource = read("../components/Composer.tsx");
 const widgetCSS = read("../components/widget/widget-mode.css");
 
-assert.match(settingsSource, /SETTINGS_TABS[^\n]+"widget"/, "Settings navigation includes the Widget tab");
+assert.match(settingsSource, /SETTINGS_NAV[\s\S]*\{ kind: "leaf", tab: "widget" \}/, "Settings navigation includes the Widget tab as a direct entry");
 assert.match(settingsSource, /tab === "widget"[\s\S]+<WidgetSection/, "Widget tab renders its settings section");
 assert.match(settingsSource, /SetDesktopWidgetEnabled\(enabled\)/, "enable switch persists through the backend");
 assert.match(settingsSource, /SetDesktopWidgetAlwaysOnTop\(on\)/, "always-on-top switch persists through the backend");
