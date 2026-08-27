@@ -81,27 +81,10 @@ async function main() {
 	);
 
   // ── Opening a task from the widget collapses the Assistant surface ──
-  // The backend emits session:activated(widget-open) only after a successful
-  // ExitWidgetMode(tabID); plain 打开主窗口 exits (no tabID) and failed
-  // activations never emit it. The frontend reuses that explicit event as the
-  // switch basis so the activated Session is visible even when the main
-  // window was in Assistant mode before entering the widget.
-  ok(
-    /import \{ app, onEvent, onProjectTreeChanged, onSessionActivated \} from "\.\/lib\/bridge";/.test(appSource),
-    "App imports onSessionActivated for the widget-open activation event",
-  );
-  ok(
-    /return onSessionActivated\(\(event\) => \{[\s\S]{0,500}if \(event\.reason !== "widget-open"\) return;[\s\S]{0,300}setAssistantOpen\(false\)[\s\S]{0,200}\}\);[\s\S]{0,160}\}, \[closeTransientOverlays\]\);/.test(appSource),
-    "session:activated(widget-open) collapses the Assistant surface so the activated Session is visible",
-  );
-  ok(
-    /if \(event\.reason !== "widget-open"\) return;[\s\S]{0,160}closeTransientOverlays\(\);[\s\S]{0,160}setAssistantOpen\(false\)/.test(appSource),
-    "only the widget-open reason closes the Assistant surface; plain widget exits and other activation reasons keep it untouched",
-  );
-  ok(
-    /useEffect\(\(\) => \{\s*return onSessionActivated\(/.test(appSource),
-    "the session activation subscription returns its unsubscribe so re-mounts clean up (StrictMode-safe)",
-  );
+  // The collapse is now a widget-originated "session reveal" signal routed
+  // through the root App's single coordination entry, not the fragile
+  // session:activated(widget-open) event. The executable behavior is covered
+  // by widget-session-reveal.test.tsx.
 
   // ── Behavioral: the multi-frame repin used by the reveal intent pins a
   // previously-scrolled timeline back to the latest messages after layout,

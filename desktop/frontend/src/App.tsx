@@ -43,7 +43,7 @@ import { asArray } from "./lib/array";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, useI18n, useT, type Translator } from "./lib/i18n";
 import { useController, type Item, type LiveStream } from "./lib/useController";
 import { isWorkChatDisabled, routeWorkChat } from "./lib/workChatRoute";
-import { app, onEvent, onProjectTreeChanged, onSessionActivated } from "./lib/bridge";
+import { app, onEvent, onProjectTreeChanged } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { playSuccessChime } from "./lib/sound";
 import { Transcript } from "./components/Transcript";
@@ -183,6 +183,7 @@ import { composerDraftKeyForTab } from "./lib/composerDraftKey";
 import logoWordmark from "./assets/logo-wordmark.png";
 import { DesktopIconMode } from "./components/widget/DesktopIconMode";
 import { createWidgetModeCoordinator } from "./lib/widgetModeCoordinator";
+import { useAssistantSurfaceSignals } from "./lib/useAssistantSurface";
 import { CollaborationWorkspace } from "./collab/CollaborationWorkspace";
 import type { CollaborationWorkspaceOption } from "./collab/types";
 
@@ -1097,7 +1098,7 @@ function linkedSessionOwnerWorkID(sessionSource: string | undefined): string {
   return sessionSource?.match(/^work:([^/]+)(?:\/|$)/)?.[1]?.trim() ?? "";
 }
 
-function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWidgetMode, onDismissWindow, collabDialogSignal = 0, assistantOpenSignal = 0 }: { widgetEnabled: boolean; widgetActive: boolean; ownerDecisionEnabled: boolean; onEnterWidgetMode: () => void | Promise<void>; onDismissWindow: () => void | Promise<void>; collabDialogSignal?: number; assistantOpenSignal?: number }) {
+function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWidgetMode, onDismissWindow, collabDialogSignal = 0, assistantOpenSignal = 0, sessionRevealSignal = 0 }: { widgetEnabled: boolean; widgetActive: boolean; ownerDecisionEnabled: boolean; onEnterWidgetMode: () => void | Promise<void>; onDismissWindow: () => void | Promise<void>; collabDialogSignal?: number; assistantOpenSignal?: number; sessionRevealSignal?: number }) {
   const {
     state,
     activeTabId,
@@ -3509,34 +3510,22 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   }, [collabDialogSignal, openCollaborationDialog]);
 
   // The Assistant widget entry exits widget mode first and then bumps the root
-  // App's monotonic signal. A ref remembers the last applied signal so the
-  // Assistant home opens exactly once per request: never on initial mount (0)
-  // and never again when unrelated state recreates this callback.
-  const appliedAssistantOpenSignal = useRef(0);
-  useEffect(() => {
-    if (assistantOpenSignal > 0 && assistantOpenSignal !== appliedAssistantOpenSignal.current) {
-      appliedAssistantOpenSignal.current = assistantOpenSignal;
-      closeTransientOverlays();
-      setAssistantFocusID("");
-      setAssistantOpen(true);
-    }
-  }, [assistantOpenSignal, closeTransientOverlays]);
-
-  // Opening a task/session from the widget exits widget mode first and the
-  // backend confirms the target Session activation with
-  // session:activated(widget-open). That explicit event must collapse the
-  // Assistant surface (and any transient overlay) so the activated Session is
-  // visible — even when the main window was in Assistant mode before entering
-  // the widget. Plain "打开主窗口" exits never emit the event, so the previous
-  // Assistant mode stays untouched; other activation reasons keep their own
-  // useController handling and must not close the Assistant surface here.
-  useEffect(() => {
-    return onSessionActivated((event) => {
-      if (event.reason !== "widget-open") return;
-      closeTransientOverlays();
-      setAssistantOpen(false);
-    });
+  // App's monotonic open signal; opening a task/session from the widget bumps
+  // the reveal signal. MainApp applies each signal exactly once through the
+  // shared hook, so the Assistant home opens on the Assistant icon and
+  // collapses when an explicit Session was opened — even when the main window
+  // was in Assistant mode before entering the widget. A plain "打开主窗口" exit
+  // bumps neither signal, so the previous Assistant mode stays untouched.
+  const openAssistantSurface = useCallback(() => {
+    closeTransientOverlays();
+    setAssistantFocusID("");
+    setAssistantOpen(true);
   }, [closeTransientOverlays]);
+  const closeAssistantSurface = useCallback(() => {
+    closeTransientOverlays();
+    setAssistantOpen(false);
+  }, [closeTransientOverlays]);
+  useAssistantSurfaceSignals(assistantOpenSignal, sessionRevealSignal, openAssistantSurface, closeAssistantSurface);
 
   const finishCollaborationConnect = useCallback(async () => {
     await refreshProjectsAndTabs();
@@ -5456,6 +5445,9 @@ export default function App() {
   const [collabDialogSignal, setCollabDialogSignal] = useState(0);
   // MainApp opens the Assistant home exactly once per widget request.
   const [assistantOpenSignal, setAssistantOpenSignal] = useState(0);
+  // A widget action opened an explicit Session: MainApp collapses the Assistant
+  // surface once per successful open so that Session is visible.
+  const [sessionRevealSignal, setSessionRevealSignal] = useState(0);
   const { showToast } = useToast();
   const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetMode, () => {
     useLayoutStore.getState().setSidebarCollapsed(true);
@@ -5472,14 +5464,21 @@ export default function App() {
     () => app.DismissMainWindow().catch(reportWidgetError),
     [reportWidgetError],
   );
+  // A widget action successfully opened an explicit Session. This is the single
+  // coordination entry the widget uses to tell MainApp to collapse the
+  // Assistant surface, instead of relying on the session:activated event timing.
+  const revealWidgetSession = useCallback(() => {
+    setSessionRevealSignal((count) => count + 1);
+  }, []);
   // Opening an existing Room exits the widget and focuses the tab that
   // OpenTopicSession returned. The exit promise is returned so the Rooms
   // popup can surface a failed exit (the main window is still hidden, so a
   // main-window toast would be invisible); the tab itself stays open and the
-  // same 打开 click becomes a safe retry.
+  // same 打开 click becomes a safe retry. A successful exit also reveals the
+  // opened Room by collapsing the Assistant surface.
   const openWidgetRoom = useCallback((tabID: string) => {
-    return widgetCoordinator.exit(tabID);
-  }, [widgetCoordinator]);
+    return widgetCoordinator.exit(tabID).then(() => { revealWidgetSession(); });
+  }, [widgetCoordinator, revealWidgetSession]);
   // Opening the main window from the quick toolbar exits widget mode through
   // the shared coordinator; a failed exit rejects so the widget keeps the
   // error visible and the same 打开主窗口 click becomes a safe retry.
@@ -5596,10 +5595,10 @@ export default function App() {
   return (
 	<>
 	  <ReactActivity mode={widgetMode ? "hidden" : "visible"}>
-	    <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} onDismissWindow={dismissMainWindow} collabDialogSignal={collabDialogSignal} assistantOpenSignal={assistantOpenSignal} />
+	    <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} onDismissWindow={dismissMainWindow} collabDialogSignal={collabDialogSignal} assistantOpenSignal={assistantOpenSignal} sessionRevealSignal={sessionRevealSignal} />
 	  </ReactActivity>
 	  <ReactActivity mode={widgetMode ? "visible" : "hidden"}>
-	    <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} onOpenAssistant={openWidgetAssistant} />
+	    <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} onOpenAssistant={openWidgetAssistant} onOpenSession={revealWidgetSession} />
 	  </ReactActivity>
 	</>
   );

@@ -123,7 +123,7 @@ function writeDailyRoutineRequests(key: string, requests: Map<string, string>): 
 	}
 }
 
-function DailyRoutinePanel({ workspaceRoot, onStartHere, onClose }: { workspaceRoot: string; onStartHere: () => void; onClose: () => void }) {
+function DailyRoutinePanel({ workspaceRoot, onStartHere, onClose, onOpenSession }: { workspaceRoot: string; onStartHere: () => void; onClose: () => void; onOpenSession: () => void }) {
 	const t = useT();
 	const [routines, setRoutines] = useState<DailyRoutine[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -197,6 +197,7 @@ function DailyRoutinePanel({ workspaceRoot, onStartHere, onClose }: { workspaceR
 			runRequests.current = nextRequests;
 			try {
 				await app.ExitWidgetMode(result.tabId);
+				onOpenSession();
 			} catch (exitCause) {
 				// The Session already exists even when the window switch fails.
 				// Restore the ledger so the next click resumes the same receipt
@@ -1338,7 +1339,7 @@ function pinnedIcon(row: { pinned: boolean }) {
   return row.pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />;
 }
 
-export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenMain, onOpenAssistant }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void>; onOpenAssistant: () => Promise<void> }) {
+export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenMain, onOpenAssistant, onOpenSession }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void>; onOpenAssistant: () => Promise<void>; onOpenSession: () => void }) {
 	const t = useT();
   const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], delegations: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
   const [desktopZoom, setDesktopZoom] = useState(1);
@@ -1428,6 +1429,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	// visible and the same button stays a safe idempotent retry.
 	const openWindowCreate = async (workspace: string, requestId: string) => {
 		await app.OpenWidgetWorkspace(workspace, requestId);
+		onOpenSession();
 	};
 	const optimisticItems = useMemo(
 		() => Object.values(quickJobs.jobs).sort((a, b) => b.createdAt - a.createdAt).map(quickStartJobItem),
@@ -1781,12 +1783,12 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
     try {
       const result = await app.ApplyDesktopIconAction(input);
       setSnapshot(result.snapshot);
-		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue", "remove"].includes(action) || action === "open_delegation") { setActiveID(""); setActiveNoticeID(""); } }
+		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue", "remove"].includes(action) || action === "open_delegation") { setActiveID(""); setActiveNoticeID(""); } if (action === "open" || action === "open_delegation") onOpenSession(); }
 		else { if (result.status === "stale" || result.status === "invalid") actionRequests.current.delete(intent); setError(result.error || t("desktopIcon.errorFallback")); }
 		return result.status;
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return "retryable_error"; }
     finally { setBusy(false); }
-  }, []);
+  }, [onOpenSession]);
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
@@ -1918,6 +1920,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		setExiting(true);
 		try {
 			await quickTaskGate.current.open(job, (tabId) => app.ExitWidgetMode(tabId));
+			onOpenSession();
 		} catch (cause) {
 			setQuickError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
@@ -2253,7 +2256,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {active && active.sourceId === "workspace" && <WorkspaceManager initialIconRoot={workspaceIconRoot} onClose={() => { setWorkspaceIconRoot(""); setActiveID(""); }} onChanged={refresh} />}
       {active && active.sourceId === "rooms" && <RoomsManager roomIconCount={roomIconCount} onRoomIconCountChange={setRoomIconCount} notificationMode={roomNotificationMode} onNotificationModeChange={setRoomNotificationMode} onClose={() => setActiveID("")} onChanged={refresh} onNewRoom={onNewRoom} onOpenRoom={onOpenRoom} />}
       {active && active.sourceId === "dsh" && <DSHQuickStart workspaces={workspaces} onChanged={refresh} onClose={() => setActiveID("")} />}
-      {active && active.kind === "workspace" && <DailyRoutinePanel key={active.sourceId} workspaceRoot={active.sourceId} onStartHere={() => { setQuickWorkspace(`project:${active.sourceId}`); setQuickStartEditJob(null); setPopupAnchorID(active.id); setActiveID("fixed:new"); }} onClose={() => setActiveID("")} />}
+      {active && active.kind === "workspace" && <DailyRoutinePanel key={active.sourceId} workspaceRoot={active.sourceId} onStartHere={() => { setQuickWorkspace(`project:${active.sourceId}`); setQuickStartEditJob(null); setPopupAnchorID(active.id); setActiveID("fixed:new"); }} onClose={() => setActiveID("")} onOpenSession={onOpenSession} />}
       {active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
       {active && activeNotice && <NoticeBody key={`${activeNotice.id}:${activeNotice.revision}`} item={active} notice={activeNotice} busy={busy} run={(action, values, answers) => run(active, action, values, activeNotice, undefined, answers)} onClose={() => { setActiveID(""); setActiveNoticeID(""); setPreviewID(""); }} />}
       {active && active.kind === "external" && !activeNotice && <ExternalRunBody item={active} busy={busy} run={(action) => void run(active, action)} />}
