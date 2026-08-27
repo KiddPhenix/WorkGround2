@@ -1,58 +1,111 @@
-# WorkGround2 助手模式设计
+# WorkGround2 Assistant 改进设计与实施计划
 
-> 状态：阶段 1～6 已实现并合入 `main`。
+> 状态：规划中
 >
-> 来源分支：阶段 1～5 `developping/assistant-improvement-proposals+2026-08-26`；阶段 6 `developping/assistant-role-orchestration+2026-08-27`
+> 类型：调整现有 Assistant 功能
 >
-> 参考视觉：用户提供的 1487×1058 Desktop 深色时间线设计图
->
-> 实现范围：阶段 1～6
+> 本文是 Assistant 目标行为和后续实施的唯一设计入口。已经完成的历史实现从 Git 历史查询，不在本文维护另一套旧设计。
 
-## 1. 功能定义
+## 1. 目标
 
-助手是长期存在的业务对象。它拥有一个长期使命或若干日常目标、自己的运行频率、显式可编辑记忆、权限边界和可审计运行历史。Agent 只负责一次 Run 内的推理与工具调用，不承担助手身份和长期状态。
+Assistant 是长期存在、持续推进用户目标的高自治执行助手。它拥有自己的主管 Session、工作计划、记忆、定时任务和权限策略，并通过工具直接创建和管理其他普通 Session。
 
-一句话模型：
+用户只需描述意图，例如：
 
-```text
-Assistant = Mission + Plan + Routines + Memory + Policy + Runs
-```
+- “继续推进这个项目，发现问题自己修。”
+- “每天检查构建，失败后分析并重试。”
+- “推广完成后继续找新渠道、优化文案。”
+- “继续找更多符合条件的职位和公司并投递。”
+- “暂停全部工作，更新 WG2 后恢复。”
 
-与现有概念的边界：
+Assistant 负责把自然语言转成可审计的操作：
 
-| 概念 | 生命周期 | 主要职责 |
-|---|---|---|
-| Agent | 单次执行 | 推理、工具调用、生成结果 |
-| Goal | 单个 Session | 自动推进一个目标至完成、阻塞或停止 |
-| Work | 一次结构化工作 | DAG、输入、成果槽和运行记录 |
-| Heartbeat | 重复 Prompt | 旧版 Desktop 定时触发入口 |
-| Assistant | 长期存在 | 决定何时运行、记住什么、持续优化什么 |
+- 新建、读取、指导、回答、取消、恢复和分叉 Session。
+- 查询和更新长期记忆。
+- 增加、修改、暂停、恢复、删除和立即执行定时任务。
+- 查询项目状态，修改项目约束。
+- 维护工作计划，完成当前工作后主动发现下一批机会。
+- 根据实际结果复盘，并通过网页、GitHub、官方文档和公开经验继续学习。
 
-## 2. 用户价值与典型场景
+最终体验应满足：持续响应、高权限、允许可恢复的试错，同时不能因为普通选择或失败停在那里等待用户。
 
-### 2.1 代码项目助手
+## 2. 调整范围
 
-- 定期扫描项目近期修改、测试、构建产物和发布条件。
-- 记住上次失败原因、已验证步骤和项目特有约束。
-- 到达发布条件时进入待处理状态，询问是否发布。
-- 用户可以随时“让它继续工作”或临时调整下一次检查时间。
+这次调整直接改进现有 Assistant，不新增平行的 Supervisor 产品，也不新增第二套 Assistant 存储或调度系统。“Supervisor”只描述 Assistant 持续观察、计划和管理 Session 的职责。
 
-### 2.2 推广助手
+现有基础已经具备：
 
-- 围绕长期推广使命执行多个日常 Routine。
-- 记录渠道、内容、回复、效果和下一轮策略。
-- 对外发帖、私信、删除、付费等动作进入持久审批。
-- 阶段 4 已接通首个真实外部渠道；阶段 5 把效果复盘收敛为可审批、可审计的配置改进提案。
+- Assistant、Plan、Routine、Memory、Policy 和持久存储。
+- Desktop Assistant Runtime 的定时 tick、主动 Wake、leader lease 和执行 lease。
+- Controller 的 `Steer`、`Cancel`、`PendingInteraction`、`AnswerQuestion` 和 Session 恢复。
+- 待回答问题的持久化与重启恢复。
+- 有 revision 的责任图、Artifact、Opportunity 和结构化进度提交。
+- Dispatcher、RunnerJob、Reflector 和 Ideator。
 
-## 3. 设计原则
+当前主要问题：
 
-1. **长期对象、短期运行**：每次触发创建独立 Run 和 Session，禁止无限膨胀的永久会话。
-2. **状态单源**：Assistant Store 是使命、Routine、记忆、运行和审批的权威来源；UI 只展示和提交意图。
-3. **幂等可恢复**：调度 occurrence、立即运行、重试和审批都使用稳定请求 ID。
-4. **失败显式**：失败进入 `retry_wait`、`waiting_attention` 或 `failed`，保存错误和下一步，不只写日志。
-5. **权限不自增**：助手可以建议修改频率或权限，不能自行扩大权限。
-6. **缓存稳定**：助手动态上下文在 Run 创建后注入 Session，不修改稳定 system-prompt 前缀。
-7. **Controller-first**：Assistant Service 不依赖 Desktop；Desktop 只是首个宿主和 UI 适配器。
+- Assistant 的执行状态分散在 Run、RunnerJob、后台 Controller 和 Session 中。
+- RunnerJob 创建的后台 Controller 没有进入统一 Session 控制面，难以实时查看、指导和停止。
+- 当前计划完成后，Assistant 可能进入空闲，横向发现能力偏低频且依赖人工采纳。
+- Session 的普通问题会等待用户，Assistant 无法统一代答。
+- 定时任务缺少完整的自然语言增删改查闭环。
+- 缺少覆盖全部执行的持久化暂停、静默、恢复和安全重启能力。
+- Assistant 看到的运行 Session、近期 Session、失败 Session 和用户当前视窗任务缺少统一的有界上下文。
+
+## 3. 状态唯一可信源
+
+目标实现必须收敛状态所有权，禁止为方便 UI 或兼容旧流程继续复制执行状态。
+
+### 3.1 Assistant Store
+
+Assistant Store 只拥有长期意图、知识和计划证据状态：
+
+- Assistant 身份、使命、工作模式和生命周期。
+- Policy。
+- Work Plan。
+- Routine。
+- Memory（包含 Learning）、Artifact 和 Opportunity。
+- 请求幂等凭据和计划修改 revision。
+
+Assistant Store 不保存 Session 的运行状态、当前步骤、待回答问题或取消状态。
+
+### 3.2 Session 子系统
+
+Session 子系统是所有执行状态的唯一可信源：
+
+- 对话和工具调用记录。
+- queued、running、waiting、completed、failed、cancelled 等运行状态。
+- 当前活动、错误、待回答问题和待审批事项。
+- `Steer`、`Answer`、`Cancel`、`Resume` 和恢复检查点。
+- Session 所属 Assistant、父 Session、用途和 Workspace。
+
+Assistant 管理的任务都是普通 Session。Session 元数据直接记录 `OwnerAssistantID` 和可选的 `ParentSessionID`；查询受管 Session 时直接查询 Session 子系统，不在 Assistant Store 再维护一份任务列表。
+
+每个 Assistant 有且只有一个 `Purpose=supervisor` 的主管 Session。唯一性由 Session 子系统保证，Assistant Runtime 直接恢复或创建它。
+
+### 3.3 Routine
+
+Routine 是用户定时任务定义的唯一可信源。调度器只计算到期时间并创建一次触发记录；触发成功后，由对应 Session 表达实际执行状态。
+
+触发记录只承担：
+
+- 防止同一个计划时间重复启动。
+- 记录本次触发创建的 Session ID。
+- 记录触发是否已被消费或需要补偿。
+
+它不复制 Session 的 running、failed 或 completed 状态。
+
+### 3.4 项目约束
+
+项目约束继续由项目自己的约束文件或约束存储持有。Assistant 通过工具读取和修改权威内容，不把副本写入 Assistant Memory。Memory 可以保存“为什么这样约束”的经验，但不能覆盖项目约束本身。
+
+### 3.5 全局工作控制
+
+所有工作是否允许继续由一个持久化 `WorkControl` 状态决定。Runtime、Scheduler、Session 创建和重试都读取同一个状态，不在各模块维护独立暂停开关。
+
+### 3.6 UI 视窗
+
+用户当前看到的任务属于短期 UI 观察，不是业务状态。前端只发布带时间戳的可见 Session ID、选中 ID 和窗口信息；后端根据这些 ID 读取权威 Session 状态。
 
 ## 4. 核心模型
 
@@ -62,22 +115,70 @@ Assistant = Mission + Plan + Routines + Memory + Policy + Runs
 type Assistant struct {
     ID            string
     Name          string
-    Description   string
     Mission       string
+    Mode          AssistantMode
     Scope         Scope
     WorkspaceRoot string
     Lifecycle     Lifecycle
     Policy        Policy
-    MemoryRev     int64
     Revision      int64
     CreatedAt     time.Time
     UpdatedAt     time.Time
 }
 ```
 
-`Lifecycle` 只描述持久生命周期：`active`、`paused`、`archived`。运行中、待审批和故障属于派生状态，避免多个字段互相打架。
+`Mode`：
 
-### 4.2 Routine
+- `finite`：满足完成标准后结束或进入维护。
+- `continuous`：完成当前批次后主动发现下一批工作，长期保持运行。
+
+`Lifecycle` 只描述 `active`、`paused`、`archived`。执行状态从主管 Session 和受管 Session 推导。
+
+Assistant 的 `paused` 只停止该 Assistant；`WorkControl=PAUSED` 停止 WG2 的全部工作。两者作用域不同，都不表达 Session 执行状态。
+
+### 4.2 Work Plan
+
+Assistant 必须拥有可编辑、可观察、可恢复的工作计划表：
+
+```go
+type WorkPlan struct {
+    Revision         int64
+    Responsibilities []Responsibility
+    Opportunities    []Opportunity
+    Experiments      []Experiment
+}
+```
+
+`Responsibility` 表达已经决定要做的工作：
+
+```go
+type Responsibility struct {
+    ID           string
+    Objective    string
+    DoneCriteria string
+    NextAction   string
+    Disposition  ResponsibilityDisposition
+    DependsOn    []string
+    BlockReason  string
+    ParentID     string
+    Strategy     string
+    Priority     int
+    ExpectedGain string
+    Cost         string
+    Risk         string
+    Revision     int64
+}
+```
+
+持久状态只表达计划决策：`planned`、`waiting`、`review`、`done`、`dropped`。`ready` 根据依赖和 Policy 推导；`active`、`failed` 和 `completed` 根据关联 Session 推导，不写回 Responsibility。
+
+`Opportunity` 是尚未采纳的候选工作。`Experiment` 记录假设、隔离方案、衡量指标和结论。Artifact 通过 Responsibility ID 记录完成证据；Session 通过计划项 ID 表达正在执行哪项工作，计划不反向保存 Session 列表。
+
+Learning 使用现有 Memory 的受控类型保存，记录可复用经验、来源、观察时间、置信度、适用范围和失效条件，不再建立独立知识副本。
+
+计划状态只通过少数计划工具修改，并使用 `expected_revision` 防止迟到推理覆盖新计划。
+
+### 4.3 Routine
 
 ```go
 type Routine struct {
@@ -86,422 +187,611 @@ type Routine struct {
     Title       string
     Prompt      string
     Schedule    Schedule
+    Timezone    string
     Enabled     bool
     CatchUp     CatchUpPolicy
     Revision    int64
 }
 ```
 
-第一版支持：
+内部失败重试计时器不写入 Routine。用户定时任务和运行恢复是两类不同状态，分别管理。
 
-- 手动执行。
-- 固定间隔。
-- 每日、每周、双周、每月、每年固定时间。
-- 时区和可选运行时间窗口。
-- 默认 `coalesce_latest`：离线错过多个周期时只补一次。
+### 4.4 Policy
 
-日历边界采用固定语义，避免依赖 `time.AddDate` 的隐式归一化：
+Policy 至少包含：
 
-- 所有 occurrence 以 UTC instant 持久化，Schedule 同时保留 IANA timezone。
-- 夏令时跳过的本地时间移动到缺口后的第一个有效 instant；重复的本地时间只取第一次。
-- 每月 29/30/31 在目标月份不存在时收敛到该月最后一天。
-- 每年 2 月 29 日在非闰年收敛到 2 月最后一天。
-- 跨午夜时间窗口合法，例如 `22:00-06:00`；落在窗口外的 interval 推迟到下一个窗口起点。
-- interval 使用上一次计划 occurrence 推进，避免执行耗时造成持续漂移。
-- timezone 无效时拒绝保存，不静默回退本机时区。
+- Workspace 与项目范围。
+- 本地读写权限。
+- 网络查询权限。
+- 创建 Session 和并发数量限制。
+- 项目约束修改权限。
+- 外部发言权限。
+- 删除、付费、凭据和隐私边界。
+- 自动回答问题和隔离试错策略。
 
-### 4.3 Run
+对外公开发布或代表用户发言由用户直接配置：
 
 ```go
-type Run struct {
-    ID            string
-    AssistantID   string
-    RoutineID     string
-    Prompt        string // 冻结的 Routine prompt 或直接用户输入原文
-    RequestID     string
-    OccurrenceKey string
-    Trigger       TriggerKind
-    State         RunState
-    Attempt       int
-    SessionPath   string
-    LeaseOwner    string
-    LeaseUntil    time.Time
-    ScheduledFor  time.Time
-    RetryAt       time.Time
-    StartedAt     time.Time
-    FinishedAt    time.Time
-    Summary       string
-    Error         *RunError
-}
+ExternalVoiceEnabled bool
 ```
 
-状态机：
+- `true`：在允许的渠道、身份、范围和频率内自主发布或回复，不逐次询问。
+- `false`：发布工具明确拒绝；Assistant 继续研究、生成草稿和优化计划，不反复请求用户。
+
+## 5. 持续监督循环
+
+Assistant Runtime 运行一个逻辑无限的控制循环。控制循环持续存在，单次模型推理仍然有边界并可恢复。
 
 ```text
-queued -> running -> succeeded
-                 -> waiting_approval -> running
-                 -> retry_wait -> queued
-                 -> waiting_attention
-                 -> failed / cancelled
+watching
+  -> thinking
+  -> acting
+  -> awaiting_session
+  -> evaluating
+  -> expanding / retry_wait / blocked / done
+  -> watching
 ```
 
-同一助手默认最多一个活动 Run。新的定时 occurrence 合并为一个待执行 Run；手动点击在相同 request ID 下幂等。
+### 5.1 唤醒来源
 
-直接用户输入（“对助手说”）不创建或覆盖 Routine，而是生成一条 `TriggerManual + RoutineID="" + Prompt=<原文>` 的 Run：Run 是输入、状态、Session 与结果的单一可信记录。原文可为任务、指导、批评/反馈或工作方法改进，一律按原文保存、不自动改写或美化；`RoutineID` 与直接原文同时提供会被拒绝，原文 trim 后不能为空且受 UTF-8 字节上限约束。指纹包含规范化原文，同 requestId + 同原文幂等返回同 Run，同 requestId + 不同原文显式冲突。
+- 用户向 Assistant 输入新要求。
+- 受管 Session 开始、推进、提问、失败或完成。
+- Routine 到期。
+- 重试时间到期。
+- 项目状态或约束变化。
+- 用户恢复全部工作。
+- 空闲 heartbeat 到期。
 
-### 4.4 显式记忆
+事件立即唤醒。heartbeat 只负责发现遗漏事件和在长期空闲时重新评估目标。控制循环可以高频检查轻量状态；只有观察 revision 变化、存在可执行工作或 heartbeat 到期时才调用模型。
 
-记忆分为：
+### 5.2 单次循环边界
 
-- `charter`：使命、约束、不可自行修改的用户决定。
-- `facts`：带来源和时间的事实。
-- `strategy`：有效方法、无效尝试和效果结论。
-- `open_loops`：开放事项、等待输入和下一步。
-- `metrics`：可量化效果；阶段 3 只提供通用记录结构。
+每次循环拥有：
 
-每条记忆包含稳定 ID、类型、正文、来源 Run、证据、锁定状态、版本和时间。AI 产生的是 `MemoryPatch`；Store 以 `expectedRevision` 原子提交，冲突时重新读取并安全重试。
+- 唯一 cycle ID 和 fence。
+- 观察到的 Plan、Policy、WorkControl 和 Session revision。
+- 模型轮数、工具次数、并发 Session 和运行时间预算。
+- 动作后的持久化检查点。
 
-### 4.5 Policy 与审批
+达到单次预算时保存下一步并回到 `watching`，随后继续新循环。长期目标没有总轮数上限。
 
-权限按动作类型声明：
+同一个 Assistant 同时只运行一个主管推理回合，避免两个模型同时改计划。受管 Session 可以在 Policy 限制内并行运行。
 
-| 动作 | 默认策略 |
-|---|---|
-| 读取项目、分析历史 | 自动允许 |
-| 限定 Workspace 的本地写入 | 使用 Assistant 配置 |
-| 网络查询 | 使用 Assistant 配置 |
-| 对外发帖、回复、私信 | 使用 Assistant 的 `publish` 三态配置；`allow` 自动执行，`approve` 逐次审批，`deny` 拒绝 |
-| 删除、付费、凭据、隐私数据 | 必须逐次审批 |
-| Assistant 记忆读取/写入（`memory` / `remember` / `forget`） | 自动允许 |
-| 项目 Skill 安装（`install_source`） | 仅 `local_write=allow` 且 `network=allow` 时自动允许；任一拒绝则拒绝，其余逐次审批 |
+### 5.3 下一步选择
 
-内建记忆工具 `memory`（只读检索）、`remember`、`forget` 在 Assistant Session 中始终自动执行：它们写入的是 Assistant 绑定项目的受控、版本化 memory store，而不是任意文件写入，因此即使 `local_write=deny/approve` 也保持允许，不再生成 `approve_tool:remember` / `approve_tool:forget` 人工待办。Controller 只在当前 turn 的冻结 Policy 没有显式 Allow 时为普通交互 Session 补记忆 Ask 规则，不能再覆盖 Assistant 的显式 Allow；普通 Session 的默认审批保持不变。Runtime 启动及每次调度还会幂等批准并恢复旧版本遗留的记忆工具待办，响应丢失后可安全重放；发布则严格遵循冻结的 `publish` 三态。工具调用与结果事件、失败显式暴露和现有 memory queue 行为保持不变。
+每轮按以下顺序选择工作：
 
-`bash` 是一个完整 shell，权限跟随 `local_write` 三态：`allow` 时自动执行（含只读命令与普通构建/测试命令，不做命令内容白名单），`deny` 时拒绝且不触发审批，`approve` 时保持逐次审批。浏览器工具从当前 page revision 的真实元素语义分类：普通点击/输入随 `network`，发帖、回复、评论、提交、点赞等外部可见动作同时受 `publish` 控制；删除、付费、密码/凭据和私有字段继续逐次审批或拒绝。`browser_type` 的权限类别由目标元素计算，不能由模型在参数里自报。`move_file` 与 MCP 等既有敏感边界保持审批或拒绝。
+1. 处理需要立即响应的安全或失败事件。
+2. 代答受管 Session 的普通问题。
+3. 处理已到期 Routine。
+4. 观察执行中的 Session，并推进最高优先级可执行责任。
+5. 复核 `review` 责任的完成证据。
+6. 对可重试失败执行恢复。
+7. 没有可执行责任时启动计划扩展。
+8. 仅剩硬门槛时记录阻塞，同时继续其他不依赖该门槛的工作。
 
-MCP 工具在阶段 2 统一视为外部边界：`network=deny` 时拒绝，其余网络策略下逐次审批。即使工具声明 `readOnly`，该声明也不能证明它不会把项目内容发送到外部服务；后续只有在引入可信 MCP 能力元数据后，才可对明确的本地只读工具放宽。
+完成由 `DoneCriteria + Artifact` 证据判定，不能只依赖模型声称完成。
 
-创建向导可选“先学习一下再干”，默认选中。该选择本身是对首个学习 Run 的明确授权：创建时将 `local_write` 与 `network` 显式设为 `allow` 并要求用户确认权限摘要；取消选择则保留模板原策略。学习过程仅可安装项目级 Skill，不得自行安装 MCP、插件、可执行文件、link/register 或高风险来源。
+## 6. Assistant 隐式上下文
 
-审批是持久 `AttentionItem`，关联 Assistant、Run、动作、摘要和恢复 token。应用重启后仍可批准、拒绝或取消。
+每次主管推理默认注入一个有界 `AssistantContext`：
 
-### 4.6 计划与责任图
+- Mission、Mode、Policy 摘要。
+- 当前可执行、等待和待验证责任，以及从 Session 推导出的执行中责任。
+- 正在运行的受管 Session：ID、标题、状态、当前活动、更新时间。
+- 最近五个相关 Session 的短摘要。
+- 最近失败的 Session 和错误分类。
+- 待回答问题、待审批事项和重试时间。
+- 当前 Workspace 和项目约束摘要。
+- 用户当前视窗可见的 Session ID、顺序和选中项。
+- 当前时间与调度状态。
 
-Assistant 级 Plan 是长期使命下的责任图（responsibility graph）。它随每次成功 Run 通过 `<assistant-progress>` 块推进，只依赖 store 的原子提交，不依赖 UI 或 Session 时序。
+默认上下文不注入完整历史、完整工具输出或大量失败日志。Assistant 使用只读工具渐进加载：
 
-```go
-type Plan struct {
-    Revision         int64            // 乐观并发守卫：进度块必须携带它看到的 revision
-    Responsibilities []Responsibility
-}
+1. 默认摘要。
+2. 指定 Session 的最近回合或失败详情。
+3. 明确需要时读取更深历史、项目文件或外部来源。
 
-type Responsibility struct {
-    ID, AssistantID string
-    Alias           string             // 稳定的模型可见别名，块协议用别名引用，不回显随机 ID
-    Objective       string
-    DoneCriteria    string             // 完成标准
-    NextAction      string             // 下一步
-    Status          ResponsibilityStatus // blocked / ready / active / done / failed
-    DependsOn       []string           // 责任 ID
-    BlockReason     string             // 阻塞原因（依赖未完成时派生）
-    Revision        int64
-    CreatedAt, UpdatedAt time.Time
-}
-```
+### 6.1 视窗上下文
 
-`Artifact` 与 `Opportunity` 是责任推进的持久证据与提案，都绑定 Assistant + Responsibility + 来源 Run：
-
-```go
-type Artifact struct {
-    ID, AssistantID, RespID, RunID string
-    Title, Kind, Content, Evidence string
-}
-type Opportunity struct {
-    ID, AssistantID, RespID, RunID string
-    Reason                         string
-}
-```
-
-进度块是受限、结构化的助手→计划协议。模型在成功回合的结尾发出一个或多个 `<assistant-progress>` JSON 块；Runner 解析、脱敏并原子应用：
-
-```json
-{
-  "plan_revision": 3,
-  "responsibility": "code-review",
-  "responsibilities": [
-    {"alias": "fix-tests", "objective": "…", "done_criteria": "…", "next_action": "…", "depends_on": ["scan"]}
-  ],
-  "complete": ["scan"],
-  "active": ["fix-tests"],
-  "artifacts": [{"resp": "scan", "title": "…", "kind": "report", "content": "…", "evidence": "…"}],
-  "opportunities": [{"resp": "fix-tests", "reason": "…"}]
-}
-```
-
-规则：
-
-- 职责用稳定 alias 引用；重声明同一 alias 且目标一致是幂等 no-op，目标不一致是冲突。
-- `depends_on` 用 alias；省略表示不变，`[]` 表示清空。同一块内允许前向引用与「下游+上游同时完成」，自依赖与环被拒绝。
-- 完成与激活对顺序不敏感：同一块内同时完成下游与上游会被接受；依赖变更会双向重算 readiness（blocked ↔ ready），未完成依赖时 `complete`/`active` 被拒绝，已 done 的责任不允许新增未完成依赖。
-- 进度元数据不拖垮 Run：stale `plan_revision` 以最新 Plan 有界 rebase（最多 3 次）；已存在 alias 的 objective 以当前 Plan 为权威、忽略模型重复声明的不同 objective，该声明中的合法 done/next/depends_on 仍按最新 Plan 应用。解析失败或仍无法应用的 malformed / cycle / missing alias / blocked 补丁记录可观察 diagnostic 后丢弃，Run 以同一 summary/session 成功落盘，计划不被半修改，既有 active 责任留待后续 Run 自动继续。只有连「无 progress 的 Run 成功落盘」也失败时才沿用显式失败/重试路径。
-
-`CompleteRunWithProgress` 是唯一收敛的进度写入：以调用方 request ID/指纹幂等，做环校验、依赖重算、stale revision 拒绝，并把「Run 完成 + 计划/证据变化」连同内嵌 request receipt 一起写入单一 `aggregate.json` 的原子替换（临时文件 + rename），要么全部提交要么全部不提交，崩溃后重放返回原结果。旧快照在读取时惰性归一化为空计划，无需迁移。
-
-### 4.7 持续改进提案
-
-阶段 5 将“根据效果不断改进”建模为持久 `ChangeProposal`，而非让模型直接改运行配置：
-
-```go
-type ChangeProposal struct {
-    ID, AssistantID, RunID string
-    TargetKind             ProposalTarget // routine / channel
-    TargetID               string
-    BaseRevision           int64
-    Routine                *RoutineProposal
-    Channel                *ChannelProposal
-    Summary, Reason        string
-    Evidence               []string
-    State                  ProposalState // pending / applied / rejected / superseded
-    Resolution             string
-    Revision               int64
-    CreatedAt, UpdatedAt   time.Time
-}
-
-type RoutineProposal struct {
-    Prompt   *string
-    Schedule *Schedule
-    Enabled  *bool
-}
-
-type ChannelProposal struct {
-    CollectIntervalSeconds *int64
-    Enabled                *bool
-}
-```
-
-模型在成功 Run 的 `<assistant-progress>` 中声明 `proposals`。Store 在同一次 `CompleteRunWithProgress` 原子提交中解析目标、冻结 `BaseRevision` 与变更前值，并生成由来源 Run、序号和内容指纹决定的稳定 ID。重复提交不产生重复提案。提案只接受上下文中真实存在、属于当前 Assistant 的 Routine 或 Channel ID；单条提案只能修改一种目标，空补丁、无变化补丁和越界值直接拒绝，避免把自然语言当作隐式配置协议。
-
-用户处理提案使用独立 request ID 和 proposal revision：
-
-- **接受**：目标 revision 仍等于 `BaseRevision` 时，在一个聚合原子写入中应用完整补丁并把提案置为 `applied`；响应丢失后可重放同一 receipt。若 revision 只因调度进度或其它未触及字段变化，但提案涉及的字段仍等于冻结基线，则允许按字段兼容合并，保留其它新值。
-- **目标已达到建议值**：即使 revision 已变化，也按幂等成功收敛为 `applied`，不重复修改目标。
-- **目标发生冲突变化**：不覆盖用户的新配置，将提案置为 `superseded` 并保存显式原因；后续 Run 可基于新快照提出新提案。
-- **拒绝**：只关闭提案并记录用户说明，不修改目标。
-
-阶段 5 的提案边界只覆盖 Routine 的 Prompt / Schedule / Enabled 和 Channel 的采集间隔 / Enabled。Mission、Policy、Workspace、渠道地址和凭据均不可通过提案修改；尤其权限不能由助手提案或批准链路自行扩大。策略文字仍进入显式 `strategy` / `metrics` 记忆，避免再造一套泛化规则引擎。
-
-## 5. 存储与恢复
-
-实际存储是每个 Assistant 一个聚合文件，没有独立 journal：
+前端发布：
 
 ```text
-<WorkGround2 user state>/assistants/
-  <assistant-id>/
-    aggregate.json
+window_id
+workspace_id
+visible_session_ids
+selected_session_id
+observed_at
+ui_revision
 ```
 
-要求：
+视窗快照有短 TTL。滚动只更新快照，不单独启动模型；下一次用户输入或运行事件发生时，Assistant 可以理解“我正在看的这几个任务”等指代。
 
-- 每个 Assistant 的全部状态（Assistant、Routine、Memory、Run、Attention、Plan、Artifact、Opportunity、ChangeProposal）连同 request receipt 一起保存在单一 `aggregate.json` 中。
-- 每次变更使用临时文件 + rename 原子替换 `aggregate.json`；request receipt 内嵌其中，崩溃后重放返回原结果，不另设 journal。
-- Store 内部以 revision 做比较交换，拒绝迟到更新。
-- occurrence key 使用 `assistantId/routineId/scheduledFor` 确定性生成。
-- Run 领取写入租约；启动时回收过期 `running`，进入 `queued` 或 `waiting_attention`。
-- 同 request ID 创建、立即运行、转换 Heartbeat 均返回同一结果。
-- 创建请求可携带 `InitialPrompt`；Assistant、Routine 与首个 queued Run 在一次聚合原子写入中提交，重复请求返回同一 Run，参数变化返回幂等冲突，不会产生“助手已创建但首个任务丢失”的半完成状态。
+多窗口时使用最近获得焦点且仍有效的快照。快照过期后必须显式视为未知。
 
-## 6. 执行流程
+### 6.2 可观察性
 
-1. Scheduler 计算到期 Routine，并创建或复用 occurrence。
-2. Runner 原子领取 queued Run，写入 lease。
-3. Desktop 宿主创建后台 Topic/Session，但不改变用户当前活动页。
-4. 组装动态上下文：使命、Routine、记忆快照、当前责任图和确定性的 ready/active 责任、权限和当前时间。
-5. 通过现有 Controller 提交普通用户 Turn；需要长推进时使用 Goal 能力。
-6. 成功后解析并脱敏 `<assistant-progress>` 块，用 `CompleteRunWithProgress` 原子提交 Run 结果 + 计划/证据/改进提案变化；stale `plan_revision` 或 alias/objective 冲突以最新 Plan 有界 rebase 重试，仍无法应用的进度元数据记录 diagnostic 后丢弃、Run 照常成功落盘。
-7. Store 原子提交结果；其它失败根据错误分类进入 retry 或 attention。
-8. UI 订阅快照变化，不由网络回包直接操作 Panel。
+隐式上下文默认不占据对话正文，但 UI 提供诊断入口，展示本轮读取了哪些 Session、Plan 项和项目状态。任何决策都可以追溯到输入 revision 和工具结果。
 
-阶段 1 的 Runner 提供接口和可恢复状态；Desktop Session 执行适配在阶段 2 接通。
+从其他 Session、网页和 GitHub 读取的文本一律视为不可信数据，不能借其中的指令提升权限或绕过 Policy。
 
-### 6.1 Assistant 执行档案（profile）
+## 7. Session 控制工具
 
-每次 Assistant Run 使用独立的 `SessionKind=assistant` 会话身份，持久化在会话 sidecar 的 `SessionKind` 与 `AssistantID`，随保存/重载存活；`boot.Build` 据此使用专门的 Assistant 稳定 system prompt（长期 outcome executor）。普通 / Work / Collaboration 会话保持原有 coding-agent 行为。
+Assistant 通过明确工具管理 Session：
 
-- 硬性能力从冻结的 Run mission + prompt 确定性派生（`assistant.RequiredCapabilities`）。命名 URL/域名或明确要求在线检查网站的任务派生 `live_web`。
-- “先学习一下再干”派生 `skill_learning`：必须同时取得实时 Web 成功证据和 `install_source` 成功计划/应用证据。Runner 要有界搜索 2–5 个候选，比较来源、时效、适配度与风险，安全时安装并验证项目 Skill，用 `remember` 记录来源、名称、路径和结果；没有合适候选时记录检索范围与判断后结束本轮，禁止无限学习。
-- Assistant Session 不使用 coding Session 的三工具 Anchored Bootstrap；首轮直接暴露完整工具目录，因此浏览器配置启用且使用默认 full token profile 时，`browser_*` 工具从第一次模型请求即可见。
-- 每个 Assistant Run 使用 `ToolApprovalAuto`：权限策略允许的可恢复操作直接执行，fallback 尽量自动放行；显式 Ask/Deny 规则与高风险业务边界继续请求人工确认或拒绝，不升级为 YOLO。
-- `live_web` 只由成功的实时网页/浏览器工具结果满足（browser open/navigate/state 或 web fetch/search 等）；只 dispatch 或失败结果不算。
-- 接受 TurnDone 为成功前，先校验必需能力证据；缺失证据通过 `Failure{code:"evidence_missing"}` 进入可重试、可观察的恢复状态，绝不记为成功 Run。网络 deny、工具不可用、模型跳过必需工具同理。
-- 责任图全部 done 且无 ready/active 时，提示开启新的 2–4 项责任周期；旧 done 项保留为历史，不重开、不修改。
-- 直接输入的 Run 使用“本次用户输入（原文）”语义：是任务就执行，是指导或反馈就据此调整计划/策略，不要求用户把输入改写成任务。
-- 每次 Run 注入近期直接输入 Run 的有界历史（稳定倒序、限制条数与 UTF-8 总字节），包含原文、状态与结果摘要，并排除当前及其后入队的 Run；历史里已完成的任务不得仅因被引用而重复执行。Routine prompt 不会当作用户直接输入。
+### 7.1 查询
 
-## 7. Desktop UI
+- `session_list`：按 running、recent、failed、owned、workspace 查询。
+- `session_status`：读取一个或多个 Session 当前状态。
+- `session_read`：有界读取指定 Session 对话和工具摘要。
+- `interaction_list`：查询待回答问题和待审批事项。
 
-### 7.1 参考图视觉语言
+### 7.2 操作
 
-参考图采用 1487×1058 Desktop 画布，关键比例与元素如下：
+- `session_create`：创建普通受管 Session。
+- `session_steer`：向正在运行的 Session 插入指导。
+- `interaction_answer`：回答指定 Session 的指定问题。
+- `session_cancel`：停止执行并保存可恢复状态。
+- `session_resume`：恢复已中断 Session。
+- `session_retry`：基于失败上下文安全重试。
+- `session_fork`：从检查点创建隔离分支，用于尝试互斥方案。
 
-- 左侧栏约 282px，深黑背景和细右边界。
-- 品牌区、快速入口、项目树和底部设置沿用现有 Workbench 侧栏。
-- 项目展开后增加“助手”节点；当前节点使用低饱和紫色选中底和左侧紫色指示线。
-- 主区使用黑灰纸张质感和高留白，不增加卡片网格。
-- 顶部显示助手名、绿色状态点和“让它继续工作”橙色动作。
-- 日期使用大号衬线标题；时间轴由时间、橙色节点、细虚线和编辑式正文组成。
-- 关键结论使用大号衬线文字，正文使用较低对比度无衬线文字。
-- 计划节点显示可直接点击的“改成别的时间”。
-- 顶部“对助手说”入口使用一条弱分割线和单行输入提示，明确显示“输入会被记录”。
+所有目标都必须显式传入稳定 Session ID，不允许空 ID 代表“当前 Session”。
 
-实现遵循现有主题 token、侧栏、图标库和窗口结构。参考图没有独立位图内容，因此无需生成新 raster 资产。
+所有写工具必须携带 `request_id`。可能覆盖并发修改的操作同时携带 `expected_revision`。统一返回：
 
-### 7.2 信息架构
+- `accepted`
+- `already_applied`
+- `stale`
+- `retryable_error`
+- `invalid`
+- `blocked_by_policy`
 
-新增一级 `AssistantWorkspace`：
+工具返回当前状态、revision 和下一步提示。响应丢失后使用相同 `request_id` 重放，不能重复创建或重复执行外部动作。
 
-- 左侧项目树：展示项目绑定助手；全局助手进入全局分组。
-- 时间线首页：今日已做、学到的记忆、下一次计划和“对助手说”快速入口。
-- 管理抽屉：概览、责任计划、例行任务、记忆、渠道、改进建议、运行记录、权限与待处理。
-- 创建/编辑向导：模板、使命、项目、Routine、频率、可选首个“先学习一下再干”任务、权限确认。
-- 待处理收件箱：审批、连续失败、缺少用户输入。
+## 8. 受管 Session 行为
 
-高频操作不进入深层设置：
+Assistant 创建的任务直接成为普通 Session，并在 Session 元数据中记录所有者、父 Session、工作计划项和用途。Desktop、daemon 和其他宿主使用同一个 Session 控制面。
 
-- 每个 Routine 都有“立即运行”。
-- 时间线上直接修改下一次运行时间。
-- 助手顶部直接暂停/唤醒。
-- 运行结果可跳转到原 Session。
+受管 Session 的事件会唤醒主管 Session：
 
-### 7.3 必须工作的交互
+- `session_started`
+- `session_progressed`
+- `interaction_required`
+- `session_failed`
+- `session_completed`
+- `session_cancelled`
 
-- 创建代码项目助手和通用助手。
-- 编辑使命、Routine、频率和记忆。
-- 暂停、恢复、立即运行和取消 Run。
-- 查看运行历史并打开关联 Session。
-- 时间线与运行记录对直接输入显示完整原文（安全纯文本、保留换行），结果摘要仍独立按 Markdown 渲染。
-- 时间线与运行记录复用普通会话 Markdown 图片链路：远程图片可直接预览、点击放大，尺寸受正文列约束；无法访问的图片显式显示失败占位。结果中的“取证证据”“证据”“说明”“来源”等独立 Markdown 章节默认折叠，结论正文保持展开，代码围栏内的同名文本不参与折叠。
-- 时间线 Run 标题表达实际工作内容：直接输入取规范化原文的有界摘要，Routine Run 取 Routine 名称，continue-mission 使用明确意图回退；运行状态只由相邻徽标表达，避免“本次运行正在工作/失败/已完成”占用标题。
-- 批准、拒绝和重试 AttentionItem。
-- 查看待处理与历史改进提案，比较变更前后值，接受或拒绝；待处理数量在助手顶栏和管理导航保持一致。
-- 时间线自动刷新，迟到旧 revision 不覆盖新状态。
-- 窄屏下侧栏可折叠，管理抽屉变为全宽层。
+主管 Session 可以读取最新状态，然后选择指导、回答、取消、恢复、分叉或更新计划。
 
-## 8. Heartbeat 兼容与转换
+Session 完成后，主管 Session 根据真实产物和验证结果更新责任状态。Session 失败只改变 Session 自身状态；计划项根据失败分类进入 retry、重新设计、等待依赖或 dropped。
 
-旧 `HeartbeatTask` 继续可读取，避免升级后任务消失。
+## 9. 自动回答与隔离试错
 
-阶段 3 提供：
+受管 Session 发生 `interaction_required` 时，Assistant 应尽可能自行处理。
 
-1. 列出可转换的 HeartbeatTask。
-2. 按 task ID 生成稳定转换 request ID。
-3. 每个旧任务转换为一个 Assistant + 一个 Routine，保留标题、Prompt、Scope、Workspace、Schedule、启停状态和 ApprovalMode。
-4. 已转换任务写入转换 receipt；重复转换返回原 Assistant。
-5. 用户确认转换后禁用旧任务，失败时不禁用，允许重试。
-6. 旧 Heartbeat Panel 保留兼容入口，并引导到助手工作区。
+决策顺序：
 
-## 9. 模板
+1. 根据 Mission、项目约束、计划、记忆和当前证据推断最佳选项。
+2. 选项可逆且置信度不足时，在隔离 Session、worktree 或 sandbox 中尝试多个方案。
+3. 用测试、产物、成本和副作用比较结果。
+4. 选择证据最好的方案并回答原 Session，或让胜出的 Session 继续执行。
+5. 无法隔离时选择最容易回滚且能继续推进的选项。
 
-### 9.1 代码项目助手
+每个普通问题都有 `decision_due_at`。到期后 Assistant 必须自行决定，不能无限等待用户。
 
-- Mission：持续关注项目健康度和发布准备情况。
-- Routine：修改扫描、测试/构建状态、发布准备检查。
-- 默认外部发布为逐次审批；用户可显式改为自动允许或拒绝。
+只有以下硬门槛允许等待用户：
 
-### 9.2 通用助手
+- 缺少无法推断或获取的凭据。
+- 不可恢复的大范围删除或数据覆盖。
+- 资金、法律和身份操作。
+- Policy 明确要求用户决定。
+- 用户明确要求此类动作必须确认。
 
-- Mission 和 Routine 由用户填写。
-- 默认只读，写入与网络权限显式选择。
+等待硬门槛时，其他可执行责任继续运行。Assistant 记录选择来源 `inferred`、`experiment` 或 `user`，以及置信度、候选项、理由和结果。
 
-推广助手模板在阶段 4 开放，默认创建内容规划、效果复盘和社区回复三个 Routine。模板默认逐次审批外发，用户把 `publish` 改为 `allow` 后可自动发帖/回复；读取公开效果数据按网络权限执行。
+## 10. 工作计划与横向扩展
 
-## 10. 分期与验收
-
-### 阶段 1：核心
-
-- `internal/assistant` 模型、校验、文件 Store、Scheduler、Run lease/retry/recovery。
-- 幂等创建、更新、立即运行和 occurrence。
-- 单助手单飞、错过合并、失败显式状态。
-- 包级单元测试、并发/race 关键路径测试。
-
-### 阶段 2：Desktop 与 UI
-
-- Desktop Service 生命周期和 Wails API。
-- 接通后台 Session Runner。
-- 参考图时间线工作区、创建/编辑、改频、记忆、历史。
-- 主要交互、TypeScript、CSS、生产构建和真实视觉验收。
-
-### 阶段 3：兼容与收件箱
-
-- Heartbeat 转换 receipt、兼容入口。
-- 代码项目/通用模板。
-- 持久 Attention Inbox 和恢复动作。
-- 转换失败补偿、重复转换和重启恢复测试。
-
-### 阶段 4：推广闭环与常驻宿主
-
-状态：已完成（2026-08-26）。
-
-- 提供类型化 `ChannelBinding`、外发 `ChannelAction`、效果 `ChannelMetric` 和连接器注册表；首个真实连接器为 Discourse，支持创建主题、回复和读取主题浏览/点赞/回复指标。
-- Assistant 聚合只保存稳定凭据引用，API Key 写入 WorkGround2 凭据存储；缺少或失效凭据显式进入诊断/待处理，不在日志、Prompt、Run 摘要和聚合文件回显秘密。
-- 发布/回复工具遵循冻结的 `publish` 三态。外发前保存 request 指纹与 `executing` receipt；同请求同意图返回原结果，不同意图冲突。网络结果不明时标记 `unknown` 并停止自动重试，人工对账后才能继续。
-- 成功外发进入自动采集队列。采集器按 `next_collect_at` 轮询公开指标，原子追加快照并计算相邻增量；失败使用有界退避且可观察，重复 tick 不重复写入同一采集窗口。
-- 最新渠道、动作与指标快照进入 Assistant 动态上下文。推广 Routine 必须比较效果、用 `metrics`/`strategy` 显式记忆记录结论，再提出下一轮内容；模型输出不能直接改指标权威数据。
-- Desktop 与 `WorkGround2 assistant daemon` 使用同一个可续租 leader lease。只有 leader 调度/领取/采集；follower 保持可观察并周期竞争，lease 过期可接管。Run fence lease 继续作为第二道并发保护；Assistant Store 的每个聚合读改写再使用跨进程 OS 文件锁，允许 follower UI 与 leader 安全地并发保存配置。
-- daemon 使用与 Desktop 相同的 Assistant Store、Controller、权限和恢复规则，可通过 `WorkGround2 assistant daemon` 作为本机后台进程或系统服务常驻；`--once` 可执行一次调度/采集/运行检查，不产生第二套状态源。
-
-### 阶段 5：持续改进提案闭环
-
-状态：已完成（2026-08-26）。
-
-- `<assistant-progress>` 增加类型化 `proposals`；成功 Run、Plan 进度和提案在一次聚合写入中提交，解析失败不留下半完成配置。
-- 提案只覆盖 Routine Prompt / Schedule / Enabled 与 Channel 采集间隔 / Enabled；Store 捕获基线 revision 和变更前值，禁止修改 Mission、Policy、Workspace、渠道地址或凭据。
-- 提供幂等 `ResolveProposal`：接受时以 revision + 触及字段基线做 CAS/兼容合并并原子应用；目标已满足则幂等收敛；目标的同字段被用户改过则显式 `superseded`，不覆盖新配置；拒绝只关闭提案。
-- 动态上下文包含现有待处理提案，防止模型重复建议；效果复盘提示要求用指标与证据解释建议，不能宣称未批准的配置已生效。
-- Desktop 增加“改进建议”页、待处理计数、前后值对比、接受/拒绝与终态历史；迟到 revision 不覆盖新状态，失败保留可重试入口。
-- 单元测试覆盖协议解析、无变化/越界拒绝、原子创建、幂等重放、CAS 接受、已达目标、冲突淘汰、拒绝、重启恢复和 UI 主交互；通过 Go 全量测试/vet、Frontend test/typecheck/build 与 Desktop 构建。
-
-### 阶段 6：角色化调度、反思与脑洞
-
-状态：已实现并合入 `main`（2026-08-27）。
-
-每个 Assistant 固定拥有一个 Dispatcher、最多三个并行 Runner、一个 Reflector 和一个低频 Ideator。角色是持久业务阶段，不依赖某个 Panel 或 Session 的生命周期：
-
-1. 用户直接输入先原子创建 `Dispatch`。Dispatcher 将其分类为 `task`、`question`、`feedback`、`improvement`、`correction` 或 `control`，保存面向用户的一级回复，并创建零到多个具名 Runner Job。提交接口返回完整 Dispatch；失败保留显式可重试状态，不把未分类输入伪装成已执行。
-2. Runner Job 冻结输入分类、目标、Runner 名称、权限、Workspace 和 ContextPack revision。不同 Job 可并行，单 Assistant 默认上限为 3；领取、续租、完成、失败和重试继续使用稳定 request ID 与 fence。计划、记忆和其它共享状态只经 Store 的 revision/CAS 入口提交。
-3. 全部关联 Job 进入终态后，Reflector 生成一个有界 `ContextPack`：包含结论、证据、失败、可复用策略、未决事项和建议的后续 Runner 上下文。ContextPack 与来源 Dispatch/Job 绑定并原子提交；Runner 只读取适用的 ContextPack，不注入无限原始历史。
-4. Ideator 在距上次脑洞至少 7 天或新增 5 个成功任务 Dispatch 后触发，也可由用户手动触发。它可以暂时放下既有策略假设来重新审视使命、目标和路径，但绝不能绕过权限、安全、Workspace、凭据和发布边界。产出保存为 `IdeaProposal`，必须由人类接受或拒绝；接受只转化为策略记忆或新的责任候选，不直接改 Mission、Policy 或执行外部动作。
-5. UI 时间线展示 Dispatcher 一级回复、分类、Runner 状态、反思摘要和脑洞待确认项。迟到快照按 revision 丢弃；所有失败均保留重试入口。
-
-验收至少覆盖：分类与幂等重放、同 request ID 冲突、零 Job 反馈输入、多 Job 三并发上限、租约恢复、反思只执行一次、ContextPack 有界与归属过滤、5 次/7 天触发、脑洞接受/拒绝 CAS、权限不可扩大、重启恢复，以及 Desktop/前端主交互。
-
-## 11. 风险与约束
-
-- 没有 Desktop 或本机 daemon 运行时不会执行任务；宿主恢复后按 `coalesce_latest` 补一次。
-- 长时间 Run 必须持有可续租 lease，应用退出后由恢复逻辑接管。
-- Assistant 动态上下文不能进入稳定 system prompt 前缀。
-- Heartbeat 当前默认 `yolo`，转换时必须映射并提示用户；外部发布默认映射为逐次审批，之后可由用户显式改为自动允许或拒绝。
-- UI 时间线是运行事实的投影，不能用乐观状态冒充已执行结果。
-- 项目路径变化或不存在时进入 `waiting_attention`，保留修复和重新绑定入口。
-
-## 12. 主要代码位置
+工作计划表在 UI 中按以下队列展示：
 
 ```text
-internal/assistant/                     核心领域、Store、Scheduler、Runner
-internal/assistant/plan.go              责任图、进度块与解析/脱敏
-internal/assistant/progress.go          CompleteRunWithProgress 与依赖/环校验
-internal/assistant/proposal.go          改进提案校验、CAS 处理与目标应用
-internal/assistant/dispatch.go          Dispatch / RunnerJob / ContextPack / IdeaProposal 模型与校验
-internal/assistant/dispatch_store.go    OpenDispatch / Classify / Fail / Reflect / OpenIdea / ResolveIdea
-internal/assistant/job_store.go         Job 领取/续租/完成/失败/取消/重试/恢复（三并发上限）
-internal/assistant/dispatcher.go        Dispatcher 经真实模型分类编排（失败显式可重试）
-internal/assistant/reflector.go         Reflector 经真实模型 once 反思 + 有界 ContextPack 归属过滤
-internal/assistant/ideator.go           Ideator 经真实模型 5 次/7 天门控与手动入口
-internal/assistant/role_protocol.go     RoleModel 接口、受限 JSON 协议、严格解析/校验、角色提示词与退避
-desktop/assistant_app.go                Desktop 宿主与 Wails API（含 Dispatch/RetryDispatch/Ideate/ResolveIdea/Job）
-desktop/assistant_runner.go             Controller/Session 执行适配与进度注入/应用
-desktop/assistant_dispatch.go           Desktop 无头 Job 执行、分类/反思/脑洞推进
-desktop/frontend/src/custom/features/assistant/  助手工作区、计划/提案页、抽屉、编辑器、时间线
-desktop/frontend/src/App.tsx            一级入口和表面切换
-desktop/heartbeat.go                    兼容与转换来源
-PROJECT_FEATURE_MAP.md                  功能状态
+机会池 -> 待执行 -> 执行中 -> 等待 -> 验证 -> 完成
 ```
+
+### 10.1 扩展触发
+
+- 当前没有可执行责任，并且没有执行中的关联 Session。
+- 工作长期没有进展。
+- 同类失败重复出现。
+- 关键指标下降。
+- Session、用户或外部研究提供了新证据。
+- heartbeat 发现 Mission 仍有未覆盖空间。
+
+### 10.2 扩展循环
+
+```text
+Evaluate -> Discover -> Research -> Rank -> Adopt -> Execute -> Learn
+```
+
+`Evaluate`：检查结果、失败、瓶颈、指标和未覆盖面。
+
+`Discover`：从相邻渠道、相邻受众、相邻目标、质量优化、流程自动化和已有成果复用等方向生成 Opportunity。
+
+`Research`：按需搜索网页、GitHub、官方文档和可信社区。研究可以交给独立受管 Session，来源必须保留链接、观察时间和关键证据。
+
+`Rank`：按目标相关性、预期价值、证据强度、成本、风险和重复度排序。
+
+`Adopt`：高自治模式自动把最有价值且可执行的 Opportunity 提升为 Responsibility 或 Experiment。
+
+`Execute`：创建 Session 执行，结果回写 Plan。
+
+`Learn`：总结有效做法、失败模式、适用范围和下一轮调整。
+
+持续目标在计划为空时必须进入扩展循环。有限目标根据配置进入 `done`、`maintenance` 或继续扩展。
+
+### 10.3 示例
+
+推广助手完成当前渠道后：
+
+- 搜索新的社区、产品目录、媒体、合作伙伴和内容形式。
+- 研究同类产品公开的增长经验。
+- 根据现有效果拆分受众并优化文案。
+- 建立可度量的文案或渠道实验。
+
+求职助手完成当前职位投递后：
+
+- 扩展相邻职位、行业和公司名单。
+- 搜索新的招聘渠道和关键词。
+- 根据回复率与拒绝原因调整简历版本和投递策略。
+- 继续形成下一批投递任务。
+
+扩展始终受 Mission、Scope、Policy、成本和并发限制。候选项必须去重；没有价值证据时允许降低频率，不能为了维持循环制造重复工作。
+
+## 11. 反思与学习
+
+以下事件触发反思：
+
+- Session 完成。
+- Session 失败。
+- 重试仍失败。
+- 一轮计划完成。
+- 指标显著变化。
+- 新研究与现有认知冲突。
+
+反思输出必须回答：
+
+- 做了什么，结果如何。
+- 哪些方法有效，证据是什么。
+- 哪些方法无效，失败边界是什么。
+- 是否应重试、调整、停止或扩大。
+- 哪些结论值得写入 Memory 的 Learning、strategy 或 fact 类型。
+- 下一步计划如何改变。
+
+Memory 中的 Learning 记录来源、观察时间、置信度、适用范围和失效条件。来自网络的经验先作为候选知识，经过本地验证或多来源交叉验证后再提升置信度。
+
+GitHub 研究优先读取项目文档、代码、Issue 和 Discussion；引入代码或配置前必须在隔离环境验证，不能因为仓库热度直接认为适用。
+
+## 12. 定时任务管理
+
+Assistant 必须能理解自然语言并直接管理 Routine：
+
+- `schedule_list`
+- `schedule_get`
+- `schedule_create`
+- `schedule_update`
+- `schedule_pause`
+- `schedule_resume`
+- `schedule_delete`
+- `schedule_run_now`
+
+语义：
+
+- 修改从下一次触发生效，不改变已经运行的 Session。
+- 暂停和删除只阻止未来触发，不隐式取消当前 Session。
+- 用户要求同时停止当前执行时，Assistant 额外调用 `session_cancel`。
+- 删除默认可恢复，重复删除返回 `already_applied`。
+- `run_now` 创建一次独立 fire，并通过 `request_id` 防止重复启动。
+- 每次计划触发生成稳定 `fire_id`；重复 tick、leader 切换和重启只能创建一个 Session。
+- 内部重试计时器不出现在用户 Routine 列表中。
+
+Routine UI 展示规则、时区、启停状态、下次运行、上次触发 Session、连续失败和当前重试状态；失败和重试信息从关联 Session 推导，不写回 Routine。
+
+## 13. 项目、记忆和 Policy 工具
+
+### 13.1 项目
+
+- `project_status`
+- `project_constraints_get`
+- `project_constraints_patch`
+
+修改项目约束直接作用于项目权威状态，使用 `request_id` 和 `expected_revision`。Assistant Memory 不保存可覆盖项目约束的副本。
+
+### 13.2 记忆
+
+- `memory_search`
+- `memory_remember`
+- `memory_forget`
+
+事实、策略、失败经验和用户偏好都要带来源。过时信息可失效或替换，不能与新事实并列后让模型自行猜测。
+
+### 13.3 Policy
+
+- `assistant_policy_get`
+- `assistant_policy_update`
+
+Assistant 可以根据用户自然语言调整 Policy，但不能自行扩大自己的权限。用户可以直接开关外部发言权限、修改允许的 Workspace、渠道、并发和危险动作边界。
+
+## 14. 暂停全部、恢复与重启
+
+`WorkControl` 状态：
+
+```text
+RUNNING -> QUIESCING -> PAUSED
+   ^                      |
+   |------ RECOVERING <---|
+```
+
+### 14.1 暂停全部
+
+`pause_all` 必须作用于所有模型回合、工具执行、Assistant 循环、Routine 触发、重试和受管 Session：
+
+1. 原子进入 `QUIESCING`，增加全局 work epoch/fence。
+2. 停止领取新任务和创建新 Session。
+3. 通知活动 Session 在安全点保存检查点。
+4. 超时未结束的模型或工具调用执行取消。
+5. 保存每个中断 Session 的恢复意图。
+6. 全部静默后进入 `PAUSED`。
+
+控制命令、状态查询和恢复命令在暂停期间仍可使用。旧 epoch 的迟到完成不得覆盖暂停后的状态。
+
+### 14.2 恢复全部
+
+`resume_all`：
+
+1. 进入 `RECOVERING`。
+2. 扫描中断 Session、待回答问题、到期 Routine fire、失效 lease 和未完成检查点。
+3. 根据幂等凭据恢复或补偿，未知外部结果不得自动重放。
+4. 恢复主管 Session 和受管 Session 的事件订阅。
+5. 进入 `RUNNING` 并立即唤醒 Assistant。
+
+### 14.3 重启语义
+
+- `RUNNING` 状态下异常退出或普通重启：启动后自动恢复。
+- 显式 `PAUSED`：重启后继续保持暂停，防止失控任务复活。
+- `pause_for_restart`：安全静默并写入一次性恢复意图，应用重启后自动进入 `RECOVERING`。
+
+UI 提供“暂停全部”“恢复全部”“安全重启”三个入口，并显示静默进度、未完成检查点和恢复结果。
+
+## 15. 失败、重试与自愈
+
+每次失败先分类：
+
+- `retryable_known`：结果明确，可安全重试。
+- `failed_known`：结果明确，需要换方案或调整计划。
+- `outcome_unknown`：外部结果未知，禁止自动重放。
+- `blocked_policy`：Policy 阻止，继续其他工作。
+- `blocked_dependency`：依赖不可用，等待事件或退避。
+
+处理流程：
+
+1. 保存错误、当前 Session、工具调用和观察 revision。
+2. 生成短反思，避免把完整失败日志反复塞入上下文。
+3. 选择重试原动作、指导原 Session、分叉替代方案、等待依赖或放弃。
+4. 可重试错误使用有上限的指数退避。
+5. 重复同类失败后必须改变策略，不能机械重放。
+6. 失败与恢复结果写入 Plan、Memory 中的 Learning 和诊断事件。
+
+Assistant 可以犯错，但错误必须显式、可定位、可恢复、可复盘。
+
+## 16. Desktop UI
+
+继续使用现有 Assistant 页面，增加以下区域：
+
+### 16.1 工作计划
+
+- 机会池、待执行、执行中、等待、验证和完成列。
+- 展示目标、下一步、完成条件和优先级；关联 Session、证据和失败从 Session 与 Artifact 查询。
+- 用户可以直接新增、修改优先级、暂停、丢弃或要求扩展。
+
+### 16.2 受管 Session
+
+- 展示 running、waiting、failed、retrying 和 completed。
+- 可以打开 Session、插入指导、回答、停止、恢复和分叉。
+- 明确显示 Session 当前活动和最后更新时间。
+
+### 16.3 定时任务
+
+- 增加、编辑、暂停、恢复、删除和立即运行。
+- 展示下次触发、最近 Session、失败次数和重试状态。
+
+### 16.4 控制与权限
+
+- 暂停全部、恢复全部、安全重启。
+- 外部发言开关。
+- Workspace、网络、本地写入、项目约束、并发和危险操作设置。
+
+### 16.5 观察与学习
+
+- 最近反思、Learning、来源和置信度。
+- 本轮隐式上下文诊断。
+- Assistant 自主选择和隔离实验的理由、结果与回滚点。
+
+UI 只提交意图和展示权威状态，不直接推断或修改业务状态。
+
+## 17. 实施计划
+
+以下工作按依赖顺序推进。每项完成后运行最小相关测试，并在跨模块控制面稳定后执行完整验证。
+
+### 17.1 收敛 Session 状态所有权
+
+目标：所有 Assistant 执行统一成为 Session。
+
+- 将活动 Session 目录下沉为 Desktop、daemon 和后台 Controller 共用的控制能力。
+- Session 元数据增加 Assistant 所有者、父 Session、用途和计划项引用。
+- 后台 Controller 创建后立即注册，结束后保留持久 Session 身份并释放运行实例。
+- Assistant 查询、取消和指导都按 Session ID 操作。
+- 停止为新任务创建独立 RunnerJob 执行状态。
+- 已有 Run/Job 只保留历史读取，不继续双写，不为其维护实时投影。
+
+验收：任意 Assistant 创建的后台任务都能出现在统一 Session 列表中，并能实时 `status`、`steer`、`answer`、`cancel` 和恢复。
+
+### 17.2 建立主管 Session 与常驻循环
+
+目标：现有 Assistant 直接拥有持续运行的主管 Session。
+
+- 创建或恢复唯一主管 Session。
+- 用户输入、Session 事件、Routine、重试和 heartbeat 进入同一事件队列。
+- 同一 Assistant 的主管推理串行执行，事件可合并但不能丢失。
+- 每轮保存 observation revision、动作 receipt 和下一步。
+- 计划为空时进入扩展循环。
+
+验收：应用持续运行时 Assistant 能自动推进；退出和重启后从同一计划与 Session 状态继续。
+
+### 17.3 补齐 Session、项目、记忆和 Policy 工具
+
+目标：自然语言意图都通过明确工具落地。
+
+- 实现 Session 查询与控制工具。
+- 实现项目状态和项目约束工具。
+- 复用并收敛 Memory 工具。
+- 实现 Policy 查询与更新。
+- 为所有写操作统一 request receipt 和 revision 冲突语义。
+
+验收：重复工具调用不产生重复 Session、重复修改或重复外部动作；目标 ID 缺失时显式拒绝。
+
+### 17.4 升级工作计划和扩展引擎
+
+目标：Assistant 有自己的工作组合表，完成后自动横向扩展。
+
+- 在现有 Plan 中补齐 Opportunity、Experiment，并让 Learning 直接使用 Memory 的受控类型。
+- 将执行中、失败和完成等运行状态改为从 Session 推导，Plan 只保存计划决策。
+- 增加 plan_empty、stalled、repeated_failure、metric_regression 和 new_evidence 触发。
+- 将 Ideator 的候选生成能力纳入主管循环。
+- 高自治模式自动采纳有证据的高价值机会。
+- 增加网页和 GitHub Research Session 模板、来源记录与验证流程。
+
+验收：推广和求职场景完成当前批次后，能自动生成、筛选并执行下一批计划；重复机会不会反复加入。
+
+### 17.5 自动代答和多方案试错
+
+目标：普通问题不再等待用户。
+
+- 将 PendingInteraction 事件送入主管 Session。
+- 实现 `interaction_answer` 和 decision deadline。
+- 可逆选项通过隔离 Session/worktree 并行尝试。
+- 保存选择依据、置信度、结果和回滚点。
+- 只把硬门槛留给用户。
+
+验收：受管 Session 的普通选项能自动得到回答；低置信选项可以隔离验证；等待硬门槛时其他计划继续推进。
+
+### 17.6 补齐 Routine 管理
+
+目标：Assistant 能自然语言增删改查定时任务。
+
+- 补齐 schedule 工具。
+- 使用稳定 fire ID 防止重复触发。
+- 明确修改、暂停、删除与当前运行 Session 的边界。
+- 在重启和 leader 切换后安全补偿。
+
+验收：重复 tick、重复请求和重启不会重复创建 Session；定时任务变更从下一次触发生效。
+
+### 17.7 全局暂停和恢复
+
+目标：用户可以可靠停止 WG2 的全部工作并恢复。
+
+- 实现唯一 WorkControl 状态和全局 fence。
+- 所有任务领取、Session 创建、模型回合、工具执行和重试接入同一闸门。
+- 实现 `pause_all`、`resume_all` 和 `pause_for_restart`。
+- 恢复 pending ask、lease、Session 检查点和未消费 fire。
+
+验收：暂停后没有新工作启动，迟到结果不会污染状态；普通重启、安全重启和显式暂停分别符合定义语义。
+
+### 17.8 更新 Assistant UI 与诊断
+
+目标：用户能看到和控制 Assistant 的真实工作状态。
+
+- 增加计划表、受管 Session、定时任务、学习记录和控制区。
+- 前端发布当前视窗快照。
+- 增加隐式上下文和自主决策诊断。
+- 所有操作失败显式提示并可安全重试。
+
+验收：UI 中显示的数据都能追溯到 Assistant Store、Session、Routine、Project 或 WorkControl 的权威状态，没有前端私有业务状态。
+
+### 17.9 清理重复执行路径
+
+目标：完成状态收敛后移除旧路径。
+
+- 删除新流程不再使用的 RunnerJob 领取与状态推进。
+- Dispatcher 保留用户意图入口和流式回复能力，停止把任务冻结成独立 Job。
+- 删除 Run/Job 与 Session 的实时双写、修复和对账代码。
+- 更新 daemon、Desktop、CLI 和测试，使其共享相同控制面。
+
+验收：一个任务只有一个 Session 执行状态；取消、恢复、问题和结果不需要跨多套状态同步。
+
+## 18. 影响模块
+
+- `internal/assistant`：Assistant、Policy、Plan、Routine、Memory、扩展循环和事件调度。
+- `internal/control`：共享 Session 控制、PendingInteraction、恢复和全局暂停接入。
+- `internal/tool/sessiontool`：Session 查询与控制工具。
+- `internal/assistantdaemon`：常驻宿主和重启恢复。
+- `desktop/assistant_app.go`：Assistant API。
+- `desktop/assistant_runner.go`：持续监督循环、事件唤醒和全局闸门。
+- `desktop/assistant_dispatch.go`：输入进入主管 Session，移除独立 Job 执行依赖。
+- `desktop/session_registry.go`：收敛到共享 Session 控制面。
+- `desktop/frontend/src/custom/features/assistant`：计划、Session、Routine、学习、权限和暂停恢复 UI。
+- 项目约束与 Memory 现有实现：提供权威读写工具，不复制状态。
+
+## 19. 验证清单
+
+### 状态单源
+
+- 一个受管任务只有一个 Session 状态。
+- Assistant Store 不保存 Session 运行状态副本。
+- Routine fire 不复制 Session 结果。
+- UI 不维护可覆盖后端的业务状态。
+
+### 幂等与乱序
+
+- 相同 request ID 重放返回同一结果。
+- 重复 tick 只创建一个 Session。
+- 旧 fence 的完成和失败都被拒绝。
+- Session 事件重复、迟到和乱序不会倒退计划。
+
+### 无限循环与扩展
+
+- 有事件立即响应。
+- 长期空闲仍会 heartbeat。
+- 单轮结束后可以继续下一轮。
+- 计划为空时 continuous Assistant 自动发现下一批工作。
+
+### 自动代答
+
+- 普通问题在 deadline 前由 Assistant 回答。
+- 多方案在隔离环境执行。
+- 硬门槛等待期间其他责任继续推进。
+
+### 暂停与恢复
+
+- 暂停后没有新模型、工具、Session、Routine 或重试启动。
+- 活动工作保存恢复意图。
+- 重启恢复不重复外部动作。
+- 显式暂停不会因为重启自动解除。
+- 安全重启能够自动恢复。
+
+### 权限
+
+- 外部发言关闭时无法发布，但草稿与研究继续。
+- 外部发言开启时在允许范围内无需逐次确认。
+- Assistant 无法自行扩大 Policy。
+- 外部内容不能通过提示注入绕过工具权限。
+
+## 20. 完成标准
+
+- 用户可以只通过自然语言让现有 Assistant 管理 Session、记忆、Routine、项目状态和项目约束。
+- Assistant 持续运行，能观察正在运行、近期、失败和视窗中的 Session。
+- Assistant 能指导、回答、取消、恢复和分叉受管 Session。
+- Assistant 有自己的工作计划，并在当前计划完成后主动研究和扩展。
+- 普通选择由 Assistant 推断或隔离试错，不长期等待用户。
+- 用户可以配置是否允许 Assistant 对外公开发言。
+- 用户可以暂停全部工作、安全重启并可靠恢复。
+- 执行状态收敛到 Session，计划状态收敛到 Assistant Plan，没有长期双写或投影层。
