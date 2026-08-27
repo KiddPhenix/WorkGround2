@@ -2009,13 +2009,14 @@ func TestDesktopIconTaskContinueRecoveryDefersUntilControllerReady(t *testing.T)
 }
 
 func TestRememberDesktopIconTaskRetainsOpenedTask(t *testing.T) {
-	tab, _ := completionTestTab(t, 0)
+	tab, sp := completionTestTab(t, 0)
 	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
 	app.widgetMode = true
 
 	app.rememberDesktopIconTask(tab.ID)
 
-	kept, ok := app.iconWidgetState.Kept["task:"+tab.ID]
+	itemID := desktopIconKeptID(sp)
+	kept, ok := app.iconWidgetState.Kept[itemID]
 	if !ok {
 		t.Fatalf("opened task was not retained: %+v", app.iconWidgetState.Kept)
 	}
@@ -2026,7 +2027,7 @@ func TestRememberDesktopIconTaskRetainsOpenedTask(t *testing.T) {
 		t.Fatal("kept title is empty")
 	}
 	snapshot := app.GetDesktopIconSnapshot()
-	item := findDesktopIconItem(snapshot.Items, "task:"+tab.ID)
+	item := findDesktopIconItem(snapshot.Items, itemID)
 	if item == nil {
 		t.Fatalf("retained icon missing from snapshot: %+v", snapshot.Items)
 	}
@@ -2036,17 +2037,18 @@ func TestRememberDesktopIconTaskRetainsOpenedTask(t *testing.T) {
 }
 
 func TestRememberDesktopIconTaskIdempotentKeepsOriginalSummary(t *testing.T) {
-	tab, _ := completionTestTab(t, 0)
+	tab, sp := completionTestTab(t, 0)
 	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
 	app.widgetMode = true
 
 	app.rememberDesktopIconTask(tab.ID)
-	app.iconWidgetState.Kept["task:"+tab.ID] = desktopIconKept{
-		ItemID: "task:" + tab.ID, SourceID: tab.ID, Title: "原标题", Summary: "原摘要", Order: 3,
+	itemID := desktopIconKeptID(sp)
+	app.iconWidgetState.Kept[itemID] = desktopIconKept{
+		ItemID: itemID, SourceID: tab.ID, Title: "原标题", Summary: "原摘要", Order: 3, SessionPath: sp,
 	}
 	app.rememberDesktopIconTask(tab.ID)
 
-	kept := app.iconWidgetState.Kept["task:"+tab.ID]
+	kept := app.iconWidgetState.Kept[itemID]
 	if kept.Summary != "原摘要" || kept.Title != "原标题" || kept.Order != 3 {
 		t.Fatalf("re-retain overwrote the kept entry: %+v", kept)
 	}
@@ -2104,11 +2106,11 @@ func TestRememberDesktopIconTaskRequiresWidgetModeAndKnownTab(t *testing.T) {
 }
 
 func TestDesktopIconRemoveDeletesRetainedIcon(t *testing.T) {
-	tab, _ := completionTestTab(t, 0)
+	tab, sp := completionTestTab(t, 0)
 	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
 	app.widgetMode = true
 	app.rememberDesktopIconTask(tab.ID)
-	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, "task:"+tab.ID)
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, desktopIconKeptID(sp))
 	if item == nil {
 		t.Fatal("retained icon missing before remove")
 	}
@@ -2119,10 +2121,10 @@ func TestDesktopIconRemoveDeletesRetainedIcon(t *testing.T) {
 	if result.Status != "accepted" {
 		t.Fatalf("remove status = %q error %q", result.Status, result.Error)
 	}
-	if _, kept := app.iconWidgetState.Kept["task:"+tab.ID]; kept {
+	if _, kept := app.iconWidgetState.Kept[item.ID]; kept {
 		t.Fatal("remove kept the retained icon")
 	}
-	if findDesktopIconItem(result.Snapshot.Items, "task:"+tab.ID) != nil {
+	if findDesktopIconItem(result.Snapshot.Items, item.ID) != nil {
 		t.Fatal("removed icon still in snapshot")
 	}
 }
@@ -3143,9 +3145,126 @@ func TestRememberDesktopIconTaskSameSessionRefreshesNotDuplicates(t *testing.T) 
 	if len(app.iconWidgetState.Kept) != 1 {
 		t.Fatalf("reopen accumulated %d kept entries: %+v", len(app.iconWidgetState.Kept), app.iconWidgetState.Kept)
 	}
-	kept, ok := app.iconWidgetState.Kept["task:task-1"]
+	kept, ok := app.iconWidgetState.Kept[desktopIconKeptID(sp)]
 	if !ok || kept.SourceID != "task-1-reborn" {
 		t.Fatalf("kept entry not refreshed to live tab: %+v", app.iconWidgetState.Kept)
+	}
+}
+
+func TestRememberDesktopIconTaskSameTabDifferentSessionsStayIndependent(t *testing.T) {
+	tab, firstPath := completionTestTab(t, 0)
+	_, secondPath := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+
+	tab.TopicTitle = "Session A"
+	app.rememberDesktopIconTask(tab.ID)
+	tab.SessionPath = secondPath // the same physical tab is rebound within its Topic
+	tab.TopicTitle = "Session B"
+	app.rememberDesktopIconTask(tab.ID)
+
+	if len(app.iconWidgetState.Kept) != 2 {
+		t.Fatalf("same tab across two Sessions kept %d entries: %+v", len(app.iconWidgetState.Kept), app.iconWidgetState.Kept)
+	}
+	first := app.iconWidgetState.Kept[desktopIconKeptID(firstPath)]
+	second := app.iconWidgetState.Kept[desktopIconKeptID(secondPath)]
+	if first.SessionPath != firstPath || first.Title != "Session A" {
+		t.Fatalf("first Session identity was overwritten: %+v", first)
+	}
+	if second.SessionPath != secondPath || second.Title != "Session B" {
+		t.Fatalf("second Session identity was not retained independently: %+v", second)
+	}
+}
+
+func TestDesktopIconKeptLiveDedupeUsesSessionPath(t *testing.T) {
+	tab, sp := completionTestTab(t, 1000)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	itemID := desktopIconKeptID(sp)
+	app.iconWidgetState.Kept[itemID] = desktopIconKept{
+		ItemID: itemID, SourceID: "stale-tab", Title: "retained", SessionPath: sp,
+	}
+
+	snapshot := app.GetDesktopIconSnapshot()
+	tasks := 0
+	for _, item := range snapshot.Items {
+		if item.Kind == "task" {
+			tasks++
+			if item.Retained {
+				t.Fatalf("same Session rendered as both live and retained: %+v", item)
+			}
+		}
+	}
+	if tasks != 1 {
+		t.Fatalf("task count = %d, want one live Session: %+v", tasks, snapshot.Items)
+	}
+}
+
+func TestDesktopIconKeptStaleSourceIDCannotHideDifferentSession(t *testing.T) {
+	_, livePath := completionTestTab(t, 0)
+	_, keptPath := completionTestTab(t, 0)
+	keptID := desktopIconKeptID(keptPath)
+	state := newDesktopIconState()
+	state.Kept[keptID] = desktopIconKept{
+		ItemID: keptID, SourceID: "reused-tab", Title: "retained", SessionPath: keptPath,
+	}
+	snapshot := buildDesktopIconSnapshot([]widgetSource{{meta: TabMeta{
+		ID: "reused-tab", SessionPath: livePath, RunningWork: true,
+	}}}, UnreadState{}, nil, state, 0, nil, nil, nil, nil)
+
+	if findDesktopIconItem(snapshot.Items, keptID) == nil {
+		t.Fatalf("stale SourceID hid a different retained Session: %+v", snapshot.Items)
+	}
+	if findDesktopIconItem(snapshot.Items, "task:reused-tab") == nil {
+		t.Fatalf("live Session missing from snapshot: %+v", snapshot.Items)
+	}
+}
+
+func TestDesktopIconKeptDelegationFilterUsesPathBeforeStaleSourceID(t *testing.T) {
+	_, sp := completionTestTab(t, 0)
+	kept := desktopIconKept{SourceID: "reused-cli-tab", SessionPath: sp}
+	if desktopIconKeptIsDelegation(kept, map[string]bool{"reused-cli-tab": true}, map[string]bool{}) {
+		t.Fatal("stale SourceID classified a normal path-backed Session as delegation")
+	}
+}
+
+func TestDesktopIconKeptMigrationReindexesBySessionPath(t *testing.T) {
+	t.Setenv("WorkGround2_STATE_HOME", t.TempDir())
+	sp := agent.NewSessionPath(t.TempDir(), "legacy")
+	legacy := newDesktopIconState()
+	legacy.Kept = map[string]desktopIconKept{
+		"task:old-tab-a": {ItemID: "task:old-tab-a", SourceID: "old-tab-a", Title: "older", SessionPath: sp, Order: 4},
+		"task:old-tab-b": {ItemID: "task:old-tab-b", SourceID: "old-tab-b", Title: "newer", SessionPath: sp, Order: 2, CompletedAt: 9},
+	}
+	legacy.Positions["task:old-tab-b"] = DesktopIconPosition{Row: "bottom", Zone: "running", Order: 2}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(desktopIconStatePath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(desktopIconStatePath(), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{}
+	app.loadDesktopIconStateLocked()
+	itemID := desktopIconKeptID(sp)
+	if len(app.iconWidgetState.Kept) != 1 {
+		t.Fatalf("migration kept %d duplicate entries: %+v", len(app.iconWidgetState.Kept), app.iconWidgetState.Kept)
+	}
+	kept, ok := app.iconWidgetState.Kept[itemID]
+	if !ok || kept.ItemID != itemID || kept.SourceID != "old-tab-b" || kept.Order != 2 {
+		t.Fatalf("migrated kept entry = %+v", kept)
+	}
+	if got := app.iconWidgetState.Positions[itemID]; got.Order != 2 {
+		t.Fatalf("migrated position = %+v", got)
+	}
+
+	reloaded := &App{}
+	reloaded.loadDesktopIconStateLocked()
+	if len(reloaded.iconWidgetState.Kept) != 1 || reloaded.iconWidgetState.Kept[itemID].ItemID != itemID {
+		t.Fatalf("migration was not idempotent after reload: %+v", reloaded.iconWidgetState.Kept)
 	}
 }
 
