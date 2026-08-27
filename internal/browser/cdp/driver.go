@@ -117,8 +117,21 @@ func (d *driver) start(ctx context.Context) error {
 }
 
 // startRemote attaches to an already-running browser via its websocket URL.
-// The remote browser is not owned and must never be killed by Close.
+// The remote browser is not owned and must never be killed by Close. A normal
+// attach never claims an existing page because there is no durable owner-to-
+// target binding yet; chromedp creates a fresh blank target for this client.
 func (d *driver) startRemote(ctx context.Context) error {
+	return d.startRemoteWithBootstrap(ctx, false)
+}
+
+// startFreshPersistent attaches to a browser process that this call just
+// launched. Its bootstrap about:blank page is known to be unowned, so it is
+// safe to reuse and avoids leaking an extra blank target on first launch.
+func (d *driver) startFreshPersistent(ctx context.Context) error {
+	return d.startRemoteWithBootstrap(ctx, true)
+}
+
+func (d *driver) startRemoteWithBootstrap(ctx context.Context, reuseBootstrap bool) error {
 	if d.opts.DebugURL == "" || d.opts.WebSocketURL == "" {
 		return fmt.Errorf("attach requires DebugURL and WebSocketURL")
 	}
@@ -131,9 +144,9 @@ func (d *driver) startRemote(ctx context.Context) error {
 	d.debugEndpoint = endpointURL.Host
 	d.mu.Unlock()
 
-	initialTarget, err := reusablePageTarget(ctx, info.Endpoint)
+	initialTarget, err := initialPageTarget(ctx, info.Endpoint, reuseBootstrap)
 	if err != nil {
-		return fmt.Errorf("find reusable page target: %w", err)
+		return fmt.Errorf("resolve initial page target: %w", err)
 	}
 	d.allocCtx, d.allocCancel = chromedp.NewRemoteAllocator(ctx, info.WebSocketURL)
 	return d.startWithAllocator(initialTarget)

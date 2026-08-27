@@ -74,7 +74,7 @@ func launchPersistent(ctx context.Context, dopts browser.DriverOptions, execPath
 	d.processID = cmd.Process.Pid
 	d.debugEndpoint = debugEndpointFor(port)
 	d.mu.Unlock()
-	if err := d.startRemote(context.WithoutCancel(ctx)); err != nil {
+	if err := d.startFreshPersistent(context.WithoutCancel(ctx)); err != nil {
 		proc.KillTree(cmd)
 		waitForProcess(done)
 		_ = d.Close()
@@ -103,6 +103,17 @@ func persistentArgs(opts browser.DriverOptions, port int) []string {
 		args = append(args, "--incognito")
 	}
 	return append(args, "about:blank")
+}
+
+// initialPageTarget returns an existing target only for a browser process that
+// the current launch path just created. A normal attach has no durable owner
+// mapping, so selecting any page from /json/list could steal another session's
+// state; an empty target tells chromedp to create a fresh blank page instead.
+func initialPageTarget(ctx context.Context, endpoint string, reuseBootstrap bool) (string, error) {
+	if !reuseBootstrap {
+		return "", nil
+	}
+	return reusablePageTarget(ctx, endpoint)
 }
 
 func reusablePageTarget(ctx context.Context, endpoint string) (string, error) {

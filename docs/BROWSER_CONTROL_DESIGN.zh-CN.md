@@ -4,7 +4,7 @@
 分支：`developping/browser-playwright-reuse+2026-08-13`
 范围：原生 CDP + Playwright 复用入口；不使用浏览器 MCP；不提供截图、下载或桌面专用 UI；本地文件上传通过专用 `browser_upload` 工具并在 Desktop 设置中可关闭。
 
-实现验证：Chrome 151 真实双门集成覆盖完整工具闭环、跨域 iframe Target 路由、取消隔离、下载拒绝、旧临时 Profile 兼容路径回收，以及共享浏览器 detach 后 endpoint/页面继续存活并可重新 attach；默认单测不启动浏览器。
+实现验证：Chrome 151 真实双门集成覆盖完整工具闭环、跨域 iframe Target 路由、取消隔离、下载拒绝、旧临时 Profile 兼容路径回收，以及共享浏览器 detach 后 endpoint/既有页面继续存活、无归属重连创建新空白 Target；默认单测不启动浏览器。
 
 ## 1. 目标
 
@@ -53,7 +53,7 @@ browser_open
 
 正常流程：
 
-1. `browser_open` 按当前 parent session 幂等创建控制 Session；优先校验记录的 endpoint 并 attach，失效时才新建浏览器并更新记录。
+1. `browser_open` 按当前 parent session 幂等创建控制 Session；优先校验记录的 endpoint 并 attach，失效时才新建浏览器并更新记录。持久 owner→Target 绑定完成前，已有浏览器的 attach 创建新空白 Target，不从 `/json/list` 认领任意既有页面；仅当前调用刚启动的 Chromium 可复用其 bootstrap 空白页。
 2. `browser_state` 发布一个不可变页面快照，返回 `revision` 和 `[index]` 元素。
 3. 写操作必须携带该 `revision`、目标 `index` 和 `request_id`。
 4. 写操作完成后重新观察页面，发布新快照并返回新 revision 摘要。
@@ -156,7 +156,7 @@ internal/browser/
     credential.go       # 预留 CredentialProvider；第一版不注册凭据工具
     cdp/
         factory.go      # DriverFactory、持久/兼容启动路由
-        persistent.go   # OS 脱离启动、endpoint readiness、已有页面 Target 复用
+        persistent.go   # OS 脱离启动、endpoint readiness、新进程 bootstrap Target 复用
         driver.go       # Chromium/Target 连接与安全 detach
         observe.go      # DOMSnapshot + AX + 页面文本
         action.go       # navigate/click/type/scroll

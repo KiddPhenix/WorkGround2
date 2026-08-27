@@ -628,7 +628,8 @@ func TestChromeDebugPortWebdriverSignal(t *testing.T) {
 
 // TestPersistentBrowserDetachAndReattach proves the shared-runtime contract on
 // a real browser: Close tears down only the CDP client, the browser and page
-// survive, and a second Driver attaches to the same page target.
+// survive, while a second unbound Driver creates a fresh page instead of
+// claiming the existing target.
 func TestPersistentBrowserDetachAndReattach(t *testing.T) {
 	if os.Getenv("WORKGROUND2_BROWSER_INTEGRATION") != "1" {
 		t.Skip("set WORKGROUND2_BROWSER_INTEGRATION=1 and use -tags browser_integration")
@@ -701,8 +702,21 @@ func TestPersistentBrowserDetachAndReattach(t *testing.T) {
 		t.Fatalf("reattached endpoint = %q, want %q", got, endpoint)
 	}
 	after, err := second.Observe(ctx, browser.ObserveOptions{})
-	if err != nil || after.Title != before.Title || after.URL != before.URL {
-		t.Fatalf("reattach did not reuse page: before=%+v after=%+v err=%v", before, after, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ActiveTab == before.ActiveTab || after.URL != "about:blank" {
+		t.Fatalf("reattach claimed existing page: before=%+v after=%+v", before, after)
+	}
+	preserved := false
+	for _, tab := range after.Tabs {
+		if tab.ID == before.ActiveTab && tab.URL == before.URL && tab.Title == before.Title {
+			preserved = true
+			break
+		}
+	}
+	if !preserved {
+		t.Fatalf("reattach lost existing page: before=%+v after=%+v", before, after)
 	}
 	if err := second.Close(); err != nil {
 		t.Fatal(err)

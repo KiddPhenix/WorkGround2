@@ -33,7 +33,7 @@ func TestPersistentArgsUseExplicitLoopbackEndpointAndProfile(t *testing.T) {
 	}
 }
 
-func TestReusablePageTargetPrefersExistingPage(t *testing.T) {
+func TestInitialPageTargetFreshLaunchReusesBootstrapPage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/json/list" {
 			http.NotFound(w, r)
@@ -42,8 +42,25 @@ func TestReusablePageTargetPrefersExistingPage(t *testing.T) {
 		fmt.Fprint(w, `[{"id":"worker","type":"service_worker","url":"https://example.test/sw.js"},{"id":"page-1","type":"page","url":"https://example.test/"}]`)
 	}))
 	defer srv.Close()
-	id, err := reusablePageTarget(context.Background(), srv.URL)
+	id, err := initialPageTarget(context.Background(), srv.URL, true)
 	if err != nil || id != "page-1" {
-		t.Fatalf("reusablePageTarget = %q, %v", id, err)
+		t.Fatalf("initialPageTarget = %q, %v", id, err)
+	}
+}
+
+func TestInitialPageTargetExistingBrowserNeverClaimsPage(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		fmt.Fprint(w, `[{"id":"foreign-page","type":"page","url":"https://example.test/"}]`)
+	}))
+	defer srv.Close()
+
+	id, err := initialPageTarget(context.Background(), srv.URL, false)
+	if err != nil || id != "" {
+		t.Fatalf("initialPageTarget = %q, %v; want empty target", id, err)
+	}
+	if requests != 0 {
+		t.Fatalf("existing-browser attach queried /json/list %d times; want 0", requests)
 	}
 }
