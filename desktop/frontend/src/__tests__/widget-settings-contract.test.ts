@@ -138,7 +138,7 @@ assert.doesNotMatch(
 );
 assert.match(
   appSource,
-  /useAssistantSurfaceSignals\(assistantOpenSignal, sessionRevealSignal, openAssistantSurface, closeAssistantSurface\);/,
+  /useAssistantSurfaceSignals\([\s\S]*?assistantOpenSignal,[\s\S]*?sessionRevealSignal,[\s\S]*?openAssistantSurface,[\s\S]*?closeAssistantSurface,[\s\S]*?revealActiveSession,[\s\S]*?\);/,
   "MainApp steers the Assistant surface through the shared assistant-surface signal hook (open on the Assistant icon, collapse on an explicit Session)",
 );
 // The assistant fixed entry never opens a generic popup and never runs the

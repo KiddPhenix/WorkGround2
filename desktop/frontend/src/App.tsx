@@ -3525,7 +3525,21 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     closeTransientOverlays();
     setAssistantOpen(false);
   }, [closeTransientOverlays]);
-  useAssistantSurfaceSignals(assistantOpenSignal, sessionRevealSignal, openAssistantSurface, closeAssistantSurface);
+  const revealActiveSession = useCallback(() => {
+    void syncActiveTab(false)
+      .then(async (tabId) => {
+        if (!tabId) throw new Error(t("history.failedOpenSession"));
+        await refreshTabMetas();
+      })
+      .catch((error) => showToast(error instanceof Error ? error.message : String(error), "error"));
+  }, [refreshTabMetas, showToast, syncActiveTab, t]);
+  useAssistantSurfaceSignals(
+    assistantOpenSignal,
+    sessionRevealSignal,
+    openAssistantSurface,
+    closeAssistantSurface,
+    revealActiveSession,
+  );
 
   const finishCollaborationConnect = useCallback(async () => {
     await refreshProjectsAndTabs();

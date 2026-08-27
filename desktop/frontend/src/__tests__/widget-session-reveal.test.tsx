@@ -25,6 +25,7 @@ const flushPromises = () => new Promise<void>((resolve) => setTimeout(resolve, 0
 
 // module-level handles so the test can drive the harness between renders.
 const assistantOpenRef: { current: boolean } = { current: true };
+const revealedSessions: number[] = [];
 const harnessApi: {
   setOpenSignal: (n: number) => void;
   setRevealSignal: (n: number) => void;
@@ -39,6 +40,7 @@ function AssistantSurface({ openSignal, revealSignal }: { openSignal: number; re
     revealSignal,
     () => setAssistantOpen(true),
     () => setAssistantOpen(false),
+    () => revealedSessions.push(revealSignal),
   );
   return React.createElement("div", { "data-assistant-open": assistantOpen ? "true" : "false" });
 }
@@ -92,10 +94,12 @@ async function main() {
   });
   await act(async () => { harnessApi.setWidgetMode(false); await flushPromises(); });
   ok(assistantOpenRef.current === false, "explicit Session open (reveal signal) collapses the Assistant surface");
+  ok(revealedSessions.join(",") === "1", "explicit Session open reconciles the backend active Tab exactly once");
 
   // A stale/unrelated re-render must not re-apply the already-consumed signal.
   await act(async () => { await flushPromises(); });
   ok(assistantOpenRef.current === false, "re-render with an unchanged reveal signal does not re-collapse or re-open");
+  ok(revealedSessions.join(",") === "1", "unchanged reveal signal does not reconcile the active Tab again");
 
   // The Assistant icon follows the same hidden-to-visible lifecycle and opens
   // the Assistant home after the widget exits.
