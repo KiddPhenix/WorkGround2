@@ -33528,6 +33528,10 @@ body > .mermaid-diagram--fullscreen {
   color: color-mix(in srgb, #c9d0d8 82%, var(--fg-faint));
 }
 
+.workspace-sidebar .project-tree__topic-origin--assist {
+  color: color-mix(in srgb, #b9a6ff 82%, var(--fg-faint));
+}
+
 .workspace-sidebar .project-tree__topic-origin--external {
   color: color-mix(in srgb, #b8d4e9 72%, var(--fg-faint));
 }

@@ -368,10 +368,10 @@ export interface DesktopIconItem {
 	sourceRevision?: number;
 }
 export interface DesktopIconDelegation {
-  id: string; kind: "subagent" | "background" | "cli"; content: string; status: "running";
+  id: string; kind: "subagent" | "background" | "cli" | "assist"; content: string; status: "running";
   sessionTitle: string; workspaceName?: string; updatedAt?: number; sessionRef?: DesktopIconTaskRef;
 }
-export interface DesktopIconSnapshot { items: DesktopIconItem[]; delegations: DesktopIconDelegation[]; delegationError?: string; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
+export interface DesktopIconSnapshot { items: DesktopIconItem[]; delegations: DesktopIconDelegation[]; assistantTasks: DesktopIconDelegation[]; delegationError?: string; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
 export interface DesktopIconSearchItem { id: string; kind: "session" | "room" | "person" | "task" | "workspace"; title: string; subtitle?: string; sourceId: string; lastActivityAt?: number; }
 export interface DesktopIconSearchResult { items: DesktopIconSearchItem[]; error?: string; }
 export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; answers?: QuestionAnswer[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
@@ -1564,6 +1564,7 @@ function makeMockApp(): AppBindings {
 		style: desktopWidgetStyle, revision: `icons-${widgetRevision}`, hoverStatusDelayMs: settings?.hoverStatusDelayMs ?? 1200,
 		unreadRevision: widgetRevision,
 		delegations: [],
+		assistantTasks: [],
 		items: [
 			{ id: "conversation:room-design", kind: "room", sourceId: "room-design", title: "产品 Room", status: "unread", unreadCount: 2, position: { row: "top", zone: "conversation", order: 0 }, revision: `room-${widgetRevision}`, notifications: [{ id: "room-msg", revision: "2", kind: "message", priority: 9, title: "小组件讨论", body: "收到一条新消息", createdAt: t0, conversation: "room-design", readSequence: 2, attention: "mention_agent", options: [] }] },
 			{ id: "task:tab-wg2", kind: "task", sourceId: "tab-wg2", title: "桌面图标模式", subtitle: "WorkGround2", status: widgetScenario === "widget-running" ? "running" : "thinking", unreadCount: 0, runtimeStatus: { phase: widgetScenario === "widget-running" ? "Running" : "Thinking", summary: widgetScenario === "widget-running" ? "read_file 执行中" : "正在核对真实状态投影", elapsedMs: 84_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 0 }, revision: `task-${widgetRevision}`, notifications: [] },

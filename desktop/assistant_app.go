@@ -460,10 +460,11 @@ func (a *App) AssistantCancel(req AssistantCancelRequest) (assistant.Run, error)
 	return *run, nil
 }
 
-// AssistantSubmit routes a direct input through the Dispatcher. The returned
-// Dispatch carries a durable state: classified, reflected, or
-// classification_failed (retryable). It never pretends an unclassified input
-// was executed.
+// AssistantSubmit durably opens a Dispatch for a direct input and returns the
+// persisted pending Dispatch immediately, without waiting for the model reply.
+// Background classification (woken below) then streams the reply and applies the
+// validated result exactly once. The returned Dispatch is pending_classification
+// on a fresh input; a replayed request ID returns the already-persisted Dispatch.
 func (a *App) AssistantSubmit(req AssistantSubmitRequest) (assistant.Dispatch, error) {
 	service, err := a.assistantRuntime()
 	if err != nil {
@@ -473,12 +474,13 @@ func (a *App) AssistantSubmit(req AssistantSubmitRequest) (assistant.Dispatch, e
 	if input == "" {
 		return assistant.Dispatch{}, errors.New("assistant: direct input must not be empty")
 	}
-	dispatch, err := service.dispatcher.Dispatch(a.assistantContext(), assistant.OpenDispatchInput{
+	dispatch, err := service.store.OpenDispatch(assistant.OpenDispatchInput{
 		AssistantID: req.AssistantID, RequestID: req.RequestID, Input: input, Now: time.Now(),
 	})
 	if err != nil {
 		return assistant.Dispatch{}, err
 	}
+	service.emitDispatchOpened(dispatch)
 	service.Wake()
 	return dispatch, nil
 }
@@ -493,8 +495,14 @@ func (a *App) AssistantRetryDispatch(assistantID, dispatchID, requestID string) 
 	}
 	dispatch, err := service.dispatcher.RetryDispatch(a.assistantContext(), assistantID, dispatchID, time.Now())
 	if err != nil {
+		service.emitDispatchTerminal(assistant.Dispatch{
+			ID: dispatchID, AssistantID: assistantID,
+			State: assistant.DispatchClassificationFailed,
+			Error: &assistant.RunError{Code: "classification_unavailable", Message: err.Error()},
+		})
 		return assistant.Dispatch{}, err
 	}
+	service.emitDispatchTerminal(dispatch)
 	service.Wake()
 	return dispatch, nil
 }

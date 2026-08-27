@@ -346,6 +346,12 @@ const STALE_TURN_RECONCILE_MS = 30_000;
 const CANCEL_RECONCILE_DELAYS_MS = [0, 100, 300, 1_000] as const;
 const OPEN_RUNTIME_RECONCILE_DELAYS_MS = [0, 100, 300, 1_000, 2_000, 4_000, 8_000, 12_000, 20_000] as const;
 
+// Read-only linked Session previews can be opened while a Runner/Job is still
+// writing its session file (between BindSession and the first persisted
+// message). Re-read the file a bounded number of times so an initially empty
+// preview surfaces its messages once they land, without polling forever.
+const PREVIEW_RELOAD_DELAYS_MS = [250, 500, 750, 1_000, 1_500, 2_000, 3_000] as const;
+
 export function shouldReconcileStaleTurn(
   state: Pick<State, "running" | "turnActive"> | undefined,
   lastTurnActivityAt: number,
@@ -1398,10 +1404,14 @@ export function useController() {
     tabId: string,
     reset = false,
     reason: HydrateReason = "startup",
-    options: { skipHistory?: boolean; placeholderItems?: Item[]; preserveCachedHistory?: boolean; sessionPath?: string } = {},
+    options: { skipHistory?: boolean; placeholderItems?: Item[]; preserveCachedHistory?: boolean; sessionPath?: string; previewReload?: boolean } = {},
   ) => {
     const sessionPath = (options.sessionPath ?? statesRef.current.get(tabId)?.meta?.sessionPath ?? "").trim();
-    const canJoinInFlight = !reset && !options.skipHistory;
+    // Linked read-only previews may be backed by a headless Runner that keeps
+    // writing after the first open. A user reopening that exact path is an
+    // explicit disk refresh, so it must supersede even the ancillary tail of
+    // an earlier hydration instead of joining its already-resolved history.
+    const canJoinInFlight = !reset && !options.skipHistory && !options.previewReload;
     const shouldTrackInFlight = !options.skipHistory;
     if (canJoinInFlight) {
       const existing = sessionLoadInFlight.current.get(tabId);
@@ -1440,17 +1450,35 @@ export function useController() {
       if (!stillCurrent()) return;
       if (meta !== undefined) dispatchTo(tabId, { type: "meta", meta });
       if (!skipHistory && historyPage !== undefined) {
-        const messages = asArray(historyPage.messages);
-        dispatchTo(tabId, { type: "history_page", page: historyPage, mode: "replace", sessionPath: historyPage.sessionPath || sessionPath });
+        let page = historyPage;
+        if (options.previewReload && asArray(page.messages).length === 0) {
+          for (const delay of PREVIEW_RELOAD_DELAYS_MS) {
+            if (!stillCurrent()) return;
+            await new Promise((resolve) => window.setTimeout(resolve, delay));
+            if (!stillCurrent()) return;
+            const nextPage = await app.HistoryPageForTab(sessionTarget(tabId), 0, HISTORY_PAGE_TURNS).catch((err) => {
+              noteFailure("preview-reload", err);
+              return undefined;
+            });
+            if (!stillCurrent()) return;
+            if (nextPage === undefined) continue;
+            if (asArray(nextPage.messages).length > 0) {
+              page = nextPage;
+              break;
+            }
+          }
+        }
+        const messages = asArray(page.messages);
+        dispatchTo(tabId, { type: "history_page", page, mode: "replace", sessionPath: page.sessionPath || sessionPath });
         projectRunHistory(tabId, statesRef.current.get(tabId)?.items ?? []);
         addBreadcrumb(
           "tab.hydrate",
-          `history page ${tabId} messages=${messages.length} turns=${historyPage.startTurn}-${historyPage.endTurn}/${historyPage.totalTurns} ms=${Date.now() - historyStartedAt}`,
+          `history page ${tabId} messages=${messages.length} turns=${page.startTurn}-${page.endTurn}/${page.totalTurns} ms=${Date.now() - historyStartedAt}`,
         );
         if (reason === "switch-tab") {
           addBreadcrumb(
             "tab.switch",
-            `history-done ${tabId} messages=${messages.length} turns=${historyPage.startTurn}-${historyPage.endTurn}/${historyPage.totalTurns} ms=${Date.now() - historyStartedAt}`,
+            `history-done ${tabId} messages=${messages.length} turns=${page.startTurn}-${page.endTurn}/${page.totalTurns} ms=${Date.now() - historyStartedAt}`,
           );
         }
       } else if (skipHistory) {
@@ -2536,7 +2564,8 @@ export function useController() {
     const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
     const prevState = statesRef.current.get(meta.id);
     const isNewTab = !prevState;
-    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath);
+    const previewReload = Boolean(meta.readOnly && meta.sessionKind === "assistant");
+    const preserveCachedHistory = !previewReload && hasReusableCachedTranscript(prevState, meta.sessionPath);
     setActiveTabId(meta.id);
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
@@ -2545,6 +2574,7 @@ export function useController() {
       placeholderItems: isNewTab ? prevItems : undefined,
       preserveCachedHistory,
       sessionPath: meta.sessionPath,
+      previewReload,
     });
     seedOpenTabRuntime(meta);
     return meta;
@@ -2587,6 +2617,7 @@ export function useController() {
   const activateLinkedSession = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath: string): Promise<TabMeta> => {
     const meta = await app.ActivateLinkedSession(scope, workspaceRoot, topicId, sessionPath);
     const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
+    const previewReload = Boolean(meta.readOnly && meta.sessionKind === "assistant");
     for (const id of Array.from(statesRef.current.keys())) {
       if (id !== meta.id) statesRef.current.delete(id);
     }
@@ -2594,7 +2625,7 @@ export function useController() {
     activeTabIdRef.current = meta.id;
     confirmBackendActiveTab(meta.id);
     dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
-    void loadSessionDataForTab(meta.id, true, "open-topic", { placeholderItems: prevItems, sessionPath: meta.sessionPath });
+    void loadSessionDataForTab(meta.id, true, "open-topic", { placeholderItems: prevItems, sessionPath: meta.sessionPath, previewReload });
     seedOpenTabRuntime(meta);
     return meta;
   }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);

@@ -302,7 +302,8 @@ func IdeatorPrompt(snapshot Snapshot, trigger IdeaTrigger) string {
 		b.WriteString("\n")
 	}
 	writeRoleContext(&b, snapshot)
-	b.WriteString("summary 是一句话提案；rationale 是理由；strategy_memory 可选，是接受后要写入的 strategy 记忆；responsibility/objective/done_criteria/next_action 可选，是接受后要创建的新责任候选。\n\n")
+	b.WriteString("summary 是一句话提案；rationale 是理由；strategy_memory 可选，是接受后要写入的 strategy 记忆。\n")
+	b.WriteString("responsibility/objective/done_criteria/next_action 可选，是接受后要创建的新责任候选。responsibility 是责任别名：不提出责任时留空；否则必须是 1..64 个 ASCII 字母、数字、下划线或连字符，例如 smoke-before-publish。\n\n")
 	b.WriteString("硬性边界：绝不突破 Policy、Workspace、安全、凭据或发布边界；不直接改 Mission/Policy/Workspace/凭据/发布配置，不执行任何外部动作。\n\n")
 	b.WriteString("只返回一个 JSON 对象，不要调用任何工具，不要输出解释或多余文本：\n")
 	b.WriteString(`{"summary":"…","rationale":"…","strategy_memory":"…","responsibility":"…","objective":"…","done_criteria":"…","next_action":"…"}` + "\n")

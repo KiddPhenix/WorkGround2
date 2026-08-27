@@ -387,16 +387,25 @@ func TestAssistantAPISubmitDispatchIdeateFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AssistantSubmit: %v", err)
 	}
-	if dispatch.State != assistant.DispatchClassified || dispatch.Kind != assistant.DispatchTask {
-		t.Fatalf("expected classified task, got %+v", dispatch)
+	if dispatch.State != assistant.DispatchPendingClassification {
+		t.Fatalf("expected pending_classification immediately after submit, got %+v", dispatch)
 	}
 	replay, err := app.AssistantSubmit(AssistantSubmitRequest{AssistantID: created.Assistant.ID, RequestID: "dispatch-1", Input: "请扫描项目最近修改并跑测试"})
 	if err != nil || replay.ID != dispatch.ID {
 		t.Fatalf("submit replay drifted: %+v err=%v", replay, err)
 	}
+	// Classification is background work: advance it explicitly, mirroring the
+	// runtime loop that AssistantSubmit wakes.
+	pending, _ := store.Get(created.Assistant.ID)
+	if err := service.classifyPending(context.Background(), pending); err != nil {
+		t.Fatalf("classifyPending: %v", err)
+	}
 	snapshot, _ := store.Get(created.Assistant.ID)
 	if len(snapshot.Dispatches) != 1 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].State != assistant.JobQueued {
 		t.Fatalf("expected one dispatch and one queued job, got %d dispatches %d jobs", len(snapshot.Dispatches), len(snapshot.Jobs))
+	}
+	if snapshot.Dispatches[0].Kind != assistant.DispatchTask {
+		t.Fatalf("expected classified task, got %+v", snapshot.Dispatches[0])
 	}
 	job, ok, err := store.ClaimJob("desktop-test", time.Now(), time.Minute)
 	if err != nil || !ok {

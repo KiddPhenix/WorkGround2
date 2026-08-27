@@ -297,6 +297,26 @@ func TestReconcileAssistantSessionTitleRepairsOnlyAutoLegacyTitle(t *testing.T) 
 	}
 }
 
+func TestEnsureAssistantSessionMetaStampsAssistSource(t *testing.T) {
+	sessionPath := filepath.Join(t.TempDir(), "assistant-session.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureAssistantSessionMeta(sessionPath, "assistant-source"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureAssistantSessionMeta(sessionPath, "assistant-source"); err != nil {
+		t.Fatalf("idempotent restamp: %v", err)
+	}
+	meta, ok, err := agent.LoadBranchMeta(sessionPath)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta: ok=%v err=%v", ok, err)
+	}
+	if meta.SessionKind != agent.SessionKindAssistant || meta.SessionSource != agent.SessionSourceAssist || meta.AssistantID != "assistant-source" {
+		t.Fatalf("assistant identity = kind %q source %q id %q", meta.SessionKind, meta.SessionSource, meta.AssistantID)
+	}
+}
+
 func TestAssistantRuntimeAutoResumesPersistedMemoryApproval(t *testing.T) {
 	host := &assistantHostStub{}
 	service, store := newAssistantTestRuntime(t, host)

@@ -375,6 +375,8 @@
 .assistant-jobs { list-style: none; margin: 12px 0 0; padding: 0; }
 .assistant-jobs li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; font-size: 13px; color: #b6b1a9; }
 .assistant-jobs__name { font-weight: 600; color: #e3ded6; }
+.assistant-jobs__name--link { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: #e3ded6; cursor: pointer; text-align: left; }
+.assistant-jobs__name--link:hover { text-decoration: underline; }
 .assistant-idea { margin-top: 12px; padding: 10px 12px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; font-size: 14px; }
 .assistant-idea__actions { display: flex; gap: 8px; margin-top: 8px; }
 
@@ -635,6 +637,59 @@ button.assistant-run-state:focus-visible {
 .assistant-handoff__status button:hover,
 .assistant-handoff__status button:focus-visible { outline: none; background: rgba(127, 200, 159, 0.16); }
 
+.assistant-live-reply {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #2b2e31;
+}
+.assistant-live-reply__mark {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--assistant-orange);
+}
+.assistant-live-reply__body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  color: #e7dfd4;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.assistant-live-reply__label { color: var(--assistant-orange); font-size: 12px; }
+.assistant-live-reply__text { color: #e7dfd4; white-space: pre-wrap; overflow-wrap: anywhere; }
+.assistant-live-reply__error { color: #e06a5e; }
+.assistant-live-reply__retry {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 4px;
+  margin: 2px 0 0;
+  padding: 2px 0;
+  border: 0;
+  color: var(--assistant-orange);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.assistant-live-reply__retry:hover:not(:disabled),
+.assistant-live-reply__retry:focus-visible { outline: none; text-decoration: underline; }
+.assistant-live-reply__retry:disabled { opacity: 0.45; cursor: not-allowed; }
+.assistant-live-reply__caret {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--assistant-orange);
+  animation: assistant-caret-blink 0.9s steps(2, start) infinite;
+}
+@keyframes assistant-caret-blink { 50% { opacity: 0; } }
+
 .assistant-manager-backdrop {
   position: absolute;
   inset: 0;
@@ -873,6 +928,7 @@ button.assistant-run-state:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .assistant-spin { animation: none; }
+  .assistant-live-reply__caret { animation: none; opacity: 1; }
 }
 
 /* ── create assistant templates ──────────────────────────────── */

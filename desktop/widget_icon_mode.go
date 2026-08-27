@@ -305,6 +305,7 @@ type DesktopIconItem struct {
 type DesktopIconSnapshot struct {
 	Items              []DesktopIconItem       `json:"items"`
 	Delegations        []DesktopIconDelegation `json:"delegations"`
+	AssistantTasks     []DesktopIconDelegation `json:"assistantTasks"`
 	DelegationError    string                  `json:"delegationError,omitempty"`
 	Revision           string                  `json:"revision"`
 	HoverStatusDelayMs int                     `json:"hoverStatusDelayMs"`
@@ -313,7 +314,8 @@ type DesktopIconSnapshot struct {
 	Error              string                  `json:"error,omitempty"`
 }
 
-// DesktopIconDelegation is one running delegation projected by the backend.
+// DesktopIconDelegation is one running task link projected by the backend.
+// Kinds subagent/background/cli belong to 委托; kind assist belongs to 助手.
 // SessionRef is the exact session the fixed entry must open.
 type DesktopIconDelegation struct {
 	ID            string              `json:"id"`
@@ -1761,7 +1763,7 @@ func (a *App) recoverDesktopIconActionsLocked() error {
 		if receipt.Status != "pending" {
 			continue
 		}
-		if receipt.Action == "open_delegation" && receipt.SessionPath != "" {
+		if desktopIconRunningTaskOpenAction(receipt.Action) && receipt.SessionPath != "" {
 			if err := a.advanceDesktopIconDelegation(receipt); err != nil {
 				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover delegation open %s: %w", receipt.RequestID, err))
 				continue
@@ -2154,9 +2156,13 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 }
 
 func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomPresentations desktopRoomNoticePresentations, roomRefs map[string]*DesktopIconTaskRef, subagentCounts map[widgetSubagentKey]int, sessionPresentations map[string]desktopIconSessionPresentation, pinnedRooms []desktopIconRoomDescriptor, delegations []DesktopIconDelegation, roomDescriptorSets ...map[string]desktopIconRoomDescriptor) DesktopIconSnapshot {
-	snapshot := DesktopIconSnapshot{HoverStatusDelayMs: hover, UnreadRevision: unreadState.Summary.Revision, Delegations: []DesktopIconDelegation{}}
-	if delegations != nil {
-		snapshot.Delegations = append(snapshot.Delegations, delegations...)
+	snapshot := DesktopIconSnapshot{HoverStatusDelayMs: hover, UnreadRevision: unreadState.Summary.Revision, Delegations: []DesktopIconDelegation{}, AssistantTasks: []DesktopIconDelegation{}}
+	for _, item := range delegations {
+		if item.Kind == agent.SessionSourceAssist {
+			snapshot.AssistantTasks = append(snapshot.AssistantTasks, item)
+			continue
+		}
+		snapshot.Delegations = append(snapshot.Delegations, item)
 	}
 	items := make([]DesktopIconItem, 0, len(sources)+len(spaces)+8)
 	taskBySource := map[string]int{}
@@ -2179,6 +2185,7 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 		}
 	}
 	delegatedRunning := 0
+	assistantRunning := 0
 	countedParents := map[widgetSubagentKey]bool{}
 	countedCLI := map[string]bool{}
 	hiddenKeptIDs := map[string]bool{}
@@ -2227,11 +2234,8 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 			continue
 		}
 		// Assistant Sessions never render an ordinary task icon: a running one
-		// projects onto the delegation entry, a completed/idle one drops out.
+		// projects onto the Assistant fixed entry, a completed/idle one drops out.
 		if meta.SessionKind == string(agent.SessionKindAssistant) {
-			if meta.RunningWork {
-				delegatedRunning++
-			}
 			continue
 		}
 		// Real running sub-agents owned by this session are the authoritative
@@ -2423,6 +2427,7 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 	// contract.
 	if delegations != nil {
 		delegatedRunning = len(snapshot.Delegations)
+		assistantRunning = len(snapshot.AssistantTasks)
 	}
 	fixed := []struct{ id, title, icon string }{
 		{"new", "新建", "plus"}, {"workspace", "工作区", "workspace"}, {"rooms", "Rooms", "rooms"}, {"assistant", "助手", "bot"}, {"delegate", "委托", "users"}, {"search", "搜索", "search"},
@@ -2431,6 +2436,9 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 		status, count := "idle", 0
 		if entry.id == "delegate" && delegatedRunning > 0 {
 			status, count = "running", delegatedRunning
+		}
+		if entry.id == "assistant" && assistantRunning > 0 {
+			status, count = "running", assistantRunning
 		}
 		items = append(items, DesktopIconItem{
 			ID: "fixed:" + entry.id, Kind: "fixed", SourceID: entry.id, Title: entry.title, Icon: entry.icon,
@@ -2455,6 +2463,9 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 		item.Revision = desktopIconItemRevision(*item)
 		if item.ID == "fixed:delegate" {
 			item.Revision = widgetRevision(item.Revision, desktopIconDelegationRevision(snapshot.Delegations))
+		}
+		if item.ID == "fixed:assistant" {
+			item.Revision = widgetRevision(item.Revision, desktopIconDelegationRevision(snapshot.AssistantTasks))
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -2763,7 +2774,7 @@ func desktopIconAppearanceKey(item DesktopIconItem) string {
 }
 
 func desktopIconSnapshotRevision(snapshot DesktopIconSnapshot) string {
-	parts := []string{strconv.Itoa(snapshot.HoverStatusDelayMs), strconv.FormatUint(snapshot.UnreadRevision, 10), desktopIconDelegationRevision(snapshot.Delegations)}
+	parts := []string{strconv.Itoa(snapshot.HoverStatusDelayMs), strconv.FormatUint(snapshot.UnreadRevision, 10), desktopIconDelegationRevision(snapshot.Delegations), desktopIconDelegationRevision(snapshot.AssistantTasks)}
 	for _, item := range snapshot.Items {
 		parts = append(parts, item.ID, item.Revision)
 	}
@@ -2898,8 +2909,8 @@ func reorderDesktopIconItems(items []DesktopIconItem, movedID string, target Des
 
 func desktopIconIntent(input DesktopIconActionInput) string {
 	revision := input.Revision
-	if strings.EqualFold(strings.TrimSpace(input.Action), "open_delegation") {
-		// Pending delegation opens persist their exact target identity before
+	if desktopIconRunningTaskOpenAction(input.Action) {
+		// Pending running-task opens persist their exact target identity before
 		// navigation. A retry must keep the same intent even when polling has
 		// advanced or removed the running-list revision meanwhile.
 		revision = ""
@@ -2914,6 +2925,11 @@ func desktopIconIntent(input DesktopIconActionInput) string {
 		input.ItemID, input.NoticeID, revision, input.Action, input.Values, input.Position, input.Conversation, input.ReadSequence,
 	})
 	return widgetRevision(string(raw))
+}
+
+func desktopIconRunningTaskOpenAction(action string) bool {
+	action = strings.ToLower(strings.TrimSpace(action))
+	return action == "open_delegation" || action == "open_assistant_task"
 }
 
 func desktopIconReplyKey(conversation string, readSequence uint64, text string) string {
@@ -2965,7 +2981,7 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 			return a.desktopIconActionErrorLocked("invalid", errors.New("requestId was already used for another action"))
 		}
 		if receipt.Status == "pending" {
-			if input.Action == "open_delegation" && receipt.SessionPath != "" {
+			if desktopIconRunningTaskOpenAction(input.Action) && receipt.SessionPath != "" {
 				if err := a.advanceDesktopIconDelegation(receipt); err != nil {
 					return a.desktopIconActionErrorLocked("retryable_error", err)
 				}
@@ -3162,23 +3178,31 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 		}
 		return DesktopIconActionResult{Status: "accepted", Snapshot: snapshot}
 	}
-	if input.Action == "open_delegation" {
-		if item.ID != "fixed:delegate" || len(input.Values) != 1 || strings.TrimSpace(input.Values[0]) == "" {
-			return a.desktopIconActionErrorLocked("invalid", errors.New("delegation target is required"))
+	if desktopIconRunningTaskOpenAction(input.Action) {
+		wantItemID := "fixed:delegate"
+		targets := snapshot.Delegations
+		staleError := "委托状态已经变化"
+		if strings.EqualFold(strings.TrimSpace(input.Action), "open_assistant_task") {
+			wantItemID = "fixed:assistant"
+			targets = snapshot.AssistantTasks
+			staleError = "助手任务状态已经变化"
+		}
+		if item.ID != wantItemID || len(input.Values) != 1 || strings.TrimSpace(input.Values[0]) == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("running task target is required"))
 		}
 		targetID := strings.TrimSpace(input.Values[0])
 		var target *DesktopIconDelegation
-		for i := range snapshot.Delegations {
-			if snapshot.Delegations[i].ID == targetID {
-				target = &snapshot.Delegations[i]
+		for i := range targets {
+			if targets[i].ID == targetID {
+				target = &targets[i]
 				break
 			}
 		}
 		if target == nil {
-			return DesktopIconActionResult{Status: "stale", Error: "委托状态已经变化", Snapshot: snapshot}
+			return DesktopIconActionResult{Status: "stale", Error: staleError, Snapshot: snapshot}
 		}
 		if target.SessionRef == nil || strings.TrimSpace(target.SessionRef.SessionPath) == "" {
-			return a.desktopIconActionErrorLocked("retryable_error", errors.New("delegation session identity is unavailable; refresh and retry"))
+			return a.desktopIconActionErrorLocked("retryable_error", errors.New("running task session identity is unavailable; refresh and retry"))
 		}
 		before := cloneDesktopIconState(a.iconWidgetState)
 		receipt := desktopIconReceipt{

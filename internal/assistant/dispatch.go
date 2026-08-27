@@ -91,6 +91,7 @@ type RunnerJob struct {
 	Prompt              string       `json:"prompt"`
 	Scope               Scope        `json:"scope"`
 	WorkspaceRoot       string       `json:"workspace_root,omitempty"`
+	SessionPath         string       `json:"session_path,omitempty"`
 	Policy              Policy       `json:"policy"`
 	ContextPackRevision int64        `json:"context_pack_revision,omitempty"`
 	State               JobState     `json:"state"`
@@ -261,6 +262,17 @@ type FinishJobInput struct {
 	LeaseFence int64
 	Summary    string
 	Now        time.Time
+}
+
+// BindJobSessionInput durably records the execution session path on a running
+// Job under its lease fence.
+type BindJobSessionInput struct {
+	RequestID   string
+	JobID       string
+	LeaseOwner  string
+	LeaseFence  int64
+	SessionPath string
+	Now         time.Time
 }
 
 // FailJobInput records a Job failure under its lease fence.

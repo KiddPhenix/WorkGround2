@@ -912,14 +912,16 @@ function SearchPanel({ onClose, onPick }: { onClose: () => void; onPick: (item: 
 	</div>;
 }
 
-function DelegationPanel({ items, error, busy, onClose, onPick }: { items: DesktopIconDelegation[]; error?: string; busy: boolean; onClose: () => void; onPick: (item: DesktopIconDelegation) => Promise<unknown> }) {
+function RunningTaskPanel({ kind, items, error, busy, onClose, onPick, onOpenAssistant }: { kind: "delegation" | "assistant"; items: DesktopIconDelegation[]; error?: string; busy: boolean; onClose: () => void; onPick: (item: DesktopIconDelegation) => Promise<unknown>; onOpenAssistant?: () => void }) {
 	const t = useT();
+	const assistant = kind === "assistant";
 	return <div className="desktop-icon-popup__delegations">
-		<div className="desktop-icon-popup__delegation-head"><strong>{t("desktopIcon.delegation.title")}</strong><button type="button" aria-label={t("desktopIcon.delegation.close")} disabled={busy} onClick={onClose}><X /></button></div>
+		<div className="desktop-icon-popup__delegation-head"><strong>{t(assistant ? "desktopIcon.assistantTasks.title" : "desktopIcon.delegation.title")}</strong><button type="button" aria-label={t("desktopIcon.delegation.close")} disabled={busy} onClick={onClose}><X /></button></div>
 		{error && <p role="alert" className="desktop-icon-popup__delegation-error">{t("desktopIcon.delegation.scanFailed", { detail: error })}</p>}
 		{items.length > 0
 			? <div className="desktop-icon-popup__delegation-list" role="list" aria-busy={busy}>{items.map((item) => <button type="button" role="listitem" key={item.id} disabled={busy} onClick={() => void onPick(item)}><span>{item.content}</span><small><b>{item.status === "running" ? t("desktopIcon.delegation.running") : item.status}</b> · {item.sessionTitle}{item.workspaceName ? ` · ${item.workspaceName}` : ""}</small></button>)}</div>
-			: <p role="status" className="desktop-icon-popup__empty">{t("desktopIcon.delegation.empty")}</p>}
+			: <p role="status" className="desktop-icon-popup__empty">{t(assistant ? "desktopIcon.assistantTasks.empty" : "desktopIcon.delegation.empty")}</p>}
+		{assistant && onOpenAssistant && <div className="desktop-icon-popup__actions"><button type="button" disabled={busy} onClick={onOpenAssistant}>{t("desktopIcon.assistantTasks.open")}</button></div>}
 	</div>;
 }
 
@@ -1341,7 +1343,7 @@ function pinnedIcon(row: { pinned: boolean }) {
 
 export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenMain, onOpenAssistant, onOpenSession }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void>; onOpenAssistant: () => Promise<void>; onOpenSession: () => void }) {
 	const t = useT();
-  const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], delegations: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
+  const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], delegations: [], assistantTasks: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
   const [desktopZoom, setDesktopZoom] = useState(1);
 	const [viewport, setViewport] = useState(() => widgetViewportSize(window.innerWidth, window.innerHeight, 1));
   const [activeID, setActiveID] = useState("");
@@ -1776,14 +1778,15 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 
   const run = useCallback(async (item: DesktopIconItem, action: string, values: string[] = [], notice = item.notifications[0], position?: DesktopIconPosition, answers?: QuestionAnswer[]) => {
     setBusy(true); setError(""); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false);
-		const intent = JSON.stringify([item.id, notice?.id || "", action === "open_delegation" ? "" : item.revision, action, values, position || null, answers || null]);
+		const opensRunningTask = action === "open_delegation" || action === "open_assistant_task";
+		const intent = JSON.stringify([item.id, notice?.id || "", opensRunningTask ? "" : item.revision, action, values, position || null, answers || null]);
 		const stableID = actionRequests.current.get(intent) || requestID(`icon-${action}`);
 		actionRequests.current.set(intent, stableID);
 		const input: DesktopIconActionInput = { itemId: item.id, noticeId: notice?.id, revision: item.revision, requestId: stableID, action, values, answers, position, conversation: notice?.conversation, readSequence: notice?.readSequence };
     try {
       const result = await app.ApplyDesktopIconAction(input);
       setSnapshot(result.snapshot);
-		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue", "remove"].includes(action) || action === "open_delegation") { setActiveID(""); setActiveNoticeID(""); } if (action === "open" || action === "open_delegation") onOpenSession(); }
+		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue", "remove"].includes(action) || opensRunningTask) { setActiveID(""); setActiveNoticeID(""); } if (action === "open" || opensRunningTask) onOpenSession(); }
 		else { if (result.status === "stale" || result.status === "invalid") actionRequests.current.delete(intent); setError(result.error || t("desktopIcon.errorFallback")); }
 		return result.status;
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return "retryable_error"; }
@@ -1854,10 +1857,9 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 			setActiveID(item.id);
 		}
 		else if (item.kind === "fixed" && item.sourceId === "assistant") {
-			// Single click exits the widget and opens the Assistant home through
-			// the root App; it never opens a generic popup and never runs the
-			// generic fixed action.
-			void openAssistant();
+			// Assistant owns its running-task popup. The panel keeps an explicit
+			// route to the Assistant home even when no task is currently running.
+			setActiveID(item.id);
 		}
     else setActiveID((current) => current === item.id ? "" : item.id);
     setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); setQuickOpen(false);
@@ -2252,7 +2254,8 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {!active && <p tabIndex={0} aria-label={t("desktopIcon.iconAria", { title: iconTitle(popupItem), text: previewText(popupItem) })} onFocus={() => timers.current?.clearPreviewClose()} onBlur={closePreviewSoon}>{previewText(popupItem)}</p>}
       {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} editJob={quickStartEditJob} initialDraft={quickDraftDecision.draft} submitJob={submitQuickStart} openWindowCreate={openWindowCreate} onClose={() => { setQuickStartEditJob(null); setPopupAnchorID(""); setActiveID(""); }} />}
       {active && active.sourceId === "search" && <SearchPanel onClose={() => setActiveID("")} onPick={(result) => run(active, "open_search", [result.id])} />}
-      {active && active.sourceId === "delegate" && <DelegationPanel items={snapshot.delegations || []} error={snapshot.delegationError} busy={busy} onClose={() => setActiveID("")} onPick={(item) => run(active, "open_delegation", [item.id])} />}
+      {active && active.sourceId === "delegate" && <RunningTaskPanel kind="delegation" items={snapshot.delegations || []} error={snapshot.delegationError} busy={busy} onClose={() => setActiveID("")} onPick={(item) => run(active, "open_delegation", [item.id])} />}
+      {active && active.sourceId === "assistant" && <RunningTaskPanel kind="assistant" items={snapshot.assistantTasks || []} busy={busy} onClose={() => setActiveID("")} onPick={(item) => run(active, "open_assistant_task", [item.id])} onOpenAssistant={() => void openAssistant()} />}
       {active && active.sourceId === "workspace" && <WorkspaceManager initialIconRoot={workspaceIconRoot} onClose={() => { setWorkspaceIconRoot(""); setActiveID(""); }} onChanged={refresh} />}
       {active && active.sourceId === "rooms" && <RoomsManager roomIconCount={roomIconCount} onRoomIconCountChange={setRoomIconCount} notificationMode={roomNotificationMode} onNotificationModeChange={setRoomNotificationMode} onClose={() => setActiveID("")} onChanged={refresh} onNewRoom={onNewRoom} onOpenRoom={onOpenRoom} />}
       {active && active.sourceId === "dsh" && <DSHQuickStart workspaces={workspaces} onChanged={refresh} onClose={() => setActiveID("")} />}
@@ -2261,7 +2264,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {active && activeNotice && <NoticeBody key={`${activeNotice.id}:${activeNotice.revision}`} item={active} notice={activeNotice} busy={busy} run={(action, values, answers) => run(active, action, values, activeNotice, undefined, answers)} onClose={() => { setActiveID(""); setActiveNoticeID(""); setPreviewID(""); }} />}
       {active && active.kind === "external" && !activeNotice && <ExternalRunBody item={active} busy={busy} run={(action) => void run(active, action)} />}
       {active && active.kind !== "external" && !activeNotice && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
-      {active && active.kind !== "external" && active.kind !== "workspace" && !isQuickStartJobItem(active) && !activeNotice && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && active.sourceId !== "delegate" && active.sourceId !== "dsh" && <><strong>{iconTitle(active)}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>{t("desktopIcon.open")}</button></div></>}
+      {active && active.kind !== "external" && active.kind !== "workspace" && !isQuickStartJobItem(active) && !activeNotice && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && active.sourceId !== "assistant" && active.sourceId !== "delegate" && active.sourceId !== "dsh" && <><strong>{iconTitle(active)}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>{t("desktopIcon.open")}</button></div></>}
 
     </section>}
     {(error || quickError || quickJobs.storageError || routineNotice) && <div className="desktop-icon-toast" role={error || quickError || quickJobs.storageError ? "alert" : "status"}>{error}{error && (quickError || quickJobs.storageError || routineNotice) ? <span aria-hidden="true">；</span> : null}{quickError}{quickError && (quickJobs.storageError || routineNotice) ? <span aria-hidden="true">；</span> : null}{quickJobs.storageError}{quickJobs.storageError && routineNotice ? <span aria-hidden="true">；</span> : null}{routineNotice}<button aria-label={t("common.close")} onClick={() => { setError(""); setQuickError(""); setRoutineNotice(""); quickJobs.clearStorageError(); }}><X /></button></div>}

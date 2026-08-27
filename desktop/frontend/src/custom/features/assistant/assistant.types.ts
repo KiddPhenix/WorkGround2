@@ -269,6 +269,19 @@ export interface AssistantPlan {
 
 export type AssistantDispatchKind = "task" | "question" | "feedback" | "improvement" | "correction" | "control";
 export type AssistantDispatchState = "pending_classification" | "classified" | "classification_failed" | "reflected" | "reflection_failed";
+export type AssistantDispatchStreamPhase = "accepted" | "streaming" | "committed" | "failed";
+
+export interface AssistantDispatchStreamEvent {
+  assistantId: string;
+  dispatchId: string;
+  requestId: string;
+  sequence: number;
+  phase: AssistantDispatchStreamPhase;
+  reply?: string;
+  jobCount?: number;
+  revision?: number;
+  error?: string;
+}
 
 export interface AssistantDispatch {
   id: string;
@@ -300,6 +313,7 @@ export interface AssistantRunnerJob {
   prompt: string;
   scope?: AssistantScope;
   workspace_root?: string;
+  session_path?: string;
   policy: AssistantPolicy;
   context_pack_revision?: number;
   state: AssistantJobState;

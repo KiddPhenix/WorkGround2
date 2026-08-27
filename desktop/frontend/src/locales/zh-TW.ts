@@ -1970,6 +1970,7 @@ export const zhTW: Record<DictKey, string> = {
   "projectTree.status.done": "已完成",
   "projectTree.externalNamed": "外部命名",
   "projectTree.sourceExternalShort": "外部",
+  "projectTree.sourceAssistant": "助手任務",
   "projectTree.visualLabel": "視覺標籤",
   "projectTree.visualIcon": "專案圖示",
   "projectTree.iconFolder": "資料夾",
@@ -2702,6 +2703,9 @@ export const zhTW: Record<DictKey, string> = {
   "desktopIcon.delegation.scanFailed": "委託掃描失敗：{detail}。清單保留已讀取結果，將自動重試。",
   "desktopIcon.delegation.running": "執行中",
   "desktopIcon.delegation.empty": "目前沒有執行中的委託",
+  "desktopIcon.assistantTasks.title": "助手正在進行的任務",
+  "desktopIcon.assistantTasks.empty": "目前沒有正在進行的助手任務",
+  "desktopIcon.assistantTasks.open": "開啟助手",
   // 工作區管理
   "desktopIcon.workspace.title": "工作區",
   "desktopIcon.workspace.add": "新增",

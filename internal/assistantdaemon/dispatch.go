@@ -121,7 +121,13 @@ func (r *Runtime) executeJob(ctx context.Context, job assistant.RunnerJob) error
 	ctrl.SetSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
 	meta, _ := agent.EnsureBranchMeta(ctrl.SessionPath())
 	meta.SessionKind, meta.AssistantID = agent.SessionKindAssistant, job.AssistantID
+	meta.SessionSource = agent.SessionSourceAssist
 	_ = agent.SaveBranchMetaPreserveUpdated(ctrl.SessionPath(), meta)
+	bound, err := r.jobRunner.BindSession(job, fmt.Sprintf("daemon-bind-session:%s:%d", job.ID, job.LeaseFence), ctrl.SessionPath(), time.Now())
+	if err != nil {
+		return r.failJob(job, "session_bind", err, true)
+	}
+	job = *bound
 	prompt := daemonJobPrompt(snapshot, job)
 	runErr := ctrl.RunWithPolicy(ctx, prompt, daemonPermission(job.Policy), control.ToolApprovalAuto)
 	if capture.attention {

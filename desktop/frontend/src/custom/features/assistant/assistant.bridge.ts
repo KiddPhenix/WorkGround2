@@ -10,6 +10,7 @@ import type {
   AssistantCreateInput,
   AssistantDeleteInput,
   AssistantDispatch,
+  AssistantDispatchStreamEvent,
   AssistantIdeateInput,
   AssistantIdeaProposal,
   AssistantMemory,
@@ -125,6 +126,16 @@ export function assistantCancelJob(input: AssistantCancelJobInput): Promise<Assi
 
 export function assistantPickWorkspace(defaultDir = ""): Promise<string> {
   return app.PickAssistantWorkspace(defaultDir) as Promise<string>;
+}
+
+// onAssistantDispatchStream subscribes to the typed inline live-reply event
+// emitted by the Go Assistant runtime. Outside the Wails shell it is a no-op;
+// the pure reducer is still exercised by the frontend logic tests.
+export function onAssistantDispatchStream(cb: (event: AssistantDispatchStreamEvent) => void): () => void {
+  if (typeof window !== "undefined" && window.runtime?.EventsOn) {
+    return window.runtime.EventsOn("assistant:dispatch-stream", (payload?: unknown) => cb(payload as AssistantDispatchStreamEvent));
+  }
+  return () => {};
 }
 
 // assistantListWorkspaces exposes the shared project tree; the create dialog

@@ -14,10 +14,11 @@ import (
 // retryable state without losing the input. There is no heuristic fallback and
 // no fabricated reply.
 type Dispatcher struct {
-	store *Store
-	model RoleModel
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	store    *Store
+	model    RoleModel
+	mu       sync.Mutex
+	locks    map[string]*sync.Mutex
+	observer ReplyObserver
 }
 
 func NewDispatcher(store *Store, model RoleModel) (*Dispatcher, error) {
@@ -28,6 +29,22 @@ func NewDispatcher(store *Store, model RoleModel) (*Dispatcher, error) {
 		return nil, errors.New("assistant: dispatcher requires a role model")
 	}
 	return &Dispatcher{store: store, model: model, locks: map[string]*sync.Mutex{}}, nil
+}
+
+// SetReplyObserver installs an optional observer that receives incremental,
+// escape-decoded previews of the Dispatcher reply while a streaming model runs.
+// It must be set before classification starts; previews are provisional and
+// never replace the validated Dispatch.Reply.
+func (d *Dispatcher) SetReplyObserver(observer ReplyObserver) {
+	d.mu.Lock()
+	d.observer = observer
+	d.mu.Unlock()
+}
+
+func (d *Dispatcher) currentObserver() ReplyObserver {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.observer
 }
 
 // Dispatch opens (or replays) a Dispatch and, if it is not yet classified, runs
@@ -91,7 +108,7 @@ func (d *Dispatcher) classify(ctx context.Context, assistantID string, dispatch 
 		return Dispatch{}, err
 	}
 	prompt := DispatcherPrompt(snapshot, dispatch.Input)
-	text, modelErr := d.model.Complete(ctx, prompt)
+	text, modelErr := d.complete(ctx, assistantID, dispatch, prompt)
 	if modelErr != nil {
 		return d.fail(assistantID, dispatch, "classification_model_unavailable", modelErr, now)
 	}
@@ -105,6 +122,36 @@ func (d *Dispatcher) classify(ctx context.Context, assistantID string, dispatch 
 		Kind:      classification.Kind, Reply: classification.Reply,
 		Jobs: classification.Jobs, Now: now,
 	})
+}
+
+// complete runs the model once, optionally streaming incremental "reply"
+// previews to the installed observer. The final text is authoritative; previews
+// are best-effort and never fabricated by the Dispatcher itself.
+func (d *Dispatcher) complete(ctx context.Context, assistantID string, dispatch Dispatch, prompt string) (string, error) {
+	streamer, ok := d.model.(StreamRoleModel)
+	observer := d.currentObserver()
+	if !ok || observer == nil {
+		return d.model.Complete(ctx, prompt)
+	}
+	decoder := &replyStreamDecoder{}
+	var last string
+	text, err := streamer.CompleteStream(ctx, prompt, func(delta string) {
+		if delta == "" {
+			return
+		}
+		reply, changed := decoder.Feed(delta)
+		if changed && reply != last {
+			last = reply
+			observer(ReplyPreview{
+				AssistantID: assistantID, DispatchID: dispatch.ID,
+				RequestID: dispatch.RequestID, Reply: reply,
+			})
+		}
+	})
+	if err != nil {
+		return "", err
+	}
+	return text, nil
 }
 
 // fail persists a retryable classification failure. If the failure cannot be

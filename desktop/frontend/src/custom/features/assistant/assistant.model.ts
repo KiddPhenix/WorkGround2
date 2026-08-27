@@ -4,6 +4,8 @@ import type {
   AssistantContextPack,
   AssistantDispatch,
   AssistantDispatchKind,
+  AssistantDispatchStreamEvent,
+  AssistantDispatchStreamPhase,
   AssistantIdeaProposal,
   AssistantIdeaState,
   AssistantJobState,
@@ -156,6 +158,14 @@ export function runHistoryAction(state: AssistantRun["state"]): AssistantRunActi
   return "none";
 }
 
+// runHasActionableAttention reports whether a waiting run still has an inbox
+// entry the user can act on. A waiting run without one would otherwise show a
+// dead-end "attention" label with an empty inbox, so the UI falls back to a
+// retry/recovery action instead.
+export function runHasActionableAttention(run: AssistantRun, attention: AssistantAttentionItem[]): boolean {
+  return attention.some((item) => item.run_id === run.id && attentionInboxAction(item, run) !== "none");
+}
+
 export function attentionNeedsRebind(action: string): boolean {
   return ["rebind_workspace", "cancel_recreate"].includes(action.trim().toLowerCase());
 }
@@ -298,4 +308,84 @@ export function timelineEntries(snapshot: AssistantSnapshot, day: Date, locale: 
     || kindOrder[a.kind] - kindOrder[b.kind]
     || a.id.localeCompare(b.id),
   );
+}
+
+export interface AssistantLiveReply {
+  assistantId: string;
+  dispatchId: string;
+  requestId: string;
+  sequence: number;
+  phase: AssistantDispatchStreamPhase;
+  reply: string;
+  jobCount: number;
+  error?: string;
+}
+
+function dispatchDate(dispatch: AssistantDispatch): number {
+  return Date.parse(dispatch.classified_at ?? dispatch.created_at ?? "") || 0;
+}
+
+// liveReplyFromDispatch projects a durable Dispatch into the inline live-reply
+// surface. pending_classification shows as "understanding"; terminal states use
+// the persisted reply only — failed text is never presented as committed.
+export function liveReplyFromDispatch(dispatch: AssistantDispatch, jobs: AssistantRunnerJob[]): AssistantLiveReply {
+  const jobCount = jobs.filter((job) => job.dispatch_id === dispatch.id).length;
+  if (dispatch.state === "classification_failed") {
+    return {
+      assistantId: dispatch.assistant_id, dispatchId: dispatch.id, requestId: dispatch.request_id,
+      sequence: 0, phase: "failed", reply: "", jobCount, error: dispatch.error?.message,
+    };
+  }
+  if (dispatch.state === "pending_classification") {
+    return {
+      assistantId: dispatch.assistant_id, dispatchId: dispatch.id, requestId: dispatch.request_id,
+      sequence: 0, phase: "accepted", reply: "", jobCount,
+    };
+  }
+  return {
+    assistantId: dispatch.assistant_id, dispatchId: dispatch.id, requestId: dispatch.request_id,
+    sequence: 0, phase: "committed", reply: dispatch.reply ?? "", jobCount,
+  };
+}
+
+// seedAssistantLiveReply recovers the latest dispatch after refresh or event
+// loss so a pending dispatch still shows "正在理解" and a final snapshot
+// replaces any provisional text.
+export function seedAssistantLiveReply(snapshot: AssistantSnapshot): AssistantLiveReply | null {
+  const dispatches = snapshot.dispatches ?? [];
+  if (dispatches.length === 0) return null;
+  const latest = dispatches.reduce((best, dispatch) => (dispatchDate(dispatch) >= dispatchDate(best) ? dispatch : best), dispatches[0]);
+  return liveReplyFromDispatch(latest, snapshot.jobs ?? []);
+}
+
+// applyAssistantDispatchStream folds one typed stream event into the inline
+// live reply. Events are correlated by assistant + dispatch; a fresh accepted
+// submission replaces the previous reply, and stale/duplicate/out-of-order
+// sequences for the same dispatch are ignored.
+export function applyAssistantDispatchStream(prev: AssistantLiveReply | null, event: AssistantDispatchStreamEvent): AssistantLiveReply | null {
+  if (!event || typeof event.assistantId !== "string" || typeof event.dispatchId !== "string") return prev;
+  if (prev && prev.assistantId !== event.assistantId) return prev;
+  if (prev && prev.dispatchId !== event.dispatchId && event.phase !== "accepted") return prev;
+  if (prev && prev.dispatchId === event.dispatchId && event.sequence <= prev.sequence) return prev;
+  return {
+    assistantId: event.assistantId,
+    dispatchId: event.dispatchId,
+    requestId: event.requestId || prev?.requestId || "",
+    sequence: event.sequence,
+    phase: event.phase,
+    reply: event.reply ?? "",
+    jobCount: event.jobCount ?? 0,
+    error: event.error,
+  };
+}
+
+// reconcileAssistantLiveReply re-applies the durable snapshot after a refresh.
+// A terminal dispatch always wins over provisional streaming text; a still
+// pending dispatch is left alone so the live reply does not flicker back to
+// "正在理解" while classification is in flight.
+export function reconcileAssistantLiveReply(state: AssistantLiveReply | null, snapshot: AssistantSnapshot): AssistantLiveReply | null {
+  if (!state) return seedAssistantLiveReply(snapshot);
+  const dispatch = (snapshot.dispatches ?? []).find((item) => item.id === state.dispatchId);
+  if (!dispatch || dispatch.state === "pending_classification") return state;
+  return { ...liveReplyFromDispatch(dispatch, snapshot.jobs ?? []), sequence: state.sequence };
 }

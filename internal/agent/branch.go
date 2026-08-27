@@ -16,6 +16,8 @@ import (
 // SessionKind classifies the session type.
 type SessionKind string
 
+const SessionSourceAssist = "assist"
+
 const (
 	SessionKindNormal        SessionKind = "normal"
 	SessionKindWork          SessionKind = "work"

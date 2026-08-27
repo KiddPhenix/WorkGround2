@@ -14,6 +14,7 @@ type JobRunnerStore interface {
 	RetryJobsDue(time.Time) ([]RunnerJob, error)
 	ClaimJob(owner string, now time.Time, ttl time.Duration) (*RunnerJob, bool, error)
 	RenewJob(jobID, owner string, fence int64, now time.Time, ttl time.Duration) (*RunnerJob, error)
+	BindJobSession(BindJobSessionInput) (*RunnerJob, error)
 	FinishJob(FinishJobInput) (*RunnerJob, error)
 	FailJob(FailJobInput) (*RunnerJob, error)
 }
@@ -74,6 +75,15 @@ func (r *JobRunner) Acquire(now time.Time) (JobAcquireResult, error) {
 
 func (r *JobRunner) Renew(job RunnerJob, now time.Time) (*RunnerJob, error) {
 	return r.store.RenewJob(job.ID, r.owner, job.LeaseFence, utcNow(now), r.ttl)
+}
+
+// BindSession durably records the execution session path on a running Job
+// before the host submits the model turn, mirroring Runner.BindSession.
+func (r *JobRunner) BindSession(job RunnerJob, requestID, sessionPath string, now time.Time) (*RunnerJob, error) {
+	return r.store.BindJobSession(BindJobSessionInput{
+		RequestID: requestID, JobID: job.ID, LeaseOwner: r.owner,
+		LeaseFence: job.LeaseFence, SessionPath: sessionPath, Now: utcNow(now),
+	})
 }
 
 func (r *JobRunner) Finish(job RunnerJob, summary string, now time.Time) (*RunnerJob, error) {

@@ -4,9 +4,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { assistantCopy } from "../custom/features/assistant/assistant.copy";
 import { isCollapsedAssistantSection, splitAssistantMarkdown } from "../custom/features/assistant/AssistantMarkdown";
-import { attentionInboxAction, attentionNeedsRebind, attentionRejectResolution, attentionResolution, nextRoutineDate, responsibilityLabel, responsibilityStatusLabel, runContentTitle, runHistoryAction, scheduleLabel, timelineEntries } from "../custom/features/assistant/assistant.model";
+import { attentionInboxAction, attentionNeedsRebind, attentionRejectResolution, attentionResolution, nextRoutineDate, responsibilityLabel, responsibilityStatusLabel, runContentTitle, runHasActionableAttention, runHistoryAction, scheduleLabel, timelineEntries, applyAssistantDispatchStream, liveReplyFromDispatch, reconcileAssistantLiveReply, seedAssistantLiveReply, type AssistantLiveReply } from "../custom/features/assistant/assistant.model";
 import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, completeAssistantRequest, pendingAssistantMutation, pendingAssistantRequest, runAssistantApproval, runAssistantCASMutation, runAssistantOutcome, runAssistantResume } from "../custom/features/assistant/assistant.requests";
-import type { AssistantAttentionItem, AssistantRun, AssistantSnapshot } from "../custom/features/assistant/assistant.types";
+import type { AssistantAttentionItem, AssistantDispatchStreamEvent, AssistantRun, AssistantSnapshot } from "../custom/features/assistant/assistant.types";
 import { normalizeAssistantList } from "../custom/features/assistant/assistant.bridge";
 
 let passed = 0;
@@ -42,6 +42,11 @@ ok(attentionInboxAction({ ...attentionBase, action: "verify_run_outcome" }, wait
 ok(attentionInboxAction({ ...attentionBase, action: "verify_run_outcome", state: "approved", resolution: "retry_acknowledged" }, waitingRun) === "continue", "acknowledged retry remains resumable after refresh");
 ok(attentionInboxAction({ ...attentionBase, action: "verify_run_outcome", state: "approved", resolution: "mark_succeeded" }, waitingRun) === "none", "marked-success outcome never resumes a waiting run");
 ok(attentionInboxAction({ ...attentionBase, action: "verify_run_outcome", state: "approved", resolution: "mark_failed" }, waitingRun) === "none", "marked-failed outcome never resumes a waiting run");
+ok(runHasActionableAttention(waitingRun, [{ ...attentionBase, action: "verify_run_outcome" }]) === true, "a waiting run with an open verification item stays actionable in the inbox");
+ok(runHasActionableAttention(waitingRun, [{ ...attentionBase, action: "verify_run_outcome", state: "approved", resolution: "mark_succeeded" }]) === false, "a resolved outcome item does not leave the run in an actionable dead end");
+ok(runHasActionableAttention(waitingRun, []) === false, "a waiting run with no attention item has no inbox path and must fall back to retry");
+ok(runHasActionableAttention(waitingRun, [{ ...attentionBase, resume_token: "approval-1" }]) === false, "a mismatched historical item does not make the run actionable");
+ok(runHasActionableAttention({ ...waitingRun, state: "running" }, [{ ...attentionBase, state: "approved" }]) === false, "a running run is never routed through the inbox fallback");
 ok(attentionResolution("answer_required", "  用户答案  ", copy.resolveNote) === "用户答案", "answer-required resolution uses the editable user answer");
 ok(attentionResolution("publish_release", "ignored", copy.resolveNote) === copy.resolveNote, "ordinary approval keeps its explicit desktop resolution");
 ok(attentionRejectResolution("answer_required", copy.resolveNote, copy.rejectNote) === copy.rejectNote, "answer-required rejection records an explicit refusal without an answer");
@@ -64,6 +69,9 @@ const snapshot: AssistantSnapshot = {
   plan: { revision: 1, responsibilities: [{ id: "resp-1", assistant_id: "assistant-1", alias: "scan", objective: "扫描修改", status: "ready", revision: 1, created_at: day.toISOString(), updated_at: day.toISOString() }] },
   artifacts: [],
   opportunities: [],
+  channels: [],
+  channel_actions: [],
+  channel_metrics: [],
   updated_at: day.toISOString(),
 };
 const entries = timelineEntries(snapshot, day, "zh", copy);
@@ -292,6 +300,47 @@ ok(foldedSections[3]?.kind === "collapsed" && foldedSections[3].title === "说�
 ok(isCollapsedAssistantSection("二、详细说明") && isCollapsedAssistantSection("Evidence"), "numbered Chinese and English process headings use the same fold policy");
 const fencedSections = splitAssistantMarkdown("## 结论\n\n```md\n## 取证证据\n代码示例\n```\n\n结论继续");
 ok(fencedSections.length === 1 && fencedSections[0]?.kind === "content", "fold parser ignores matching headings inside fenced code");
+
+// ── Inline live reply: correlation, ordering, reconciliation ───────────────
+const liveDispatch = {
+  id: "dispatch-1", assistant_id: "assistant-1", request_id: "req-1", input: "扫描项目",
+  state: "classified" as const, kind: "task" as const, reply: "收到，我来处理。", revision: 2,
+  created_at: day.toISOString(), updated_at: day.toISOString(), classified_at: day.toISOString(),
+};
+const liveSnapshot: AssistantSnapshot = {
+  ...snapshot,
+  dispatches: [liveDispatch],
+  jobs: [{ id: "job-1", assistant_id: "assistant-1", dispatch_id: "dispatch-1", name: "execute", kind: "task", prompt: "扫描项目", state: "queued", attempt: 0, max_attempts: 3, policy: snapshot.assistant.policy, scope: "workspace", revision: 1, created_at: day.toISOString(), updated_at: day.toISOString() }],
+};
+ok(seedAssistantLiveReply(liveSnapshot)?.phase === "committed" && seedAssistantLiveReply(liveSnapshot)?.reply === "收到，我来处理。", "seed recovers the latest durable dispatch as the authoritative committed reply");
+ok(seedAssistantLiveReply({ ...liveSnapshot, dispatches: [{ ...liveDispatch, state: "pending_classification", reply: undefined, classified_at: undefined }] })?.phase === "accepted", "a pending dispatch seeds as 正在理解");
+
+const accepted: AssistantDispatchStreamEvent = { assistantId: "assistant-1", dispatchId: "dispatch-2", requestId: "req-2", sequence: 1, phase: "accepted" };
+const streaming: AssistantDispatchStreamEvent = { assistantId: "assistant-1", dispatchId: "dispatch-2", requestId: "req-2", sequence: 2, phase: "streaming", reply: "收到，" };
+const streamingMore: AssistantDispatchStreamEvent = { assistantId: "assistant-1", dispatchId: "dispatch-2", requestId: "req-2", sequence: 3, phase: "streaming", reply: "收到，我来处理。" };
+const committed: AssistantDispatchStreamEvent = { assistantId: "assistant-1", dispatchId: "dispatch-2", requestId: "req-2", sequence: 4, phase: "committed", reply: "收到，我来处理。", jobCount: 1 };
+let live: AssistantLiveReply | null = null;
+live = applyAssistantDispatchStream(live, accepted);
+ok(live?.phase === "accepted", "accepted stream event opens the inline reply");
+live = applyAssistantDispatchStream(live, streaming);
+live = applyAssistantDispatchStream(live, streamingMore);
+ok(live?.phase === "streaming" && live.reply === "收到，我来处理。", "streaming events accumulate the cumulative reply");
+live = applyAssistantDispatchStream(live, { ...streamingMore, sequence: 2 });
+ok(live?.sequence === 3, "out-of-order/duplicate sequence is ignored");
+live = applyAssistantDispatchStream(live, committed);
+ok(live?.phase === "committed" && live.reply === "收到，我来处理。" && live.jobCount === 1, "committed closes with the validated reply and job count");
+
+const otherAccepted: AssistantDispatchStreamEvent = { assistantId: "assistant-1", dispatchId: "dispatch-3", requestId: "req-3", sequence: 5, phase: "accepted" };
+live = applyAssistantDispatchStream(live, otherAccepted);
+ok(live?.dispatchId === "dispatch-3" && live.phase === "accepted", "a new accepted submission replaces the previous live reply");
+live = applyAssistantDispatchStream(live, { ...streaming, dispatchId: "dispatch-2", sequence: 6, phase: "streaming" });
+ok(live?.dispatchId === "dispatch-3", "a late stream from an older dispatch does not cross-wire the latest submission");
+ok(applyAssistantDispatchStream(live, { assistantId: "assistant-other", dispatchId: "dispatch-x", requestId: "rx", sequence: 7, phase: "streaming" })?.dispatchId === "dispatch-3", "a different assistant's event is ignored");
+
+const provisional: AssistantLiveReply = { assistantId: "assistant-1", dispatchId: "dispatch-1", requestId: "req-1", sequence: 9, phase: "streaming", reply: "临时文本", jobCount: 0 };
+ok(reconcileAssistantLiveReply(provisional, liveSnapshot)?.reply === "收到，我来处理。", "a terminal snapshot replaces provisional text with the persisted reply");
+ok(reconcileAssistantLiveReply(provisional, { ...liveSnapshot, dispatches: [{ ...liveDispatch, state: "pending_classification", reply: undefined, classified_at: undefined }] })?.reply === "临时文本", "a still-pending snapshot does not flicker the streaming text away");
+ok(liveReplyFromDispatch({ ...liveDispatch, state: "classification_failed", error: { code: "classification_unavailable", message: "model down", retryable: true, outcome_known: true, at: day.toISOString() }, reply: undefined }, []).phase === "failed", "failed classification is never presented as committed");
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

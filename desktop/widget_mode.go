@@ -816,12 +816,12 @@ func (a *App) widgetSubagentCounts(sources []widgetSource) (map[widgetSubagentKe
 }
 
 // widgetDelegations builds the typed running-delegation projection consumed by
-// icon mode. Each session directory is scanned once, and real running
-// sub-agents, explicit CLI/external dispatch, and running Assistant sessions
-// are the delegation sources. Every target carries the exact session identity
-// needed for navigation. Ordinary BackgroundOnly sessions are deliberately
-// excluded: they stay as their own running task icon instead of being projected
-// as delegated work.
+// icon mode. Each session directory is scanned once. Real running sub-agents
+// and explicit CLI/external dispatch feed the delegation entry; running
+// Assistant sessions carry the distinct "assist" kind and are split into the
+// Assistant entry by snapshot construction. Every target carries the exact
+// session identity needed for navigation. Ordinary BackgroundOnly sessions are
+// deliberately excluded: they stay as their own running task icon.
 func (a *App) widgetDelegations(sources []widgetSource) ([]DesktopIconDelegation, map[widgetSubagentKey]int, error) {
 	dirs := map[string]bool{}
 	parents := map[widgetSubagentKey]widgetSource{}
@@ -886,20 +886,20 @@ func (a *App) widgetDelegations(sources []widgetSource) ([]DesktopIconDelegation
 
 	for _, source := range sources {
 		meta := source.meta
-		// Delegation aggregates real running sub-agents (scanned above),
-		// explicit CLI/external dispatch, and running Assistant sessions. An
+		// The running-task projection aggregates real running sub-agents (scanned
+		// above), explicit CLI/external dispatch, and Assistant sessions. An
 		// ordinary Session that entered BackgroundOnly solely because of a
 		// background Job is NOT a delegation: it keeps its own running task icon
 		// and never counts here.
 		if meta.SessionKind == string(agent.SessionKindAssistant) {
-			// A running Assistant Session projects onto the delegation entry and
+			// A running Assistant Session projects onto the Assistant entry and
 			// never keeps its own task icon; completed/idle ones drop out.
 			if !meta.RunningWork {
 				continue
 			}
 			item := DesktopIconDelegation{
 				ID:            "assistant:" + widgetRevision(firstNonEmpty(strings.TrimSpace(meta.SessionID), strings.TrimSpace(meta.ID)), strings.TrimSpace(meta.SessionPath)),
-				Kind:          "assistant",
+				Kind:          agent.SessionSourceAssist,
 				Content:       conciseWidgetText(firstNonEmpty(agent.UserPreviewText(source.requestText), agent.UserPreviewText(meta.ActivityText), strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "Assistant 委托"), 120),
 				Status:        "running",
 				SessionTitle:  firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "所属 Session"),

@@ -7135,6 +7135,9 @@ func (a *App) ListProjectTree() []ProjectNode {
 		if sk == "" {
 			sk = string(agent.SessionKindNormal)
 		}
+		if sessionSource == "" && sk == string(agent.SessionKindAssistant) {
+			sessionSource = agent.SessionSourceAssist
+		}
 		wid := tab.workID
 		if wid == "" {
 			wid = info.WorkID
@@ -7221,11 +7224,11 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		return
 	}
-	topicWorkBinding := func(key string) (sessionID, sessionPath, sessionKind, workID string) {
+	topicSessionBinding := func(key string) (sessionID, sessionPath, sessionKind, workID string) {
 		sessions := runtimeSessionsByTopic[key]
 		if len(sessions) == 1 {
 			session := sessions[0]
-			if session.sessionKind == string(agent.SessionKindWork) || session.sessionKind == string(agent.SessionKindCollaboration) {
+			if session.sessionKind == string(agent.SessionKindWork) || session.sessionKind == string(agent.SessionKindCollaboration) || session.sessionKind == string(agent.SessionKindAssistant) {
 				return session.sessionID, session.sessionPath, session.sessionKind, session.workID
 			}
 			// Single normal session: expose identity so the frontend can
@@ -7241,7 +7244,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		selected := persisted[0]
 		identityKind := selected.SessionKind
-		if identityKind != agent.SessionKindWork && identityKind != agent.SessionKindCollaboration {
+		if identityKind != agent.SessionKindWork && identityKind != agent.SessionKindCollaboration && identityKind != agent.SessionKindAssistant {
 			// Cold start: map the most-recent normal session path so the
 			// frontend can match persisted unread conversations.
 			return "", selected.Path, string(agent.SessionKindNormal), ""
@@ -7348,7 +7351,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				continue
 			}
 			open, running, status, turnStartedAt := topicRuntimeStatus(key)
-			sessionID, sessionPath, sessionKind, workID := topicWorkBinding(key)
+			sessionID, sessionPath, sessionKind, workID := topicSessionBinding(key)
 			kind := "global_topic"
 			if sessionKind == string(agent.SessionKindWork) {
 				kind = "global_work_session"
@@ -7455,7 +7458,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				continue
 			}
 			open, running, status, turnStartedAt := topicRuntimeStatus(key)
-			sessionID, sessionPath, sessionKind, workID := topicWorkBinding(key)
+			sessionID, sessionPath, sessionKind, workID := topicSessionBinding(key)
 			kind := "topic"
 			if sessionKind == string(agent.SessionKindWork) {
 				kind = "work_session"
@@ -8500,6 +8503,9 @@ func projectTreeSessionSource(info agent.SessionInfo) (source, channel, channelL
 	source = strings.TrimSpace(info.SessionSource)
 	channel = strings.TrimSpace(info.Channel)
 	channelLabel = strings.TrimSpace(info.ChannelLabel)
+	if source == "" && info.SessionKind == agent.SessionKindAssistant {
+		source = agent.SessionSourceAssist
+	}
 	if source == "" && strings.TrimSpace(info.TopicID) != "" && info.TopicID == legacySessionTopicID(info.Path) {
 		source = "external"
 	}

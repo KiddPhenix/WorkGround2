@@ -1,5 +1,11 @@
 # Feature Map
 
+> 2026-08-27 Assistant 小组件任务与 Session 来源拆分：用户明确要求 Codex 直接实现、不使用 Worker；共享工作树已有 Assistant 未提交改动，本次不切分支或提交。Assistant 运行任务已从“委托”拆到“助手”左键弹窗，新增 `assist` Session 来源（含旧 Assistant Session 读取兼容）并在 Session List 显示 `ASSIST` 标识；跳转复用精确 SessionRef、持久化 receipt 与幂等恢复。Agent/Assistant daemon、Desktop 专项测试与两端 vet、前端专项 105 项、类型检查、CSS/z-index 检查及 production build 通过；完整小组件契约仍在既有第 227 行 CSS 透明选择器断言提前中断。状态：`done`。
+
+> 2026-08-27 Assistant 进行中 Job Session 跳转修复：当前共享工作树已有 Assistant lease/recovery 未提交改动，本次未切分支或提交，避免混入或覆盖；RunnerJob 在模型 turn 前通过 lease owner/fence 与幂等 receipt 绑定 `session_path`，时间线名称复用统一 Session 导航，运行中、完成后及刷新恢复后均可打开。Internal Assistant 全量、Desktop 绑定/续租专项、两端 vet、前端 TypeScript 与新增 UI 断言通过；Assistant workspace 全量 126 通过、3 个 direct-input 既有失败。状态：`done`。
+
+> 2026-08-27 Browser 重连页面误复用止血：共享工作树已有其他未提交功能，本次按用户要求由 Codex 直接处理且不切分支、不使用 Worker；已有 Chromium 的无归属 CDP attach 不再拿 `/json/list` 第一张页面，改为创建新空白 Target，仅刚启动的新进程复用自有 bootstrap 空白页；既有页面与 endpoint 保持存活。Browser/CDP、Tool/Boot 专项、受影响包 vet、真实 Chrome detach/reattach 集成测试与 diff check 均通过。状态：`done`。
+
 > 2026-08-21 小组件已解决 Ask 提醒收敛：分支 `developping/widget-resolved-ask-notice+2026-08-21`；高优先级未读仅表达提醒紧急度，不再伪装成 Controller 的结构化 `needs_input`；同优先级下真实待回答/待确认交互优先展示，避免已回答问题仍以第二个输入框和角标出现。相关快照/Room/排序回归、Desktop vet 与 diff check 通过；DesktopIcon 宽回归仍命中既有 Wails `invalid context` 基线。状态：`done`。
 
 > 2026-07-27 Work 结构规划可靠性调整：分支 `developping/definition-planner-json-repair+2026-07-27`；首次提示在 system 与最终 user 尾部双重约束单一 DefinitionPlan JSON；结构解析失败后基于最近草稿有界自动修复，强调业务内容不变、仅纠正 JSON/schema，并保留显式失败与安全重试语义。状态：`done`。
@@ -363,3 +369,4 @@
 | Session 运行列表易点选 | `done` | 当前共享工作树（保留既有未提交工作，未切分支） | `Codex` | `desktop/frontend/src/components/SessionStatusIndicators.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/__tests__/session-status-indicators.test.tsx` | 鼠标离开运行中列表后延迟 300ms 关闭，重新进入可取消关闭；弹层整体右移 24px。专项 57/57、TypeScript 检查和前端生产构建通过。 |
 | Session List 当前 Workspace 选中态 | `done` | 当前共享工作树（保留既有未提交工作，未切分支） | `Codex` | `desktop/frontend/src/components/ProjectTree.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/__tests__/workbench-layout.test.ts` | 新建 Session 当前归属 Workspace 现在使用项目色描边、左侧标记、淡色背景和加粗名称，并标记 `aria-current=location`；悬停保持选中态。Workbench 专项 130/130、TypeScript、CSS、z-index 和前端生产构建通过。 |
 | Assistant 待处理审批代次过滤 | `done` | 当前共享工作树（保留既有未提交工作，未切分支） | `Codex` | `desktop/frontend/src/custom/features/assistant/{assistant.types.ts,assistant.model.ts}`、Assistant 前端测试 | 调整功能：待处理投影按 Run 当前 `resume_token` 识别唯一可操作项，旧代次已审批记录继续保留审计但不再复活为“继续运行”；旧代次异常 open 记录同样不覆盖当前决策。Assistant 212 项与 TypeScript 检查通过。 |
+| Assistant 调度器显式流式回复 | `in_progress` | 当前共享工作树（保留既有未提交工作，未切分支） | `Codex + WorkGround2` | `internal/assistant`、`desktop/assistant_*`、`desktop/frontend/src/custom/features/assistant` | 调整功能：采用已选内联回复视觉稿；提交先持久化并立即解锁输入框，Dispatcher 一级回复通过可去重事件流实时呈现，最终以持久化 Dispatch 快照对账。当前工作树已有重叠改动，本任务不自动切分支、commit 或 merge。 |

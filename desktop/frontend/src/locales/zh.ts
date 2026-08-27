@@ -981,6 +981,7 @@ export const zh: Record<DictKey, string> = {
   "projectTree.status.done": "已完成",
   "projectTree.externalNamed": "外部命名",
   "projectTree.sourceExternalShort": "外部",
+  "projectTree.sourceAssistant": "助手任务",
   "projectTree.visualLabel": "视觉标签",
   "projectTree.visualIcon": "项目图标",
   "projectTree.iconFolder": "文件夹",
@@ -2706,6 +2707,9 @@ export const zh: Record<DictKey, string> = {
   "desktopIcon.delegation.scanFailed": "委托扫描失败：{detail}。列表保留已读取结果，将自动重试。",
   "desktopIcon.delegation.running": "运行中",
   "desktopIcon.delegation.empty": "当前没有运行中的委托",
+  "desktopIcon.assistantTasks.title": "助手正在进行的任务",
+  "desktopIcon.assistantTasks.empty": "当前没有正在进行的助手任务",
+  "desktopIcon.assistantTasks.open": "打开助手",
   // 工作区管理
   "desktopIcon.workspace.title": "工作区",
   "desktopIcon.workspace.add": "新增",

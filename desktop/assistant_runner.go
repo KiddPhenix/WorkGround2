@@ -115,6 +115,7 @@ func ensureAssistantSessionMeta(sessionPath, assistantID string) error {
 		return err
 	}
 	meta.SessionKind = agent.SessionKindAssistant
+	meta.SessionSource = agent.SessionSourceAssist
 	if id := strings.TrimSpace(assistantID); id != "" {
 		meta.AssistantID = id
 	}
@@ -374,6 +375,10 @@ type AssistantRuntime struct {
 	running  atomic.Bool
 	tick     time.Duration
 
+	// dispatchSeq gives every assistant:dispatch-stream event a monotonic,
+	// runtime-global sequence so the frontend can drop stale/out-of-order deltas.
+	dispatchSeq atomic.Int64
+
 	diagnosticMu sync.RWMutex
 	diagnostics  []AssistantDiagnostic
 }
@@ -399,9 +404,7 @@ func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
-	roleModel := assistant.RoleModelFunc(func(ctx context.Context, prompt string) (string, error) {
-		return app.runRoleCompletion(ctx, prompt)
-	})
+	roleModel := assistantRoleModel{app: app}
 	dispatcher, err := assistant.NewDispatcher(store, roleModel)
 	if err != nil {
 		return nil, err
@@ -430,14 +433,16 @@ func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &AssistantRuntime{
+	r := &AssistantRuntime{
 		app: app, store: store, scheduler: scheduler, runner: runner,
 		jobRunner: jobRunner, dispatcher: dispatcher, reflector: reflector, ideator: ideator,
 		channels: channels, leader: leader,
 		host: appAssistantSessionHost{app: app}, inflight: map[string]*assistantInFlight{},
 		byRun: map[string]*assistantInFlight{}, tick: assistantTickInterval,
 		wake: make(chan struct{}, 1),
-	}, nil
+	}
+	dispatcher.SetReplyObserver(r.emitDispatchPreview)
+	return r, nil
 }
 
 func (r *AssistantRuntime) Start() {

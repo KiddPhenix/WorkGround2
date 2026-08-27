@@ -49,9 +49,10 @@ import {
   assistantRunNow,
   assistantSubmit,
   assistantUpdate,
+  onAssistantDispatchStream,
 } from "./assistant.bridge";
 import { assistantCopy } from "./assistant.copy";
-import { attentionInboxAction, attentionRejectResolution, attentionResolution, dispatchStateLabel, formatAssistantDate, formatTimelineTime, ideaStateLabel, jobStateLabel, responsibilityLabel, responsibilityStatusLabel, runHistoryAction, runStateLabel, scheduleLabel, timelineEntries } from "./assistant.model";
+import { applyAssistantDispatchStream, attentionInboxAction, attentionRejectResolution, attentionResolution, dispatchStateLabel, formatAssistantDate, formatTimelineTime, ideaStateLabel, jobStateLabel, liveReplyFromDispatch, reconcileAssistantLiveReply, responsibilityLabel, responsibilityStatusLabel, runHasActionableAttention, runHistoryAction, runStateLabel, scheduleLabel, seedAssistantLiveReply, timelineEntries, type AssistantLiveReply } from "./assistant.model";
 import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, completeAssistantRequest, pendingAssistantRequest, runAssistantApproval, runAssistantCASMutation, runAssistantMutation, runAssistantOutcome, runAssistantRejection, runAssistantResume } from "./assistant.requests";
 import { assistantTemplate, assistantTemplateContent, templateRoutine, templateRoutines, type AssistantTemplateID } from "./assistant.templates";
 import {
@@ -64,6 +65,7 @@ import {
   type AssistantPolicy,
   type AssistantRecord,
   type AssistantRun,
+  type AssistantRunnerJob,
   type AssistantRoutine,
   type AssistantScheduleKind,
   type AssistantSnapshot,
@@ -94,6 +96,19 @@ function assistantRunSessionTarget(run: AssistantRun, owner: AssistantRecord): A
   return {
     scope,
     workspaceRoot: scope === "project" ? run.workspace_root || owner.workspace_root || "" : "",
+    sessionPath,
+    assistantID: owner.id,
+    assistantName: owner.name,
+  };
+}
+
+function assistantJobSessionTarget(job: AssistantRunnerJob, owner: AssistantRecord): AssistantSessionTarget | null {
+  const sessionPath = job.session_path?.trim();
+  if (!sessionPath) return null;
+  const scope = (job.scope || owner.scope) === "workspace" ? "project" : "global";
+  return {
+    scope,
+    workspaceRoot: scope === "project" ? job.workspace_root || owner.workspace_root || "" : "",
     sessionPath,
     assistantID: owner.id,
     assistantName: owner.name,
@@ -260,6 +275,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
   const [busy, setBusy] = useState("");
   const [handoff, setHandoff] = useState("");
   const [handoffNotice, setHandoffNotice] = useState(false);
+  const [liveReply, setLiveReply] = useState<AssistantLiveReply | null>(null);
   const today = useMemo(() => new Date(), [data.snapshot?.revision]);
   const timeline = useMemo(() => data.snapshot ? timelineEntries(data.snapshot, today, locale, copy) : [], [copy, data.snapshot, locale, today]);
   const openAttention = data.snapshot?.attention.filter((item) => attentionInboxAction(item, data.snapshot?.runs.find((run) => run.id === item.run_id)) !== "none").length ?? 0;
@@ -287,10 +303,11 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
     setBusy("handoff");
     const intentKey = assistantIntentKey("handoff", data.snapshot.assistant.id, prompt);
     try {
-      await assistantSubmit({ assistantId: data.snapshot.assistant.id, requestId: pendingAssistantRequest(intentKey), input: prompt });
+      const dispatch = await assistantSubmit({ assistantId: data.snapshot.assistant.id, requestId: pendingAssistantRequest(intentKey), input: prompt });
       completeAssistantRequest(intentKey);
       setHandoff("");
       setHandoffNotice(true);
+      setLiveReply(liveReplyFromDispatch(dispatch, data.snapshot?.jobs ?? []));
       await data.refresh();
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : copy.error, "error");
@@ -392,6 +409,26 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
 
   useEffect(() => { resizeHandoff(); }, [handoff, resizeHandoff]);
 
+  const selectedAssistantID = data.selectedID;
+  const selectedIDRef = useRef(selectedAssistantID);
+  useEffect(() => { selectedIDRef.current = selectedAssistantID; }, [selectedAssistantID]);
+
+  useEffect(() => onAssistantDispatchStream((event) => {
+    if (event.assistantId !== selectedIDRef.current) return;
+    setLiveReply((prev) => applyAssistantDispatchStream(prev, event));
+  }), []);
+
+  useEffect(() => {
+    const snapshot = data.snapshot;
+    if (!snapshot) return;
+    setLiveReply((prev) => {
+      if (!prev) return seedAssistantLiveReply(snapshot);
+      return reconcileAssistantLiveReply(prev, snapshot);
+    });
+  }, [data.snapshot]);
+
+  useEffect(() => { setLiveReply(null); }, [selectedAssistantID]);
+
   const handleHandoffKeyDown = useCallback((event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (isComposerSubmitKey(event, submitKey, composingRef.current)) {
       event.preventDefault();
@@ -488,6 +525,31 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
             </span>
           )}
         </div>
+        {liveReply && liveReply.assistantId === assistant.id && (
+          <div className="assistant-live-reply" role="status" aria-live="polite">
+            <Bot size={14} className="assistant-live-reply__mark" aria-hidden="true" />
+            <div className="assistant-live-reply__body">
+              {liveReply.phase === "accepted" ? (
+                <span className="assistant-live-reply__label">{copy.assistantUnderstanding}</span>
+              ) : liveReply.phase === "streaming" ? (
+                <>
+                  <span className="assistant-live-reply__label">{copy.assistantReplying}</span>
+                  {liveReply.reply ? <span className="assistant-live-reply__text">{liveReply.reply}<span className="assistant-live-reply__caret" aria-hidden="true" /></span> : null}
+                </>
+              ) : liveReply.phase === "committed" ? (
+                <>
+                  <span className="assistant-live-reply__label">{liveReply.jobCount > 0 ? `${copy.understood} · ${copy.arrangedWork.replace("{n}", String(liveReply.jobCount))}` : copy.replied}</span>
+                  {liveReply.reply ? <span className="assistant-live-reply__text">{liveReply.reply}</span> : null}
+                </>
+              ) : (
+                <>
+                  <span className="assistant-live-reply__error">{copy.classificationFailed}</span>
+                  <button type="button" className="assistant-live-reply__retry" disabled={Boolean(busy)} onClick={() => void retryClassification(liveReply.dispatchId)}><RefreshCw size={12} />{copy.retry}</button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="assistant-workspace__scroll">
@@ -542,16 +604,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
                       {entry.jobs && entry.jobs.length > 0 ? (
                         <ul className="assistant-jobs">
                           {entry.jobs.map((job) => (
-                            <li key={job.id}>
-                              <span className={`assistant-run-state assistant-run-state--${job.state}`}>{jobStateLabel(job.state, locale)}</span>
-                              <span className="assistant-jobs__name">{job.name}</span>
-                              {job.state === "failed" || job.state === "cancelled" || job.state === "waiting_attention" ? (
-                                <button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void retryJob(job.id)}><RefreshCw size={13} />{copy.retryJob}</button>
-                              ) : null}
-                              {job.state === "queued" || job.state === "running" || job.state === "retry_wait" ? (
-                                <button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void cancelJob(job.id)}><X size={13} />{copy.stopJob}</button>
-                              ) : null}
-                            </li>
+                            <AssistantJobRow key={job.id} job={job} busy={busy} onRetry={retryJob} onCancel={cancelJob} owner={assistant} onOpenSession={onOpenSession} />
                           ))}
                         </ul>
                       ) : null}
@@ -1101,7 +1154,44 @@ function ChannelEditor({ snapshot, busy, act }: { snapshot: AssistantSnapshot; b
   );
 }
 
-function RunHistory({ snapshot, busy, act, onRun, onAttention, onOpenSession }: { snapshot: AssistantSnapshot; busy: string; act: Act; onRun: (id?: string) => Promise<void>; onAttention: () => void; onOpenSession?: AssistantWorkspaceProps["onOpenSession"] }) {
+// AssistantJobRow renders one dispatch job with its recoverable state. A
+// waiting_attention job (e.g. recovered after lease loss) keeps its explicit
+// unknown-outcome error visible and exposes the retry recovery action, so the
+// step never shows a dead-end label with no way forward.
+export function AssistantJobRow({ job, busy, onRetry, onCancel, owner, onOpenSession }: { job: AssistantRunnerJob; busy: string; onRetry: (id: string) => Promise<void>; onCancel: (id: string) => Promise<void>; owner: AssistantRecord; onOpenSession?: (target: AssistantSessionTarget) => void }) {
+  const { locale } = useI18n();
+  const copy = assistantCopy(locale);
+  const target = assistantJobSessionTarget(job, owner);
+  const name = target && onOpenSession ? (
+    <button
+      type="button"
+      className="assistant-jobs__name assistant-jobs__name--link"
+      title={copy.openSession}
+      aria-label={`${job.name}，${copy.openSession}`}
+      onClick={() => onOpenSession(target)}
+    >
+      {job.name}
+      <ExternalLink size={11} aria-hidden="true" />
+    </button>
+  ) : (
+    <span className="assistant-jobs__name">{job.name}</span>
+  );
+  return (
+    <li key={job.id}>
+      <span className={`assistant-run-state assistant-run-state--${job.state}`}>{jobStateLabel(job.state, locale)}</span>
+      {name}
+      {job.error?.message && job.error.message.trim() !== (job.summary ?? "").trim() ? <p className="assistant-event__error">{job.error.message}</p> : null}
+      {job.state === "failed" || job.state === "cancelled" || job.state === "waiting_attention" ? (
+        <button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void onRetry(job.id)}><RefreshCw size={13} />{copy.retryJob}</button>
+      ) : null}
+      {job.state === "queued" || job.state === "running" || job.state === "retry_wait" ? (
+        <button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void onCancel(job.id)}><X size={13} />{copy.stopJob}</button>
+      ) : null}
+    </li>
+  );
+}
+
+export function RunHistory({ snapshot, busy, act, onRun, onAttention, onOpenSession }: { snapshot: AssistantSnapshot; busy: string; act: Act; onRun: (id?: string) => Promise<void>; onAttention: () => void; onOpenSession?: AssistantWorkspaceProps["onOpenSession"] }) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
   if (snapshot.runs.length === 0) return <p className="assistant-empty-copy">{copy.noHistory}</p>;
@@ -1110,7 +1200,10 @@ function RunHistory({ snapshot, busy, act, onRun, onAttention, onOpenSession }: 
     return act(`cancel-${runID}`, () => runAssistantMutation(key, (requestId) => assistantCancel({ runId: runID, requestId, reason: "用户从助手工作区停止" })));
   };
   return <div className="assistant-history">{[...snapshot.runs].sort((a, b) => b.created_at.localeCompare(a.created_at)).map((run) => {
-    const action = runHistoryAction(run.state);
+    // A waiting run must always stay actionable. If its attention was already
+    // resolved or is otherwise missing, the inbox would be an empty dead end —
+    // fall back to a retry that starts a fresh executable run.
+    const action = runHistoryAction(run.state) === "attention" && !runHasActionableAttention(run, snapshot.attention) ? "rerun" : runHistoryAction(run.state);
     const sessionTarget = assistantRunSessionTarget(run, snapshot.assistant);
     const directInput = !run.routine_id ? run.prompt?.trim() : "";
     const result = run.summary || run.error?.message || snapshot.routines.find((item) => item.id === run.routine_id)?.title;

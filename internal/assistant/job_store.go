@@ -115,6 +115,32 @@ func (s *Store) RenewJob(jobID, owner string, fence int64, now time.Time, lease 
 	})
 }
 
+// BindJobSession durably records the execution session path on a running Job
+// before the host submits the model turn. It is fence-guarded and replay-safe:
+// a crash after this commit leaves an auditable session reference on the job
+// recovered into attention, and a stale/late fence can never overwrite the
+// session path of a newer retried execution.
+func (s *Store) BindJobSession(in BindJobSessionInput) (*RunnerJob, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return nil, err
+	}
+	in.SessionPath = strings.TrimSpace(in.SessionPath)
+	if in.SessionPath == "" {
+		return nil, errors.New("assistant: session path is required")
+	}
+	fp, err := inputFingerprint(struct {
+		JobID, Owner, SessionPath string
+		Fence                     int64
+	}{in.JobID, in.LeaseOwner, in.SessionPath, in.LeaseFence})
+	if err != nil {
+		return nil, err
+	}
+	return s.withJobLeaseRequest(in.JobID, in.LeaseOwner, in.LeaseFence, in.RequestID, "bind_job_session", fp, storeNow(in.Now), func(job *RunnerJob, _ time.Time) error {
+		job.SessionPath = in.SessionPath
+		return nil
+	}, nil)
+}
+
 // FinishJob completes a running Job under its lease fence.
 func (s *Store) FinishJob(in FinishJobInput) (*RunnerJob, error) {
 	if err := validateRequestID(in.RequestID); err != nil {

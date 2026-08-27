@@ -588,6 +588,7 @@ eq(projectTreeIsExternalCall(recentProject.children?.[1] as ProjectNode), true, 
 eq(projectTreeIsExternalCall(recentProject.children?.[2] as ProjectNode), true, "IM sessions are external calls");
 eq(projectTreeIsExternalCall(recentProject.children?.[3] as ProjectNode), false, "Work child sessions stay internal");
 eq(projectTreeIsExternalCall(recentProject.children?.[4] as ProjectNode), false, "collaboration sessions stay internal");
+eq(projectTreeIsExternalCall({ key: "assist", kind: "topic", label: "Assistant task", sessionSource: "assist" }), false, "Assistant tasks stay visible when external calls are hidden");
 
 eq(
   splitWorkbenchRecentTree([recentProject], "updated", { showExternal: true, limit: 3 }).recent.map((node) => node.key),

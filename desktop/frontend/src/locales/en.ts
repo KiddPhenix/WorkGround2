@@ -981,6 +981,7 @@ export const en = {
   "projectTree.status.done": "done",
   "projectTree.externalNamed": "Externally named",
   "projectTree.sourceExternalShort": "EXT",
+  "projectTree.sourceAssistant": "Assistant task",
   "projectTree.visualLabel": "Visual label",
   "projectTree.visualIcon": "Project icon",
   "projectTree.iconFolder": "Folder",
@@ -2706,6 +2707,9 @@ export const en = {
   "desktopIcon.delegation.scanFailed": "Delegation scan failed: {detail}. Keeping the loaded results; will retry automatically.",
   "desktopIcon.delegation.running": "Running",
   "desktopIcon.delegation.empty": "No delegations are running",
+  "desktopIcon.assistantTasks.title": "Assistant tasks in progress",
+  "desktopIcon.assistantTasks.empty": "No Assistant tasks are running",
+  "desktopIcon.assistantTasks.open": "Open Assistant",
   // workspace manager
   "desktopIcon.workspace.title": "Workspaces",
   "desktopIcon.workspace.add": "Add",

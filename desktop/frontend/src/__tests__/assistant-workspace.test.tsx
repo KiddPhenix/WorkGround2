@@ -4,10 +4,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { AssistantSidebarEntry, AssistantWorkspace, AttentionInbox, DiagnosticsEditor, OverviewEditor, ProposalInbox, assistantDiagnosticWarning, sortedDiagnostics } from "../custom/features/assistant/AssistantWorkspace";
+import { AssistantSidebarEntry, AssistantWorkspace, AssistantJobRow, AttentionInbox, DiagnosticsEditor, OverviewEditor, ProposalInbox, RunHistory, assistantDiagnosticWarning, sortedDiagnostics } from "../custom/features/assistant/AssistantWorkspace";
 import { assistantCopy } from "../custom/features/assistant/assistant.copy";
 import { assistantGet } from "../custom/features/assistant/assistant.bridge";
-import type { AssistantDiagnostic, AssistantSnapshot } from "../custom/features/assistant/assistant.types";
+import type { AssistantDiagnostic, AssistantRun, AssistantRunnerJob, AssistantSnapshot } from "../custom/features/assistant/assistant.types";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 
@@ -206,17 +206,18 @@ await act(async () => {
 ok(host.querySelector(".assistant-handoff__status")?.textContent?.includes("已记录并排队") ?? false, "successful send surfaces the recorded-and-queued status inside the dock");
 ok(handoffInput!.value === "", "successful send clears the draft");
 const submittedSnapshot = await assistantGet("assistant-code-project");
-const submittedRun = submittedSnapshot.runs.find((run) => run.prompt === "排查构建失败" && !run.routine_id);
-ok(submittedRun !== undefined, "direct input is durably visible as a frozen non-routine Run after refresh");
+const submittedDispatch = submittedSnapshot.dispatches?.find((dispatch) => dispatch.input === "排查构建失败");
+ok(submittedDispatch !== undefined, "direct input is durably visible as a Dispatch after refresh");
 ok(!submittedSnapshot.routines.some((routine) => routine.id.startsWith("adhoc-")), "direct input does not create or overwrite an adhoc Routine");
-ok([...host.querySelectorAll(".assistant-event--run h2")].some((heading) => heading.textContent === "排查构建失败"), "direct-input run h2 shows the actual user content");
+ok(host.querySelector(".assistant-live-reply")?.textContent?.includes("收到，我来处理") ?? false, "accepted input exposes the Dispatcher reply inside the handoff dock");
+ok(handoffInput?.disabled === false, "composer unlocks as soon as the durable Dispatch is accepted");
 ok(host.querySelector(".assistant-event__prompt")?.textContent?.includes("排查构建失败") ?? false, "timeline keeps the submitted original text separate from the result");
 
 const manage = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;
 await act(async () => { manage?.click(); });
 const historyTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("运行记录")) as HTMLButtonElement | undefined;
 await act(async () => { historyTab?.click(); });
-ok(host.querySelector(".assistant-history-item__prompt")?.textContent?.includes("排查构建失败") ?? false, "run history keeps the full direct input traceable");
+ok(submittedSnapshot.dispatches?.some((dispatch) => dispatch.input === "排查构建失败") ?? false, "the durable Dispatch keeps the full direct input traceable independently from run history");
 const channelsTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("推广渠道")) as HTMLButtonElement | undefined;
 await act(async () => { channelsTab?.click(); });
 ok(host.textContent?.includes("还没有推广渠道") ?? false, "channel manager explains the empty Discourse state");
@@ -483,6 +484,65 @@ await act(async () => {
   root.render(<LocaleProvider><ToastProvider><AttentionInbox snapshot={{ ...attentionSnapshot, attention: [{ ...outcomeAttention, state: "approved", resolution: "mark_succeeded" }] }} busy="" act={async () => true} onOverview={() => undefined} /></ToastProvider></LocaleProvider>);
 });
 ok(host.textContent?.includes("没有需要你处理的事项") ?? false, "terminal outcome decisions automatically leave the inbox");
+
+// ── Waiting-attention jobs keep a diagnosable retry path ──
+const waitingJob: AssistantRunnerJob = {
+  id: "job-platforms", assistant_id: attentionSnapshot.assistant.id, dispatch_id: "dispatch-1", name: "plan-platforms", kind: "task", prompt: "选择发布平台",
+  scope: "global", policy: attentionSnapshot.assistant.policy, state: "waiting_attention", attempt: 2, max_attempts: 3,
+  error: { code: "outcome_unknown", message: "execution lease expired; external outcome is unknown", retryable: false, outcome_known: false, at: "2026-08-17T00:00:00Z" },
+  revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z",
+};
+let jobRetried = 0;
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><AssistantJobRow job={waitingJob} busy="" onRetry={async () => { jobRetried += 1; }} onCancel={async () => undefined} owner={attentionSnapshot.assistant} onOpenSession={() => undefined} /></ToastProvider></LocaleProvider>);
+});
+ok(host.textContent?.includes("execution lease expired; external outcome is unknown") ?? false, "waiting_attention job keeps its recovery diagnostic visible instead of a bare label");
+ok(host.textContent?.includes("重试") ?? false, "waiting_attention job exposes the retry recovery action");
+ok(host.querySelector("button.assistant-jobs__name--link") === null, "a job without a session path does not render a navigation link");
+const jobRetryButton = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("重试")) as HTMLButtonElement | undefined;
+await act(async () => { jobRetryButton?.click(); });
+ok(jobRetried === 1, "retry on a waiting_attention job re-queues for a fresh fenced execution");
+
+// ── A running job with a session path is navigable while it runs ──
+const runningJob: AssistantRunnerJob = {
+  id: "job-collect", assistant_id: saved.assistant.id, dispatch_id: "dispatch-1", name: "collect-resumes", kind: "task", prompt: "收集简历",
+  scope: "workspace", workspace_root: "~/projects/WorkGround2", session_path: "/mock/sessions/job-collect.jsonl",
+  policy: saved.assistant.policy, state: "running", attempt: 1, max_attempts: 3,
+  revision: 1, created_at: "2026-08-17T00:00:00Z", updated_at: "2026-08-17T00:00:00Z",
+};
+let jobOpened: { scope: string; workspaceRoot: string; sessionPath: string; assistantID: string; assistantName: string } | null = null;
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><AssistantJobRow job={runningJob} busy="" onRetry={async () => undefined} onCancel={async () => undefined} owner={saved.assistant} onOpenSession={(target) => { jobOpened = target; }} /></ToastProvider></LocaleProvider>);
+});
+const jobLink = host.querySelector("button.assistant-jobs__name--link") as HTMLButtonElement | null;
+ok(jobLink !== null, "a running job with a session path renders a keyboard-accessible open control");
+ok(jobLink?.getAttribute("aria-label") === "collect-resumes，打开会话", "running job link exposes an open-session label");
+await act(async () => { jobLink?.click(); });
+ok(
+  jobOpened?.scope === "project" &&
+    jobOpened?.workspaceRoot === "~/projects/WorkGround2" &&
+    jobOpened?.sessionPath === "/mock/sessions/job-collect.jsonl" &&
+    jobOpened?.assistantID === "assistant-code-project" &&
+    jobOpened?.assistantName === "代码项目助手",
+  "running job link hands the correct scope/workspaceRoot/path/assistant identity to onOpenSession",
+);
+
+// ── Waiting runs never show a dead-end attention label ──
+const deadEndRun: AssistantRun = { ...attentionSnapshot.runs[0], id: "run-deadend" };
+let reran = 0;
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><RunHistory snapshot={{ ...attentionSnapshot, runs: [deadEndRun], attention: [] }} busy="" act={async () => true} onRun={async () => { reran += 1; }} onAttention={() => undefined} onOpenSession={undefined} /></ToastProvider></LocaleProvider>);
+});
+ok(host.textContent?.includes("重新运行") ?? false, "a waiting run with no actionable attention item falls back to a retry instead of a dead-end label");
+ok(!host.textContent?.includes("去处理") ?? false, "dead-end waiting run no longer routes to an empty inbox");
+const deadEndRetry = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("重新运行")) as HTMLButtonElement | undefined;
+await act(async () => { deadEndRetry?.click(); });
+ok(reran === 1, "dead-end waiting run retry starts a fresh executable run");
+
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><RunHistory snapshot={attentionSnapshot} busy="" act={async () => true} onRun={async () => undefined} onAttention={() => undefined} onOpenSession={undefined} /></ToastProvider></LocaleProvider>);
+});
+ok(host.textContent?.includes("去处理") ?? false, "a waiting run with an actionable attention item keeps the inbox path");
 
 await act(async () => { root.unmount(); });
 console.log(`\n${passed} passed, ${failed} failed\n`);

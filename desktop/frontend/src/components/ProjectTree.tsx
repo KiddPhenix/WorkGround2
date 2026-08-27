@@ -662,7 +662,7 @@ export function projectTreeIsExternalCall(node: ProjectNode): boolean {
   const channel = (node.channel ?? "").trim();
   const titleSource = (node.titleSource ?? "").trim().toLowerCase();
   if (channel) return true;
-  if (source.startsWith("work:") || source === "collaboration") return false;
+  if (source.startsWith("work:") || source === "collaboration" || source === "assist") return false;
   if (source) return true;
   return Boolean(titleSource && titleSource !== "manual" && titleSource !== "auto");
 }
@@ -827,6 +827,7 @@ function projectTreeSourceBadge(node: ProjectNode, t: Translator): ProjectTreeSo
   if (source === "auto") {
     return { label: "BOT", title, className: "project-tree__topic-origin--bot" };
   }
+  if (source === "assist") return { label: "ASSIST", title: t("projectTree.sourceAssistant"), className: "project-tree__topic-origin--assist" };
   if (source.includes("cli")) return { label: "CLI", title, className: "project-tree__topic-origin--cli" };
   if (source.includes("bot")) return { label: "BOT", title, className: "project-tree__topic-origin--bot" };
   if (!source && titleSource && titleSource !== "manual" && titleSource !== "auto") {

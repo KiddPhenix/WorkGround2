@@ -304,6 +304,132 @@ func TestJobRunnerLeaseRecovery(t *testing.T) {
 	}
 }
 
+// TestJobRunnerLeaseLossRetryRecovery covers the reported dead-end: a job whose
+// lease expired mid-turn is recovered to waiting_attention (outcome unknown),
+// and the user retry must produce a fresh, finishable fenced execution while
+// stale/late completions from the old lease can never overwrite it.
+func TestJobRunnerLeaseLossRetryRecovery(t *testing.T) {
+	store := testStore(t, t.TempDir())
+	mustCreate(t, store, "helper-a")
+	_ = classifyTask(t, store, "helper-a", "req-1", testEpoch)
+	r, _ := NewJobRunner(store, "owner", time.Minute)
+	acquired, err := r.Acquire(testEpoch)
+	if err != nil || acquired.Job == nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	first := *acquired.Job
+	if first.LeaseFence != 1 || first.State != JobRunning {
+		t.Fatalf("expected first claim with fence 1, got %+v", first)
+	}
+
+	// Lease expires while the turn is still running: recovery converts the job
+	// to waiting_attention with an unknown outcome.
+	recovered, err := store.RecoverJobs(testEpoch.Add(2 * time.Hour))
+	if err != nil || len(recovered) != 1 || recovered[0].State != JobWaitingAttention {
+		t.Fatalf("RecoverJobs: %+v err=%v", recovered, err)
+	}
+
+	// A late completion from the old lease must fail with ErrLeaseLost and must
+	// not overwrite the recovered state.
+	if _, err := r.Finish(first, "late completion", testEpoch.Add(2*time.Hour+time.Minute)); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("stale Finish after recovery must fail with ErrLeaseLost, got %v", err)
+	}
+	if _, err := r.Fail(first, Failure{Code: "late", Message: "late failure", Retryable: true, OutcomeKnown: true, Now: testEpoch.Add(2*time.Hour + time.Minute)}); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("stale Fail after recovery must fail with ErrLeaseLost, got %v", err)
+	}
+	snapshot, err := store.Get("helper-a")
+	if err != nil || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].State != JobWaitingAttention {
+		t.Fatalf("recovered state must survive stale completions, got %+v err=%v", snapshot.Jobs, err)
+	}
+	if snapshot.Jobs[0].Error == nil || snapshot.Jobs[0].Error.Code != "outcome_unknown" || snapshot.Jobs[0].Error.OutcomeKnown {
+		t.Fatalf("recovered job keeps an explicit unknown-outcome error, got %+v", snapshot.Jobs[0].Error)
+	}
+
+	// Repeated retry clicks are idempotent: the same request ID is a no-op.
+	retried, err := store.RetryJob(RetryJobInput{JobID: first.ID, RequestID: "retry-1", Now: testEpoch.Add(3 * time.Hour)})
+	if err != nil || retried.State != JobQueued || retried.Error != nil {
+		t.Fatalf("RetryJob: %+v err=%v", retried, err)
+	}
+	again, err := store.RetryJob(RetryJobInput{JobID: first.ID, RequestID: "retry-1", Now: testEpoch.Add(3*time.Hour + time.Minute)})
+	if err != nil || again.State != JobQueued {
+		t.Fatalf("idempotent RetryJob replayed: %+v err=%v", again, err)
+	}
+
+	// The retried execution claims the same job under a fresh fence and can
+	// finish normally; the old fence can no longer be used.
+	acquired2, err := r.Acquire(testEpoch.Add(3*time.Hour + 2*time.Minute))
+	if err != nil || acquired2.Job == nil {
+		t.Fatalf("Acquire after retry: %v", err)
+	}
+	if acquired2.Job.ID != first.ID || acquired2.Job.LeaseFence <= first.LeaseFence {
+		t.Fatalf("retried claim must reuse the job with a fresh fence, got %+v (was %+v)", acquired2.Job, first)
+	}
+	done, err := r.Finish(*acquired2.Job, "done", testEpoch.Add(3*time.Hour+2*time.Minute+30*time.Second))
+	if err != nil || done.State != JobSucceeded {
+		t.Fatalf("Finish after retry: %+v err=%v", done, err)
+	}
+	if _, err := r.Finish(first, "old fence after retry", testEpoch.Add(3*time.Hour+3*time.Minute)); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("old fence must stay stale after retry claim, got %v", err)
+	}
+}
+
+// TestJobRunnerBindSession proves the job session path is bound under the
+// current lease fence, replays idempotently, rejects conflicting or stale
+// payloads, and persists through snapshot/read.
+func TestJobRunnerBindSession(t *testing.T) {
+	store := testStore(t, t.TempDir())
+	mustCreate(t, store, "helper-a")
+	_ = classifyTask(t, store, "helper-a", "req-1", testEpoch)
+	r, _ := NewJobRunner(store, "owner", time.Minute)
+	acquired, err := r.Acquire(testEpoch)
+	if err != nil || acquired.Job == nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	job := *acquired.Job
+
+	bound, err := r.BindSession(job, "bind-1", "sessions/job-1.json", testEpoch.Add(time.Second))
+	if err != nil || bound.SessionPath != "sessions/job-1.json" {
+		t.Fatalf("BindSession: %+v err=%v", bound, err)
+	}
+	snapshot, err := store.Get("helper-a")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got := snapshot.Jobs[0].SessionPath; got != "sessions/job-1.json" {
+		t.Fatalf("session path not persisted through snapshot, got %q", got)
+	}
+
+	// Same request replays idempotently without a second revision bump.
+	again, err := r.BindSession(job, "bind-1", "sessions/job-1.json", testEpoch.Add(2*time.Second))
+	if err != nil || again.SessionPath != "sessions/job-1.json" || again.Revision != bound.Revision {
+		t.Fatalf("idempotent replay: %+v err=%v", again, err)
+	}
+
+	// Same request with a different path is an explicit conflict.
+	if _, err := r.BindSession(job, "bind-1", "sessions/other.json", testEpoch.Add(3*time.Second)); !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("expected ErrIdempotency for conflicting payload, got %v", err)
+	}
+
+	// A stale fence from an older execution must be rejected and must not
+	// overwrite the bound path.
+	stale := job
+	stale.LeaseFence = job.LeaseFence - 1
+	if _, err := r.BindSession(stale, "bind-stale", "sessions/stale.json", testEpoch.Add(4*time.Second)); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("stale fence bind must fail with ErrLeaseLost, got %v", err)
+	}
+
+	// A late bind after lease expiry must be rejected.
+	if _, err := r.BindSession(job, "bind-late", "sessions/late.json", testEpoch.Add(2*time.Hour)); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("late bind must fail with ErrLeaseLost, got %v", err)
+	}
+
+	// The original bound path survives every rejected attempt.
+	snapshot, _ = store.Get("helper-a")
+	if got := snapshot.Jobs[0].SessionPath; got != "sessions/job-1.json" {
+		t.Fatalf("session path changed after rejected binds, got %q", got)
+	}
+}
+
 func TestJobRunnerFailureRetriesAndCompletes(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
@@ -683,6 +809,73 @@ func TestRoleBackoffBounded(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		if d := roleBackoff(i); d <= 0 || d > 30*time.Minute {
 			t.Fatalf("backoff %d out of bounds: %v", i, d)
+		}
+	}
+}
+
+func TestReflectDispatchConvergesOnExistingPackSameRequest(t *testing.T) {
+	store := testStore(t, t.TempDir())
+	mustCreate(t, store, "helper-a")
+	dispatch := classifyTask(t, store, "helper-a", "req-1", testEpoch)
+	finishDispatchJob(t, store, "owner", testEpoch)
+
+	first, err := store.ReflectDispatch(ReflectInput{
+		AssistantID: "helper-a", DispatchID: dispatch.ID, RequestID: "reflect-1",
+		Content: ContextPackContent{Conclusion: "first"},
+		Now:     testEpoch.Add(time.Hour),
+	})
+	if err != nil || first.Conclusion != "first" {
+		t.Fatalf("first reflect: %v %+v", err, first)
+	}
+
+	second, err := store.ReflectDispatch(ReflectInput{
+		AssistantID: "helper-a", DispatchID: dispatch.ID, RequestID: "reflect-1",
+		Content: ContextPackContent{Conclusion: "second"},
+		Now:     testEpoch.Add(2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("duplicate reflect with different content: %v", err)
+	}
+	if second.ID != first.ID || second.Conclusion != "first" {
+		t.Fatalf("expected existing pack %+v, got %+v", first, second)
+	}
+	snapshot, _ := store.Get("helper-a")
+	if len(snapshot.ContextPacks) != 1 {
+		t.Fatalf("expected exactly one context pack, got %d", len(snapshot.ContextPacks))
+	}
+}
+
+func TestReflectDispatchSameRequestDifferentDispatchConflicts(t *testing.T) {
+	store := testStore(t, t.TempDir())
+	mustCreate(t, store, "helper-a")
+	dispatch := classifyTask(t, store, "helper-a", "req-1", testEpoch)
+	finishDispatchJob(t, store, "owner", testEpoch)
+	if _, err := store.ReflectDispatch(ReflectInput{
+		AssistantID: "helper-a", DispatchID: dispatch.ID, RequestID: "reflect-1",
+		Content: ContextPackContent{Conclusion: "done"},
+		Now:     testEpoch.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("first reflect: %v", err)
+	}
+
+	other := classifyTask(t, store, "helper-a", "req-2", testEpoch.Add(30*time.Minute))
+	finishDispatchJob(t, store, "owner", testEpoch.Add(30*time.Minute))
+	_, err := store.ReflectDispatch(ReflectInput{
+		AssistantID: "helper-a", DispatchID: other.ID, RequestID: "reflect-1",
+		Content: ContextPackContent{Conclusion: "other"},
+		Now:     testEpoch.Add(2 * time.Hour),
+	})
+	if !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("expected ErrIdempotency for reused request id on different dispatch, got %v", err)
+	}
+}
+
+func TestIdeatorPromptStatesResponsibilityAliasGrammar(t *testing.T) {
+	snapshot := Snapshot{Assistant: Assistant{Mission: "mission"}}
+	prompt := IdeatorPrompt(snapshot, IdeaTriggerManual)
+	for _, want := range []string{"1..64", "ASCII", "下划线", "连字符", "smoke-before-publish", "留空"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("ideator prompt missing alias grammar %q:\n%s", want, prompt)
 		}
 	}
 }

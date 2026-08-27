@@ -113,8 +113,11 @@ func moveJob(job *RunnerJob, next JobState) error {
 }
 
 func clearJobLease(job *RunnerJob) {
+	// LeaseFence is deliberately preserved: it is monotonic across claims, so a
+	// stale/late completion from an earlier lease can never match the fence of
+	// a newer retried execution (numeric fence reuse would let it overwrite the
+	// retry state).
 	job.LeaseOwner = ""
-	job.LeaseFence = 0
 	job.LeaseUntil = time.Time{}
 }
 
@@ -374,10 +377,13 @@ func (s *Store) ReflectDispatch(in ReflectInput) (ContextPack, error) {
 	if err := validateContextPackContent(content); err != nil {
 		return ContextPack{}, err
 	}
+	// Reflection is exactly-once per Dispatch, not per model payload: the model
+	// may emit a different content blob on a re-entrant/duplicate call, so the
+	// idempotency fingerprint keys on the Dispatch alone. The same request ID
+	// reused for a different Dispatch still yields an idempotency conflict.
 	fingerprint, err := inputFingerprint(struct {
 		DispatchID string
-		Content    ContextPackContent
-	}{in.DispatchID, content})
+	}{in.DispatchID})
 	if err != nil {
 		return ContextPack{}, err
 	}

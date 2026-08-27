@@ -328,6 +328,7 @@ func (r *Runtime) execute(ctx context.Context, run assistant.Run) error {
 	}
 	meta, _ := agent.EnsureBranchMeta(ctrl.SessionPath())
 	meta.SessionKind, meta.AssistantID = agent.SessionKindAssistant, run.AssistantID
+	meta.SessionSource = agent.SessionSourceAssist
 	_ = agent.SaveBranchMetaPreserveUpdated(ctrl.SessionPath(), meta)
 	bound, err := r.runner.BindSession(run, fmt.Sprintf("daemon-bind:%s:%d", run.ID, run.LeaseFence), ctrl.SessionPath(), time.Now())
 	if err != nil {

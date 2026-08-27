@@ -196,6 +196,8 @@ assert.deepEqual(iconHitRect(physicalRect, 1.25), { x: 371, y: 521, width: 90, h
 assert.deepEqual(iconHitRect(physicalRect, 1.5), { x: 445, y: 625, width: 108, height: 120 }, "native hit region follows the WebView raster scale at 150%");
 
 const component = readFileSync(resolve(import.meta.dirname, "../components/widget/DesktopIconMode.tsx"), "utf8");
+const projectTreeSource = readFileSync(resolve(import.meta.dirname, "../components/ProjectTree.tsx"), "utf8");
+const frontendTypes = readFileSync(resolve(import.meta.dirname, "../lib/types.ts"), "utf8");
 assert.match(component, /asArray\(notice\.options\)\.map\(/, "notice choices tolerate legacy or malformed null option arrays without crashing icon mode");
 const css = readFileSync(resolve(import.meta.dirname, "../components/widget/desktop-icon-mode.css"), "utf8");
 const backend = readFileSync(resolve(import.meta.dirname, "../../../widget_icon_mode.go"), "utf8");
@@ -843,11 +845,14 @@ assert.match(css, /button:disabled\s*\{\s*opacity: \.55/, "disabled buttons stay
 // --- workspace management: the fixed workspace icon between 新建 and Rooms ---
 // The backend fixed bar is the declared Go contract: 新建 → 工作区 → Rooms → 助手 → 委托 → 搜索.
 assert.match(backend, /\{"new", "新建", "plus"\},\s*\{"workspace", "工作区", "workspace"\},\s*\{"rooms", "Rooms", "rooms"\},\s*\{"assistant", "助手", "bot"\},\s*\{"delegate", "委托", "users"\},\s*\{"search", "搜索", "search"\}/, "backend fixed bar order is 新建 → 工作区 → Rooms → 助手 → 委托 → 搜索 by declaration");
-assert.match(component, /function DelegationPanel\([\s\S]*t\("desktopIcon\.delegation\.title"\)[\s\S]*t\("desktopIcon\.delegation\.empty"\)/, "delegate fixed entry renders a running-list panel with an explicit empty state");
+assert.match(component, /function RunningTaskPanel\([\s\S]*desktopIcon\.assistantTasks\.title[\s\S]*desktopIcon\.delegation\.title[\s\S]*desktopIcon\.assistantTasks\.empty[\s\S]*desktopIcon\.delegation\.empty/, "delegate and Assistant fixed entries share one running-list renderer with distinct copy");
 assert.match(component, /error && <p role="alert" className="desktop-icon-popup__delegation-error">\{t\("desktopIcon\.delegation\.scanFailed", \{ detail: error \}\)\}/, "delegate panel exposes partial scan failures and automatic retry state inline");
 assert.match(component, /active\.sourceId === "delegate"[\s\S]*items=\{snapshot\.delegations \|\| \[\]\}[\s\S]*run\(active, "open_delegation", \[item\.id\]\)/, "delegate list opens the exact typed snapshot item through the idempotent backend action");
+assert.match(component, /active\.sourceId === "assistant"[\s\S]*items=\{snapshot\.assistantTasks \|\| \[\]\}[\s\S]*run\(active, "open_assistant_task", \[item\.id\]\)[\s\S]*openAssistant/, "Assistant left click renders its own running-task list, opens the exact Session, and keeps the Assistant-home route");
 const delegationBridge = readFileSync(resolve(import.meta.dirname, "../lib/bridge.ts"), "utf8");
-assert.match(delegationBridge, /interface DesktopIconDelegation[\s\S]*sessionRef\?: DesktopIconTaskRef;[\s\S]*interface DesktopIconSnapshot \{ items: DesktopIconItem\[\]; delegations: DesktopIconDelegation\[\]/, "bridge exposes the typed delegation view only through DesktopIconSnapshot");
+assert.match(delegationBridge, /kind: "subagent" \| "background" \| "cli" \| "assist"[\s\S]*interface DesktopIconSnapshot \{ items: DesktopIconItem\[\]; delegations: DesktopIconDelegation\[\]; assistantTasks: DesktopIconDelegation\[\]/, "bridge exposes separate delegation and assist task lists with an explicit assist kind");
+assert.match(projectTreeSource, /source === "assist"[\s\S]{0,180}label: "ASSIST"[\s\S]{0,180}project-tree__topic-origin--assist/, "Session List renders assist as its own source type instead of generic external work");
+assert.match(frontendTypes, /sessionKind\?: "normal" \| "work" \| "collaboration" \| "assistant"/, "frontend session-list models accept durable Assistant sessions");
 assert.match(delegationBridge, /interface DesktopIconNotice[\s\S]{0,420}attention\?: "mention_member" \| "mention_agent" \| "mention_both"/, "bridge carries the typed Room member/Agent mention distinction");
 assert.match(delegationBridge, /GetDesktopRoomPins\(\): Promise<string\[\]>;[\s\S]+SetDesktopRoomPinned\(topicID: string, pinned: boolean\): Promise<void>;/, "bridge exposes the desktop-specific Room pin API");
 assert.match(delegationBridge, /let desktopRoomPins: string\[\] = \[\][\s\S]+async GetDesktopRoomPins\(\)[\s\S]+async SetDesktopRoomPinned\(topicID: string, pinned: boolean\)[\s\S]+desktopRoomPins\.length >= 7/, "browser mock preserves Room pins and enforces the same seven-pin limit");

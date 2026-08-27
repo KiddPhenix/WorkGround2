@@ -2826,6 +2826,47 @@ func TestProjectTreeMigratesCLISessionFromProjectDir(t *testing.T) {
 	}
 }
 
+func TestProjectTreeShowsAssistSessionSource(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	dir := config.ProjectSessionDir(projectRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := writeLegacySession(t, dir, "assist-project.jsonl", "assistant project prompt", time.Now())
+	meta, err := agent.EnsureBranchMeta(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.Scope = "project"
+	meta.WorkspaceRoot = projectRoot
+	meta.TopicID = "assist-topic"
+	meta.TopicTitle = "Assistant task"
+	meta.SessionKind = agent.SessionKindAssistant
+	meta.AssistantID = "assistant-project"
+	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := setTopicTitleWithSource(projectRoot, meta.TopicID, meta.TopicTitle, topicTitleSourceAuto); err != nil {
+		t.Fatal(err)
+	}
+	if err := prependTopicInProjectsFile(projectRoot, meta.TopicID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	nodes := NewApp().ListProjectTree()
+	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
+		t.Fatalf("Assistant Session should appear in project tree, got %#v", nodes)
+	}
+	got := nodes[0].Children[0]
+	if got.SessionSource != agent.SessionSourceAssist || got.SessionKind != string(agent.SessionKindAssistant) || got.SessionPath != sessionPath {
+		t.Fatalf("Assistant Session projection = source %q kind %q path %q", got.SessionSource, got.SessionKind, got.SessionPath)
+	}
+}
+
 func TestProjectTreeMigratesNewCLISessionAfterProjectDirMarker(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

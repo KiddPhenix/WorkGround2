@@ -1179,7 +1179,7 @@ func TestWidgetDelegationsProjectsRunningAssistantSession(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("items = %+v, want one assistant delegation", items)
 	}
-	if items[0].Kind != "assistant" || items[0].Status != "running" || items[0].Content != "帮我整理周报" {
+	if items[0].Kind != agent.SessionSourceAssist || items[0].Status != "running" || items[0].Content != "帮我整理周报" {
 		t.Fatalf("assistant delegation = %+v", items[0])
 	}
 	if items[0].SessionRef == nil || items[0].SessionRef.SessionPath != assistantPath {
@@ -1207,13 +1207,20 @@ func TestWidgetDelegationsExcludesIdleAssistantSession(t *testing.T) {
 	}
 }
 
-func TestBuildDesktopIconSnapshotProjectsRunningAssistantOntoDelegate(t *testing.T) {
+func TestBuildDesktopIconSnapshotProjectsRunningAssistantOntoAssistant(t *testing.T) {
 	sources := []widgetSource{{meta: TabMeta{ID: "assistant-tab", SessionID: "assistant-session", SessionKind: string(agent.SessionKindAssistant), RunningWork: true, TurnStartedAt: time.Now().UnixMilli()}}}
-	delegations := []DesktopIconDelegation{{ID: "assistant:assistant-tab", Kind: "assistant", Content: "帮我整理周报", Status: "running"}}
+	delegations := []DesktopIconDelegation{{ID: "assistant:assistant-tab", Kind: agent.SessionSourceAssist, Content: "帮我整理周报", Status: "running"}}
 	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, nil, delegations)
+	assistant := findDesktopIconItem(snapshot.Items, "fixed:assistant")
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
-	if delegate == nil || delegate.ActivityCount != 1 || delegate.Status != "running" {
-		t.Fatalf("delegate = %#v, want one running assistant delegation", delegate)
+	if assistant == nil || assistant.ActivityCount != 1 || assistant.Status != "running" {
+		t.Fatalf("assistant = %#v, want one running Assistant task", assistant)
+	}
+	if delegate == nil || delegate.ActivityCount != 0 || delegate.Status != "idle" {
+		t.Fatalf("delegate = %#v, want Assistant excluded from delegations", delegate)
+	}
+	if len(snapshot.AssistantTasks) != 1 || snapshot.AssistantTasks[0].Kind != agent.SessionSourceAssist || len(snapshot.Delegations) != 0 {
+		t.Fatalf("assistantTasks=%+v delegations=%+v", snapshot.AssistantTasks, snapshot.Delegations)
 	}
 	if findDesktopIconItem(snapshot.Items, "task:assistant-tab") != nil {
 		t.Fatal("running assistant session received an independent task icon")
@@ -1223,9 +1230,13 @@ func TestBuildDesktopIconSnapshotProjectsRunningAssistantOntoDelegate(t *testing
 func TestBuildDesktopIconSnapshotExcludesIdleAssistantSession(t *testing.T) {
 	sources := []widgetSource{{meta: TabMeta{ID: "assistant-tab", SessionID: "assistant-session", SessionKind: string(agent.SessionKindAssistant)}}}
 	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, nil, nil)
+	assistant := findDesktopIconItem(snapshot.Items, "fixed:assistant")
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
+	if assistant == nil || assistant.ActivityCount != 0 || assistant.Status != "idle" {
+		t.Fatalf("assistant = %#v, want idle without Assistant task", assistant)
+	}
 	if delegate == nil || delegate.ActivityCount != 0 || delegate.Status != "idle" {
-		t.Fatalf("delegate = %#v, want idle without assistant delegation", delegate)
+		t.Fatalf("delegate = %#v, want idle without delegation", delegate)
 	}
 	if findDesktopIconItem(snapshot.Items, "task:assistant-tab") != nil {
 		t.Fatal("idle assistant session received an independent task icon")
@@ -2386,6 +2397,39 @@ func TestDesktopIconPendingBackgroundDelegationRetryUsesReceipt(t *testing.T) {
 	snapshot := buildDesktopIconSnapshot([]widgetSource{source}, UnreadState{}, nil, app.iconWidgetState, 0, nil, nil, nil, nil)
 	if task := findDesktopIconItem(snapshot.Items, "task:"+tab.ID); task == nil || task.Status != "running" {
 		t.Fatal("BackgroundOnly session lost its own running task icon after delegation receipt recovery")
+	}
+}
+
+func TestDesktopIconPendingAssistantTaskRetryUsesReceipt(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	tab, sessionPath := completionTestTab(t, 0)
+	tab.ID = "assistant-target"
+	tab.sessionKind = agent.SessionKindAssistant
+	app := &App{
+		tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID, widgetMode: true, ctx: context.Background(),
+		sessionDirsOverride: []string{filepath.Dir(sessionPath)}, iconWidgetStateLoaded: true,
+		iconWidgetState: desktopIconPersistedState{Positions: map[string]DesktopIconPosition{}, Kept: map[string]desktopIconKept{}, CompletionSummaries: map[string]desktopIconCompletionSummary{}},
+		widgetWindowOps: &widgetWindowOps{
+			read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 590, Height: 176}, false },
+			restoreMain: func(DesktopWindowState, bool) error { return nil }, applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+		},
+		widgetTaskbarToggle: func(bool) error { return nil },
+	}
+	app.runtimeEvents.emit = func(_ context.Context, _ string, _ ...interface{}) {}
+	input := DesktopIconActionInput{ItemID: "fixed:assistant", Revision: "old-list", RequestID: "retry-assistant-open", Action: "open_assistant_task", Values: []string{"assistant:ended"}}
+	app.iconWidgetState.Applied = append(app.iconWidgetState.Applied, desktopIconReceipt{
+		RequestID: input.RequestID, Intent: desktopIconIntent(input), Status: "pending", Action: input.Action, ItemID: input.ItemID,
+		Text: input.Values[0], TargetKind: agent.SessionSourceAssist, TargetScope: "global", SessionPath: sessionPath, AppliedAt: time.Now().UnixMilli(),
+	})
+	if err := app.recoverDesktopIconActionsLocked(); err != nil {
+		t.Fatalf("automatic pending Assistant task recovery: %v", err)
+	}
+	if app.iconWidgetState.Applied[0].Status != "applied" || app.activeTabID == "" {
+		t.Fatalf("recovered Assistant receipt = %+v active=%q", app.iconWidgetState.Applied[0], app.activeTabID)
+	}
+	input.Revision = "new-list-after-completion"
+	if result := app.ApplyDesktopIconAction(input); result.Status != "already_applied" {
+		t.Fatalf("Assistant request replay = %+v", result)
 	}
 }
 
