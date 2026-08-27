@@ -87,3 +87,15 @@ func TestBrowserPolicyCoversNativeFirstNoReload(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultSystemPromptPrefersExistingPatternsAndSingleSource(t *testing.T) {
+	for _, want := range []string{
+		"Prefer reusing the project's existing flows and patterns before adding new ones.",
+		"Do not add mapping tables casually",
+		"single authoritative source of truth",
+	} {
+		if !strings.Contains(DefaultSystemPrompt, want) {
+			t.Fatalf("DefaultSystemPrompt missing %q:\n%s", want, DefaultSystemPrompt)
+		}
+	}
+}
