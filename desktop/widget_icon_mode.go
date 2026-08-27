@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -400,9 +401,9 @@ type desktopIconKept struct {
 	CompletedAt   int64  `json:"completedAt,omitempty"`
 	Order         int    `json:"order"`
 	Revision      string `json:"revision"`
-	// Session identity recorded at retain time. A tab can be closed while its
-	// kept icon stays visible; these fields let a later open reopen (or reuse)
-	// the same session instead of falling back to whatever tab is active.
+	// Session identity recorded at retain time. Kept map keys and ItemID are
+	// derived from SessionPath; SourceID/tabID remains a replaceable projection.
+	// A closed tab can therefore be recreated without changing icon ownership.
 	Scope         string `json:"scope,omitempty"`
 	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
 	TopicID       string `json:"topicId,omitempty"`
@@ -533,6 +534,17 @@ func (a *App) loadDesktopIconStateLocked() {
 	if a.iconWidgetState.CompletionSummaries == nil {
 		a.iconWidgetState.CompletionSummaries = map[string]desktopIconCompletionSummary{}
 	}
+	loadErr := a.iconWidgetStateErr
+	if migrateDesktopIconKeptState(&a.iconWidgetState) {
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetStateErr = fmt.Errorf("migrate desktop icon kept sessions: %w", err)
+			// Keep the migrated in-memory snapshot usable for this call, but
+			// force the next call to reread and retry the durable migration.
+			a.iconWidgetStateLoaded = false
+		} else if loadErr != nil {
+			a.iconWidgetStateErr = loadErr
+		}
+	}
 }
 
 func (a *App) saveDesktopIconStateLocked() error {
@@ -545,6 +557,112 @@ func (a *App) saveDesktopIconStateLocked() error {
 	}
 	a.iconWidgetStateErr = nil
 	return nil
+}
+
+// desktopIconKeptID derives the retained icon identity from the exact Session
+// path. The reversible encoding avoids hash collisions while keeping the path
+// safe as a JSON/DOM identifier. Physical tab IDs are deliberately excluded:
+// one tab may be rebound to several Sessions over its lifetime.
+func desktopIconKeptID(sessionPath string) string {
+	key := sessionRuntimeKey(sessionPath)
+	if key == "" {
+		return ""
+	}
+	return "task:session:" + base64.RawURLEncoding.EncodeToString([]byte(key))
+}
+
+func mergeDesktopIconKept(left, right desktopIconKept) desktopIconKept {
+	if right.CompletedAt > left.CompletedAt {
+		left, right = right, left
+	}
+	left.Order = min(left.Order, right.Order)
+	if left.SourceID == "" {
+		left.SourceID = right.SourceID
+	}
+	if left.SessionID == "" {
+		left.SessionID = right.SessionID
+	}
+	if left.Title == "" {
+		left.Title = right.Title
+	}
+	if left.Summary == "" {
+		left.Summary = right.Summary
+	}
+	if left.CompletionKey == "" {
+		left.CompletionKey = right.CompletionKey
+	}
+	if left.Scope == "" {
+		left.Scope = right.Scope
+	}
+	if left.WorkspaceRoot == "" {
+		left.WorkspaceRoot = right.WorkspaceRoot
+	}
+	if left.TopicID == "" {
+		left.TopicID = right.TopicID
+	}
+	if left.SessionPath == "" {
+		left.SessionPath = right.SessionPath
+	}
+	if left.SessionKind == "" {
+		left.SessionKind = right.SessionKind
+	}
+	if left.Revision == "" {
+		left.Revision = right.Revision
+	}
+	return left
+}
+
+// migrateDesktopIconKeptState reindexes legacy task:<tabID> entries by their
+// durable Session path. It is deterministic and idempotent; duplicate legacy
+// entries for the same path converge into one entry. Empty-path legacy entries
+// keep their old key so their existing explicit open error stays observable.
+func migrateDesktopIconKeptState(state *desktopIconPersistedState) bool {
+	if state == nil || len(state.Kept) == 0 {
+		return false
+	}
+	if state.Positions == nil {
+		state.Positions = map[string]DesktopIconPosition{}
+	}
+	oldIDs := make([]string, 0, len(state.Kept))
+	for id := range state.Kept {
+		oldIDs = append(oldIDs, id)
+	}
+	sort.Strings(oldIDs)
+	migrated := make(map[string]desktopIconKept, len(state.Kept))
+	changed := false
+	for _, oldID := range oldIDs {
+		kept := state.Kept[oldID]
+		newID := desktopIconKeptID(kept.SessionPath)
+		if newID == "" {
+			if kept.ItemID != oldID {
+				kept.ItemID = oldID
+				changed = true
+			}
+			migrated[oldID] = kept
+			continue
+		}
+		oldItemID := kept.ItemID
+		if oldID != newID || oldItemID != newID {
+			changed = true
+		}
+		kept.ItemID = newID
+		if current, exists := migrated[newID]; exists {
+			kept = mergeDesktopIconKept(current, kept)
+			changed = true
+		}
+		migrated[newID] = kept
+		if _, exists := state.Positions[newID]; !exists {
+			if position, ok := state.Positions[oldID]; ok {
+				state.Positions[newID] = position
+				changed = true
+			} else if position, ok := state.Positions[oldItemID]; ok {
+				state.Positions[newID] = position
+				changed = true
+			}
+		}
+	}
+	state.Kept = migrated
+	return changed
 }
 
 // rememberDesktopIconTask durably retains the task icon for a conversation
@@ -593,7 +711,13 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 	if strings.EqualFold(meta.SessionSource, "cli") || meta.SessionKind == "collaboration" || meta.SessionKind == string(agent.SessionKindAssistant) {
 		return
 	}
-	id := "task:" + meta.ID
+	sessionPath := strings.TrimSpace(meta.SessionPath)
+	id := desktopIconKeptID(sessionPath)
+	if id == "" {
+		a.iconWidgetStateErr = fmt.Errorf("retain desktop task %q: session path is required", meta.ID)
+		slog.Error("desktop: retain task icon without session path", "tabID", tabID)
+		return
+	}
 	summary, completionKey, completedAt := "", "", int64(0)
 	if tab.Ctrl != nil {
 		result := lastWidgetAssistantText(tab.Ctrl.History())
@@ -616,7 +740,7 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 		Scope:         meta.Scope,
 		WorkspaceRoot: meta.WorkspaceRoot,
 		TopicID:       meta.TopicID,
-		SessionPath:   strings.TrimSpace(meta.SessionPath),
+		SessionPath:   sessionPath,
 		SessionKind:   meta.SessionKind,
 	}
 	if existing, exists := a.iconWidgetState.Kept[id]; exists {
@@ -638,10 +762,8 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 		}
 		return
 	}
-	// Reopening a closed task must not accumulate duplicate kept icons for the
-	// same session: refresh the existing entry's tab identity instead. A tab can
-	// be recreated with a new ID after being closed, so matching by session path
-	// (the durable identity) keeps the icon pointing at the live tab.
+	// Compatibility for in-memory legacy fixtures that bypass persisted-state
+	// migration. Durable state loaded from disk is already indexed by this path.
 	for existingID, existing := range a.iconWidgetState.Kept {
 		if existing.SessionPath == "" {
 			continue
@@ -659,7 +781,9 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 				existing.CompletionKey = entry.CompletionKey
 				existing.CompletedAt = entry.CompletedAt
 			}
-			a.iconWidgetState.Kept[existingID] = existing
+			delete(a.iconWidgetState.Kept, existingID)
+			existing.ItemID = id
+			a.iconWidgetState.Kept[id] = existing
 			if err := a.saveDesktopIconStateLocked(); err != nil {
 				slog.Error("desktop: refresh retained task icon", "tabID", tabID, "err", err)
 			}
@@ -692,36 +816,25 @@ func (a *App) activeDesktopIconSessionRef() desktopIconSessionRef {
 	}
 }
 
-// removeActiveSessionDesktopIcon removes only a currently visible retained
-// task icon for the active session. Missing icons are an idempotent no-op. The
-// stable SessionID is authoritative; tab/path matching is limited to legacy
-// kept entries written before SessionID was persisted.
+// removeActiveSessionDesktopIcon removes the retained icon for the active
+// Session. Missing icons are an idempotent no-op. Session path is authoritative;
+// SessionID/tabID are compatibility fallbacks only for legacy empty-path data.
 func (a *App) removeActiveSessionDesktopIcon() (bool, error) {
 	ref := a.activeDesktopIconSessionRef()
-	if ref.sessionID == "" {
+	refPath := sessionRuntimeKey(ref.sessionPath)
+	if refPath == "" && ref.sessionID == "" {
 		return false, nil
 	}
 	a.iconWidgetMu.Lock()
 	defer a.iconWidgetMu.Unlock()
 	a.loadDesktopIconStateLocked()
-
-	visible := map[string]bool{}
-	for _, item := range a.desktopIconSnapshotLocked().Items {
-		if item.Kind == "task" {
-			visible[item.ID] = true
-			visible["task:"+item.SourceID] = true
-		}
-	}
 	before := cloneDesktopIconState(a.iconWidgetState)
 	removed := false
 	for key, kept := range a.iconWidgetState.Kept {
-		if !visible[key] && !visible[kept.ItemID] && !visible["task:"+kept.SourceID] {
-			continue
-		}
-		match := strings.TrimSpace(kept.SessionID) == ref.sessionID
-		if kept.SessionID == "" {
-			match = kept.SourceID == ref.tabID ||
-				(ref.sessionPath != "" && sessionRuntimeKey(kept.SessionPath) == sessionRuntimeKey(ref.sessionPath))
+		keptPath := sessionRuntimeKey(kept.SessionPath)
+		match := refPath != "" && keptPath == refPath
+		if keptPath == "" {
+			match = (ref.sessionID != "" && strings.TrimSpace(kept.SessionID) == ref.sessionID) || kept.SourceID == ref.tabID
 		}
 		if !match {
 			continue
@@ -2180,7 +2293,7 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 		if desktopIconKeptIsDelegation(kept, hiddenKeptIDs, hiddenKeptPaths) {
 			continue
 		}
-		if _, live := taskBySource[kept.SourceID]; live {
+		if desktopIconKeptHasLiveTask(taskBySource, kept) {
 			continue
 		}
 		notice := desktopIconNoticeForKept(kept, persisted.CompletionSummaries)
@@ -2365,16 +2478,31 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 	return snapshot
 }
 
+func desktopIconKeptHasLiveTask(taskBySource map[string]int, kept desktopIconKept) bool {
+	path := strings.TrimSpace(kept.SessionPath)
+	pathKey := sessionRuntimeKey(path)
+	keys := []string{path, "path:" + path, pathKey, "path:" + pathKey}
+	if pathKey == "" {
+		keys = []string{strings.TrimSpace(kept.SourceID), strings.TrimSpace(kept.SessionID)}
+	}
+	for _, key := range keys {
+		if key == "" || key == "path:" {
+			continue
+		}
+		if _, live := taskBySource[key]; live {
+			return true
+		}
+	}
+	return false
+}
+
 func desktopIconKeptIsDelegation(kept desktopIconKept, hiddenIDs, hiddenPaths map[string]bool) bool {
 	if kept.SessionKind == string(agent.SessionKindAssistant) {
 		return true
 	}
-	if hiddenIDs[strings.TrimSpace(kept.SourceID)] || hiddenIDs[strings.TrimSpace(kept.SessionID)] {
-		return true
-	}
 	path := strings.TrimSpace(kept.SessionPath)
 	if path == "" {
-		return false
+		return hiddenIDs[strings.TrimSpace(kept.SourceID)] || hiddenIDs[strings.TrimSpace(kept.SessionID)]
 	}
 	if strings.EqualFold(filepath.Base(filepath.Dir(filepath.Clean(path))), "subagents") {
 		return true
