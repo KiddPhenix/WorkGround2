@@ -5,6 +5,7 @@
 /npm/.stage/
 /reasonix
 /reasonix.exe
+/desktop/desktop.exe
 /addons/*/bin/*
 !/addons/*/bin/.gitkeep
 
