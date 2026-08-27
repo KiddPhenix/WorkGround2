@@ -77,7 +77,11 @@ const zh = {
   progressWarning: "上次运行已完成，但计划进度未能更新。",
   runtimeWarning: "助手最近运行遇到问题，详情已保留。",
   viewDetails: "查看详情",
-  diagnosticTitle: "读取诊断",
+  diagnostics: "诊断",
+  noDiagnostics: "当前没有诊断记录。",
+  diagnosticTimeUnknown: "时间未知",
+  categoryData: "数据",
+  categoryRuntime: "运行时",
   save: "保存",
   pause: "暂停",
   resume: "唤醒",
@@ -212,7 +216,7 @@ const en: typeof zh = {
   changeTime: "Change time", taskPlaceholder: "Talk to the assistant…", send: "Send", sendShortcut: "Send", overview: "Overview", routines: "Routines", memory: "Explicit memory",
   history: "Run history", attention: "Attention", channels: "Promotion channels", proposals: "Improvement proposals", proposalIntro: "The assistant can only suggest evidence-backed configuration changes. Nothing takes effect before you accept it, and proposals cannot change permissions, workspace, or credentials.", noProposals: "No improvement proposals yet. The assistant suggests one when run evidence is strong enough.", pendingProposals: "Awaiting decision", noPendingProposals: "No proposal is waiting for a decision.", proposalHistory: "Decision history", proposalPending: "Pending", proposalApplied: "Applied", proposalRejected: "Rejected", proposalSuperseded: "Superseded", proposalTarget: "Target", proposalReason: "Reason", proposalChanges: "Configuration changes", proposalEvidence: "Evidence", proposalResolution: "Resolution", acceptProposal: "Accept and apply", rejectProposal: "Reject", proposalAcceptedNote: "Accepted by the user in Desktop", proposalRejectedNote: "Rejected by the user in Desktop", channelCollectInterval: "Metric collection interval", enabledState: "Enabled", disabledState: "Disabled", unknownValue: "Unknown", minute: "minutes", noChannels: "No promotion channel yet. Configure Discourse to publish or reply according to the publishing permission.", addChannel: "Add channel", channelName: "Channel name", channelBaseURL: "Discourse URL", channelUsername: "API username", channelAPIKey: "API key", channelAPIKeyHint: "Credentials are stored separately in WorkGround2's credential store. Leave blank to keep the saved value.", channelCategory: "Default category ID", channelCollectHours: "Metric collection interval (hours)", channelActions: "Outbound actions", channelMetrics: "Effect metrics", name: "Name", mission: "Long-term mission", workspace: "Workspace", scope: "Scope", scopeGlobal: "Global", scopeWorkspace: "Project workspace", save: "Save", pause: "Pause", resume: "Wake",
   deleteAssistant: "Delete assistant", deleteAssistantTitle: "Delete this assistant", deleteAssistantBody: "Its configuration, plan, memory, and run history will leave Assistant mode. Sessions it created stay in Recent.", confirmDeleteAssistant: "Delete", deletedAssistant: "Assistant deleted",
-  workspaceFreezeHint: "Queued runs keep their frozen workspace. New runs use the updated path after saving.", partialWarning: "Some assistant data couldn't be read. Healthy assistants are still available.", progressWarning: "The last run completed, but its plan progress could not be updated.", runtimeWarning: "The assistant recently encountered a runtime issue. Details were retained.", viewDetails: "View details", diagnosticTitle: "Diagnostics",
+  workspaceFreezeHint: "Queued runs keep their frozen workspace. New runs use the updated path after saving.", partialWarning: "Some assistant data couldn't be read. Healthy assistants are still available.", progressWarning: "The last run completed, but its plan progress could not be updated.", runtimeWarning: "The assistant recently encountered a runtime issue. Details were retained.", viewDetails: "View details", diagnostics: "Diagnostics", noDiagnostics: "No diagnostics to show.", diagnosticTimeUnknown: "time unknown", categoryData: "Data", categoryRuntime: "Runtime",
   routineTitle: "Routine name", routinePrompt: "What to do on each run", frequency: "Run frequency", manual: "Manual only", interval: "Fixed interval", daily: "Daily",
   weekly: "Weekly", hour: "hours", at: "Time", timezone: "Timezone", runNow: "Run now", enabled: "Enabled", memoryKind: "Memory type",
   memoryBody: "What should it remember explicitly?", addMemory: "Add memory", charter: "Charter", facts: "Facts", strategy: "Strategy", openLoops: "Open loops", metrics: "Metrics",
@@ -248,7 +252,7 @@ const en: typeof zh = {
   runnerJobs: "Runner jobs", reflection: "Reflection", reflectionEmpty: "No reflection yet.", ideate: "Brainstorm", ideaIntro: "Brainstorming temporarily drops existing strategy assumptions to re-examine mission and path. It can only be accepted as strategy memory or a responsibility candidate — never changes mission, permissions, or runs external actions.", ideaPending: "Pending", ideaAccepted: "Accepted", ideaRejected: "Rejected", ideaSuperseded: "Superseded", acceptIdea: "Accept", rejectIdea: "Reject", retryJob: "Retry", stopJob: "Stop", classificationFailed: "Classification failed; your input is kept and can be retried.", reflectionFailed: "Reflection failed; it will retry with bounded backoff.",
 };
 
-const zhTW: typeof zh = { ...zh, entry: "助手", newAssistant: "新增助手", memory: "明確記憶", history: "執行記錄", attention: "待處理", save: "儲存", sendShortcut: "傳送", workspacePick: "選擇既有工作區", workspaceNew: "從資料夾新增", workspaceChooseTitle: "選擇既有工作區", workspaceChooseBody: "從 WorkGround2 已登記的專案工作區中選擇；未登記的目錄請用「從資料夾新增」。", workspaceChooseLoading: "正在讀取工作區列表…", workspaceChooseEmpty: "尚無已登記的工作區。", workspaceChooseFailed: "工作區列表讀取失敗", workspaceNewHint: "在資料夾選擇器中新增或選擇目錄，作為該助手的工作區。" };
+const zhTW: typeof zh = { ...zh, entry: "助手", newAssistant: "新增助手", memory: "明確記憶", history: "執行記錄", attention: "待處理", save: "儲存", sendShortcut: "傳送", workspacePick: "選擇既有工作區", workspaceNew: "從資料夾新增", workspaceChooseTitle: "選擇既有工作區", workspaceChooseBody: "從 WorkGround2 已登記的專案工作區中選擇；未登記的目錄請用「從資料夾新增」。", workspaceChooseLoading: "正在讀取工作區列表…", workspaceChooseEmpty: "尚無已登記的工作區。", workspaceChooseFailed: "工作區列表讀取失敗", workspaceNewHint: "在資料夾選擇器中新增或選擇目錄，作為該助手的工作區。", diagnostics: "診斷", noDiagnostics: "目前沒有診斷記錄。", diagnosticTimeUnknown: "時間未知", categoryData: "資料", categoryRuntime: "執行期" };
 
 export type AssistantCopy = typeof zh;
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
+  Activity,
   AlertCircle,
   Bot,
   Brain,
@@ -70,7 +71,7 @@ import {
 import "./assistant.css";
 import type { ProjectNode } from "../../../lib/types";
 
-type ManageTab = "overview" | "routines" | "memory" | "channels" | "proposals" | "history" | "attention" | "plan";
+type ManageTab = "overview" | "diagnostics" | "routines" | "memory" | "channels" | "proposals" | "history" | "attention" | "plan";
 
 export interface AssistantSessionTarget {
   scope: "global" | "project";
@@ -127,6 +128,39 @@ export function assistantDiagnosticWarning(diagnostics: AssistantDiagnostic[], c
   if (diagnostics.some((item) => item.category === "data" || item.operation === "list")) return copy.partialWarning;
   if (diagnostics.some((item) => item.operation === "progress_apply" || item.operation === "progress_parse")) return copy.progressWarning;
   return copy.runtimeWarning;
+}
+
+// Missing or unparseable timestamps map to epoch 0 so they safely sink to the
+// bottom of the newest-first ordering instead of breaking the sort with NaN.
+export function diagnosticTimeMillis(at: string): number {
+  if (!at) return 0;
+  const parsed = new Date(at).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+// Newest first, never mutating the source array; ties (including invalid
+// timestamps) keep their original relative order via the stable sort.
+export function sortedDiagnostics(diagnostics: AssistantDiagnostic[]): AssistantDiagnostic[] {
+  return [...diagnostics].sort((a, b) => diagnosticTimeMillis(b.at) - diagnosticTimeMillis(a.at));
+}
+
+// Local, human-readable timestamp; returns "" for missing/invalid input so the
+// caller can render a fallback label instead of throwing.
+export function formatDiagnosticTime(at: string, locale: string): string {
+  if (!at) return "";
+  const parsed = new Date(at);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const lang = locale === "en" ? "en-GB" : locale === "zh-TW" ? "zh-TW" : "zh-CN";
+  return new Intl.DateTimeFormat(lang, {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(parsed);
+}
+
+export function diagnosticCategoryLabel(category: AssistantDiagnostic["category"], copy: ReturnType<typeof assistantCopy>): string {
+  if (category === "data") return copy.categoryData;
+  if (category === "runtime") return copy.categoryRuntime;
+  return copy.unknownValue;
 }
 
 function useAssistantData(focusAssistantID?: string) {
@@ -422,7 +456,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
         <div className="assistant-diagnostic" role="status">
           <AlertCircle size={14} aria-hidden="true" />
           <span>{assistantDiagnosticWarning(data.diagnostics, copy)}</span>
-          <button type="button" onClick={() => setManageTab("overview")}>{copy.viewDetails}</button>
+          <button type="button" onClick={() => setManageTab("diagnostics")}>{copy.viewDetails}</button>
         </div>
       )}
 
@@ -582,6 +616,7 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted,
   const [busy, setBusy] = useState("");
   const tabs: Array<{ id: ManageTab; label: string; icon: typeof Bot }> = [
     { id: "overview", label: copy.overview, icon: Bot },
+    { id: "diagnostics", label: copy.diagnostics, icon: Activity },
     { id: "plan", label: copy.plan, icon: Check },
     { id: "routines", label: copy.routines, icon: CalendarClock },
     { id: "memory", label: copy.memory, icon: Brain },
@@ -624,9 +659,10 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted,
     <div className="assistant-manager-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <aside className="assistant-manager" role="dialog" aria-modal="true" aria-label={copy.manage}>
         <header><h2>{copy.manage}</h2><button className="assistant-icon-button" type="button" aria-label={copy.close} onClick={onClose}><X size={18} /></button></header>
-        <nav aria-label={copy.manage}>{tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={tab === id ? "page" : undefined} className={tab === id ? "is-active" : ""} onClick={() => onTab(id)}><Icon size={15} />{label}{id === "attention" && snapshot.attention.some((item) => attentionInboxAction(item, snapshot.runs.find((run) => run.id === item.run_id)) !== "none") && <span className="assistant-nav-dot" />}{id === "proposals" && snapshot.proposals?.some((item) => item.state === "pending") && <span className="assistant-nav-dot" />}</button>)}</nav>
+        <nav aria-label={copy.manage}>{tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={tab === id ? "page" : undefined} className={tab === id ? "is-active" : ""} onClick={() => onTab(id)}><Icon size={15} />{label}{id === "diagnostics" && diagnostics.length > 0 && <span className="assistant-nav-count">{diagnostics.length}</span>}{id === "attention" && snapshot.attention.some((item) => attentionInboxAction(item, snapshot.runs.find((run) => run.id === item.run_id)) !== "none") && <span className="assistant-nav-dot" />}{id === "proposals" && snapshot.proposals?.some((item) => item.state === "pending") && <span className="assistant-nav-dot" />}</button>)}</nav>
         <div className="assistant-manager__content">
-          {tab === "overview" && <OverviewEditor snapshot={snapshot} diagnostics={diagnostics} busy={busy} act={act} onDelete={deleteAssistant} />}
+          {tab === "overview" && <OverviewEditor snapshot={snapshot} busy={busy} act={act} onDelete={deleteAssistant} />}
+          {tab === "diagnostics" && <DiagnosticsEditor diagnostics={diagnostics} />}
           {tab === "plan" && <PlanView snapshot={snapshot} />}
           {tab === "routines" && <RoutineEditor snapshot={snapshot} busy={busy} act={act} onRun={onRun} />}
           {tab === "memory" && <MemoryEditor snapshot={snapshot} busy={busy} act={act} />}
@@ -796,11 +832,37 @@ export function ProposalInbox({ snapshot, busy, act }: { snapshot: AssistantSnap
 	</div>;
 }
 
+export function DiagnosticsEditor({ diagnostics }: { diagnostics: AssistantDiagnostic[] }) {
+  const { locale } = useI18n();
+  const copy = assistantCopy(locale);
+  const rows = useMemo(() => sortedDiagnostics(diagnostics), [diagnostics]);
+  if (rows.length === 0) {
+    return <p className="assistant-empty-copy">{copy.noDiagnostics}</p>;
+  }
+  return (
+    <div className="assistant-diagnostics">
+      {rows.map((item, index) => {
+        const when = formatDiagnosticTime(item.at, locale);
+        return (
+          <article key={`${item.at}-${index}`} className="assistant-diagnostic-entry">
+            <header>
+              <span className="assistant-diagnostic-entry__category">{diagnosticCategoryLabel(item.category, copy)}</span>
+              <code className="assistant-diagnostic-entry__operation">{item.operation}</code>
+              <time dateTime={item.at}>{when || copy.diagnosticTimeUnknown}</time>
+            </header>
+            <p>{item.message}</p>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 type Act = (key: string, action: () => Promise<unknown>) => Promise<boolean>;
 
 const ALWAYS_ASK_POLICY: ReadonlySet<keyof AssistantPolicy> = new Set(["delete", "payment", "secrets", "private_data"]);
 
-export function OverviewEditor({ snapshot, diagnostics, busy, act, onDelete }: { snapshot: AssistantSnapshot; diagnostics: AssistantDiagnostic[]; busy: string; act: Act; onDelete: () => Promise<void> }) {
+export function OverviewEditor({ snapshot, busy, act, onDelete }: { snapshot: AssistantSnapshot; busy: string; act: Act; onDelete: () => Promise<void> }) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
   const [name, setName] = useState(snapshot.assistant.name);
@@ -884,7 +946,6 @@ export function OverviewEditor({ snapshot, diagnostics, busy, act, onDelete }: {
         <p className="assistant-form__hint"><AlertCircle size={13} />{copy.policyAskNote}</p>
         <p className="assistant-form__hint"><Clock3 size={13} />{copy.policyFreezeHint}</p>
       </section>
-      {diagnostics.length > 0 && <div className="assistant-diagnostic-list" role="status"><strong>{copy.diagnosticTitle}</strong>{diagnostics.map((item, index) => <p key={`${item.at}-${index}`}><span>{item.operation}</span>{item.message}</p>)}</div>}
       <div className="assistant-form__actions">
         <button className="assistant-button" type="button" disabled={Boolean(busy)} onClick={() => void changeLifecycle()}>
           {lifecycle === "paused" ? <Pause size={14} /> : <Play size={14} />}{lifecycle === "paused" ? copy.pause : copy.resume}

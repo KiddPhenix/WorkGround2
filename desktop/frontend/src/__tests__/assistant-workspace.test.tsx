@@ -4,10 +4,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { AssistantSidebarEntry, AssistantWorkspace, AttentionInbox, OverviewEditor, ProposalInbox, assistantDiagnosticWarning } from "../custom/features/assistant/AssistantWorkspace";
+import { AssistantSidebarEntry, AssistantWorkspace, AttentionInbox, DiagnosticsEditor, OverviewEditor, ProposalInbox, assistantDiagnosticWarning, sortedDiagnostics } from "../custom/features/assistant/AssistantWorkspace";
 import { assistantCopy } from "../custom/features/assistant/assistant.copy";
 import { assistantGet } from "../custom/features/assistant/assistant.bridge";
-import type { AssistantSnapshot } from "../custom/features/assistant/assistant.types";
+import type { AssistantDiagnostic, AssistantSnapshot } from "../custom/features/assistant/assistant.types";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 
@@ -19,7 +19,7 @@ function ok(value: boolean, label: string) {
 }
 
 console.log("\nassistant workspace");
-const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { pretendToBeVisual: true, url: "http://localhost/?mock=demo" });
+const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { pretendToBeVisual: true, url: "http://localhost/?mock=assistant-diagnostic" });
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 globalThis.window = dom.window as unknown as Window & typeof globalThis;
 globalThis.document = dom.window.document;
@@ -125,6 +125,27 @@ ok(pressHandoffKey("Enter") === false, "plain Enter inserts a newline in Ctrl+En
 ok(pressHandoffKey("Enter", { altKey: true }) === false, "Alt+Enter never sends");
 ok(pressHandoffKey("Enter", { metaKey: true }) === true, "Meta+Enter sends in Ctrl+Enter mode on macOS");
 ok(pressHandoffKey("Enter", { ctrlKey: true }) === true, "Ctrl+Enter sends in Ctrl+Enter mode");
+
+// ── Diagnostics: the top warning routes to a dedicated diagnostics page ──
+// The mock injects one list diagnostic, so the top banner is present; its
+// "查看详情" action must activate the diagnostics management tab directly,
+// never the overview page or a scroll-to-bottom permission form.
+const diagnosticBanner = host.querySelector(".assistant-diagnostic") as HTMLElement | null;
+ok(diagnosticBanner !== null, "diagnostic warning banner appears when diagnostics exist");
+const viewDetailsButton = [...(diagnosticBanner?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.trim() === "查看详情") as HTMLButtonElement | undefined;
+ok(viewDetailsButton !== undefined, "top warning exposes a view-details action");
+await act(async () => { viewDetailsButton?.click(); });
+const diagnosticsNav = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("诊断")) as HTMLButtonElement | undefined;
+ok(diagnosticsNav !== undefined, "management nav includes the diagnostics page");
+ok(diagnosticsNav?.getAttribute("aria-current") === "page", "view details activates the diagnostics tab immediately");
+ok(diagnosticsNav?.querySelector(".assistant-nav-count")?.textContent === "1", "diagnostics nav shows the current diagnostic count");
+const diagnosticEntry = host.querySelector(".assistant-diagnostic-entry") as HTMLElement | null;
+ok(diagnosticEntry !== null, "diagnostics page lists entries on first screen without scrolling to overview");
+ok(diagnosticEntry?.textContent?.includes("list") ?? false, "diagnostics entry keeps the raw operation");
+ok(diagnosticEntry?.textContent?.includes("一个助手快照损坏") ?? false, "diagnostics entry keeps the full message");
+ok(diagnosticEntry?.querySelector(".assistant-diagnostic-entry__category")?.textContent?.trim() === "未知", "diagnostics entry shows a readable category label");
+const diagnosticTime = diagnosticEntry?.querySelector("time") as HTMLTimeElement | null;
+ok(diagnosticTime !== null && Boolean(diagnosticTime.dateTime) && (diagnosticTime.textContent?.length ?? 0) > 0, "diagnostics entry shows a parseable local time");
 
 // ── Run heading identifies the work; summary renders as Markdown ─────
 const runEvents = [...host.querySelectorAll(".assistant-event--run")];
@@ -262,7 +283,7 @@ ok(
 // Assistant revision. It must not overwrite an unsaved local draft.
 const renderOverview = async (snapshot: AssistantSnapshot, onDelete = async () => undefined) => {
   await act(async () => {
-    root.render(<LocaleProvider><ToastProvider><OverviewEditor snapshot={snapshot} diagnostics={[]} busy="" act={async (_key, action) => { await action(); return true; }} onDelete={onDelete} /></ToastProvider></LocaleProvider>);
+    root.render(<LocaleProvider><ToastProvider><OverviewEditor snapshot={snapshot} busy="" act={async (_key, action) => { await action(); return true; }} onDelete={onDelete} /></ToastProvider></LocaleProvider>);
   });
 };
 await renderOverview(saved);
@@ -294,6 +315,43 @@ ok(deleteCalls === 0 && host.textContent?.includes("确认删除"), "delete Assi
 const confirmDeleteButton = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "确认删除") as HTMLButtonElement | undefined;
 await act(async () => { confirmDeleteButton?.click(); });
 ok(deleteCalls === 1, "confirmed delete delegates exactly once");
+
+// ── Diagnostics editor: newest-first order, invalid time, and empty state ──
+const diagnosticsFixture: AssistantDiagnostic[] = [
+  { at: "2026-08-17T09:00:00Z", category: "runtime", operation: "progress_apply", message: "invalid transition" },
+  { at: "not-a-date", operation: "list", message: "corrupt aggregate" },
+  { at: "2026-08-17T10:00:00Z", category: "data", operation: "list", message: "skipped snapshot" },
+  { at: "", operation: "run", message: "missing timestamp" },
+];
+const fixtureCopy = diagnosticsFixture.map((item) => ({ ...item }));
+const sortedFixture = sortedDiagnostics(diagnosticsFixture);
+ok(
+  sortedFixture.map((item) => item.at).join("|") === "2026-08-17T10:00:00Z|2026-08-17T09:00:00Z|not-a-date|",
+  "diagnostics sort newest-first by time with invalid timestamps sinking safely",
+);
+ok(
+  diagnosticsFixture.every((item, index) => item.at === fixtureCopy[index].at && item.message === fixtureCopy[index].message),
+  "diagnostics sorting never mutates the source array",
+);
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><DiagnosticsEditor diagnostics={diagnosticsFixture} /></ToastProvider></LocaleProvider>);
+});
+const diagnosticEntries = [...host.querySelectorAll(".assistant-diagnostic-entry")];
+ok(diagnosticEntries.length === 4, "diagnostics page lists every diagnostic on screen");
+ok((diagnosticEntries[0]?.textContent?.includes("skipped snapshot") && diagnosticEntries[0]?.textContent?.includes("list")) ?? false, "newest diagnostic leads with operation and full message");
+ok(diagnosticEntries[0]?.querySelector(".assistant-diagnostic-entry__category")?.textContent?.trim() === "数据", "category renders a readable label");
+ok((diagnosticEntries[0]?.querySelector("time")?.textContent?.length ?? 0) > 0, "diagnostics show a parseable local time");
+ok((diagnosticEntries[1]?.textContent?.includes("invalid transition") && diagnosticEntries[1]?.textContent?.includes("progress_apply")) ?? false, "runtime diagnostic keeps operation and message");
+ok(diagnosticEntries[2]?.textContent?.includes("时间未知") ?? false, "invalid time renders a safe unknown label without throwing");
+ok(diagnosticEntries[3]?.textContent?.includes("时间未知") ?? false, "missing time renders a safe unknown label without throwing");
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><DiagnosticsEditor diagnostics={[]} /></ToastProvider></LocaleProvider>);
+});
+ok(host.textContent?.includes("当前没有诊断记录") ?? false, "diagnostics page shows a clear empty state instead of a blank page");
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><OverviewEditor snapshot={newerSnapshot} busy="" act={async (_key, action) => { await action(); return true; }} onDelete={async () => undefined} /></ToastProvider></LocaleProvider>);
+});
+ok(host.querySelector(".assistant-diagnostic-list") === null, "overview no longer embeds the diagnostics detail at the bottom of the permission form");
 
 // ── Background CSS contract ───────────────────────────────────
 const testDir = dirname(fileURLToPath(import.meta.url));

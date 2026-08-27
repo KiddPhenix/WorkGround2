@@ -676,6 +676,7 @@ button.assistant-run-state:focus-visible {
 .assistant-manager > nav button:hover, .assistant-manager > nav button:focus-visible { outline: none; color: #e4ddd3; background: #1d2022; }
 .assistant-manager > nav button.is-active { color: #e4ddd3; background: #231d2f; }
 .assistant-nav-dot { width: 6px; height: 6px; margin-left: auto; border-radius: 50%; background: var(--assistant-orange); }
+.assistant-nav-count { min-width: 18px; height: 18px; margin-left: auto; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; color: #18120e; background: var(--assistant-orange); font-size: 11px; font-weight: 600; line-height: 1; }
 .assistant-manager__content { min-width: 0; overflow: auto; padding: 30px 34px 44px; }
 
 .assistant-form { display: flex; flex-direction: column; gap: 20px; }
@@ -707,10 +708,13 @@ button.assistant-run-state:focus-visible {
 .assistant-policy__option:hover:not(.is-active) { color: #ded7cd; border-color: #56595d; }
 .assistant-policy__option.is-active { color: #18120e; border-color: var(--assistant-orange); background: var(--assistant-orange); }
 .assistant-policy__option.is-always-ask.is-active { border-color: #b78c4a; background: #b78c4a; }
-.assistant-diagnostic-list { padding: 13px 14px; border: 1px solid #5d4930; border-radius: 7px; color: #c9b18e; background: #201b14; }
-.assistant-diagnostic-list strong { display: block; margin-bottom: 8px; color: #e0c49c; font-size: 12px; }
-.assistant-diagnostic-list p { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 10px; margin: 5px 0; font-size: 12px; line-height: 1.55; }
-.assistant-diagnostic-list p span { color: #8d8172; font-family: ui-monospace, "Cascadia Code", monospace; }
+.assistant-diagnostics { display: flex; flex-direction: column; gap: 12px; }
+.assistant-diagnostic-entry { padding: 12px 14px; border: 1px solid #5d4930; border-radius: 7px; color: #c9b18e; background: #201b14; }
+.assistant-diagnostic-entry header { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.assistant-diagnostic-entry__category { flex-shrink: 0; padding: 2px 8px; border-radius: 5px; color: #18120e; background: var(--assistant-orange); font-size: 11px; font-weight: 600; }
+.assistant-diagnostic-entry__operation { flex-shrink: 0; color: #8d8172; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 12px; }
+.assistant-diagnostic-entry time { margin-left: auto; flex-shrink: 0; color: #8d8172; font-size: 11px; white-space: nowrap; }
+.assistant-diagnostic-entry p { margin: 8px 0 0; color: #e2d3b4; font-size: 13px; line-height: 1.6; word-break: break-word; }
 .assistant-check { flex-direction: row !important; align-items: center; }
 .assistant-check input { width: 16px; min-height: 16px; margin: 0; accent-color: #9f67d0; }
 
