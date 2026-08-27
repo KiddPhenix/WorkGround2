@@ -1290,7 +1290,10 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
     { label: copy.policyPublish, access: accessLabel(creationPolicy.publish) },
     { label: copy.policyHighRisk, access: accessLabel(creationPolicy.delete) },
   ] : [];
-  const needsConfirmation = template?.id === "code" || template?.id === "promo" || learnFirst;
+  // Confirmation follows the effective policy, not the learn-first switch:
+  // any auto-allow capability in the final policy still requires an explicit
+  // user confirmation, while a fully read-only/approve policy does not.
+  const needsConfirmation = Boolean(creationPolicy && Object.values(creationPolicy).some((access) => access === "allow"));
   const generalRoutineValid = template?.id !== "general" || (routineTitle.trim() !== "" && routinePrompt.trim() !== "");
 
   return (
@@ -1386,7 +1389,10 @@ export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => v
 
             {template && (
               <label className="assistant-check assistant-create__learn">
-                <input type="checkbox" checked={learnFirst} onChange={(event) => { setLearnFirst(event.target.checked); setConfirmed(false); }} />
+                {/* Turning learn-first off lowers the disclosed permissions, so an already
+                    confirmed wider policy stays valid; re-enabling the boost raises them
+                    again and therefore requires a fresh confirmation. */}
+                <input type="checkbox" checked={learnFirst} onChange={(event) => { const boosted = event.target.checked; setLearnFirst(boosted); if (boosted) setConfirmed(false); }} />
                 <span><strong>{copy.learnFirst}</strong><small>{copy.learnFirstHint}</small></span>
               </label>
             )}

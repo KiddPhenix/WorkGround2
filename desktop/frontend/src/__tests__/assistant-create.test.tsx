@@ -2,7 +2,7 @@ import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { CreateAssistantDialog } from "../custom/features/assistant/AssistantWorkspace";
-import { setMockListProjectTree, setMockPickAssistantWorkspace } from "../lib/bridge";
+import { app, setMockListProjectTree, setMockPickAssistantWorkspace } from "../lib/bridge";
 import type { ProjectNode } from "../lib/types";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
@@ -45,6 +45,14 @@ const setValue = async (input: HTMLInputElement, value: string) => {
   await act(async () => {
     setter?.call(input, value);
     reactProps<{ onChange: (event: { target: HTMLInputElement }) => void }>(input).onChange({ target: input });
+  });
+};
+
+const setAreaValue = async (area: HTMLTextAreaElement, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")?.set;
+  await act(async () => {
+    setter?.call(area, value);
+    reactProps<{ onChange: (event: { target: HTMLTextAreaElement }) => void }>(area).onChange({ target: area });
   });
 };
 
@@ -184,10 +192,24 @@ await flush();
 ok(wsInput()?.value === "~/retried-folder", "folder picker can be retried after a failure");
 setMockPickAssistantWorkspace(null);
 
-// Turning learn-first off keeps the template policy and clears stale confirmation.
+// Turning learn-first off lowers the disclosed permissions: the network
+// auto-allow boost disappears while the code template's local_write auto-allow
+// stays. The wider permission was already confirmed, so lowering the boost
+// must keep that confirmation valid and the create button usable.
 await act(async () => { learnFirst?.click(); });
 ok(learnFirst?.checked === false, "learn-first can be disabled at creation time");
-ok(clickText("创建助手")?.disabled === true, "changing the permission-bearing option clears stale confirmation");
+ok(host.textContent?.includes("拒绝") ?? false, "turning learn-first off removes the network auto-allow from the disclosed policy");
+ok(clickText("创建助手")?.disabled === false, "已确认权限后取消 learn-first，代码模板创建按钮保持可用");
+
+// Re-enabling the boost raises the permissions again, so a fresh confirmation
+// is required before creation can be used again.
+await act(async () => { learnFirst?.click(); });
+ok(learnFirst?.checked === true, "learn-first can be re-enabled at creation time");
+ok(clickText("创建助手")?.disabled === true, "learn-first 从关闭重新开启时，创建按钮再次要求确认");
+const reConfirm = host.querySelector(".assistant-create__confirm input") as HTMLInputElement | null;
+ok(reConfirm !== null, "重新开启 learn-first 后权限确认门禁重新出现");
+await act(async () => { reConfirm?.click(); });
+ok(clickText("创建助手")?.disabled === false, "重新确认权限提升后创建恢复可用");
 
 // Select general template → requires a routine; learn-first elevates only the
 // disclosed network/local permissions and therefore also requires confirmation.
@@ -195,7 +217,45 @@ await act(async () => { clickText("选择模板")?.click(); });
 await act(async () => { clickText("通用")?.click(); });
 ok(clickText("创建助手")?.disabled === true, "general template is blocked until a routine is filled");
 ok(host.textContent?.includes("例行任务名称") ?? false, "general template exposes a routine form");
-ok((host.querySelector(".assistant-create__learn input") as HTMLInputElement | null)?.checked === true, "general template also offers learn-first by default");
+const generalLearn = host.querySelector(".assistant-create__learn input") as HTMLInputElement | null;
+ok(generalLearn?.checked === true, "general template also offers learn-first by default");
+
+// General template with learn-first off: the effective policy is read-only
+// (no auto-allow), so there is no permission confirmation gate at all and
+// create only needs the real required fields.
+await act(async () => { generalLearn?.click(); });
+ok(generalLearn?.checked === false, "通用模板可以关闭 learn-first");
+ok(host.querySelector(".assistant-create__confirm input") === null, "learn-first 关闭时通用模板没有权限确认门禁");
+ok(clickText("创建助手")?.disabled === true, "通用模板未填使命和例行任务时创建仍不可用");
+const missionArea = host.querySelectorAll("textarea")[0] as HTMLTextAreaElement | null;
+const routineTitleInput = host.querySelector(".assistant-create__routine-label input") as HTMLInputElement | null;
+const routinePromptArea = host.querySelectorAll("textarea")[1] as HTMLTextAreaElement | null;
+await setAreaValue(missionArea!, "持续维护我的项目健康度");
+await setValue(routineTitleInput!, "每日巡检");
+await setAreaValue(routinePromptArea!, "检查测试与构建状态并汇报差异");
+ok(clickText("创建助手")?.disabled === false, "通用模板填写使命和例行任务后，learn-first 关闭时创建按钮可用");
+
+// learn-first 从关闭重新开启时，创建按钮再次要求确认。
+await act(async () => { generalLearn?.click(); });
+ok(generalLearn?.checked === true, "通用模板可以重新开启 learn-first");
+ok(host.querySelector(".assistant-create__confirm input") !== null, "重新开启 learn-first 后通用模板重新出现权限确认门禁");
+ok(clickText("创建助手")?.disabled === true, "通用模板重新开启 learn-first 时创建按钮再次要求确认");
+await act(async () => { (host.querySelector(".assistant-create__confirm input") as HTMLInputElement | null)?.click(); });
+ok(clickText("创建助手")?.disabled === false, "通用模板确认权限后创建恢复可用");
+
+// Submitting with learn-first off must not carry the initial learn run: the
+// created assistant snapshot comes back without any queued first task.
+const createdIDs: string[] = [];
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><CreateAssistantDialog onClose={() => undefined} onCreated={(id) => createdIDs.push(id)} /></ToastProvider></LocaleProvider>);
+});
+const generalLearnAfter = host.querySelector(".assistant-create__learn input") as HTMLInputElement | null;
+await act(async () => { generalLearnAfter?.click(); });
+await act(async () => { clickText("创建助手")?.click(); });
+await flush();
+ok(createdIDs.length === 1, "submission reaches the backend and returns a created assistant id");
+const created = createdIDs[0] ? await app.AssistantGet(createdIDs[0]) : null;
+ok(created?.runs.length === 0, "learn-first 关闭时创建请求不携带首个学习任务");
 
 await act(async () => { root.unmount(); });
 console.log(`\n${passed} passed, ${failed} failed\n`);
