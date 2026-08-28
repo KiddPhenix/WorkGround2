@@ -197,14 +197,22 @@ export function assistantSupervisorDiagnostic(assistantID: string): Promise<Assi
   return app.AssistantSupervisorDiagnostic(assistantID) as Promise<AssistantSupervisorDiagnostic>;
 }
 
+const mockDispatchStreamListeners = new Set<(event: AssistantDispatchStreamEvent) => void>();
+
 // onAssistantDispatchStream subscribes to the typed inline live-reply event
-// emitted by the Go Assistant runtime. Outside the Wails shell it is a no-op;
-// the pure reducer is still exercised by the frontend logic tests.
+// emitted by the Go Assistant runtime. Browser tests use the same subscription
+// path through emitMockAssistantDispatchStream.
 export function onAssistantDispatchStream(cb: (event: AssistantDispatchStreamEvent) => void): () => void {
   if (typeof window !== "undefined" && window.runtime?.EventsOn) {
     return window.runtime.EventsOn("assistant:dispatch-stream", (payload?: unknown) => cb(payload as AssistantDispatchStreamEvent));
   }
-  return () => {};
+  mockDispatchStreamListeners.add(cb);
+  return () => { mockDispatchStreamListeners.delete(cb); };
+}
+
+/** Browser/test-only dispatcher stream emitter. Wails uses runtime EventsOn. */
+export function emitMockAssistantDispatchStream(event: AssistantDispatchStreamEvent): void {
+  mockDispatchStreamListeners.forEach((listener) => listener(event));
 }
 
 // assistantListWorkspaces exposes the shared project tree; the create dialog
