@@ -2,82 +2,31 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"workground2/internal/agent"
 	"workground2/internal/assistant"
 	"workground2/internal/assistantchannel"
 	"workground2/internal/config"
-	"workground2/internal/control"
 	"workground2/internal/event"
 	"workground2/internal/netclient"
 	"workground2/internal/permission"
+	"workground2/internal/provider"
 	"workground2/internal/tool"
+	"workground2/internal/tool/assistanttool"
+	"workground2/internal/tool/sessiontool"
 )
 
 const (
 	assistantTickInterval = 30 * time.Second
-	assistantLeaseTTL     = 2 * time.Minute
-	assistantReadyTimeout = 20 * time.Second
 )
-
-type assistantSession struct {
-	TabID       string
-	SessionPath string
-}
-
-type assistantSessionHost interface {
-	PrepareSession(assistant.Run) (assistantSession, error)
-	WaitReady(context.Context, string, time.Duration) (assistantController, error)
-	TrySubmit(string, string, assistant.Policy, []control.ToolGrant, func() bool, func()) (bool, error)
-	Cancel(string)
-}
-
-type assistantController interface {
-	SetToolApprovalMode(string)
-}
-
-type appAssistantSessionHost struct{ app *App }
-
-func (h appAssistantSessionHost) PrepareSession(run assistant.Run) (assistantSession, error) {
-	var tab *WorkspaceTab
-	var err error
-	if strings.TrimSpace(run.SessionPath) != "" {
-		// Restored run: persist the Assistant identity before the tab loads so
-		// boot.Build deterministically selects the Assistant system prompt.
-		if err := ensureAssistantSessionMeta(run.SessionPath, run.AssistantID); err != nil {
-			return assistantSession{}, err
-		}
-		tab, err = h.app.ensureTabForSessionPath(run.SessionPath)
-	} else {
-		tab, err = h.app.ensureAssistantBackgroundTab(run)
-	}
-	if err != nil {
-		return assistantSession{}, err
-	}
-	if tab == nil {
-		return assistantSession{}, errors.New("assistant session tab was not created")
-	}
-	if err := h.app.ensureAssistantTabProfile(tab, run.AssistantID); err != nil {
-		return assistantSession{}, err
-	}
-	path := strings.TrimSpace(tab.currentSessionPath())
-	if path == "" {
-		return assistantSession{}, errors.New("assistant session path is unavailable")
-	}
-	return assistantSession{TabID: tab.ID, SessionPath: path}, nil
-}
 
 // ensureAssistantTabProfile upgrades an already-loaded legacy Assistant tab in
 // place. Old Assistant sessions were ordinary coding tabs; merely stamping the
@@ -215,7 +164,7 @@ func (a *App) reconcileAssistantSessionTitle(run assistant.Run) (bool, error) {
 // Assistant run and stamps the Assistant identity into its BranchMeta BEFORE the
 // tab's controller builds, so boot.Build selects the Assistant system prompt on
 // the first turn rather than only after a restore.
-func (a *App) ensureAssistantBackgroundTab(run assistant.Run) (*WorkspaceTab, error) {
+func (a *App) ensureAssistantBackgroundTab(run assistant.Run, sessionPath string) (*WorkspaceTab, error) {
 	scope := "global"
 	workspaceRoot := ""
 	if run.Scope == assistant.ScopeWorkspace {
@@ -240,9 +189,12 @@ func (a *App) ensureAssistantBackgroundTab(run assistant.Run) (*WorkspaceTab, er
 	}
 	_ = prependTopicInProjectsFile(workspaceRoot, topicID, false)
 
-	sessionPath, err := createEmptySessionFile(desktopSessionDir(actualRoot), "")
-	if err != nil {
-		return nil, err
+	if strings.TrimSpace(sessionPath) == "" {
+		var err error
+		sessionPath, err = createEmptySessionFile(desktopSessionDir(actualRoot), "")
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := ensureAssistantSessionMeta(sessionPath, run.AssistantID); err != nil {
 		return nil, err
@@ -258,122 +210,43 @@ func (a *App) ensureAssistantBackgroundTab(run assistant.Run) (*WorkspaceTab, er
 	return tab, nil
 }
 
-func (h appAssistantSessionHost) WaitReady(ctx context.Context, tabID string, timeout time.Duration) (assistantController, error) {
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		tab, ctrl := h.app.tabAndCtrlByID(tabID)
-		if ctrl != nil {
-			return ctrl, nil
-		}
-		if tab != nil && tab.Ready && strings.TrimSpace(tab.StartupErr) != "" {
-			return nil, fmt.Errorf("assistant session startup: %s", tab.StartupErr)
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-deadline.C:
-			return nil, errors.New("assistant session startup timed out")
-		case <-ticker.C:
-		}
-	}
-}
-
-func (h appAssistantSessionHost) TrySubmit(tabID, prompt string, policy assistant.Policy, grants []control.ToolGrant, claim func() bool, release func()) (bool, error) {
-	tab, ctrl := h.app.tabAndCtrlByID(tabID)
-	if tab == nil || ctrl == nil {
-		return false, workspaceNotReadyErr(tab)
-	}
-	if err := h.app.applyPendingModelForTab(tab); err != nil {
-		return false, err
-	}
-	tab, ctrl = h.app.tabAndCtrlByID(tabID)
-	if tab == nil || ctrl == nil {
-		return false, workspaceNotReadyErr(tab)
-	}
-	if err := h.app.ensureTabControllerWorkspace(tab); err != nil {
-		return false, err
-	}
-	tab.reconcileMu.Lock()
-	defer tab.reconcileMu.Unlock()
-	tab, ctrl = h.app.tabAndCtrlByID(tabID)
-	if ctrl == nil || tab.sink == nil {
-		return false, workspaceNotReadyErr(tab)
-	}
-	tab.sink.assistantMu.Lock()
-	defer tab.sink.assistantMu.Unlock()
-	if !claim() {
-		return false, nil
-	}
-	if !ctrl.TrySubmitUserTurnWithPolicy(prompt, prompt, buildAssistantPermissionPolicy(policy), control.ToolApprovalAuto, grants...) {
-		release()
-		return false, nil
-	}
-	h.app.ensureTabTopicIndexedForUserTurn(tab)
-	h.app.emitProjectTreeChanged()
-	return true, nil
-}
-
-func (h appAssistantSessionHost) Cancel(tabID string) { h.app.CancelTab(tabID) }
-
-type assistantTurnResult struct {
-	Err          error
-	Summary      string
-	ProgressText string
-	Attention    bool
-	Action       string
-	Tool         string
-	Subject      string
-	ResumeToken  string
-}
-
-type assistantInFlight struct {
-	runID    string
-	tabID    string
-	done     chan assistantTurnResult
-	once     sync.Once
-	summary  string
-	turnText string
-	// required holds the deterministic capabilities this run must evidence
-	// before it can be recorded as successful.
-	required []assistant.Capability
-	// evidence accumulates successful live tool results observed on the typed
-	// event stream. A dispatch alone or a failed result never records evidence.
-	evidence assistant.Evidence
-}
-
-func (f *assistantInFlight) complete(result assistantTurnResult) {
-	f.once.Do(func() { f.done <- result })
-}
-
-// AssistantRuntime owns one process-local scheduler owner and executes claimed
-// runs in inactive Desktop sessions. The Store lease remains the authority;
-// this map only correlates Controller events while this process is alive.
+// AssistantRuntime owns one process-local supervisor loop. Execution state lives
+// exclusively in the shared Session subsystem: the loop creates managed Sessions
+// (for routine fires, task Dispatches and supervisor advance decisions) and
+// never claims or writes Runs/Jobs.
 type AssistantRuntime struct {
 	app         *App
 	store       *assistant.Store
 	scheduler   *assistant.Scheduler
-	runner      *assistant.Runner
-	jobRunner   *assistant.JobRunner
 	dispatcher  *assistant.Dispatcher
 	reflector   *assistant.Reflector
 	ideator     *assistant.Ideator
 	channels    *assistantchannel.Service
 	leader      *assistant.LeaderElector
 	leaderLease assistant.LeaderLease
-	host        assistantSessionHost
+	viewport    *assistant.Viewport
+	autoAnswer  *assistant.AutoAnswer
+	// executor is the shared supervisor Session executor (atomic supervisor
+	// Session creation, durable event queue, real Controller turns). Desktop
+	// and daemon drive the same core.
+	executor *assistant.SupervisorExecutor
 
-	mu       sync.Mutex
-	inflight map[string]*assistantInFlight // tab ID -> run event correlation
-	byRun    map[string]*assistantInFlight
-	cancel   context.CancelFunc
-	done     chan struct{}
-	wake     chan struct{}
-	wg       sync.WaitGroup
-	running  atomic.Bool
-	tick     time.Duration
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	done    chan struct{}
+	wake    chan struct{}
+	wg      sync.WaitGroup
+	running atomic.Bool
+	tick    time.Duration
+
+	// sessionControl is the adapter used to create/steer managed sessions. It
+	// defaults to the desktop app adapter; tests inject a recording fake.
+	sessionControl sessiontool.SessionControl
+
+	// trialStatus resolves an experiment trial fork session's derived status for
+	// the winner sweep. It defaults to the Session subsystem (agent.ListSessions
+	// + DeriveSessionStatus); tests inject a fake.
+	trialStatus assistant.TrialStatusResolver
 
 	// dispatchSeq gives every assistant:dispatch-stream event a monotonic,
 	// runtime-global sequence so the frontend can drop stale/out-of-order deltas.
@@ -395,16 +268,11 @@ func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
-	owner := fmt.Sprintf("desktop:%d:%d", os.Getpid(), time.Now().UnixNano())
-	runner, err := assistant.NewRunner(store, owner, assistantLeaseTTL)
-	if err != nil {
-		return nil, err
-	}
-	jobRunner, err := assistant.NewJobRunner(store, owner, assistantLeaseTTL)
-	if err != nil {
-		return nil, err
-	}
 	roleModel := assistantRoleModel{app: app}
+	autoAnswer, err := assistant.NewAutoAnswer(roleModel)
+	if err != nil {
+		return nil, err
+	}
 	dispatcher, err := assistant.NewDispatcher(store, roleModel)
 	if err != nil {
 		return nil, err
@@ -417,7 +285,7 @@ func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
-	leader, err := assistant.NewLeaderElector(root, owner, 90*time.Second)
+	leader, err := assistant.NewLeaderElector(root, assistantOwner("desktop"), 90*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -434,15 +302,61 @@ func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
 		return nil, err
 	}
 	r := &AssistantRuntime{
-		app: app, store: store, scheduler: scheduler, runner: runner,
-		jobRunner: jobRunner, dispatcher: dispatcher, reflector: reflector, ideator: ideator,
-		channels: channels, leader: leader,
-		host: appAssistantSessionHost{app: app}, inflight: map[string]*assistantInFlight{},
-		byRun: map[string]*assistantInFlight{}, tick: assistantTickInterval,
-		wake: make(chan struct{}, 1),
+		app: app, store: store, scheduler: scheduler,
+		dispatcher: dispatcher, reflector: reflector, ideator: ideator,
+		channels: channels, leader: leader, tick: assistantTickInterval,
+		wake:       make(chan struct{}, 1),
+		viewport:   assistant.NewViewport(),
+		autoAnswer: autoAnswer,
 	}
+	// Build the shared supervisor executor AFTER r exists: its hooks close over
+	// the runtime so sessionControl/autoAnswer/trialStatus resolve lazily (test
+	// fakes can be injected later).
+	events, err := assistant.NewSupervisorEventQueue(store.Root())
+	if err != nil {
+		return nil, err
+	}
+	executor, err := assistant.NewSupervisorExecutor(assistant.SupervisorExecutorOptions{
+		Store:  store,
+		Events: events,
+		Host:   &desktopSupervisorHost{r: r},
+		Control: func() assistant.SessionControl {
+			return supervisorSessionControl{inner: r.sessionCreator()}
+		},
+		Ideator:    ideator,
+		AutoAnswer: func() *assistant.AutoAnswer { return r.autoAnswer },
+		TrialStatus: func() assistant.TrialStatusResolver {
+			if r.trialStatus != nil {
+				return r.trialStatus
+			}
+			return r.trialSessionStatus
+		},
+		Viewport:   r.CurrentViewport,
+		Diagnostic: r.recordDiagnostic,
+		Wake:       r.Wake,
+		Constraints: func(assistantID string) (string, int64) {
+			if store == nil {
+				return "", 0
+			}
+			snap, err := store.Get(assistantID)
+			if err != nil {
+				return "", 0
+			}
+			return assistant.LoadProjectConstraintsSummary(snap.Assistant.WorkspaceRoot)
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	r.executor = executor
 	dispatcher.SetReplyObserver(r.emitDispatchPreview)
 	return r, nil
+}
+
+// assistantOwner derives a process-local scheduler owner ID. Runs/Jobs are no
+// longer claimed, but the leader elector still needs a stable owner string.
+func assistantOwner(kind string) string {
+	return fmt.Sprintf("%s:%d:%d", kind, os.Getpid(), time.Now().UnixNano())
 }
 
 func (r *AssistantRuntime) Start() {
@@ -472,16 +386,9 @@ func (r *AssistantRuntime) Stop() {
 	}
 	r.mu.Lock()
 	cancel, done := r.cancel, r.done
-	active := make([]*assistantInFlight, 0, len(r.byRun))
-	for _, in := range r.byRun {
-		active = append(active, in)
-	}
 	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
-	}
-	for _, in := range active {
-		r.host.Cancel(in.tabID)
 	}
 	if done != nil {
 		<-done
@@ -493,6 +400,21 @@ func (r *AssistantRuntime) Stop() {
 		}
 		r.leaderLease = assistant.LeaderLease{}
 	}
+}
+
+// sessionCreator returns the SessionControl adapter for managed-session writes.
+// Production uses the app adapter; tests may inject a recording fake.
+func (r *AssistantRuntime) sessionCreator() sessiontool.SessionControl {
+	if r == nil {
+		return nil
+	}
+	if r.sessionControl != nil {
+		return r.sessionControl
+	}
+	if r.app != nil {
+		return &appAssistantSessionControl{app: r.app}
+	}
+	return nil
 }
 
 func (r *AssistantRuntime) loop(ctx context.Context) {
@@ -511,7 +433,7 @@ func (r *AssistantRuntime) loop(ctx context.Context) {
 	}
 }
 
-// Wake requests an immediate scheduler/runner pass. Capacity one coalesces
+// Wake requests an immediate supervisor pass. Capacity one coalesces
 // bursts from repeated idempotent UI calls without blocking the Wails thread.
 func (r *AssistantRuntime) Wake() {
 	if r == nil {
@@ -529,8 +451,557 @@ func (r *AssistantRuntime) Wake() {
 	}
 }
 
+// WorkControl returns the current global work gate with host-observed active
+// work and a next-step hint.
+func (r *AssistantRuntime) WorkControl() (AssistantWorkControlView, error) {
+	store, err := r.requireStore()
+	if err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	wc, err := store.WorkControl()
+	if err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	var active []AssistantActiveWork
+	if r.app != nil {
+		active = r.app.activeHostWork()
+	}
+	hint := ""
+	switch wc.State {
+	case assistant.WorkQuiescing:
+		hint = "waiting for active sessions to quiesce"
+	case assistant.WorkPaused:
+		hint = "all work paused; resume to continue"
+	case assistant.WorkRecovering:
+		hint = "recovering interrupted sessions"
+	case assistant.WorkRunning:
+		hint = "running"
+	}
+	return workControlView(wc, active, hint), nil
+}
+
+// PauseAll quiesces every active Session (ordinary tabs, managed and supervisor
+// Assistant sessions): it first raises the persistent epoch/fence, requests
+// cancellation of all running controllers so they checkpoint at a safe point,
+// and only confirms PAUSED once the host observes global silence. On timeout it
+// keeps QUIESCING and returns the still-active objects plus an explicit error —
+// it never claims PAUSED while work is still running. Idempotent by request ID.
+func (r *AssistantRuntime) PauseAll(requestID string) (AssistantWorkControlView, error) {
+	store, err := r.requireStore()
+	if err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	wc, err := store.PauseAll(requestID, time.Now())
+	if err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	// Notify and cancel every active live controller so they checkpoint at a
+	// safe point; then wait (bounded) for global silence before entering PAUSED.
+	if r.app != nil {
+		r.app.quiesceHostWork()
+		if !r.app.hostWorkQuiet(5 * time.Second) {
+			active := r.app.activeHostWork()
+			return workControlView(wc, active, "still waiting for active sessions to quiesce"),
+				fmt.Errorf("pause_all: %d session(s) still active after timeout; state %s", len(active), wc.State)
+		}
+	}
+	r.Wake()
+	done, err := store.CompletePause("complete:"+requestID, time.Now())
+	if err != nil {
+		return workControlView(wc, nil, ""), err
+	}
+	return workControlView(done, nil, "all work paused"), nil
+}
+
+// ResumeAll moves PAUSED/QUIESCING to RECOVERING, scans interrupted Sessions
+// and safely retryable work, then completes back to RUNNING. It is idempotent:
+// replaying while already RUNNING is a no-op that returns the current gate.
+func (r *AssistantRuntime) ResumeAll(requestID string) (AssistantWorkControlView, error) {
+	store, err := r.requireStore()
+	if err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	// Replay while already RUNNING is a no-op: return the current gate.
+	if wc, err := store.WorkControl(); err == nil && wc.State == assistant.WorkRunning {
+		return workControlView(wc, nil, "already running"), nil
+	}
+	wc, err := store.ResumeAll(requestID, time.Now())
+	if err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	// Recovery scan: re-drive interrupted sessions from their checkpoint and
+	// restore supervisor subscriptions. The loop wake re-runs the supervisor
+	// pass (fires, dispatches, events) once the gate is RUNNING again.
+	recovered := []AssistantActiveWork{}
+	if r.app != nil {
+		recovered = r.app.resumeHostWork()
+	}
+	r.Wake()
+	done, err := store.CompleteResume("complete:"+requestID, time.Now())
+	if err != nil {
+		return workControlView(wc, recovered, "recovery incomplete"), err
+	}
+	return workControlView(done, recovered, "work resumed"), nil
+}
+
+// PauseForRestart quiesces work and records a one-shot restart intent, then
+// enters PAUSED. The next process consumes the intent and auto-recovers.
+func (r *AssistantRuntime) PauseForRestart(requestID string) (AssistantWorkControlView, error) {
+	store, err := r.requireStore()
+	if err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	if r.app != nil {
+		r.app.quiesceHostWork()
+		if !r.app.hostWorkQuiet(5 * time.Second) {
+			wc, _ := store.WorkControl()
+			active := r.app.activeHostWork()
+			return workControlView(wc, active, "still waiting for active sessions to quiesce"),
+				fmt.Errorf("pause_for_restart: %d session(s) still active after timeout; state %s", len(active), wc.State)
+		}
+	}
+	if _, err := store.PauseForRestart(requestID, time.Now()); err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	done, err := store.CompletePause("complete:"+requestID, time.Now())
+	if err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	return workControlView(done, nil, "safe restart armed"), nil
+}
+
+// recordSupervisorCycles persists one bounded supervisor cycle per active
+// Assistant per tick: the observed Plan/Assistant/Memory/WorkControl revisions
+// plus a derived next step. It is the durable checkpoint the supervisor loop
+// resumes from after a crash or leader switch, and the fence is monotonic per
+// Assistant so a stale cycle can never overwrite a newer one.
+func (r *AssistantRuntime) recordSupervisorCycles(now time.Time) {
+	if r == nil {
+		return
+	}
+	assistants, err := r.store.List()
+	if err != nil {
+		r.recordDiagnostic("cycle_list", err)
+		return
+	}
+	wc, err := r.store.WorkControl()
+	if err != nil {
+		r.recordDiagnostic("cycle_workcontrol", err)
+		return
+	}
+	for _, a := range assistants {
+		if a.Lifecycle != assistant.LifecycleActive {
+			continue
+		}
+		snapshot, err := r.store.Get(a.ID)
+		if err != nil {
+			r.recordDiagnostic("cycle_snapshot", err)
+			continue
+		}
+		cycle, err := r.store.OpenCycle(assistant.OpenCycleInput{
+			AssistantID: a.ID,
+			RequestID:   assistant.StableID("request", "cycle/"+a.ID+"/"+fmt.Sprint(now.UnixNano())),
+			Observed: assistant.CycleObservation{
+				PlanRevision:      snapshot.Plan.Revision,
+				AssistantRevision: snapshot.Assistant.Revision,
+				MemoryRevision:    snapshot.Memory.Revision,
+				WorkEpoch:         wc.Epoch,
+			},
+			Now: now,
+		})
+		if err != nil {
+			r.recordDiagnostic("cycle_open", err)
+			continue
+		}
+		if _, err := r.store.CheckpointCycle(assistant.CheckpointCycleInput{
+			AssistantID: a.ID, CycleID: cycle.ID,
+			RequestID: assistant.StableID("request", "cycle-checkpoint/"+cycle.ID+"/"+fmt.Sprint(cycle.Fence)),
+			Fence:     cycle.Fence,
+			NextStep:  r.supervisorNextStep(snapshot, now),
+			Now:       now,
+		}); err != nil {
+			r.recordDiagnostic("cycle_checkpoint", err)
+		}
+		r.writebackManagedSessions(a.ID)
+	}
+}
+
+// writebackManagedSessions polls completed managed Sessions and applies their
+// <assistant-progress> to the plan via RecordSessionTranscript, then marks them
+// completed. It is poll-based (runs on the tick), idempotent, and leaves the
+// event hot path untouched; a still-running Session is skipped until its next
+// idle observation.
+func (r *AssistantRuntime) writebackManagedSessions(assistantID string) {
+	if r.app == nil || r.executor == nil || r.executor.Host() == nil {
+		return
+	}
+	for _, s := range r.executor.Host().ManagedSessions(assistantID) {
+		meta, ok, err := agent.LoadBranchMeta(s.Path)
+		if err != nil || !ok {
+			continue
+		}
+		if meta.Status == agent.SessionStatusCompleted || meta.Status == agent.SessionStatusFailed {
+			continue
+		}
+		_, ctrl := r.app.sessionCtrlByID(agent.BranchID(s.Path))
+		if ctrl == nil || ctrl.Running() {
+			continue // not loaded yet, or still executing
+		}
+		ses, err := agent.LoadSession(s.Path)
+		if err != nil {
+			continue
+		}
+		transcript := rawAssistantText(ses.Snapshot())
+		if strings.TrimSpace(transcript) == "" {
+			continue
+		}
+		if err := r.store.RecordSessionTranscript(assistant.RecordSessionTranscriptInput{
+			RequestID: "record-progress:" + agent.BranchID(s.Path), AssistantID: assistantID, SessionID: agent.BranchID(s.Path),
+			Transcript: transcript, Now: time.Now(),
+		}); err != nil {
+			r.recordDiagnostic("supervisor_writeback", err)
+			continue
+		}
+		meta.Status = agent.SessionStatusCompleted
+		meta.UpdatedAt = time.Now()
+		_ = agent.SaveBranchMetaPreserveUpdated(s.Path, meta)
+		r.markDispatchExecuted(assistantID, agent.BranchID(s.Path))
+	}
+}
+
+// markDispatchExecuted marks the Dispatch bound to a completed managed Session
+// as executed, making it reflection-ready under the converged Session-triggered
+// precondition.
+func (r *AssistantRuntime) markDispatchExecuted(assistantID, sessionID string) {
+	snapshot, err := r.store.Get(assistantID)
+	if err != nil {
+		return
+	}
+	for _, d := range snapshot.Dispatches {
+		if d.SessionID != sessionID || d.State != assistant.DispatchClassified {
+			continue
+		}
+		if _, err := r.store.MarkDispatchExecuted(assistant.MarkDispatchExecutedInput{
+			RequestID:   assistant.StableID("request", "dispatch-executed/"+d.ID),
+			AssistantID: assistantID, DispatchID: d.ID, Now: time.Now(),
+		}); err != nil {
+			r.recordDiagnostic("dispatch_executed", err)
+		}
+	}
+}
+
+// advanceClassifiedDispatches creates and submits a managed Session for each
+// classified task Dispatch that has no Session yet, then binds it. It is the
+// converged direct-input execution path: the Dispatcher only classifies, and the
+// supervisor loop creates the Session.
+func (r *AssistantRuntime) advanceClassifiedDispatches(now time.Time) {
+	if r.sessionCreator() == nil {
+		return
+	}
+	assistants, err := r.store.List()
+	if err != nil {
+		return
+	}
+	for _, a := range assistants {
+		snapshot, err := r.store.Get(a.ID)
+		if err != nil {
+			continue
+		}
+		for _, d := range snapshot.Dispatches {
+			if d.State != assistant.DispatchClassified || d.Kind != assistant.DispatchTask || d.SessionID != "" {
+				continue
+			}
+			adapter := r.sessionCreator()
+			if adapter == nil {
+				return
+			}
+			sessionID, err := adapter.Create(sessiontool.SessionCreateRequest{
+				Title: d.Input, Prompt: d.Input, OwnerID: a.ID, Purpose: agent.PurposeManaged,
+				RequestID: assistant.StableID("request", "dispatch-session/"+d.ID),
+			})
+			if err != nil {
+				r.recordDiagnostic("dispatch_session", err)
+				continue
+			}
+			if _, err := r.store.BindDispatchSession(assistant.BindDispatchSessionInput{
+				RequestID:   assistant.StableID("request", "dispatch-session/"+d.ID),
+				AssistantID: a.ID, DispatchID: d.ID, SessionID: sessionID, Now: now,
+			}); err != nil {
+				r.recordDiagnostic("dispatch_bind", err)
+			}
+		}
+	}
+}
+
+// fireRoutineSessions turns each due routine fire into a managed Session through
+// the shared Session subsystem, then binds the fire to the Session. The Store's
+// durable fire ledger makes the fire idempotent across crashes, and the
+// fire-derived RequestID makes the Session creation idempotent, so a duplicated
+// tick or a crash between "create" and "bind" never creates a second Session;
+// an unconsumed fire is simply retried on the next tick.
+func (r *AssistantRuntime) fireRoutineSessions(fires []assistant.RoutineFire) {
+	if r == nil || len(fires) == 0 {
+		return
+	}
+	adapter := r.sessionCreator()
+	if adapter == nil {
+		return
+	}
+	for _, fire := range fires {
+		title := strings.TrimSpace(fire.Title)
+		if title == "" {
+			title = strings.TrimSpace(fire.Prompt)
+		}
+		requestID := assistant.StableID("request", "routine-fire/"+fire.FireID)
+		sessionID, err := adapter.Create(sessiontool.SessionCreateRequest{
+			Title: title, Prompt: fire.Prompt, OwnerID: fire.AssistantID, Purpose: agent.PurposeManaged,
+			RequestID: requestID,
+		})
+		if err != nil {
+			r.recordDiagnostic("routine_fire_session", err)
+			continue
+		}
+		if _, err := r.store.ConsumeRoutineFire(fire.AssistantID, fire.FireID, sessionID, requestID, time.Now()); err != nil {
+			r.recordDiagnostic("routine_fire_bind", err)
+		}
+	}
+}
+
+func rawAssistantText(msgs []provider.Message) string {
+	var b strings.Builder
+	for _, m := range msgs {
+		if m.Role == provider.RoleAssistant && m.Content != "" {
+			b.WriteString(m.Content)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// runSupervisorTurns runs one real supervisor reasoning turn per assistant with
+// a decision-worthy signal (pending durable events, expansion trigger, or
+// pending attention). Reasoning executes through each assistant's durable
+// Purpose=supervisor Session Controller (model history, tool calls, pending
+// interaction, checkpoint and restart recovery all live in that Session), never
+// through an out-of-session role model. It is a no-op when no executor is
+// wired (tests) and is not run on every idle tick: the model is only called
+// when there is work to decide.
+func (r *AssistantRuntime) runSupervisorTurns(now time.Time) {
+	if r == nil || r.executor == nil {
+		return
+	}
+	r.executor.RunTurns(context.Background(), now)
+}
+
+// enqueueSupervisorUserInput durably records the user input event and wakes the
+// loop, so the supervisor observes direct input even when it does not create a
+// managed Session (questions, feedback, control intents). A persistence failure
+// is recorded, never silently swallowed.
+func (r *AssistantRuntime) enqueueSupervisorUserInput(assistantID, requestID, input string) {
+	if r == nil || r.executor == nil {
+		return
+	}
+	if err := r.executor.EnqueueUserInput(assistantID, requestID, input); err != nil {
+		r.recordDiagnostic("supervisor_event", err)
+	}
+}
+
+// advanceResponsibility is the acting-phase delegate: the supervisor executor
+// owns the advance logic (shared with the daemon); the runtime forwards so
+// tests and callers keep the same entry point.
+func (r *AssistantRuntime) advanceResponsibility(a assistant.Assistant, alias string) {
+	if r.executor != nil {
+		r.executor.AdvanceResponsibility(a, alias)
+	}
+}
+
+// autoAnswerPending forwards the answer action to the shared supervisor
+// executor (auto-answer loop, hard-gate classification and experiment forks).
+func (r *AssistantRuntime) autoAnswerPending(a assistant.Assistant, sessionID string) {
+	if r.executor != nil {
+		r.executor.AutoAnswerPending(a, sessionID)
+	}
+}
+
+// autoAnswerInteraction forwards one interaction batch to the shared executor.
+func (r *AssistantRuntime) autoAnswerInteraction(a assistant.Assistant, sessionID string, item sessiontool.SessionInteraction, now time.Time) {
+	if r.executor != nil {
+		r.executor.AutoAnswerInteraction(a, sessionID, assistant.SessionInteraction{
+			Kind: item.Kind, ID: item.ID, Questions: item.Questions, DueAt: item.DueAt,
+		}, now)
+	}
+}
+
+// resolveExperimentTrials forwards the experiment winner sweep to the shared
+// executor; the trial status resolver is resolved lazily there.
+func (r *AssistantRuntime) resolveExperimentTrials() {
+	if r.executor != nil {
+		r.executor.ResolveExperimentTrials()
+	}
+}
+
+// trialSessionStatus derives a trial fork session's experiment status from the
+// Session subsystem: completed -> done, failed/cancelled -> failed (terminal,
+// can never win), any other located state -> running.
+func (r *AssistantRuntime) trialSessionStatus(sessionID string) (string, bool) {
+	dirs := []string{config.SessionDir()}
+	for _, p := range loadProjectsFile().Projects {
+		dirs = append(dirs, config.ProjectSessionDir(p.Root))
+	}
+	for _, dir := range dirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		sessions, err := agent.ListSessions(dir)
+		if err != nil {
+			continue
+		}
+		for _, s := range sessions {
+			if agent.BranchID(s.Path) != sessionID {
+				continue
+			}
+			meta, ok, err := agent.LoadBranchMeta(s.Path)
+			if err != nil || !ok {
+				return "", false
+			}
+			switch agent.DeriveSessionStatus(meta) {
+			case agent.SessionStatusCompleted:
+				return assistant.TrialStatusDone, true
+			case agent.SessionStatusFailed, agent.SessionStatusCancelled:
+				return assistant.TrialStatusFailed, true
+			default:
+				return assistant.TrialStatusRunning, true
+			}
+		}
+	}
+	return "", false
+}
+
+// recordDecision persists a decision through the store (idempotent receipt) and
+// mirrors it to the diagnostic log so the source/confidence/candidates/rationale/
+// result/rollback point are auditable even without opening the aggregate.
+func (r *AssistantRuntime) recordDecision(rec assistant.InteractionDecisionRecord) {
+	if r.store != nil {
+		if recorded, err := r.store.RecordInteractionDecision(rec); err == nil {
+			rec = recorded
+		} else {
+			r.recordDiagnostic("autoanswer_decision", err)
+		}
+	}
+	slog.Info("desktop: assistant auto-answer decision",
+		"assistant_id", rec.AssistantID,
+		"session_id", rec.SessionID,
+		"interaction_id", rec.InteractionID,
+		"source", string(rec.Source),
+		"hard_gate", string(rec.HardGate),
+		"confidence", rec.Confidence,
+		"candidates", rec.Candidates,
+		"rationale", rec.Rationale,
+		"result", rec.Result,
+		"rollback", rec.Rollback,
+		"trials", len(rec.Trials),
+		"due_at", rec.DueAt,
+	)
+}
+
+// interactionPrompt joins a batch's question prompts into one bounded string for
+// hard-gate classification and routing.
+func interactionPrompt(questions []event.AskQuestion) string {
+	prompts := make([]string, 0, len(questions))
+	for _, q := range questions {
+		if p := strings.TrimSpace(q.Prompt); p != "" {
+			prompts = append(prompts, p)
+		}
+	}
+	return strings.Join(prompts, " ")
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+// supervisorNextStep derives the durable next-step hint from the plan plus the
+// managed-Session execution state. It deliberately ignores snapshot.Runs: the
+// Session subsystem is the single source of execution truth. The running/failed
+// view comes from the shared supervisor executor's host (multi-dir meta scan),
+// the same view the supervisor turns use.
+func (r *AssistantRuntime) supervisorNextStep(snapshot assistant.Snapshot, now time.Time) string {
+	if triggers := assistant.EvaluateExpansion(snapshot, now); len(triggers) > 0 {
+		return "expand:" + string(triggers[0])
+	}
+	executable := 0
+	for _, resp := range snapshot.Plan.Responsibilities {
+		if resp.Status == assistant.RespReady || resp.Status == assistant.RespActive {
+			executable++
+		}
+	}
+	running, failed := 0, 0
+	if r.executor != nil {
+		rs, fs := r.executor.SessionSummaries(snapshot.Assistant.ID)
+		running, failed = len(rs), len(fs)
+	}
+	return fmt.Sprintf("advance %d executable responsibilities (%d running, %d failed sessions)", executable, running, failed)
+}
+
+// PublishViewport records the user's current window observation. It is
+// short-lived UI context, not business state: the frontend only submits intent
+// (visible/selected session IDs), and the backend reads authoritative Session
+// state by those IDs when composing the Assistant's implicit context.
+func (r *AssistantRuntime) PublishViewport(snapshot assistant.ViewportSnapshot) {
+	if r == nil || r.viewport == nil {
+		return
+	}
+	r.viewport.Publish(snapshot)
+}
+
+// CurrentViewport returns the most recently focused still-valid viewport
+// snapshot, or ok=false when it is expired or unknown.
+func (r *AssistantRuntime) CurrentViewport(now time.Time) (assistant.ViewportSnapshot, bool) {
+	if r == nil || r.viewport == nil {
+		return assistant.ViewportSnapshot{}, false
+	}
+	return r.viewport.Current(now)
+}
+
 func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 	now := time.Now()
+	wc, err := r.store.WorkControl()
+	if err != nil {
+		r.recordDiagnostic("workcontrol", err)
+		return
+	}
+	// Restart semantics: a safe-restart intent survives into the next process
+	// and recovers exactly once (PAUSED -> RECOVERING -> RUNNING). An explicit
+	// PAUSED without intent stays paused; a plain RUNNING restart keeps running.
+	if wc.RestartIntent == assistant.RestartIntentRestart && (wc.State == assistant.WorkPaused || wc.State == assistant.WorkQuiescing) {
+		if _, err := r.store.BeginRestartRecovery("restart:"+stableRequestID(), time.Now()); err != nil {
+			r.recordDiagnostic("workcontrol_restart", err)
+			return
+		}
+		wc, err = r.store.WorkControl()
+		if err != nil {
+			r.recordDiagnostic("workcontrol", err)
+			return
+		}
+	}
+	if wc.State != assistant.WorkRunning && wc.State != assistant.WorkRecovering {
+		// Global pause/restart fence: no scheduling, dispatch or session creation
+		// happens while work is quiescing or paused.
+		return
+	}
+	recovering := wc.State == assistant.WorkRecovering
+	// Recovery pass: re-drive interrupted sessions from their checkpoints
+	// before anything else, then complete the resume back to RUNNING.
+	if recovering && r.app != nil {
+		r.app.resumeHostWork()
+	}
+	r.ensureSupervisorSessions()
 	if r.leader != nil {
 		lease, leader, err := r.leader.Acquire(now)
 		if err != nil {
@@ -543,14 +1014,14 @@ func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 		}
 		r.leaderLease = lease
 	}
-	if err := r.resumeAutoMemoryApprovals(now); err != nil {
-		r.recordDiagnostic("memory_approval_recovery", err)
-		slog.Warn("desktop: assistant memory approval recovery had failures", "err", err)
-	}
-	if result, err := r.scheduler.Tick(now); err != nil {
+	// Session creation first, so the supervisor observes fresh execution state
+	// and its durable event queue sees the new sessions in the same tick.
+	result, err := r.scheduler.Tick(now)
+	if err != nil {
 		r.recordDiagnostic("schedule", err)
 		slog.Error("desktop: assistant schedule tick failed", "err", err, "failures", len(result.Failures))
 	}
+	r.fireRoutineSessions(result.Fires)
 	if r.channels != nil {
 		if _, err := r.channels.CollectDue(ctx); err != nil {
 			r.recordDiagnostic("channel_collect", err)
@@ -559,125 +1030,104 @@ func (r *AssistantRuntime) tickOnce(ctx context.Context) {
 	if err := r.processDispatches(ctx); err != nil {
 		r.recordDiagnostic("dispatch", err)
 	}
-	for {
-		acquired, err := r.runner.Acquire(time.Now())
-		if err != nil {
-			r.recordDiagnostic("acquire", err)
-			slog.Error("desktop: assistant acquire failed", "err", err)
-			return
+	r.advanceClassifiedDispatches(now)
+	// Durable, mergeable event collection: routine fires, session lifecycle
+	// transitions, deferred retries and the idle heartbeat wake the supervisor.
+	if r.executor != nil {
+		if err := r.executor.EnqueueRoutineFires(result.Fires, now); err != nil {
+			r.recordDiagnostic("supervisor_event", err)
 		}
-		for _, diagnostic := range acquired.Diagnostics {
-			r.recordDiagnostic("recovery", errors.New(diagnostic))
-			slog.Warn("desktop: assistant recovery diagnostic", "detail", diagnostic)
-		}
-		if acquired.Run == nil {
-			break
-		}
-		run := *acquired.Run
-		r.wg.Add(1)
-		go func() {
-			defer r.wg.Done()
-			r.execute(ctx, run)
-		}()
+		r.executor.CollectSupervisorEvents(now)
 	}
-	for {
-		acquired, err := r.jobRunner.Acquire(time.Now())
-		if err != nil {
-			r.recordDiagnostic("job_acquire", err)
-			slog.Error("desktop: assistant job acquire failed", "err", err)
-			return
+	r.recordSupervisorCycles(now)
+	r.runSupervisorTurns(now)
+	r.resolveExperimentTrials()
+	// A recovery pass ends by re-opening the gate: RECOVERING -> RUNNING exactly
+	// once per resume, idempotent under replay (already-RUNNING is a no-op).
+	if recovering {
+		if _, err := r.store.CompleteResume("resume:"+stableRequestID(), time.Now()); err != nil {
+			r.recordDiagnostic("workcontrol_resume", err)
 		}
-		for _, diagnostic := range acquired.Diagnostics {
-			r.recordDiagnostic("recovery", errors.New(diagnostic))
-			slog.Warn("desktop: assistant job recovery diagnostic", "detail", diagnostic)
-		}
-		if acquired.Job == nil {
-			break
-		}
-		job := *acquired.Job
-		r.wg.Add(1)
-		go func() {
-			defer r.wg.Done()
-			r.executeJob(ctx, job)
-			_ = r.reflectReadyOf(ctx, job.AssistantID)
-		}()
 	}
+}
+
+// stableRequestID returns a fresh, collision-safe request ID for desktop-owned
+// work-control transitions.
+func stableRequestID() string {
+	return assistant.StableID("request", fmt.Sprintf("desktop/%d/%d", os.Getpid(), time.Now().UnixNano()))
+}
+
+// ensureSupervisorSessions gives every active Assistant exactly one durable
+// Purpose=supervisor session through the shared supervisor executor. Uniqueness
+// lives in the Session subsystem (atomic deterministic creation by the host):
+// a supervisor session already present is recovered, never duplicated, and a
+// missing one is created once.
+func (r *AssistantRuntime) ensureSupervisorSessions() {
+	if r == nil || r.executor == nil || r.app == nil {
+		return
+	}
+	assistants, err := r.store.List()
+	if err != nil {
+		r.recordDiagnostic("supervisor_list", err)
+		return
+	}
+	r.executor.EnsureSupervisorSessions(assistants)
 }
 
 func (r *AssistantRuntime) Tools(assistantID, executionID string) []tool.Tool {
 	if r == nil {
 		return nil
 	}
-	return assistantchannel.Tools(r.channels, assistantID, executionID)
+	tools := assistantchannel.Tools(r.channels, assistantID, executionID)
+	tools = append(tools, r.sessionTools()...)
+	tools = append(tools, assistantStoreTools(r.store, assistantID)...)
+	return tools
+}
+
+// assistantStoreTools returns the schedule/memory/policy tools bound to one
+// Assistant, so a supervisor turn can manage its own Routines, Memory and Policy
+// through the authoritative assistant.Store.
+func assistantStoreTools(store *assistant.Store, assistantID string) []tool.Tool {
+	if store == nil || assistantID == "" {
+		return nil
+	}
+	return []tool.Tool{
+		assistanttool.NewScheduleListTool(store, assistantID),
+		assistanttool.NewScheduleGetTool(store, assistantID),
+		assistanttool.NewScheduleCreateTool(store, assistantID),
+		assistanttool.NewScheduleUpdateTool(store, assistantID),
+		assistanttool.NewSchedulePauseTool(store, assistantID),
+		assistanttool.NewScheduleResumeTool(store, assistantID),
+		assistanttool.NewScheduleDeleteTool(store, assistantID),
+		assistanttool.NewScheduleRunNowTool(store, assistantID),
+		assistanttool.NewMemorySearchTool(store, assistantID),
+		assistanttool.NewMemoryRememberTool(store, assistantID),
+		assistanttool.NewMemoryForgetTool(store, assistantID),
+		assistanttool.NewPolicyGetTool(store, assistantID),
+		assistanttool.NewPolicyUpdateTool(store, assistantID),
+		assistanttool.NewProjectStatusTool(store, assistantID),
+		assistanttool.NewProjectConstraintsGetTool(store, assistantID),
+		assistanttool.NewProjectConstraintsPatchTool(store, assistantID),
+	}
 }
 
 func (a *App) assistantToolsForTab(tab *WorkspaceTab) []tool.Tool {
 	if a == nil || tab == nil || tab.sessionKind != agent.SessionKindAssistant || a.assistant == nil {
 		return nil
 	}
-	// The Controller is assembled before a Run is claimed. Its durable session
+	// The Controller is assembled before a Session runs. Its durable session
 	// identity still gives outbound intents a stable retry scope without
 	// deduplicating identical content across unrelated Assistant sessions.
-	return a.assistant.Tools(tab.assistantID, tab.SessionID)
-}
-
-func (r *AssistantRuntime) resumeAutoMemoryApprovals(now time.Time) error {
-	assistants, listErr := r.store.List()
-	issues := []error{}
-	if listErr != nil {
-		issues = append(issues, listErr)
+	tools := a.assistant.Tools(tab.assistantID, tab.SessionID)
+	// The supervisor Session reasons with a bounded, read-only observation
+	// surface: it can list/read sessions, schedules, memory, policy and project
+	// state, but never acts directly — the loop routes its bounded decision and
+	// applies fences before any side effect. Write session/schedule/memory/
+	// policy tools stay on managed Sessions.
+	if supervisorTab(tab) {
+		tools = filterReadOnlyTools(tools)
 	}
-	for _, record := range assistants {
-		snapshot, err := r.store.Get(record.ID)
-		if err != nil {
-			issues = append(issues, err)
-			continue
-		}
-		runs := make(map[string]assistant.Run, len(snapshot.Runs))
-		for _, run := range snapshot.Runs {
-			runs[run.ID] = run
-		}
-		for _, item := range snapshot.Attention {
-			if !autoAllowedAssistantMemoryTool(item.Tool) || !strings.HasPrefix(item.Action, "approve_tool") {
-				continue
-			}
-			run, ok := runs[item.RunID]
-			if !ok || run.State != assistant.RunWaitingApproval || item.ResumeToken != run.ResumeToken {
-				continue
-			}
-			if item.State == assistant.AttentionOpen {
-				resolved, resolveErr := r.store.ResolveAttention(assistant.ResolveAttentionInput{
-					RequestID:   assistant.StableID("request", "auto-memory-resolve/"+item.ID),
-					AssistantID: record.ID, AttentionID: item.ID, ExpectedRevision: item.Revision,
-					State: assistant.AttentionApproved, Resolution: "助手记忆工具按冻结权限自动允许", Now: now,
-				})
-				if resolveErr != nil {
-					issues = append(issues, fmt.Errorf("resolve %s: %w", item.ID, resolveErr))
-					continue
-				}
-				item = *resolved
-			}
-			if item.State != assistant.AttentionApproved {
-				continue
-			}
-			if _, resumeErr := r.store.Resume(assistant.ResumeInput{
-				RequestID: assistant.StableID("request", "auto-memory-resume/"+item.ID),
-				RunID:     run.ID, Now: now,
-			}); resumeErr != nil {
-				issues = append(issues, fmt.Errorf("resume %s: %w", run.ID, resumeErr))
-			}
-		}
-	}
-	return errors.Join(issues...)
-}
-
-func autoAllowedAssistantMemoryTool(name string) bool {
-	switch strings.TrimSpace(name) {
-	case "memory", "remember", "forget":
-		return true
-	default:
-		return false
-	}
+	return tools
 }
 
 func (r *AssistantRuntime) recordDiagnostic(operation string, err error) {
@@ -703,596 +1153,8 @@ func (r *AssistantRuntime) Diagnostics() []AssistantDiagnostic {
 	return append([]AssistantDiagnostic(nil), r.diagnostics...)
 }
 
-func (r *AssistantRuntime) execute(ctx context.Context, run assistant.Run) {
-	defer r.Wake()
-	if err := validateAssistantWorkspace(run); err != nil {
-		if attentionErr := r.requestWorkspaceAttention(run, err); attentionErr != nil {
-			r.recordDiagnostic("workspace_attention", errors.Join(err, attentionErr))
-			slog.Error("desktop: persist assistant workspace attention failed", "run", run.ID, "err", attentionErr)
-		}
-		return
-	}
-	session, err := r.host.PrepareSession(run)
-	if err != nil {
-		r.failKnown(run, "session_prepare", err, true)
-		return
-	}
-	_, err = r.host.WaitReady(ctx, session.TabID, assistantReadyTimeout)
-	if err != nil {
-		r.failKnown(run, "session_startup", err, true)
-		return
-	}
-	if err := ctx.Err(); err != nil {
-		r.failKnown(run, "runtime_stopped", err, true)
-		return
-	}
-	bindRequest := fmt.Sprintf("bind-session:%s:%d", run.ID, run.LeaseFence)
-	bound, err := r.runner.BindSession(run, bindRequest, session.SessionPath, time.Now())
-	if err != nil {
-		r.failKnown(run, "session_bind", err, true)
-		return
-	}
-	run = *bound
-
-	prompt, grants, selected, planRevision, err := r.promptFor(run)
-	if err != nil {
-		r.failKnown(run, "prompt_build", err, true)
-		return
-	}
-	if err := ctx.Err(); err != nil {
-		r.failKnown(run, "runtime_stopped", err, true)
-		return
-	}
-	required := assistant.RequiredCapabilities(run.Mission, run.Prompt)
-	in := &assistantInFlight{
-		runID:    run.ID,
-		tabID:    session.TabID,
-		done:     make(chan assistantTurnResult, 1),
-		required: required,
-	}
-	accepted, err := r.host.TrySubmit(session.TabID, prompt, run.Policy, grants, func() bool {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		if r.inflight[session.TabID] != nil || r.byRun[run.ID] != nil {
-			return false
-		}
-		r.inflight[session.TabID], r.byRun[run.ID] = in, in
-		return true
-	}, func() {
-		r.removeInFlight(in)
-	})
-	if err != nil {
-		r.failKnown(run, "submit", err, true)
-		return
-	}
-	if !accepted {
-		r.failKnown(run, "session_busy", errors.New("assistant session already has an active turn"), true)
-		return
-	}
-	defer r.removeInFlight(in)
-
-	renew := time.NewTicker(assistantLeaseTTL / 2)
-	defer renew.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			// Process shutdown intentionally leaves the lease to expire. Recovery
-			// will surface the unknown outcome instead of guessing completion.
-			return
-		case result := <-in.done:
-			if errors.Is(result.Err, context.Canceled) {
-				return
-			}
-			if result.Attention {
-				if strings.TrimSpace(result.ResumeToken) == "" {
-					result.ResumeToken = fmt.Sprintf("resume:%s:%d", run.ID, run.LeaseFence)
-				}
-				_, requestErr := r.store.RequestApproval(assistant.ApprovalInput{
-					RequestID: "attention:" + run.ID + ":" + fmt.Sprint(run.LeaseFence),
-					RunID:     run.ID, LeaseOwner: run.LeaseOwner, LeaseFence: run.LeaseFence,
-					Action: result.Action, Summary: result.Summary, Tool: result.Tool, Subject: result.Subject,
-					SessionPath: session.SessionPath,
-					ResumeToken: result.ResumeToken, Now: time.Now(),
-				})
-				if requestErr != nil {
-					r.recordDiagnostic("attention", requestErr)
-					slog.Error("desktop: persist assistant attention failed", "run", run.ID, "err", requestErr)
-					_, failErr := r.runner.Fail(run, assistant.Failure{
-						Code: "attention_persist_failed", Message: requestErr.Error(), Retryable: false,
-						OutcomeKnown: false, Now: time.Now(),
-					})
-					if failErr != nil {
-						slog.Error("desktop: persist assistant unknown outcome failed", "run", run.ID, "err", failErr)
-					}
-				}
-				r.host.Cancel(session.TabID)
-				return
-			}
-			if result.Err != nil {
-				_, failErr := r.runner.Fail(run, assistant.Failure{
-					Code: "turn_failed", Message: result.Err.Error(), Retryable: false,
-					OutcomeKnown: false, Now: time.Now(),
-				})
-				if failErr != nil {
-					r.recordDiagnostic("turn_failure", failErr)
-					slog.Error("desktop: persist assistant failure failed", "run", run.ID, "err", failErr)
-				}
-				return
-			}
-			// Validate required-capability evidence before accepting success. A
-			// missing successful live tool result means the model skipped, was
-			// denied, or the tool failed — never a successful Run.
-			if missing := in.evidence.Missing(in.required); len(missing) > 0 {
-				r.failEvidence(run, missing)
-				r.host.Cancel(session.TabID)
-				return
-			}
-			r.completeRun(run, selected, planRevision, result, session.SessionPath)
-			return
-		case <-renew.C:
-			renewed, renewErr := r.runner.Renew(run, time.Now())
-			if renewErr != nil {
-				r.recordDiagnostic("renew", renewErr)
-				slog.Error("desktop: renew assistant lease failed", "run", run.ID, "err", renewErr)
-				r.host.Cancel(session.TabID)
-				return
-			}
-			run = *renewed
-		}
-	}
-}
-
-func validateAssistantWorkspace(run assistant.Run) error {
-	if run.Scope != assistant.ScopeWorkspace {
-		return nil
-	}
-	root := strings.TrimSpace(run.WorkspaceRoot)
-	if root == "" || !filepath.IsAbs(root) {
-		return fmt.Errorf("frozen workspace path is invalid: %q", run.WorkspaceRoot)
-	}
-	info, err := os.Stat(root)
-	if err != nil {
-		return fmt.Errorf("frozen workspace is unavailable: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("frozen workspace is not a directory: %s", root)
-	}
-	return nil
-}
-
-func (r *AssistantRuntime) requestWorkspaceAttention(run assistant.Run, cause error) error {
-	_, err := r.store.RequireAttention(assistant.RequireAttentionInput{
-		RequestID: fmt.Sprintf("workspace-attention:%s:%d", run.ID, run.LeaseFence),
-		RunID:     run.ID, LeaseOwner: run.LeaseOwner, LeaseFence: run.LeaseFence,
-		Action:      "cancel_recreate",
-		Summary:     fmt.Sprintf("工作区不可用：%v。旧 Run 的冻结工作区不可修改；请取消它，重新绑定 Assistant 后新建 Run。", cause),
-		ResumeToken: fmt.Sprintf("cancel-recreate:%s:%d", run.ID, run.LeaseFence), Now: time.Now(),
-	})
-	return err
-}
-
-func (r *AssistantRuntime) failKnown(run assistant.Run, code string, err error, retryable bool) {
-	if err == nil {
-		return
-	}
-	r.recordDiagnostic(code, err)
-	_, persistErr := r.runner.Fail(run, assistant.Failure{
-		Code: code, Message: err.Error(), Retryable: retryable,
-		OutcomeKnown: true, RetryAfter: time.Minute, Now: time.Now(),
-	})
-	if persistErr != nil {
-		slog.Error("desktop: persist assistant setup failure failed", "run", run.ID, "cause", err, "err", persistErr)
-	}
-}
-
-// completeRun records a successful turn together with any progress patch the
-// model emitted. Run completion and plan/artifact changes commit atomically. A
-// patch that cannot be applied never fails the whole run: the runner rebases a
-// stale plan revision against the latest plan (bounded), and if the metadata is
-// still malformed, cyclic or blocked it records a diagnostic and completes the
-// run without the patch. Only a failure to persist even that no-progress
-// completion keeps the explicit failure path.
-func (r *AssistantRuntime) completeRun(run assistant.Run, selected *assistant.Responsibility, planRevision int64, result assistantTurnResult, sessionPath string) {
-	summary := strings.TrimSpace(assistant.StripProgressBlocks(result.Summary))
-	selectedID := ""
-	if selected != nil {
-		selectedID = selected.ID
-	}
-	base := assistant.CompleteRunInput{
-		RunID:            run.ID,
-		LeaseOwner:       run.LeaseOwner,
-		LeaseFence:       run.LeaseFence,
-		Summary:          summary,
-		SessionPath:      sessionPath,
-		ResponsibilityID: selectedID,
-		Now:              time.Now(),
-	}
-
-	blocks, parseErrs := assistant.ParseProgressBlocks(result.ProgressText)
-	for _, perr := range parseErrs {
-		r.recordDiagnostic("progress_parse", perr)
-		slog.Warn("desktop: assistant progress block parse failed", "run", run.ID, "err", perr)
-	}
-	if len(parseErrs) == 0 && len(blocks) > 0 {
-		base.Progress = assistant.MergeProgressBlocks(blocks)
-		base.Progress.PlanRevision = planRevision
-		if err := r.applyProgressWithRebase(base, run); err != nil {
-			r.recordDiagnostic("progress_apply", err)
-			slog.Warn("desktop: assistant progress patch discarded; completing run without it", "run", run.ID, "err", err)
-		} else {
-			return
-		}
-	}
-
-	// Complete the run without the patch. This is the only remaining place a
-	// successful turn can still fail: if even the no-progress completion cannot
-	// be persisted, keep the explicit, observable retry path.
-	base.Progress = assistant.ProgressBlock{}
-	base.RequestID = fmt.Sprintf("complete:%s:%d", run.ID, run.LeaseFence)
-	if _, err := r.store.CompleteRunWithProgress(base); err != nil {
-		if r.runSucceeded(run.AssistantID, run.ID) {
-			return
-		}
-		r.failKnown(run, "complete_failed", err, true)
-	}
-}
-
-// assistantProgressRebaseLimit bounds how many times a conflicting progress
-// patch is rebased against the latest plan before it is discarded.
-const assistantProgressRebaseLimit = 3
-
-// applyProgressWithRebase applies one progress patch, rebasing it against the
-// latest plan whenever the store reports a revision conflict. Each attempt uses
-// a distinct deterministic request ID so rebased input never collides with a
-// prior receipt fingerprint, and an ambiguous write result is resolved by the
-// persisted run state so a committed patch is never re-applied.
-func (r *AssistantRuntime) applyProgressWithRebase(input assistant.CompleteRunInput, run assistant.Run) error {
-	for attempt := 0; attempt <= assistantProgressRebaseLimit; attempt++ {
-		if attempt > 0 {
-			snapshot, err := r.store.Get(run.AssistantID)
-			if err != nil {
-				return err
-			}
-			assistant.RebaseProgress(snapshot.Plan, &input.Progress)
-		}
-		input.RequestID = progressRequestID(run, attempt)
-		if _, err := r.store.CompleteRunWithProgress(input); err == nil {
-			return nil
-		} else if !errors.Is(err, assistant.ErrConflict) {
-			if r.runSucceeded(run.AssistantID, run.ID) {
-				return nil
-			}
-			return err
-		}
-	}
-	if r.runSucceeded(run.AssistantID, run.ID) {
-		return nil
-	}
-	return fmt.Errorf("assistant: progress still conflicts after %d rebases: %w", assistantProgressRebaseLimit, assistant.ErrConflict)
-}
-
-// progressRequestID derives a deterministic, attempt-scoped request ID so a
-// rebased attempt never reuses a prior receipt fingerprint.
-func progressRequestID(run assistant.Run, attempt int) string {
-	if attempt == 0 {
-		return fmt.Sprintf("progress:%s:%d", run.ID, run.LeaseFence)
-	}
-	return fmt.Sprintf("progress:%s:%d:%d", run.ID, run.LeaseFence, attempt)
-}
-
-// runSucceeded reports whether the persisted run already reached the succeeded
-// state, used to resolve an ambiguous write result without re-applying a patch.
-func (r *AssistantRuntime) runSucceeded(assistantID, runID string) bool {
-	snapshot, err := r.store.Get(assistantID)
-	if err != nil {
-		return false
-	}
-	for i := range snapshot.Runs {
-		if snapshot.Runs[i].ID == runID {
-			return snapshot.Runs[i].State == assistant.RunSucceeded
-		}
-	}
-	return false
-}
-
-// failEvidence persists a missing-capability failure with a bounded retry. It
-// keeps the run recoverable and observable: the next attempt re-runs the turn so
-// the model can obtain the required successful tool result. No success or
-// progress completion is applied.
-func (r *AssistantRuntime) failEvidence(run assistant.Run, missing []assistant.Capability) {
-	failure := assistant.EvidenceFailure(missing)
-	failure.Now = time.Now()
-	failure.RetryAfter = time.Minute
-	r.recordDiagnostic(failure.Code, errors.New(failure.Message))
-	_, failErr := r.runner.Fail(run, failure)
-	if failErr != nil {
-		r.recordDiagnostic(failure.Code, failErr)
-		slog.Error("desktop: persist assistant evidence failure failed", "run", run.ID, "err", failErr)
-	}
-}
-
-// directHistoryMaxItems / directHistoryMaxBytes bound the direct-input history
-// injected into a Run prompt so recent feedback stays in context without
-// unboundedly growing the prefix.
-const (
-	directHistoryMaxItems = 8
-	directHistoryMaxBytes = 16000
-)
-
-func isDirectInputRun(run assistant.Run) bool {
-	return run.RoutineID == "" && strings.TrimSpace(run.Prompt) != ""
-}
-
-// directInputHistory selects recent direct-input runs (manual, non-routine,
-// non-empty prompt), excludes the current run, and returns them in stable
-// newest-first order bounded by item count and total UTF-8 bytes of
-// prompt+summary.
-func directInputHistory(runs []assistant.Run, currentID string, maxItems, maxBytes int) []assistant.Run {
-	currentIndex := len(runs)
-	for index, run := range runs {
-		if run.ID == currentID {
-			currentIndex = index
-			break
-		}
-	}
-	type candidate struct {
-		run   assistant.Run
-		order int
-	}
-	selected := make([]candidate, 0, currentIndex)
-	for index, run := range runs[:currentIndex] {
-		if run.ID == currentID || run.RoutineID != "" || run.Trigger != assistant.TriggerManual || strings.TrimSpace(run.Prompt) == "" {
-			continue
-		}
-		selected = append(selected, candidate{run: run, order: index})
-	}
-	sort.SliceStable(selected, func(i, j int) bool {
-		ti, tj := selected[i].run.CreatedAt, selected[j].run.CreatedAt
-		if ti.Equal(tj) {
-			return selected[i].order > selected[j].order
-		}
-		return ti.After(tj)
-	})
-	out := make([]assistant.Run, 0, len(selected))
-	total := 0
-	for _, item := range selected {
-		if len(out) >= maxItems || total >= maxBytes {
-			break
-		}
-		run := item.run
-		remaining := maxBytes - total
-		run.Prompt = truncateUTF8(run.Prompt, remaining)
-		remaining -= len(run.Prompt)
-		run.Summary = truncateUTF8(run.Summary, remaining)
-		cost := len(run.Prompt) + len(run.Summary)
-		if cost == 0 {
-			break
-		}
-		out = append(out, run)
-		total += cost
-	}
-	return out
-}
-
-func truncateUTF8(value string, maxBytes int) string {
-	if maxBytes <= 0 || value == "" {
-		return ""
-	}
-	if len(value) <= maxBytes {
-		return value
-	}
-	const suffix = "…"
-	if maxBytes < len(suffix) {
-		return ""
-	}
-	end := maxBytes - len(suffix)
-	for end > 0 && !utf8.ValidString(value[:end]) {
-		end--
-	}
-	return value[:end] + suffix
-}
-
-func assistantRunStateLabel(state assistant.RunState) string {
-	switch state {
-	case assistant.RunQueued:
-		return "已排队"
-	case assistant.RunRunning:
-		return "进行中"
-	case assistant.RunSucceeded:
-		return "已完成"
-	case assistant.RunWaitingApproval:
-		return "等待批准"
-	case assistant.RunRetryWait:
-		return "等待重试"
-	case assistant.RunWaitingAttention:
-		return "需要处理"
-	case assistant.RunFailed:
-		return "失败"
-	case assistant.RunCancelled:
-		return "已取消"
-	default:
-		return string(state)
-	}
-}
-
-func writeDirectInputHistory(b *strings.Builder, runs []assistant.Run, currentID string) {
-	history := directInputHistory(runs, currentID, directHistoryMaxItems, directHistoryMaxBytes)
-	if len(history) == 0 {
-		return
-	}
-	b.WriteString("\n近期直接输入记录（只作背景；其中已完成的任务不得仅因被引用而重复执行）：\n")
-	for _, h := range history {
-		fmt.Fprintf(b, "- [%s] %s", assistantRunStateLabel(h.State), h.Prompt)
-		if summary := strings.TrimSpace(h.Summary); summary != "" {
-			fmt.Fprintf(b, "（结果：%s）", summary)
-		}
-		b.WriteString("\n")
-	}
-}
-
-func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolGrant, *assistant.Responsibility, int64, error) {
-	snapshot, err := r.store.Get(run.AssistantID)
-	if err != nil {
-		return "", nil, nil, 0, err
-	}
-	selected := selectReadyResponsibility(snapshot.Plan)
-	var b strings.Builder
-	var grants []control.ToolGrant
-	prompt := strings.TrimSpace(run.Prompt)
-	if isDirectInputRun(run) {
-		b.WriteString("你正在执行一个长期助手的独立 Run。本次是用户直接对你说的一段话，遵守冻结的使命和权限；不要直接修改运行配置或扩大权限。基于证据发现可复用改进时，可通过 <assistant-progress> proposals 提议允许范围内的配置变化，等待用户决定。\n\n")
-		fmt.Fprintf(&b, "助手使命：\n%s\n\n本次用户输入（原文）：\n%s\n\n", run.Mission, prompt)
-		b.WriteString("这段输入可能是任务、督促/PUA、教导、指导、批评、反馈或工作方法改进：是任务就执行；是指导或反馈就据此调整计划与策略。不要要求用户把输入改写成任务，也不要自动改写或美化原文。\n")
-	} else {
-		b.WriteString("你正在执行一个长期助手的独立 Run。只处理本次 Routine，遵守冻结的使命和权限；不要直接修改运行配置或扩大权限。基于证据发现可复用改进时，可通过 <assistant-progress> proposals 提议允许范围内的配置变化，等待用户决定。\n\n")
-		if prompt == "" {
-			prompt = "继续推进助手使命，检查当前状态并完成最有价值的下一步。"
-		}
-		fmt.Fprintf(&b, "助手使命：\n%s\n\n本次任务：\n%s\n\n", run.Mission, prompt)
-	}
-	writeDirectInputHistory(&b, snapshot.Runs, run.ID)
-	fmt.Fprintf(&b, "冻结上下文：assistant_revision=%d, scope=%s, workspace_root=%s\n",
-		run.AssistantRevision, run.Scope, run.WorkspaceRoot)
-	fmt.Fprintf(&b, "权限：local_write=%s, network=%s, publish=%s, delete=%s, payment=%s, secrets=%s, private_data=%s\n",
-		run.Policy.LocalWrite, run.Policy.Network, run.Policy.Publish, run.Policy.Delete,
-		run.Policy.Payment, run.Policy.Secrets, run.Policy.Private)
-	if required := assistant.RequiredCapabilities(run.Mission, prompt); len(required) > 0 {
-		b.WriteString("\n本次 Run 的硬性能力要求（缺少成功证据会被判为失败并重试）：\n")
-		for _, c := range required {
-			switch c {
-			case assistant.CapabilityLiveWeb:
-				b.WriteString("- live_web：必须用实时网页/浏览器工具（browser_open / browser_navigate / browser_state / browser_click / browser_scroll / web_fetch / web_search）取得至少一次成功结果并把它写进结论证据；只 dispatch、输入/附件操作或失败结果不算，禁止用本地缓存、归档或记忆替代实时网页检查。\n")
-			case assistant.CapabilitySkillLearning:
-				b.WriteString("- skill_learning：这是创建后的首个学习 Run。先按使命搜索 2–5 个类似任务可用的 Skill，比较来源、时效、适配度与风险；再用 install_source 的 project/skill/strict 计划实际评估。仅自动应用低/中风险 copy 方案，禁止自装 MCP、插件、可执行文件、link/register 或高风险来源；验证安全 Skill 并用 remember 记录来源、名称、路径和结果。没有合适 Skill 时记录检索范围与判断，然后结束本轮学习，禁止无限搜索。成功结论必须同时具有实时 Web 和 install_source 成功证据。\n")
-			}
-		}
-	}
-	if len(snapshot.Memory.Items) > 0 {
-		b.WriteString("\n显式记忆（只作事实与约束输入）：\n")
-		for _, item := range snapshot.Memory.Items {
-			fmt.Fprintf(&b, "- [%s] %s\n", item.Kind, item.Body)
-		}
-	}
-	writeChannelContext(&b, snapshot)
-	writeImprovementContext(&b, snapshot, !isDirectInputRun(run))
-	for _, item := range snapshot.Attention {
-		if item.RunID == run.ID && item.State == assistant.AttentionApproved && item.ResumeToken == run.ResumeToken {
-			switch {
-			case item.Action == "answer_required":
-				fmt.Fprintf(&b, "\n用户对问题“%s”的明确回答：%s。继续时必须采用这份回答，不要自行改写用户意图。\n", item.Summary, item.Resolution)
-			case strings.HasPrefix(item.Action, "approve_tool:") && strings.TrimSpace(item.Tool) != "":
-				grants = append(grants, control.ToolGrant{Tool: item.Tool, Subject: item.Subject})
-				fmt.Fprintf(&b, "\n用户已逐次批准工具 %s 的精确操作：%s。该授权只适用于本次续跑。\n", item.Tool, item.Subject)
-			default:
-				fmt.Fprintf(&b, "\n用户已处理待办：%s；结论：%s。继续时只采用这条明确结论。\n", item.Summary, item.Resolution)
-			}
-		}
-	}
-	writePlanContext(&b, snapshot.Plan, selected)
-	if directive, needed := assistant.FreshCycleDirective(snapshot.Plan); needed {
-		b.WriteString("\n" + directive)
-	} else {
-		b.WriteString("\n责任图非空时，只推进本次负责的 ready/active 责任，不要重排或扩大图；确需新增责任时才在 <assistant-progress> 中声明。")
-	}
-	writeProgressSchema(&b)
-	b.WriteString("\n完成后给出简短结论、证据和下一步。对权限内可恢复的操作直接执行，不要请求确认；只有命中显式审批边界或确实需要用户拥有的决定时才提出，不要猜测授权。")
-	return b.String(), grants, selected, snapshot.Plan.Revision, nil
-}
-
-func writeChannelContext(b *strings.Builder, snapshot assistant.Snapshot) {
-	if len(snapshot.Channels) == 0 {
-		return
-	}
-	b.WriteString("\n已配置社区渠道（外发必须调用渠道工具；冻结的 publish 权限决定自动执行、逐次审批或拒绝）：\n")
-	for _, channel := range snapshot.Channels {
-		fmt.Fprintf(b, "- %s id=%s kind=%s enabled=%t collect_every_seconds=%d base=%s\n", channel.Name, channel.ID, channel.Kind, channel.Enabled, channel.CollectIntervalSeconds, channel.BaseURL)
-	}
-	if len(snapshot.ChannelMetrics) == 0 {
-		return
-	}
-	b.WriteString("\n最近推广效果（渠道权威观测；比较增量后用 metrics/strategy 记忆记录结论）：\n")
-	start := len(snapshot.ChannelMetrics) - 10
-	if start < 0 {
-		start = 0
-	}
-	for i := start; i < len(snapshot.ChannelMetrics); i++ {
-		metric := snapshot.ChannelMetrics[i]
-		fmt.Fprintf(b, "- channel=%s topic=%d views=%d(+%d) likes=%d(+%d) replies=%d(+%d) at=%s\n", metric.ChannelID, metric.TopicID, metric.Views, metric.ViewsDelta, metric.Likes, metric.LikesDelta, metric.Replies, metric.ReplyDelta, metric.CollectedAt.UTC().Format(time.RFC3339))
-	}
-}
-
-// writeImprovementContext exposes only typed proposal targets and current
-// pending proposals. It lives in the dynamic Run prompt, keeping the stable
-// system-prompt prefix cache-safe while preventing repeated recommendations.
-func writeImprovementContext(b *strings.Builder, snapshot assistant.Snapshot, includePrompt bool) {
-	if len(snapshot.Routines) > 0 {
-		b.WriteString("\n可提出改进建议的 Routine（只能提议 prompt / schedule / enabled，不能直接修改）：\n")
-		for _, routine := range snapshot.Routines {
-			schedule, _ := json.Marshal(routine.Schedule)
-			fmt.Fprintf(b, "- id=%s title=%s revision=%d enabled=%t schedule=%s",
-				routine.ID, routine.Title, routine.Revision, routine.Enabled, schedule)
-			if includePrompt {
-				fmt.Fprintf(b, " prompt=%q", truncateUTF8(routine.Prompt, 1500))
-			}
-			b.WriteString("\n")
-		}
-	}
-	pending := make([]assistant.ChangeProposal, 0)
-	for _, proposal := range snapshot.Proposals {
-		if proposal.State == assistant.ProposalPending {
-			pending = append(pending, proposal)
-		}
-	}
-	if len(pending) == 0 {
-		return
-	}
-	b.WriteString("\n已有待用户处理的改进建议（不要重复提出相同目标和值）：\n")
-	for _, proposal := range pending {
-		var after any
-		if proposal.Routine != nil {
-			after = proposal.Routine.After
-		} else if proposal.Channel != nil {
-			after = proposal.Channel.After
-		}
-		patch, _ := json.Marshal(after)
-		fmt.Fprintf(b, "- id=%s target=%s/%s summary=%s after=%s\n", proposal.ID, proposal.TargetKind, proposal.TargetID, proposal.Summary, patch)
-	}
-}
-
-// writeProgressSchema appends a bounded, concrete example of the
-// <assistant-progress> protocol so the model emits well-formed patches.
-func writeProgressSchema(b *strings.Builder) {
-	b.WriteString(`
-
-<assistant-progress> 块是单个 JSON 对象，字段如下（除 alias/objective 外都可省略）：
-
-{
-  "plan_revision": 3,
-  "responsibility": "code-review",
-  "responsibilities": [
-    {"alias": "fix-tests", "objective": "修复失败用例", "done_criteria": "全部通过", "next_action": "运行 go test", "depends_on": ["scan"]}
-  ],
-  "complete": ["scan"],
-  "active": ["fix-tests"],
-  "artifacts": [{"resp": "scan", "title": "扫描报告", "kind": "report", "content": "…", "evidence": "…"}],
-  "opportunities": [{"resp": "fix-tests", "reason": "下游已就绪"}],
-  "proposals": [{
-    "target_kind": "routine",
-    "target_id": "routine-release",
-    "routine": {"schedule": {"kind": "daily", "timezone": "Asia/Shanghai", "at": "09:00"}},
-    "summary": "把发布检查调整到工作日上午",
-    "reason": "最近三次下午检查都错过了当天发布窗口",
-    "evidence": ["run-123: 17:30 才发现可发布", "run-127: 18:10 才完成检查"]
-  }]
-}
-
-depends_on 用 alias 引用，省略表示不变，[] 表示清空；同一块内可前向引用，禁止自依赖与环。responsibility 填本次实际推进的 alias，complete/active 填 alias 列表。
-
-proposals 仅在运行结果或渠道指标提供了具体证据时填写；target_id 必须取上文真实 ID。routine 只允许 prompt / schedule / enabled，channel 只允许 collect_interval_seconds / enabled。每条建议必须有 summary、reason 和 1–16 条 evidence；现有待处理建议不得重复。建议只会进入待用户处理状态，不能声称配置已经修改。禁止通过提案修改使命、权限、Workspace、渠道地址或凭据。`)
-}
-
 // selectReadyResponsibility deterministically picks the one responsibility a
-// run works on: an already-active one wins, otherwise the first ready one in
+// session works on: an already-active one wins, otherwise the first ready one in
 // creation order.
 func selectReadyResponsibility(plan assistant.Plan) *assistant.Responsibility {
 	for i := range plan.Responsibilities {
@@ -1310,163 +1172,17 @@ func selectReadyResponsibility(plan assistant.Plan) *assistant.Responsibility {
 	return nil
 }
 
-func writePlanContext(b *strings.Builder, plan assistant.Plan, selected *assistant.Responsibility) {
-	if len(plan.Responsibilities) == 0 {
-		return
-	}
-	b.WriteString("\n当前责任图（按别名引用）：\n")
-	aliasOf := map[string]string{}
-	for _, r := range plan.Responsibilities {
-		if r.Alias != "" {
-			aliasOf[r.ID] = r.Alias
-		}
-	}
-	for _, r := range plan.Responsibilities {
-		label := r.Alias
-		if label == "" {
-			label = r.ID
-		}
-		status := string(r.Status)
-		fmt.Fprintf(b, "- %s [%s] %s", label, status, r.Objective)
-		if strings.TrimSpace(r.DoneCriteria) != "" {
-			fmt.Fprintf(b, "（完成标准：%s）", strings.TrimSpace(r.DoneCriteria))
-		}
-		if strings.TrimSpace(r.NextAction) != "" {
-			fmt.Fprintf(b, "（下一步：%s）", strings.TrimSpace(r.NextAction))
-		}
-		if len(r.DependsOn) > 0 {
-			deps := make([]string, 0, len(r.DependsOn))
-			for _, dep := range r.DependsOn {
-				if a, ok := aliasOf[dep]; ok {
-					deps = append(deps, a)
-				} else {
-					deps = append(deps, dep)
-				}
-			}
-			fmt.Fprintf(b, "（依赖：%s）", strings.Join(deps, ", "))
-		}
-		if strings.TrimSpace(r.BlockReason) != "" {
-			fmt.Fprintf(b, "（阻塞原因：%s）", strings.TrimSpace(r.BlockReason))
-		}
-		b.WriteString("\n")
-	}
-	if selected != nil {
-		label := selected.Alias
-		if label == "" {
-			label = selected.ID
-		}
-		fmt.Fprintf(b, "\n本次负责：%s（%s）。只推进这一项，完成后在 <assistant-progress> 中声明 complete。\n", label, selected.Objective)
-	}
-}
-
 func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
 	return assistant.PermissionPolicy(policy)
 }
 
-func (r *AssistantRuntime) removeInFlight(in *assistantInFlight) {
-	r.mu.Lock()
-	if r.inflight[in.tabID] == in {
-		delete(r.inflight, in.tabID)
-	}
-	if r.byRun[in.runID] == in {
-		delete(r.byRun, in.runID)
-	}
-	r.mu.Unlock()
+// ObserveEvent is retained as the tab event-sink seam. With the Run execution
+// path removed there are no in-flight runs to correlate, so it always reports
+// "not consumed" and the normal sink pipeline handles the event.
+func (r *AssistantRuntime) ObserveEvent(string, event.Event) bool {
+	return false
 }
 
-func (r *AssistantRuntime) ObserveEvent(tabID string, value event.Event) bool {
-	if r == nil {
-		return false
-	}
-	r.mu.Lock()
-	in := r.inflight[tabID]
-	if in == nil {
-		r.mu.Unlock()
-		return false
-	}
-	switch value.Kind {
-	case event.Text:
-		// Raw answer deltas carry the <assistant-progress> protocol block. The
-		// final Message is stripped for display, so the runner reconstructs the
-		// raw protocol from these deltas instead.
-		if len(in.turnText) < 1<<20 {
-			in.turnText += value.Text
-		}
-		r.mu.Unlock()
-		return false
-	case event.Message:
-		if strings.TrimSpace(value.Text) != "" {
-			in.summary = strings.TrimSpace(value.Text)
-		}
-		r.mu.Unlock()
-		return false
-	case event.ToolResult:
-		// Only a successful result counts as capability evidence. A dispatch
-		// alone (ToolDispatch) or a failed/denied result records nothing.
-		in.evidence.RecordToolResult(value.Tool.Name, value.Tool.Err == "")
-		r.mu.Unlock()
-		return false
-	case event.ApprovalRequest:
-		tool := strings.TrimSpace(value.Approval.Tool)
-		action := "approve_tool"
-		if tool != "" {
-			action += ":" + tool
-		}
-		summary := strings.TrimSpace(value.Approval.Subject)
-		if summary == "" {
-			summary = strings.TrimSpace(value.Approval.Summary)
-		} else if detail := strings.TrimSpace(value.Approval.Summary); detail != "" && detail != summary {
-			summary += " — " + detail
-		}
-		if summary == "" {
-			summary = "助手执行需要用户审批"
-		}
-		token := strings.TrimSpace(value.Approval.ID)
-		r.mu.Unlock()
-		in.complete(assistantTurnResult{
-			Attention: true, Action: action, Summary: summary,
-			Tool: tool, Subject: strings.TrimSpace(value.Approval.Subject), ResumeToken: token,
-		})
-		return true
-	case event.AskRequest:
-		summary := "助手执行需要用户输入"
-		if len(value.Ask.Questions) > 0 && strings.TrimSpace(value.Ask.Questions[0].Prompt) != "" {
-			summary = strings.TrimSpace(value.Ask.Questions[0].Prompt)
-		}
-		token := strings.TrimSpace(value.Ask.ID)
-		r.mu.Unlock()
-		in.complete(assistantTurnResult{Attention: true, Action: "answer_required", Summary: summary, ResumeToken: token})
-		return true
-	case event.TurnDone:
-		summary := in.summary
-		if summary == "" && value.Err == nil {
-			summary = "助手已完成本次运行"
-		}
-		progressText := in.turnText
-		r.mu.Unlock()
-		in.complete(assistantTurnResult{Err: value.Err, Summary: summary, ProgressText: progressText})
-		return false
-	default:
-		r.mu.Unlock()
-		return false
-	}
-}
-
-func (r *AssistantRuntime) CancelRun(runID string) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	in := r.byRun[runID]
-	if in != nil {
-		delete(r.byRun, runID)
-		if r.inflight[in.tabID] == in {
-			delete(r.inflight, in.tabID)
-		}
-	}
-	r.mu.Unlock()
-	if in != nil {
-		in.complete(assistantTurnResult{Err: context.Canceled})
-		r.host.Cancel(in.tabID)
-	}
-}
+// CancelRun is a no-op compatibility seam: Runs are historical/read-only and
+// never have a live in-flight turn to cancel.
+func (r *AssistantRuntime) CancelRun(string) {}

@@ -161,6 +161,19 @@ func (r *sessionRegistry) count() int {
 	return len(r.items)
 }
 
+// all returns a snapshot of every registered session holder. Callers must not
+// mutate the returned tabs; it exists for host-wide scans (pause quiesce,
+// resume recovery) that observe live controllers under one consistent view.
+func (r *sessionRegistry) all() []*WorkspaceTab {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*WorkspaceTab, 0, len(r.items))
+	for _, tab := range r.items {
+		out = append(out, tab)
+	}
+	return out
+}
+
 func newSessionID() string {
 	var value [16]byte
 	if _, err := rand.Read(value[:]); err == nil {

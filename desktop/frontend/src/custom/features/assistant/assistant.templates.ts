@@ -27,6 +27,7 @@ function readOnlyPolicy(): AssistantPolicy {
     payment: "approve",
     secrets: "approve",
     private_data: "approve",
+    constraint_edit: "approve",
   };
 }
 

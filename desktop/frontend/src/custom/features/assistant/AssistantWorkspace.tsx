@@ -27,17 +27,19 @@ import { useI18n } from "../../../lib/i18n";
 import { useToast } from "../../../lib/toast";
 import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../../lib/composerKeyboard";
 import { AssistantMarkdown } from "./AssistantMarkdown";
+import { AssistantWorkControlBar } from "./AssistantWorkControlBar";
 import {
   assistantApplyMemory,
   assistantCancel,
-  assistantCancelJob,
   assistantCreate,
   assistantDelete,
   assistantGet,
   assistantIdeate,
   assistantList,
   assistantListWorkspaces,
+  assistantManagedSessions,
   assistantPickWorkspace,
+  assistantPublishViewport,
   assistantPutChannel,
   assistantPutRoutine,
   assistantResolveAttention,
@@ -45,10 +47,17 @@ import {
 	assistantResolveProposal,
   assistantResume,
   assistantRetryDispatch,
-  assistantRetryJob,
   assistantRunNow,
+  assistantSessionAnswer,
+  assistantSessionCancel,
+  assistantSessionFork,
+  assistantSessionResume,
+  assistantSessionStatus,
+  assistantSessionSteer,
   assistantSubmit,
+  assistantSupervisorDiagnostic,
   assistantUpdate,
+  assistantViewport,
   onAssistantDispatchStream,
 } from "./assistant.bridge";
 import { assistantCopy } from "./assistant.copy";
@@ -60,6 +69,7 @@ import {
   type AssistantAccess,
   type AssistantChannel,
 	type AssistantChangeProposal,
+  type AssistantManagedSession,
   type AssistantMemoryKind,
   type AssistantDiagnostic,
   type AssistantPolicy,
@@ -68,7 +78,12 @@ import {
   type AssistantRunnerJob,
   type AssistantRoutine,
   type AssistantScheduleKind,
+  type AssistantSessionControlOutcome,
+  type AssistantSessionControlResult,
+  type AssistantSessionInteraction,
+  type AssistantSessionStatusView,
   type AssistantSnapshot,
+  type AssistantSupervisorDiagnostic,
 } from "./assistant.types";
 import "./assistant.css";
 import type { ProjectNode } from "../../../lib/types";
@@ -367,36 +382,6 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
     }
   }, [busy, copy.error, data, showToast]);
 
-  const retryJob = useCallback(async (jobID: string) => {
-    if (!data.snapshot || busy) return;
-    setBusy(`job-${jobID}`);
-    const intentKey = assistantIntentKey("job-retry", data.snapshot.assistant.id, jobID);
-    try {
-      await assistantRetryJob({ jobId: jobID, requestId: pendingAssistantRequest(intentKey) });
-      completeAssistantRequest(intentKey);
-      await data.refresh();
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : copy.error, "error");
-    } finally {
-      setBusy("");
-    }
-  }, [busy, copy.error, data, showToast]);
-
-  const cancelJob = useCallback(async (jobID: string) => {
-    if (!data.snapshot || busy) return;
-    setBusy(`job-${jobID}`);
-    const intentKey = assistantIntentKey("job-cancel", data.snapshot.assistant.id, jobID);
-    try {
-      await assistantCancelJob({ jobId: jobID, requestId: pendingAssistantRequest(intentKey), reason: "cancelled from Desktop" });
-      completeAssistantRequest(intentKey);
-      await data.refresh();
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : copy.error, "error");
-    } finally {
-      setBusy("");
-    }
-  }, [busy, copy.error, data, showToast]);
-
   const resizeHandoff = useCallback(() => {
     const element = textareaRef.current;
     if (!element) return;
@@ -428,6 +413,51 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
   }, [data.snapshot]);
 
   useEffect(() => { setLiveReply(null); }, [selectedAssistantID]);
+
+  // ── 受管 Session 区：只读投影 + 用户控制（控制见 section 组件） ──
+  const [managedSessions, setManagedSessions] = useState<AssistantManagedSession[]>([]);
+  const [selectedSessionID, setSelectedSessionID] = useState<string | undefined>(undefined);
+  const [managedReload, setManagedReload] = useState(0);
+  useEffect(() => {
+    setSelectedSessionID(undefined);
+    setManagedSessions([]);
+    const id = data.selectedID;
+    if (!id) return;
+    let alive = true;
+    const load = async () => {
+      try {
+        const sessions = await assistantManagedSessions(id);
+        if (alive) setManagedSessions(sessions);
+      } catch { /* keep last known list; the poll retries */ }
+    };
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 5000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [data.selectedID, managedReload]);
+
+  // viewport：把真实 UI 选中/可见的 Session 发布给后端，revision 单调递增。
+  const viewportRef = useRef({ revision: 0 });
+  useEffect(() => {
+    let alive = true;
+    void assistantViewport().then(([snap]) => {
+      if (alive) viewportRef.current.revision = Math.max(viewportRef.current.revision, snap.ui_revision ?? 0);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [data.selectedID]);
+  const visibleSessionIDs = useMemo(() => managedSessions.map((item) => item.id), [managedSessions]);
+  const visibleSessionKey = visibleSessionIDs.join(",");
+  useEffect(() => {
+    const current = data.snapshot?.assistant;
+    if (!current) return;
+    viewportRef.current.revision += 1;
+    assistantPublishViewport({
+      windowId: "assistant-main",
+      workspaceId: current.workspace_root ?? "",
+      visibleSessionIds: visibleSessionIDs,
+      selectedSessionId: selectedSessionID ?? "",
+      uiRevision: viewportRef.current.revision,
+    });
+  }, [data.snapshot?.assistant.id, data.snapshot?.assistant.workspace_root, visibleSessionKey, selectedSessionID]);
 
   const handleHandoffKeyDown = useCallback((event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (isComposerSubmitKey(event, submitKey, composingRef.current)) {
@@ -484,10 +514,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
         </div>
       </header>
 
-      <button className="assistant-continue" type="button" disabled={Boolean(busy) || assistant.lifecycle !== "active"} onClick={() => void run()}>
-        {busy === "run" ? <RefreshCw className="assistant-spin" size={16} /> : <Play size={16} fill="currentColor" />}
-        {copy.continueWork}
-      </button>
+      <AssistantWorkControlBar copy={copy} />
 
       {data.diagnostics.length > 0 && (
         <div className="assistant-diagnostic" role="status">
@@ -552,6 +579,17 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
         )}
       </div>
 
+      <AssistantManagedSessionsSection
+        assistant={assistant}
+        sessions={managedSessions}
+        selectedSessionID={selectedSessionID}
+        onSelect={setSelectedSessionID}
+        onOpenSession={onOpenSession}
+        onChanged={() => setManagedReload((value) => value + 1)}
+        copy={copy}
+      />
+      <AssistantSupervisorDiagnosticPanel assistantID={assistant.id} copy={copy} />
+
       <div className="assistant-workspace__scroll">
         <div className="assistant-day">
           <h1><span>{copy.today}</span>，{formatAssistantDate(today, locale)}</h1>
@@ -604,7 +642,8 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
                       {entry.jobs && entry.jobs.length > 0 ? (
                         <ul className="assistant-jobs">
                           {entry.jobs.map((job) => (
-                            <AssistantJobRow key={job.id} job={job} busy={busy} onRetry={retryJob} onCancel={cancelJob} owner={assistant} onOpenSession={onOpenSession} />
+                            // 主执行视角不再操作 RunnerJob：历史只读展示（无 retry/stop）。
+                            <AssistantJobRow key={job.id} job={job} busy={busy} owner={assistant} onOpenSession={onOpenSession} />
                           ))}
                         </ul>
                       ) : null}
@@ -649,6 +688,320 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
       )}
       {creating && <CreateAssistantDialog onClose={() => setCreating(false)} onCreated={(id) => { setCreating(false); void data.loadList(id); }} />}
     </section>
+  );
+}
+
+// ── 受管 Session 区（设计 16.2）───────────────────────────────
+// 只读投影 + 用户控制：展示派生状态、owner/purpose/responsibility/workspace/
+// 最后更新；提供打开、指导、回答、停止、恢复、分叉。每个控制操作使用稳定
+// request_id（assistantIntentKey + pendingAssistantRequest），同一次失败重试
+// 复用同一个 request_id，accepted/already_applied 后释放以便下次新操作。
+
+function sessionStatusLabel(status: string, copy: ReturnType<typeof assistantCopy>): string {
+  switch (status) {
+    case "running": return copy.sessionStatusRunning;
+    case "waiting": return copy.sessionStatusWaiting;
+    case "retrying": return copy.sessionStatusRetrying;
+    case "failed": return copy.sessionStatusFailed;
+    case "completed": return copy.sessionStatusCompleted;
+    default: return copy.sessionStatusIdle;
+  }
+}
+
+function sessionOutcomeLabel(outcome: AssistantSessionControlOutcome, copy: ReturnType<typeof assistantCopy>): string {
+  switch (outcome) {
+    case "accepted": return copy.outcomeAccepted;
+    case "already_applied": return copy.outcomeAlreadyApplied;
+    case "stale": return copy.outcomeStale;
+    case "retryable_error": return copy.outcomeRetryable;
+    case "invalid": return copy.outcomeInvalid;
+    case "blocked_by_policy": return copy.outcomeBlockedPolicy;
+  }
+}
+
+function AssistantManagedSessionsSection({ assistant, sessions, selectedSessionID, onSelect, onOpenSession, onChanged, copy }: {
+  assistant: AssistantRecord;
+  sessions: AssistantManagedSession[];
+  selectedSessionID?: string;
+  onSelect: (sessionID: string | undefined) => void;
+  onOpenSession?: (target: AssistantSessionTarget) => void;
+  onChanged: () => void;
+  copy: ReturnType<typeof assistantCopy>;
+}) {
+  const { locale } = useI18n();
+  const [statuses, setStatuses] = useState<Record<string, AssistantSessionStatusView>>({});
+  const [busyID, setBusyID] = useState("");
+  const [steerDrafts, setSteerDrafts] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, Record<string, string[]>>>({});
+  const [outcomes, setOutcomes] = useState<Record<string, AssistantSessionControlResult>>({});
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      const next: Record<string, AssistantSessionStatusView> = {};
+      await Promise.all(sessions.map(async (session) => {
+        try { next[session.id] = await assistantSessionStatus(session.id); } catch { /* session may be gone */ }
+      }));
+      if (alive) setStatuses(next);
+    };
+    void load();
+    return () => { alive = false; };
+  }, [sessions]);
+
+  // 稳定 request_id：key 固定为 (action, assistant, session)；失败不释放，
+  // 重试复用同一 request_id；accepted/already_applied 后释放。
+  const runControl = async (op: string, sessionID: string, request: (requestId: string) => Promise<AssistantSessionControlResult>) => {
+    if (busyID) return;
+    const key = assistantIntentKey(`session-${op}`, assistant.id, sessionID);
+    const requestId = pendingAssistantRequest(key);
+    setBusyID(`${sessionID}:${op}`);
+    try {
+      const result = await request(requestId);
+      if (result.outcome === "accepted" || result.outcome === "already_applied") completeAssistantRequest(key);
+      setOutcomes((prev) => ({ ...prev, [`${sessionID}:${op}`]: result }));
+      onChanged();
+    } catch (cause) {
+      // 失败保留 request_id：下一次重试必须复用同一个 request_id。
+      setOutcomes((prev) => ({ ...prev, [`${sessionID}:${op}`]: {
+        outcome: "retryable_error", session_id: sessionID,
+        message: cause instanceof Error ? cause.message : String(cause),
+        at: new Date().toISOString(),
+      } }));
+    } finally {
+      setBusyID("");
+    }
+  };
+
+  const sendSteer = (session: AssistantManagedSession) => {
+    const text = (steerDrafts[session.id] ?? "").trim();
+    if (!text) return;
+    // 失败时保留草稿（意图仍待提交），accepted/already_applied 后才清空。
+    void runControl("steer", session.id, async (requestId) => {
+      const result = await assistantSessionSteer({ sessionId: session.id, text, requestId });
+      if (result.outcome === "accepted" || result.outcome === "already_applied") {
+        setSteerDrafts((prev) => ({ ...prev, [session.id]: "" }));
+      }
+      return result;
+    });
+  };
+
+  const toggleAnswer = (interactionID: string, questionID: string, label: string) => {
+    setAnswers((prev) => {
+      const current = prev[interactionID] ?? {};
+      const selected = new Set(current[questionID] ?? []);
+      if (selected.has(label)) selected.delete(label); else selected.add(label);
+      return { ...prev, [interactionID]: { ...current, [questionID]: [...selected] } };
+    });
+  };
+
+  const sendAnswer = (session: AssistantManagedSession, interaction: AssistantSessionInteraction) => {
+    const answersFor = answers[interaction.id] ?? {};
+    const payload = (interaction.questions ?? [])
+      .filter((question) => (answersFor[question.id] ?? []).length > 0)
+      .map((question) => ({ questionId: question.id, selected: answersFor[question.id] ?? [] }));
+    if (payload.length === 0) return;
+    void runControl("answer", session.id, async (requestId) => {
+      const result = await assistantSessionAnswer({ sessionId: session.id, interactionId: interaction.id, answers: payload, requestId });
+      if (result.outcome === "accepted" || result.outcome === "already_applied") {
+        setAnswers((prev) => { const next = { ...prev }; delete next[interaction.id]; return next; });
+      }
+      return result;
+    });
+  };
+
+  if (sessions.length === 0) {
+    return <div className="assistant-managed" aria-label={copy.managedSessions}><h2 className="assistant-managed__title">{copy.managedSessions}</h2><p className="assistant-managed__empty">{copy.managedSessionsEmpty}</p></div>;
+  }
+  return (
+    <div className="assistant-managed" aria-label={copy.managedSessions}>
+      <h2 className="assistant-managed__title">{copy.managedSessions}</h2>
+      {sessions.map((session) => {
+        const selected = selectedSessionID === session.id;
+        const status = statuses[session.id];
+        const interactions = (status?.interactions ?? []).filter((item) => item.kind === "ask");
+        const workspace = session.workspace_root || assistant.workspace_root || "";
+        const target: AssistantSessionTarget = {
+          scope: workspace ? "project" : "global",
+          workspaceRoot: workspace,
+          sessionPath: session.path,
+          assistantID: assistant.id,
+          assistantName: assistant.name,
+        };
+        const sessionOutcomes = Object.entries(outcomes).filter(([key]) => key.startsWith(`${session.id}:`));
+        return (
+          <article key={session.id} className={`assistant-session-card${selected ? " is-selected" : ""}`} data-session-id={session.id}>
+            <header className="assistant-session-card__head">
+              <button
+                type="button"
+                className="assistant-session-card__select"
+                aria-pressed={selected}
+                onClick={() => onSelect(selected ? undefined : session.id)}
+              >
+                {session.title || session.id}
+              </button>
+              <span className={`assistant-run-state assistant-run-state--${session.status}`}>{sessionStatusLabel(session.status, copy)}</span>
+              {target && onOpenSession && (
+                <button type="button" className="assistant-text-action" aria-label={`${session.title || session.id}，${copy.sessionOpen}`} onClick={() => onOpenSession(target)}><ExternalLink size={12} />{copy.sessionOpen}</button>
+              )}
+            </header>
+            <p className="assistant-session-card__meta">
+              <span>{copy.sessionOwner}：{session.owner_id}</span>
+              {session.purpose ? <span>{copy.sessionPurpose}：{session.purpose}</span> : null}
+              {session.responsibility_id ? <span>{copy.sessionResponsibility}：<code>{session.responsibility_id}</code></span> : null}
+              {workspace ? <span>{copy.sessionWorkspace}：<code>{workspace}</code></span> : null}
+              {session.updated_at ? <span>{copy.sessionUpdated}：{formatTimelineTime(new Date(session.updated_at), locale)}</span> : null}
+            </p>
+            {interactions.map((interaction) => {
+              const answerState = answers[interaction.id] ?? {};
+              const hasSelection = (interaction.questions ?? []).some((question) => (answerState[question.id] ?? []).length > 0);
+              return (
+                <div key={interaction.id} className="assistant-session-interaction">
+                  <span>{copy.sessionPendingAsk}</span>
+                  {(interaction.questions ?? []).map((question) => (
+                    <div key={question.id}>
+                      <span>{question.prompt}</span>
+                      <div className="assistant-session-card__actions">
+                        {(question.options ?? []).map((option) => {
+                          const on = (answerState[question.id] ?? []).includes(option.label);
+                          return (
+                            <button
+                              key={option.label}
+                              type="button"
+                              className={`assistant-text-action${on ? " is-active" : ""}`}
+                              aria-pressed={on}
+                              onClick={() => toggleAnswer(interaction.id, question.id, option.label)}
+                            >
+                              {on ? <Check size={12} /> : null}{option.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                  <div className="assistant-session-interaction__answer">
+                    <button className="assistant-button" type="button" disabled={Boolean(busyID) || !hasSelection} onClick={() => sendAnswer(session, interaction)}><Send size={12} />{copy.sessionAnswerSend}</button>
+                  </div>
+                </div>
+              );
+            })}
+            <div className="assistant-session-card__actions">
+              <div className="assistant-session-card__steer">
+                <input
+                  type="text"
+                  value={steerDrafts[session.id] ?? ""}
+                  placeholder={copy.sessionSteerPlaceholder}
+                  aria-label={`${copy.sessionSteer} ${session.title || session.id}`}
+                  disabled={Boolean(busyID)}
+                  onChange={(event) => setSteerDrafts((prev) => ({ ...prev, [session.id]: event.target.value }))}
+                  onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); sendSteer(session); } }}
+                />
+                <button className="assistant-text-action" type="button" disabled={Boolean(busyID) || !(steerDrafts[session.id] ?? "").trim()} onClick={() => sendSteer(session)}><Send size={12} />{copy.sessionSteerSend}</button>
+              </div>
+              {session.status === "running" || session.status === "waiting" || session.status === "retrying" ? (
+                <button className="assistant-text-action" type="button" disabled={Boolean(busyID)} onClick={() => void runControl("cancel", session.id, (requestId) => assistantSessionCancel({ sessionId: session.id, requestId }))}><X size={12} />{copy.sessionCancel}</button>
+              ) : null}
+              {session.status !== "running" ? (
+                <button className="assistant-text-action" type="button" disabled={Boolean(busyID)} onClick={() => void runControl("resume", session.id, (requestId) => assistantSessionResume({ sessionId: session.id, requestId }))}><Play size={12} />{copy.sessionResume}</button>
+              ) : null}
+              <button className="assistant-text-action" type="button" disabled={Boolean(busyID)} onClick={() => void runControl("fork", session.id, (requestId) => assistantSessionFork({ sessionId: session.id, requestId }))}><ChevronRight size={12} />{copy.sessionFork}</button>
+            </div>
+            {sessionOutcomes.map(([key, result]) => (
+              <p key={key} className={`assistant-session-outcome assistant-session-outcome--${result.outcome}`} role="status">
+                <span>{sessionOutcomeLabel(result.outcome, copy)}</span>
+                {result.next_hint && result.next_hint !== result.outcome ? <span>· {result.next_hint}</span> : null}
+                {result.message ? <span>· {result.message}</span> : null}
+              </p>
+            ))}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── 监督诊断面板（设计 16.5）─────────────────────────────────
+// 复用后端 AssistantSupervisorDiagnostic DTO：supervisor Session、cycle 观察
+// 版本、pending events、recent decisions/receipts、next step、retry/failure。
+
+function AssistantSupervisorDiagnosticPanel({ assistantID, copy }: { assistantID: string; copy: ReturnType<typeof assistantCopy> }) {
+  const [diag, setDiag] = useState<AssistantSupervisorDiagnostic | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const value = await assistantSupervisorDiagnostic(assistantID);
+        if (alive) setDiag(value);
+      } catch { /* keep last known diagnostic; the poll retries */ }
+    };
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 5000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [assistantID]);
+  if (!diag) return null;
+  const hasContent = Boolean(diag.supervisor || diag.cycle || diag.next_step ||
+    diag.pending_events?.length || diag.recent_decisions?.length || diag.recent_receipts?.length ||
+    diag.running_sessions?.length || diag.failed_sessions?.length || diag.retry_due > 0 || diag.diagnostics?.length);
+  if (!hasContent) return null;
+  return (
+    <details className="assistant-supervisor">
+      <summary className="assistant-supervisor__head"><Activity size={14} aria-hidden="true" />{copy.supervisorDiagnostic}</summary>
+      <div className="assistant-supervisor__body">
+        {diag.supervisor ? (
+          <div className="assistant-supervisor__row"><strong>{copy.supervisorSession}</strong><code>{diag.supervisor.id}</code></div>
+        ) : null}
+        {diag.cycle ? (
+          <div className="assistant-supervisor__row">
+            <strong>{copy.supervisorCycle}</strong>
+            <span>{diag.cycle.state} · fence {diag.cycle.fence} · rev {diag.cycle.revision}</span>
+            <span>{copy.cycleObserved}：{copy.cyclePlanRevision} {diag.cycle.observed.plan_revision} · {copy.cycleAssistantRevision} {diag.cycle.observed.assistant_revision} · {copy.cycleMemoryRevision} {diag.cycle.observed.memory_revision} · {copy.cycleWorkEpoch} {diag.cycle.observed.work_epoch}</span>
+          </div>
+        ) : null}
+        {diag.next_step ? <div className="assistant-supervisor__row"><strong>{copy.cycleNextStep}</strong><span>{diag.next_step}</span></div> : null}
+        {diag.pending_events?.length ? (
+          <div className="assistant-supervisor__row"><strong>{copy.pendingEvents}</strong>
+            <ul className="assistant-supervisor__list">{diag.pending_events.map((event) => (
+              <li key={event.id}><code>{event.kind}</code><span>{event.session_id || event.request_id || ""}</span></li>
+            ))}</ul>
+          </div>
+        ) : null}
+        {diag.recent_decisions?.length ? (
+          <div className="assistant-supervisor__row"><strong>{copy.recentDecisions}</strong>
+            <ul className="assistant-supervisor__list">{diag.recent_decisions.map((decision) => (
+              <li key={decision.id}><code>{decision.source || "auto"}</code><span>{decision.result || decision.winner || decision.id}</span></li>
+            ))}</ul>
+          </div>
+        ) : null}
+        {diag.recent_receipts?.length ? (
+          <div className="assistant-supervisor__row"><strong>{copy.recentReceipts}</strong>
+            <ul className="assistant-supervisor__list">{diag.recent_receipts.map((receipt) => (
+              <li key={`${receipt.request_id}-${receipt.operation}`}><code>{receipt.operation}</code><span>{receipt.request_id}</span></li>
+            ))}</ul>
+          </div>
+        ) : null}
+        {diag.running_sessions?.length ? (
+          <div className="assistant-supervisor__row"><strong>{copy.runningSessions}</strong>
+            <ul className="assistant-supervisor__list">{diag.running_sessions.map((item) => (
+              <li key={item.id}><code>{item.id}</code><span>{item.title || item.status}</span></li>
+            ))}</ul>
+          </div>
+        ) : null}
+        {diag.failed_sessions?.length ? (
+          <div className="assistant-supervisor__row"><strong>{copy.failedSessions}</strong>
+            <ul className="assistant-supervisor__list">{diag.failed_sessions.map((item) => (
+              <li key={item.id}><code>{item.id}</code><span>{item.title || item.status}</span></li>
+            ))}</ul>
+          </div>
+        ) : null}
+        {diag.retry_due > 0 ? <div className="assistant-supervisor__row"><strong>{copy.retryDue}</strong><span>{diag.retry_due}</span></div> : null}
+        {diag.diagnostics?.length ? (
+          <div className="assistant-supervisor__row"><strong>{copy.diagnostics}</strong>
+            <ul className="assistant-supervisor__list">{diag.diagnostics.map((item, index) => (
+              <li key={`${item.operation}-${index}`}><code>{item.operation}</code><span>{item.message}</span></li>
+            ))}</ul>
+          </div>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -1154,11 +1507,11 @@ function ChannelEditor({ snapshot, busy, act }: { snapshot: AssistantSnapshot; b
   );
 }
 
-// AssistantJobRow renders one dispatch job with its recoverable state. A
-// waiting_attention job (e.g. recovered after lease loss) keeps its explicit
-// unknown-outcome error visible and exposes the retry recovery action, so the
-// step never shows a dead-end label with no way forward.
-export function AssistantJobRow({ job, busy, onRetry, onCancel, owner, onOpenSession }: { job: AssistantRunnerJob; busy: string; onRetry: (id: string) => Promise<void>; onCancel: (id: string) => Promise<void>; owner: AssistantRecord; onOpenSession?: (target: AssistantSessionTarget) => void }) {
+// AssistantJobRow renders one dispatch job as read-only history. The main
+// execution view no longer operates RunnerJobs (no claim/retry/stop): retry and
+// stop buttons render only when the caller explicitly supplies handlers, which
+// the main timeline never does.
+export function AssistantJobRow({ job, busy, onRetry, onCancel, owner, onOpenSession }: { job: AssistantRunnerJob; busy: string; onRetry?: (id: string) => Promise<void>; onCancel?: (id: string) => Promise<void>; owner: AssistantRecord; onOpenSession?: (target: AssistantSessionTarget) => void }) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
   const target = assistantJobSessionTarget(job, owner);
@@ -1181,10 +1534,10 @@ export function AssistantJobRow({ job, busy, onRetry, onCancel, owner, onOpenSes
       <span className={`assistant-run-state assistant-run-state--${job.state}`}>{jobStateLabel(job.state, locale)}</span>
       {name}
       {job.error?.message && job.error.message.trim() !== (job.summary ?? "").trim() ? <p className="assistant-event__error">{job.error.message}</p> : null}
-      {job.state === "failed" || job.state === "cancelled" || job.state === "waiting_attention" ? (
+      {onRetry && (job.state === "failed" || job.state === "cancelled" || job.state === "waiting_attention") ? (
         <button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void onRetry(job.id)}><RefreshCw size={13} />{copy.retryJob}</button>
       ) : null}
-      {job.state === "queued" || job.state === "running" || job.state === "retry_wait" ? (
+      {onCancel && (job.state === "queued" || job.state === "running" || job.state === "retry_wait") ? (
         <button type="button" className="assistant-text-action" disabled={Boolean(busy)} onClick={() => void onCancel(job.id)}><X size={13} />{copy.stopJob}</button>
       ) : null}
     </li>

@@ -257,23 +257,44 @@ func DispatcherPrompt(snapshot Snapshot, input string) string {
 // dispatch classification and its terminal job results.
 func ReflectorPrompt(snapshot Snapshot, dispatch Dispatch, jobs []RunnerJob) string {
 	var b strings.Builder
-	b.WriteString("你是长期助手的 Reflector。这个 Dispatch 的所有 Runner Job 已进入终态，把结果沉淀成一个有界 ContextPack，严格按 JSON 协议返回。\n\n")
+	b.WriteString("你是长期助手的 Reflector。这个 Dispatch 的执行已进入终态，把结果沉淀成一个有界 ContextPack，严格按 JSON 协议返回。\n\n")
 	fmt.Fprintf(&b, "分类：%s\n用户原文：\n%s\nDispatcher 一级回复：%s\n\n", dispatch.Kind, dispatch.Input, dispatch.Reply)
-	b.WriteString("各 Job 终态结果：\n")
-	remaining := roleMaxJobResultBytes
-	for _, job := range jobs {
-		if remaining <= 0 {
-			break
+	if len(jobs) > 0 {
+		b.WriteString("各 Job 终态结果：\n")
+		remaining := roleMaxJobResultBytes
+		for _, job := range jobs {
+			if remaining <= 0 {
+				break
+			}
+			state := string(job.State)
+			if job.Error != nil {
+				state += "（错误：" + job.Error.Message + "）"
+			}
+			line := truncateRoleText(fmt.Sprintf("- [%s] %s：%s\n", job.Name, state, strings.TrimSpace(job.Summary)), remaining)
+			b.WriteString(line)
+			remaining -= len(line)
 		}
-		state := string(job.State)
-		if job.Error != nil {
-			state += "（错误：" + job.Error.Message + "）"
+	} else {
+		b.WriteString("受管 Session 已回写的计划结果：\n")
+		remaining := roleMaxJobResultBytes
+		for _, artifact := range snapshot.Artifacts {
+			if remaining <= 0 {
+				break
+			}
+			line := truncateRoleText(fmt.Sprintf("- [artifact:%s] %s\n", artifact.Kind, strings.TrimSpace(artifact.Title)), remaining)
+			b.WriteString(line)
+			remaining -= len(line)
 		}
-		line := truncateRoleText(fmt.Sprintf("- [%s] %s：%s\n", job.Name, state, strings.TrimSpace(job.Summary)), remaining)
-		b.WriteString(line)
-		remaining -= len(line)
+		for _, opportunity := range snapshot.Opportunities {
+			if remaining <= 0 {
+				break
+			}
+			line := truncateRoleText(fmt.Sprintf("- [opportunity] %s\n", strings.TrimSpace(opportunity.Reason)), remaining)
+			b.WriteString(line)
+			remaining -= len(line)
+		}
 	}
-	b.WriteString("\nconclusion 是给用户/后续 Job 看的有界结论；evidence/failures/strategies/open_loops 是可选列表；runner_context 是给后续 Runner Job 的简短上下文。\n\n")
+	b.WriteString("\nconclusion 是给用户/后续 Session 看的有界结论；evidence/failures/strategies/open_loops 是可选列表；runner_context 是给后续受管 Session 的简短上下文。\n\n")
 	b.WriteString("只返回一个 JSON 对象，不要调用任何工具，不要输出解释或多余文本：\n")
 	b.WriteString(`{"conclusion":"…","evidence":["…"],"failures":["…"],"strategies":["…"],"open_loops":["…"],"runner_context":"…"}` + "\n")
 	b.WriteString("禁止在 JSON 中携带 policy、workspace、scope、credential、publish、action 等任何权限/工作区/外部动作字段。")

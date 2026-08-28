@@ -31,6 +31,11 @@ const (
 	// DispatchClassified has a kind, a user-facing first-level reply and 0..N
 	// frozen Runner Jobs.
 	DispatchClassified DispatchState = "classified"
+	// DispatchExecuted means the Dispatch's managed Session reached a terminal
+	// state (completed or failed) and its results were written back; the
+	// Dispatch is now ready for reflection. It replaces the legacy
+	// "all jobs terminal" precondition.
+	DispatchExecuted DispatchState = "executed"
 	// DispatchClassificationFailed keeps the raw input plus an explicit,
 	// retryable error (for example the model was unavailable).
 	DispatchClassificationFailed DispatchState = "classification_failed"
@@ -46,21 +51,26 @@ const (
 // It carries the raw text verbatim, the classification, the user-facing reply,
 // and the identity of the Jobs it spawned.
 type Dispatch struct {
-	ID                    string        `json:"id"`
-	AssistantID           string        `json:"assistant_id"`
-	RequestID             string        `json:"request_id"`
-	Input                 string        `json:"input"`
-	Kind                  DispatchKind  `json:"kind,omitempty"`
-	Reply                 string        `json:"reply,omitempty"`
-	State                 DispatchState `json:"state"`
-	Error                 *RunError     `json:"error,omitempty"`
-	RetryAt               time.Time     `json:"retry_at,omitempty" ts_type:"string"`
-	ClassificationAttempt int           `json:"classification_attempt,omitempty"`
-	ReflectionAttempt     int           `json:"reflection_attempt,omitempty"`
-	Revision              int64         `json:"revision"`
-	CreatedAt             time.Time     `json:"created_at" ts_type:"string"`
-	UpdatedAt             time.Time     `json:"updated_at" ts_type:"string"`
-	ClassifiedAt          time.Time     `json:"classified_at,omitempty" ts_type:"string"`
+	ID          string        `json:"id"`
+	AssistantID string        `json:"assistant_id"`
+	RequestID   string        `json:"request_id"`
+	Input       string        `json:"input"`
+	Kind        DispatchKind  `json:"kind,omitempty"`
+	Reply       string        `json:"reply,omitempty"`
+	State       DispatchState `json:"state"`
+	// SessionID is the managed Session the supervisor created to execute this
+	// Dispatch (the converged new-flow execution target). It replaces the frozen
+	// RunnerJob for task Dispatches.
+	SessionID             string    `json:"session_id,omitempty"`
+	Error                 *RunError `json:"error,omitempty"`
+	RetryAt               time.Time `json:"retry_at,omitempty" ts_type:"string"`
+	ClassificationAttempt int       `json:"classification_attempt,omitempty"`
+	ReflectionAttempt     int       `json:"reflection_attempt,omitempty"`
+	WorkEpoch             int64     `json:"work_epoch,omitempty"`
+	Revision              int64     `json:"revision"`
+	CreatedAt             time.Time `json:"created_at" ts_type:"string"`
+	UpdatedAt             time.Time `json:"updated_at" ts_type:"string"`
+	ClassifiedAt          time.Time `json:"classified_at,omitempty" ts_type:"string"`
 }
 
 // JobState is the lifecycle of a Runner Job. It mirrors the Run lifecycle so
@@ -100,6 +110,7 @@ type RunnerJob struct {
 	LeaseOwner          string       `json:"lease_owner,omitempty"`
 	LeaseFence          int64        `json:"lease_fence"`
 	LeaseUntil          time.Time    `json:"lease_until,omitempty" ts_type:"string"`
+	WorkEpoch           int64        `json:"work_epoch,omitempty"`
 	RetryAt             time.Time    `json:"retry_at,omitempty" ts_type:"string"`
 	StartedAt           time.Time    `json:"started_at,omitempty" ts_type:"string"`
 	FinishedAt          time.Time    `json:"finished_at,omitempty" ts_type:"string"`
@@ -395,7 +406,7 @@ func validateDispatchKind(kind DispatchKind) error {
 
 func validateDispatchState(state DispatchState) error {
 	switch state {
-	case DispatchPendingClassification, DispatchClassified, DispatchClassificationFailed, DispatchReflected, DispatchReflectionFailed:
+	case DispatchPendingClassification, DispatchClassified, DispatchClassificationFailed, DispatchReflected, DispatchReflectionFailed, DispatchExecuted:
 		return nil
 	default:
 		return fmt.Errorf("assistant: invalid dispatch state %q", state)
@@ -439,7 +450,7 @@ func validateDispatch(d Dispatch) error {
 	if err := validateDispatchState(d.State); err != nil {
 		return err
 	}
-	if d.State == DispatchClassified || d.State == DispatchReflected || d.State == DispatchReflectionFailed {
+	if d.State == DispatchClassified || d.State == DispatchReflected || d.State == DispatchReflectionFailed || d.State == DispatchExecuted {
 		if err := validateDispatchKind(d.Kind); err != nil {
 			return err
 		}

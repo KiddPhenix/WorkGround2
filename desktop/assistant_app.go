@@ -15,6 +15,7 @@ import (
 
 	"workground2/internal/assistant"
 	"workground2/internal/config"
+	"workground2/internal/workgate"
 )
 
 // AssistantCreateRequest is the typed Wails input for creating one durable
@@ -105,7 +106,8 @@ type AssistantCancelRequest struct {
 }
 
 // AssistantSubmitRequest routes a direct user input through the Dispatcher:
-// it persists a Dispatch, classifies it, and creates zero or more Runner Jobs.
+// it persists a Dispatch and classifies it. Execution happens via the converged
+// supervisor loop, which turns classified task Dispatches into managed Sessions.
 type AssistantSubmitRequest struct {
 	AssistantID string `json:"assistantId"`
 	RequestID   string `json:"requestId"`
@@ -141,6 +143,21 @@ type AssistantCancelJobRequest struct {
 	Reason    string `json:"reason"`
 }
 
+// AssistantWorkControlRequest carries the idempotency key for a global
+// pause/resume/restart intent.
+type AssistantWorkControlRequest struct {
+	RequestID string `json:"requestId"`
+}
+
+// AssistantPublishViewportRequest carries the user's current window observation.
+type AssistantPublishViewportRequest struct {
+	WindowID          string   `json:"windowId"`
+	WorkspaceID       string   `json:"workspaceId,omitempty"`
+	VisibleSessionIDs []string `json:"visibleSessionIds,omitempty"`
+	SelectedSessionID string   `json:"selectedSessionId,omitempty"`
+	UIRevision        int64    `json:"uiRevision,omitempty"`
+}
+
 type AssistantDiagnostic struct {
 	At        time.Time `json:"at" ts_type:"string"`
 	Category  string    `json:"category"`
@@ -173,6 +190,16 @@ func (a *App) assistantContext() context.Context {
 		return a.ctx
 	}
 	return context.Background()
+}
+
+// workGate returns the shared assistant work-control gate so ordinary (non-
+// Assistant) tabs are fenced by the same persistent gate that pauses/resumes the
+// assistant runtime. Nil when the assistant runtime or its store is unavailable.
+func (a *App) workGate() workgate.Gate {
+	if a == nil || a.assistant == nil || a.assistant.store == nil {
+		return nil
+	}
+	return a.assistant.store.WorkGate()
 }
 
 func (a *App) AssistantList() (AssistantListResult, error) {
@@ -481,6 +508,10 @@ func (a *App) AssistantSubmit(req AssistantSubmitRequest) (assistant.Dispatch, e
 		return assistant.Dispatch{}, err
 	}
 	service.emitDispatchOpened(dispatch)
+	// User input enters the durable supervisor event queue (mergeable, non-lossy)
+	// so the supervisor wakes even when the input does not create a managed
+	// Session (questions, feedback, control intents).
+	service.enqueueSupervisorUserInput(req.AssistantID, req.RequestID, input)
 	service.Wake()
 	return dispatch, nil
 }
@@ -536,32 +567,81 @@ func (a *App) AssistantResolveIdea(req AssistantResolveIdeaRequest) (assistant.I
 	})
 }
 
-// AssistantRetryJob re-queues a failed/cancelled/waiting Job.
+// AssistantRetryJob is disabled: the legacy RunnerJob execution path is
+// decommissioned and Jobs are historical/read-only.
 func (a *App) AssistantRetryJob(req AssistantRetryJobRequest) (assistant.RunnerJob, error) {
-	service, err := a.assistantRuntime()
-	if err != nil {
-		return assistant.RunnerJob{}, err
-	}
-	job, err := service.store.RetryJob(assistant.RetryJobInput{JobID: req.JobID, RequestID: req.RequestID, Now: time.Now()})
-	if err != nil {
-		return assistant.RunnerJob{}, err
-	}
-	service.Wake()
-	return *job, nil
+	return assistant.RunnerJob{}, errors.New("assistant: 旧 Job 路径已停用，仅历史只读")
 }
 
-// AssistantCancelJob cancels a Job.
+// AssistantCancelJob is disabled: the legacy RunnerJob execution path is
+// decommissioned and Jobs are historical/read-only.
 func (a *App) AssistantCancelJob(req AssistantCancelJobRequest) (assistant.RunnerJob, error) {
+	return assistant.RunnerJob{}, errors.New("assistant: 旧 Job 路径已停用，仅历史只读")
+}
+
+// AssistantWorkControl returns the current global work gate (state/epoch/
+// revision + host-observed active work + next hint).
+func (a *App) AssistantWorkControl() (AssistantWorkControlView, error) {
 	service, err := a.assistantRuntime()
 	if err != nil {
-		return assistant.RunnerJob{}, err
+		return AssistantWorkControlView{}, err
 	}
-	job, err := service.store.CancelJob(assistant.CancelJobInput{JobID: req.JobID, RequestID: req.RequestID, Reason: req.Reason, Now: time.Now()})
+	return service.WorkControl()
+}
+
+// AssistantPauseAll pauses all Assistant work and cancels in-flight sessions.
+func (a *App) AssistantPauseAll(req AssistantWorkControlRequest) (AssistantWorkControlView, error) {
+	service, err := a.assistantRuntime()
 	if err != nil {
-		return assistant.RunnerJob{}, err
+		return AssistantWorkControlView{}, err
 	}
-	service.Wake()
-	return *job, nil
+	return service.PauseAll(req.RequestID)
+}
+
+// AssistantResumeAll resumes all Assistant work and wakes the runtime loop.
+func (a *App) AssistantResumeAll(req AssistantWorkControlRequest) (AssistantWorkControlView, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	return service.ResumeAll(req.RequestID)
+}
+
+// AssistantPauseForRestart quiesces work and records a one-shot restart intent.
+func (a *App) AssistantPauseForRestart(req AssistantWorkControlRequest) (AssistantWorkControlView, error) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return AssistantWorkControlView{}, err
+	}
+	return service.PauseForRestart(req.RequestID)
+}
+
+// AssistantPublishViewport records the user's current window observation as a
+// short-lived snapshot. It only submits intent; the backend treats it as
+// unknown once its TTL expires.
+func (a *App) AssistantPublishViewport(req AssistantPublishViewportRequest) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return
+	}
+	service.PublishViewport(assistant.ViewportSnapshot{
+		WindowID:          req.WindowID,
+		WorkspaceID:       req.WorkspaceID,
+		VisibleSessionIDs: req.VisibleSessionIDs,
+		SelectedSessionID: req.SelectedSessionID,
+		ObservedAt:        time.Now().UTC(),
+		UIRevision:        req.UIRevision,
+	})
+}
+
+// AssistantViewport returns the most recently focused still-valid viewport
+// snapshot, or ok=false when it is expired or unknown.
+func (a *App) AssistantViewport() (assistant.ViewportSnapshot, bool) {
+	service, err := a.assistantRuntime()
+	if err != nil {
+		return assistant.ViewportSnapshot{}, false
+	}
+	return service.CurrentViewport(time.Now())
 }
 
 // PickAssistantWorkspace opens a native directory chooser for the create dialog

@@ -1274,6 +1274,10 @@ type SessionInfo struct {
 	SessionKind    SessionKind `json:"sessionKind,omitempty"`
 	WorkID         string      `json:"workId,omitempty"`
 	WorkRequestID  string      `json:"workRequestId,omitempty"`
+	// AssistantID is the durable Assistant that owns this session.
+	AssistantID string `json:"assistantId,omitempty"`
+	// Purpose is the durable reason this session exists.
+	Purpose SessionPurpose `json:"purpose,omitempty"`
 }
 
 // SessionOrderInfo is the lightweight sidecar/mtime ordering record shared by
@@ -1304,6 +1308,8 @@ type SessionOrderInfo struct {
 	SessionKind    SessionKind
 	WorkID         string
 	WorkRequestID  string
+	AssistantID    string
+	Purpose        SessionPurpose
 	// Turns and Preview are the cached listing fields from the sidecar; SchemaVersion
 	// >= agent.BranchMetaCountsVersion means they were recorded from content and can
 	// be trusted (even Turns == 0). ListSessions uses them to skip the whole-file decode.
@@ -1832,6 +1838,8 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 		sessionKind := SessionKindNormal
 		workID := ""
 		workRequestID := ""
+		assistantID := ""
+		purpose := SessionPurpose("")
 		turns := 0
 		preview := ""
 		schemaVersion := 0
@@ -1862,6 +1870,8 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			sessionKind = meta.SessionKind
 			workID = meta.WorkID
 			workRequestID = meta.WorkRequestID
+			assistantID = meta.AssistantID
+			purpose = meta.Purpose
 			turns = meta.Turns
 			preview = meta.Preview
 			schemaVersion = meta.SchemaVersion
@@ -1891,6 +1901,8 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			SessionKind:    sessionKind,
 			WorkID:         workID,
 			WorkRequestID:  workRequestID,
+			AssistantID:    assistantID,
+			Purpose:        purpose,
 			Turns:          turns,
 			Preview:        preview,
 			SchemaVersion:  schemaVersion,
@@ -2064,6 +2076,8 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			SessionKind:    session.SessionKind,
 			WorkID:         session.WorkID,
 			WorkRequestID:  session.WorkRequestID,
+			AssistantID:    session.AssistantID,
+			Purpose:        session.Purpose,
 		})
 	}
 	return out, nil

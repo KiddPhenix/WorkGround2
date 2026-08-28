@@ -19,22 +19,52 @@ const (
 	RespFailed  ResponsibilityStatus = "failed"  // recorded failure, recoverable
 )
 
+// ResponsibilityDisposition is the persisted decision state of a responsibility
+// — what the Assistant chose to do with it. It is distinct from
+// ResponsibilityStatus: ready/active/completed/failed are derived from
+// dependencies, Policy and the associated Session, and are never written back
+// as a durable decision.
+type ResponsibilityDisposition string
+
+const (
+	DispositionPlanned ResponsibilityDisposition = "planned"
+	DispositionWaiting ResponsibilityDisposition = "waiting"
+	DispositionReview  ResponsibilityDisposition = "review"
+	DispositionDone    ResponsibilityDisposition = "done"
+	DispositionDropped ResponsibilityDisposition = "dropped"
+)
+
+func validDisposition(d ResponsibilityDisposition) bool {
+	switch d {
+	case "", DispositionPlanned, DispositionWaiting, DispositionReview, DispositionDone, DispositionDropped:
+		return true
+	}
+	return false
+}
+
 // Responsibility is one durable objective within an assistant-level plan. It
 // carries enough context to be independently actionable: what done looks like,
 // the immediate next action, its dependencies, and why it is blocked.
+//
+// Disposition is the ONLY persisted decision state (planned|waiting|review|done|
+// dropped). Status is a derived projection recomputed on every read from
+// Disposition plus the dependency graph; execution flavors (active/failed) are
+// layered on by hosts from the associated Session via DeriveResponsibilityStatus
+// and are never written back to the plan.
 type Responsibility struct {
-	ID           string               `json:"id"`
-	AssistantID  string               `json:"assistant_id"`
-	Alias        string               `json:"alias,omitempty"`
-	Objective    string               `json:"objective"`
-	DoneCriteria string               `json:"done_criteria,omitempty"`
-	NextAction   string               `json:"next_action,omitempty"`
-	Status       ResponsibilityStatus `json:"status"`
-	DependsOn    []string             `json:"depends_on,omitempty"`
-	BlockReason  string               `json:"block_reason,omitempty"`
-	Revision     int64                `json:"revision"`
-	CreatedAt    time.Time            `json:"created_at" ts_type:"string"`
-	UpdatedAt    time.Time            `json:"updated_at" ts_type:"string"`
+	ID           string                    `json:"id"`
+	AssistantID  string                    `json:"assistant_id"`
+	Alias        string                    `json:"alias,omitempty"`
+	Objective    string                    `json:"objective"`
+	DoneCriteria string                    `json:"done_criteria,omitempty"`
+	NextAction   string                    `json:"next_action,omitempty"`
+	Status       ResponsibilityStatus      `json:"status"`
+	Disposition  ResponsibilityDisposition `json:"disposition,omitempty"`
+	DependsOn    []string                  `json:"depends_on,omitempty"`
+	BlockReason  string                    `json:"block_reason,omitempty"`
+	Revision     int64                     `json:"revision"`
+	CreatedAt    time.Time                 `json:"created_at" ts_type:"string"`
+	UpdatedAt    time.Time                 `json:"updated_at" ts_type:"string"`
 }
 
 // Artifact is a durable output or piece of evidence published by finishing
@@ -53,16 +83,86 @@ type Artifact struct {
 	CreatedAt   time.Time `json:"created_at" ts_type:"string"`
 }
 
+// ExperimentStatus is the lifecycle of an isolated trial for a reversible,
+// low-confidence decision. Unlike Responsibility, an Experiment has no derived
+// active/failed state — it only records a hypothesis, how it was isolated, what
+// was measured, and the conclusion.
+type ExperimentStatus string
+
+const (
+	ExperimentRunning   ExperimentStatus = "running"
+	ExperimentConcluded ExperimentStatus = "concluded"
+	ExperimentDiscarded ExperimentStatus = "discarded"
+)
+
+// Experiment is a durable record of one isolated trial. It captures the
+// hypothesis, the isolation mechanism (worktree/session/sandbox), every
+// candidate with its isolated session/worktree, the measured outcome (result,
+// cost, side effects, evidence, confidence), the rollback point and the winner
+// so the Assistant can audit a decision and roll it back. It never duplicates
+// Session run state; the trial's Session carries execution. Revision is the
+// optimistic CAS fence: a stale conclusion against an older revision is
+// rejected, and the RecordExperiment request receipt makes replays idempotent.
+type Experiment struct {
+	ID          string `json:"id"`
+	AssistantID string `json:"assistant_id"`
+	RespID      string `json:"resp_id,omitempty"`
+	Hypothesis  string `json:"hypothesis"`
+	Isolation   string `json:"isolation,omitempty"`
+	Metric      string `json:"metric,omitempty"`
+	Conclusion  string `json:"conclusion,omitempty"`
+	// Candidates are the answer labels raced for a reversible auto-answer
+	// decision; Trials record each candidate's isolated Session/worktree and
+	// its real terminal status.
+	Candidates []string     `json:"candidates,omitempty"`
+	Trials     []TrialState `json:"trials,omitempty"`
+	// Result is the settled outcome: "running" while racing, then
+	// "answered:<winner session>" or "answered-fallback" (no candidate
+	// completed; the most rollback-safe answer was used).
+	Result string `json:"result,omitempty"`
+	// Winner is the winning trial session ID (empty for a fallback answer).
+	Winner string `json:"winner,omitempty"`
+	// Cost and SideEffects are bounded, observed summaries (fork count,
+	// completed/failed/timed-out counts, cancelled forks), never invented.
+	Cost        string `json:"cost,omitempty"`
+	SideEffects string `json:"side_effects,omitempty"`
+	// Evidence is why this winner was chosen over the other candidates.
+	Evidence string `json:"evidence,omitempty"`
+	// Confidence is the model's self-reported confidence that routed this
+	// decision into the isolated trial.
+	Confidence float64 `json:"confidence,omitempty"`
+	// Rollback records the rollback points (the loser fork session IDs).
+	Rollback  string           `json:"rollback,omitempty"`
+	Status    ExperimentStatus `json:"status"`
+	Revision  int64            `json:"revision"`
+	CreatedAt time.Time        `json:"created_at" ts_type:"string"`
+	UpdatedAt time.Time        `json:"updated_at" ts_type:"string"`
+}
+
+func validExperimentStatus(s ExperimentStatus) bool {
+	switch s {
+	case ExperimentRunning, ExperimentConcluded, ExperimentDiscarded:
+		return true
+	}
+	return false
+}
+
 // Opportunity is a durable proposal or downstream wake-up signal pointing at a
-// responsibility that has become actionable or worth considering.
+// responsibility that has become actionable or worth considering. Objective
+// carries the candidate work itself so the Rank/Adopt stage can evaluate and
+// de-duplicate without resolving through a responsibility first.
 type Opportunity struct {
-	ID          string    `json:"id"`
-	AssistantID string    `json:"assistant_id"`
-	RespID      string    `json:"resp_id,omitempty"`
-	RunID       string    `json:"run_id,omitempty"`
-	Reason      string    `json:"reason,omitempty"`
-	Revision    int64     `json:"revision"`
-	CreatedAt   time.Time `json:"created_at" ts_type:"string"`
+	ID          string `json:"id"`
+	AssistantID string `json:"assistant_id"`
+	RespID      string `json:"resp_id,omitempty"`
+	RunID       string `json:"run_id,omitempty"`
+	Objective   string `json:"objective,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	// AdoptedAt marks when the Adopt stage promoted this opportunity to a
+	// responsibility; zero means it is still in the pool.
+	AdoptedAt time.Time `json:"adopted_at,omitempty" ts_type:"string"`
+	Revision  int64     `json:"revision"`
+	CreatedAt time.Time `json:"created_at" ts_type:"string"`
 }
 
 // Plan is the durable assistant-level responsibility graph. Its revision guards
@@ -116,8 +216,9 @@ type ArtifactDecl struct {
 
 // OpportunityDecl declares one downstream wake-up signal or proposal.
 type OpportunityDecl struct {
-	Resp   string `json:"resp"` // alias
-	Reason string `json:"reason,omitempty"`
+	Resp      string `json:"resp"` // alias
+	Objective string `json:"objective,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 const (
@@ -298,6 +399,120 @@ func validResponsibilityStatus(s ResponsibilityStatus) bool {
 	return false
 }
 
+// ResponsibilityDerivedInput carries the external signals that determine the
+// derived ResponsibilityStatus without being persisted on the Responsibility
+// itself. It keeps the plan a decision record and the Session subsystem the
+// single source of truth for execution state.
+type ResponsibilityDerivedInput struct {
+	DependenciesSatisfied bool
+	RunningSession        bool
+	CompletedSession      bool
+	FailedSession         bool
+}
+
+// DeriveResponsibilityStatus maps the persisted disposition plus the associated
+// Session/dependency signals onto a derived status. A dropped or done decision
+// is terminal; otherwise failures, running work, and completion take precedence
+// over dependency readiness.
+func DeriveResponsibilityStatus(r Responsibility, in ResponsibilityDerivedInput) ResponsibilityStatus {
+	switch r.Disposition {
+	case DispositionDone:
+		return RespDone
+	case DispositionDropped:
+		return RespFailed
+	}
+	if in.FailedSession {
+		return RespFailed
+	}
+	if in.RunningSession {
+		return RespActive
+	}
+	if in.CompletedSession {
+		return RespDone
+	}
+	if !in.DependenciesSatisfied {
+		return RespBlocked
+	}
+	return RespReady
+}
+
+// dispositionFromLegacyStatus maps a legacy persisted ResponsibilityStatus onto
+// the durable decision state (Disposition). The mapping is stable and lossless:
+// execution flavors (ready/active/failed) fold into "planned" (their work state
+// now derives from the associated Session), blocked folds into "waiting", and
+// done stays done. An empty or unknown legacy status defaults to planned.
+func dispositionFromLegacyStatus(s ResponsibilityStatus) ResponsibilityDisposition {
+	switch s {
+	case RespDone:
+		return DispositionDone
+	case RespBlocked:
+		return DispositionWaiting
+	case RespReady, RespActive, RespFailed:
+		return DispositionPlanned
+	default:
+		return DispositionPlanned
+	}
+}
+
+// migrateResponsibilityDispositions backfills the durable decision state of
+// every responsibility that still lacks one from its legacy persisted Status.
+// It is stable and replayable: already-migrated responsibilities are untouched,
+// so re-reading and re-writing old aggregates converges after one pass and is a
+// no-op afterwards.
+func migrateResponsibilityDispositions(plan *Plan) {
+	for i := range plan.Responsibilities {
+		r := &plan.Responsibilities[i]
+		if r.Disposition != "" {
+			continue
+		}
+		r.Disposition = dispositionFromLegacyStatus(r.Status)
+	}
+}
+
+// depsDispositionDone reports whether every dependency of r has the terminal
+// "done" decision, so readiness can be derived from the graph alone.
+func depsDispositionDone(plan *Plan, deps []string) bool {
+	byID := make(map[string]bool, len(plan.Responsibilities))
+	for _, d := range plan.Responsibilities {
+		byID[d.ID] = d.Disposition == DispositionDone
+	}
+	for _, dep := range deps {
+		if !byID[dep] {
+			return false
+		}
+	}
+	return true
+}
+
+// deriveResponsibilityStatuses recomputes the derived Status projection of every
+// responsibility from its persisted Disposition and the dependency graph. It is
+// the in-store portion of the derivation (done/dropped decisions are terminal;
+// planned/review are blocked until their dependencies are done); the
+// Session-derived signals (active/failed/completed) are layered on by hosts via
+// DeriveResponsibilityStatus. Status is a projection, never an independent
+// write target, so it can never drift from the decision state.
+func deriveResponsibilityStatuses(plan *Plan) {
+	done := make(map[string]bool, len(plan.Responsibilities))
+	for i := range plan.Responsibilities {
+		r := &plan.Responsibilities[i]
+		switch r.Disposition {
+		case DispositionDone:
+			done[r.ID] = true
+			r.Status = RespDone
+		case DispositionDropped:
+			r.Status = RespFailed
+		default:
+			r.Status = RespBlocked
+		}
+	}
+	for i := range plan.Responsibilities {
+		r := &plan.Responsibilities[i]
+		if r.Status == RespBlocked && depsDispositionDone(plan, r.DependsOn) {
+			r.Status = RespReady
+		}
+	}
+}
+
 // validatePlan checks the plan, its responsibilities, and the durable artifacts
 // and opportunities against the rest of the aggregate. It is called on every
 // read so a corrupt graph is surfaced instead of silently loaded.
@@ -320,6 +535,9 @@ func validatePlan(agg *aggregate) error {
 		}
 		if !validResponsibilityStatus(r.Status) {
 			return fmt.Errorf("responsibility %s has invalid status %q", r.ID, r.Status)
+		}
+		if !validDisposition(r.Disposition) {
+			return fmt.Errorf("responsibility %s has invalid disposition %q", r.ID, r.Disposition)
 		}
 		if r.Revision < 1 || r.CreatedAt.IsZero() || r.UpdatedAt.IsZero() {
 			return fmt.Errorf("responsibility %s has invalid revision or timestamps", r.ID)
@@ -400,6 +618,26 @@ func validatePlan(agg *aggregate) error {
 		}
 		if o.Revision < 1 || o.CreatedAt.IsZero() {
 			return fmt.Errorf("opportunity %s has invalid revision or timestamp", o.ID)
+		}
+	}
+	for _, e := range agg.Experiments {
+		if err := validateID("experiment", e.ID); err != nil {
+			return err
+		}
+		if e.AssistantID != agg.Assistant.ID {
+			return fmt.Errorf("experiment %s belongs to %s", e.ID, e.AssistantID)
+		}
+		if strings.TrimSpace(e.Hypothesis) == "" {
+			return fmt.Errorf("experiment %s has no hypothesis", e.ID)
+		}
+		if !validExperimentStatus(e.Status) {
+			return fmt.Errorf("experiment %s has invalid status %q", e.ID, e.Status)
+		}
+		if e.RespID != "" && !ids[e.RespID] {
+			return fmt.Errorf("experiment %s references missing responsibility %s", e.ID, e.RespID)
+		}
+		if e.Revision < 1 || e.CreatedAt.IsZero() || e.UpdatedAt.IsZero() {
+			return fmt.Errorf("experiment %s has invalid revision or timestamps", e.ID)
 		}
 	}
 	return nil

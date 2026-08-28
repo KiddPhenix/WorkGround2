@@ -31,9 +31,32 @@ func NewIdeator(store *Store, model RoleModel) (*Ideator, error) {
 // or parse failure returns an error; cadence failures are also persisted for
 // bounded-backoff retry.
 func (id *Ideator) Ideate(ctx context.Context, in OpenIdeaInput) (IdeaProposal, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return IdeaProposal{}, err
+	}
 	snapshot, err := id.store.Get(in.AssistantID)
 	if err != nil {
 		return IdeaProposal{}, err
+	}
+	for _, idea := range snapshot.Ideas {
+		if idea.RequestID != in.RequestID {
+			continue
+		}
+		if idea.Trigger != in.Trigger {
+			return IdeaProposal{}, &IdempotencyError{RequestID: in.RequestID, Operation: "open_idea"}
+		}
+		return idea, nil
+	}
+	if in.Trigger == IdeaTriggerCadence {
+		due, _, _, err := id.store.ShouldIdeate(in.AssistantID, in.Now)
+		if err != nil {
+			return IdeaProposal{}, err
+		}
+		if !due {
+			return IdeaProposal{}, fmt.Errorf("%w: ideation cadence is not due", ErrTransition)
+		}
+	} else if in.Trigger != IdeaTriggerManual {
+		return IdeaProposal{}, fmt.Errorf("assistant: invalid idea trigger %q", in.Trigger)
 	}
 	prompt := IdeatorPrompt(snapshot, in.Trigger)
 	text, modelErr := id.model.Complete(ctx, prompt)

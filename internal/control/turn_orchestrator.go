@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"workground2/internal/agent"
 	"workground2/internal/autoresearch"
@@ -136,6 +137,20 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 		c.clearInFlightTurn()
 	} else {
 		c.appendAutoResearchHeartbeat(autoResearchTaskID, autoresearch.HeartbeatWarning, err.Error())
+		// Persist the failure classification on the durable session so a later
+		// session_retry reads a typed class instead of guessing: cancel is not a
+		// failure (the user asked to stop), every other turn error is classified
+		// conservatively. Success (below) clears any stale failure record.
+		if !(errors.Is(err, context.Canceled) && c.CancelRequested()) {
+			if path := c.SessionPath(); path != "" {
+				fail := agent.NewSessionFailure(
+					agent.ClassifySessionError(err), "turn_error", err.Error(), time.Now().UTC(),
+				)
+				if recErr := agent.RecordSessionFailure(path, fail); recErr != nil {
+					slog.Warn("controller: record session failure", "err", recErr)
+				}
+			}
+		}
 		// When the user explicitly cancels (Ctrl+C), the incomplete turn's
 		// assistant messages and tool results are already saved to the
 		// session. If they stay, the next turn's model sees leftover

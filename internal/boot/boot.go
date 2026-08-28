@@ -56,6 +56,7 @@ import (
 	"workground2/internal/tool/sessiontool"
 	"workground2/internal/vocabulary"
 	"workground2/internal/work"
+	"workground2/internal/workgate"
 )
 
 // ProductName is the user-visible product name used throughout the UI,
@@ -372,6 +373,14 @@ type Options struct {
 	// daemon hosts use this for audited channel adapters without registering
 	// process-global built-ins.
 	ExtraTools []tool.Tool
+	// WorkGate optionally fences this session's model turns and tool execution
+	// behind the shared persistent work-control gate. Hosts that own an Assistant
+	// Store pass store.WorkGate() so ordinary sessions pause/resume with the
+	// Assistant runtime. When nil, Build mounts the default global gate (the
+	// assistant store's workcontrol.json) when one exists — so CLI/serve/bot/ACP
+	// sessions share the same pause/resume fence as Desktop and the daemon by
+	// default. A missing file leaves the session unfenced (equivalent to RUNNING).
+	WorkGate workgate.Gate
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a
@@ -393,6 +402,20 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		return nil, err
 	}
 	probeCLICapabilities(ctx, cfg, stderr)
+	// Default shared work gate: every frontend that builds through boot.Build
+	// (CLI, serve, bot, ACP, desktop, daemon) mounts the same persistent
+	// WorkControl when one exists. A missing workcontrol.json means the global
+	// gate has never been interrupted — equivalent to RUNNING, so the session
+	// stays unfenced without reading a file. Hosts that own an Assistant Store
+	// pass store.WorkGate() explicitly (same file, same fence).
+	workGate := opts.WorkGate
+	if workGate == nil {
+		if p := defaultWorkControlPath(); p != "" {
+			if _, err := os.Stat(p); err == nil {
+				workGate = workgate.OpenFile(p)
+			}
+		}
+	}
 	modelName := opts.Model
 	if modelName == "" {
 		modelName = cfg.DefaultModel
@@ -1669,6 +1692,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		WorkV2Enabled:       cfg.Work.CollaborationWorkbenchV2,
 		WorkViews:           workViews,
 		TaskExecutor:        taskExec,
+		WorkGate:            workGate,
 	}
 	// Guardian: when guardian_model is configured, spawn an LLM safety reviewer
 	// that can auto-allow safe Ask decisions and annotate risky ones before
@@ -1935,6 +1959,18 @@ func resolveWorkspaceRoot(explicit string) string {
 		return root
 	}
 	return wd
+}
+
+// defaultWorkControlPath returns the global assistant store's workcontrol.json
+// when the store root is resolvable, else "". All hosts that build through
+// boot.Build share this file, so a pause/resume requested from Desktop or the
+// daemon also fences CLI, serve, bot, and ACP sessions.
+func defaultWorkControlPath() string {
+	root := config.MemoryUserDir()
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, "assistants", "workcontrol.json")
 }
 
 func nearestGitRoot(start string) (string, bool) {

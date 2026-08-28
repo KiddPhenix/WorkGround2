@@ -120,7 +120,10 @@ func (d *Dispatcher) classify(ctx context.Context, assistantID string, dispatch 
 		AssistantID: assistantID, DispatchID: dispatch.ID,
 		RequestID: classifyRequestID(dispatch.ID),
 		Kind:      classification.Kind, Reply: classification.Reply,
-		Jobs: classification.Jobs, Now: now,
+		// The Dispatcher keeps the user-intent entry and streaming reply but no
+		// longer freezes Jobs; the supervisor creates a managed Session for a
+		// task Dispatch (17.9 convergence).
+		Jobs: nil, Now: now,
 	})
 }
 

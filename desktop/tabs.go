@@ -3005,6 +3005,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 		EffortOverride:           cloneStringPtr(tab.effort),
 		TokenMode:                currentTabTokenMode(tab),
 		SessionKind:              tab.sessionKind,
+		WorkGate:                 a.workGate(),
 		SharedHost:               sharedHost,
 		SessionRefs:              a.sessionRefs,
 		SessionRefsErr:           a.sessionRefsErr,

@@ -39,6 +39,17 @@ import type {
   AssistantRetryJobInput,
   AssistantCancelJobInput,
   AssistantRunnerJob,
+  AssistantWorkControl,
+  AssistantWorkControlInput,
+  AssistantViewportSnapshot,
+  AssistantPublishViewportInput,
+  AssistantManagedSession,
+  AssistantSessionControlResult,
+  AssistantSessionStatusView,
+  AssistantSteerRequest,
+  AssistantAnswerRequest,
+  AssistantSessionRequest,
+  AssistantSupervisorDiagnostic,
 } from "../custom/features/assistant/assistant.types";
 import type {
   CollaborationActionResult,
@@ -553,6 +564,20 @@ export interface AppBindings extends WailsWorkBindings {
   AssistantResolveIdea(input: AssistantResolveIdeaInput): Promise<AssistantIdeaProposal>;
   AssistantRetryJob(input: AssistantRetryJobInput): Promise<AssistantRunnerJob>;
   AssistantCancelJob(input: AssistantCancelJobInput): Promise<AssistantRunnerJob>;
+  AssistantWorkControl(): Promise<AssistantWorkControl>;
+  AssistantPauseAll(input: AssistantWorkControlInput): Promise<AssistantWorkControl>;
+  AssistantResumeAll(input: AssistantWorkControlInput): Promise<AssistantWorkControl>;
+  AssistantPauseForRestart(input: AssistantWorkControlInput): Promise<AssistantWorkControl>;
+  AssistantPublishViewport(input: AssistantPublishViewportInput): void;
+  AssistantViewport(): Promise<[AssistantViewportSnapshot, boolean]>;
+  AssistantManagedSessions(assistantID: string): Promise<AssistantManagedSession[]>;
+  AssistantSessionStatus(sessionID: string): Promise<AssistantSessionStatusView>;
+  AssistantSessionSteer(input: AssistantSteerRequest): Promise<AssistantSessionControlResult>;
+  AssistantSessionAnswer(input: AssistantAnswerRequest): Promise<AssistantSessionControlResult>;
+  AssistantSessionCancel(input: AssistantSessionRequest): Promise<AssistantSessionControlResult>;
+  AssistantSessionResume(input: AssistantSessionRequest): Promise<AssistantSessionControlResult>;
+  AssistantSessionFork(input: AssistantSessionRequest): Promise<AssistantSessionControlResult>;
+  AssistantSupervisorDiagnostic(assistantID: string): Promise<AssistantSupervisorDiagnostic>;
   AssistantResolveAttention(input: AssistantResolveAttentionInput): Promise<AssistantAttentionItem>;
   AssistantResolveProposal(input: AssistantResolveProposalInput): Promise<AssistantChangeProposal>;
   AssistantResume(input: AssistantResumeInput): Promise<AssistantRun>;
@@ -1403,6 +1428,57 @@ export function setMockPickAssistantWorkspace(fn: ((defaultDir: string) => Promi
 /** Test-only override for the project-tree browser mock. */
 export function setMockListProjectTree(fn: (() => Promise<ProjectNode[]>) | null): void {
   mockListProjectTreeFn = fn;
+}
+
+// ── Assistant 受管 Session / 诊断 / viewport 测试钩子 ──────────
+// The browser mock methods read these at call time, so tests can swap data or
+// force failures without touching Wails. Null uses the canned default.
+
+let mockManagedSessionsSource: AssistantManagedSession[] | null = null;
+let mockSessionStatusSource: Record<string, AssistantSessionStatusView> | null = null;
+let mockDiagnosticSource: AssistantSupervisorDiagnostic | null = null;
+let mockSessionControlCalls: Array<{ op: string; sessionId: string; requestId: string; text?: string }> = [];
+let mockSessionSteerShouldFail = false;
+let mockViewportPublishes: AssistantPublishViewportInput[] = [];
+
+/** Test-only override for AssistantManagedSessions; null restores the canned default. */
+export function setMockAssistantManagedSessions(items: AssistantManagedSession[] | null): void {
+  mockManagedSessionsSource = items;
+}
+
+/** Test-only override for per-session AssistantSessionStatus; null derives from the managed list. */
+export function setMockAssistantSessionStatus(items: Record<string, AssistantSessionStatusView> | null): void {
+  mockSessionStatusSource = items;
+}
+
+/** Test-only override for AssistantSupervisorDiagnostic; null restores the canned default. */
+export function setMockAssistantSupervisorDiagnostic(diag: AssistantSupervisorDiagnostic | null): void {
+  mockDiagnosticSource = diag;
+}
+
+/** Test-only switch: the next AssistantSessionSteer call throws instead of accepting. */
+export function setMockAssistantSessionSteerShouldFail(fail: boolean): void {
+  mockSessionSteerShouldFail = fail;
+}
+
+/** Returns a copy of every recorded Assistant session-control call (op/sessionId/requestId). */
+export function getMockSessionControlCalls(): Array<{ op: string; sessionId: string; requestId: string; text?: string }> {
+  return [...mockSessionControlCalls];
+}
+
+/** Clears the recorded session-control calls between tests. */
+export function resetMockSessionControlCalls(): void {
+  mockSessionControlCalls = [];
+}
+
+/** Returns a copy of every recorded viewport publish (in order). */
+export function getMockViewportPublishes(): AssistantPublishViewportInput[] {
+  return mockViewportPublishes.map((publish) => ({ ...publish, visibleSessionIds: publish.visibleSessionIds ? [...publish.visibleSessionIds] : undefined }));
+}
+
+/** Clears the recorded viewport publishes between tests. */
+export function resetMockViewportPublishes(): void {
+  mockViewportPublishes = [];
 }
 
 function makeMockApp(): AppBindings {
@@ -2664,6 +2740,7 @@ function makeMockApp(): AppBindings {
       payment: "approve",
       secrets: "approve",
       private_data: "approve",
+      constraint_edit: "approve",
     },
     memory_revision: 1,
     revision: 1,
@@ -2682,6 +2759,12 @@ function makeMockApp(): AppBindings {
     revision: 1,
     created_at: assistantISO(8, 20),
     updated_at: assistantISO(8, 20),
+  };
+  let mockAssistantWorkControl: AssistantWorkControl = {
+    state: "running", epoch: 1, revision: 1, active: [], next_hint: "工作中",
+  };
+  let mockAssistantViewport: AssistantViewportSnapshot = {
+    window_id: "mock-window", observed_at: new Date().toISOString(),
   };
   let mockAssistantSnapshots: AssistantSnapshot[] = freshMock ? [] : [{
     revision: 1,
@@ -5400,6 +5483,79 @@ function makeMockApp(): AppBindings {
       job.state = "cancelled"; job.finished_at = new Date().toISOString(); job.revision += 1; job.updated_at = job.finished_at;
       touchAssistantSnapshot(snapshot);
       return cloneAssistant(job);
+    },
+    async AssistantWorkControl() {
+      return mockAssistantWorkControl;
+    },
+    async AssistantPauseAll() {
+      mockAssistantWorkControl = { ...mockAssistantWorkControl, state: "paused", epoch: mockAssistantWorkControl.epoch + 1, revision: mockAssistantWorkControl.revision + 1 };
+      return mockAssistantWorkControl;
+    },
+    async AssistantResumeAll() {
+      mockAssistantWorkControl = { ...mockAssistantWorkControl, state: "running", epoch: mockAssistantWorkControl.epoch + 1, revision: mockAssistantWorkControl.revision + 1 };
+      return mockAssistantWorkControl;
+    },
+    async AssistantPauseForRestart() {
+      mockAssistantWorkControl = { ...mockAssistantWorkControl, state: "paused", epoch: mockAssistantWorkControl.epoch + 1, revision: mockAssistantWorkControl.revision + 1 };
+      return mockAssistantWorkControl;
+    },
+    AssistantPublishViewport(input: AssistantPublishViewportInput) {
+      mockViewportPublishes.push({ ...input, visibleSessionIds: input.visibleSessionIds ? [...input.visibleSessionIds] : undefined });
+      mockAssistantViewport = {
+        window_id: input.windowId,
+        workspace_id: input.workspaceId ?? "",
+        visible_session_ids: input.visibleSessionIds ? [...input.visibleSessionIds] : [],
+        selected_session_id: input.selectedSessionId ?? "",
+        observed_at: new Date().toISOString(),
+        ui_revision: input.uiRevision ?? 0,
+      };
+    },
+    async AssistantViewport() {
+      return [mockAssistantViewport, true] as [AssistantViewportSnapshot, boolean];
+    },
+    async AssistantManagedSessions(assistantID: string) {
+      if (mockManagedSessionsSource) return mockManagedSessionsSource;
+      return [{ id: `managed-${assistantID}`, path: `/mock/sessions/managed-${assistantID}.jsonl`, title: "受管任务", preview: "", status: "running", turns: 1, owner_id: assistantID, purpose: "managed", updated_at: new Date().toISOString() }];
+    },
+    async AssistantSessionStatus(sessionID: string): Promise<AssistantSessionStatusView> {
+      if (mockSessionStatusSource && mockSessionStatusSource[sessionID]) return mockSessionStatusSource[sessionID];
+      const sessions = mockManagedSessionsSource ?? [];
+      const session = sessions.find((item) => item.id === sessionID) ?? (sessionID.startsWith("managed-") ? { id: sessionID, path: `/mock/sessions/${sessionID}.jsonl`, title: "受管任务", preview: "", status: "running", turns: 1, owner_id: "", purpose: "managed", updated_at: new Date().toISOString() } : undefined);
+      if (!session) throw new Error("Session 不存在");
+      return {
+        id: session.id, path: session.path, title: session.title, status: session.status,
+        turns: session.turns, purpose: session.purpose, running: session.status === "running", updated_at: session.updated_at,
+      };
+    },
+    async AssistantSessionSteer(input: AssistantSteerRequest): Promise<AssistantSessionControlResult> {
+      mockSessionControlCalls.push({ op: "steer", sessionId: input.sessionId, requestId: input.requestId, text: input.text });
+      if (mockSessionSteerShouldFail) throw new Error("steer 网络失败");
+      return { outcome: "accepted", session_id: input.sessionId, at: new Date().toISOString() };
+    },
+    async AssistantSessionAnswer(input: AssistantAnswerRequest): Promise<AssistantSessionControlResult> {
+      mockSessionControlCalls.push({ op: "answer", sessionId: input.sessionId, requestId: input.requestId });
+      return { outcome: "accepted", session_id: input.sessionId, at: new Date().toISOString() };
+    },
+    async AssistantSessionCancel(input: AssistantSessionRequest): Promise<AssistantSessionControlResult> {
+      mockSessionControlCalls.push({ op: "cancel", sessionId: input.sessionId, requestId: input.requestId });
+      return { outcome: "accepted", session_id: input.sessionId, at: new Date().toISOString() };
+    },
+    async AssistantSessionResume(input: AssistantSessionRequest): Promise<AssistantSessionControlResult> {
+      mockSessionControlCalls.push({ op: "resume", sessionId: input.sessionId, requestId: input.requestId });
+      return { outcome: "accepted", session_id: input.sessionId, at: new Date().toISOString() };
+    },
+    async AssistantSessionFork(input: AssistantSessionRequest): Promise<AssistantSessionControlResult> {
+      mockSessionControlCalls.push({ op: "fork", sessionId: input.sessionId, requestId: input.requestId });
+      return { outcome: "accepted", session_id: `fork-${input.sessionId}-${input.requestId.slice(-6)}`, at: new Date().toISOString() };
+    },
+    async AssistantSupervisorDiagnostic(assistantID: string): Promise<AssistantSupervisorDiagnostic> {
+      if (mockDiagnosticSource) return mockDiagnosticSource;
+      return {
+        assistant_id: assistantID,
+        supervisor: { id: `supervisor-${assistantID}`, path: `/mock/sessions/supervisor-${assistantID}.jsonl` },
+        pending_events: [], recent_decisions: [], recent_receipts: [],
+        running_sessions: [], failed_sessions: [], retry_due: 0, diagnostics: [], at: new Date().toISOString(),
+      };
     },
     async AssistantResolveAttention(input: AssistantResolveAttentionInput) {
       const snapshot = findAssistantSnapshot(input.assistantId);

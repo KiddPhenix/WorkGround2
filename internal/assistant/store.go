@@ -24,26 +24,32 @@ var storeGates sync.Map
 // assistant aggregate. Callers receive deep copies, so mutating a result never
 // changes Store state without a subsequent CAS operation.
 type Snapshot struct {
-	Revision       int64            `json:"revision"`
-	Assistant      Assistant        `json:"assistant"`
-	Routines       []Routine        `json:"routines"`
-	Memory         Memory           `json:"memory"`
-	Runs           []Run            `json:"runs"`
-	Attention      []AttentionItem  `json:"attention"`
-	Plan           Plan             `json:"plan"`
-	Artifacts      []Artifact       `json:"artifacts"`
-	Opportunities  []Opportunity    `json:"opportunities"`
-	Proposals      []ChangeProposal `json:"proposals"`
-	Channels       []ChannelBinding `json:"channels"`
-	ChannelActions []ChannelAction  `json:"channel_actions"`
-	ChannelMetrics []ChannelMetric  `json:"channel_metrics"`
-	Dispatches     []Dispatch       `json:"dispatches"`
-	Jobs           []RunnerJob      `json:"jobs"`
-	ContextPacks   []ContextPack    `json:"context_packs"`
-	Ideas          []IdeaProposal   `json:"ideas"`
-	Ideation       Ideation         `json:"ideation,omitempty"`
-	Receipts       []RequestReceipt `json:"receipts"`
-	UpdatedAt      time.Time        `json:"updated_at" ts_type:"string"`
+	Revision       int64                       `json:"revision"`
+	Assistant      Assistant                   `json:"assistant"`
+	Routines       []Routine                   `json:"routines"`
+	Memory         Memory                      `json:"memory"`
+	Runs           []Run                       `json:"runs"`
+	Fires          []RoutineFire               `json:"fires"`
+	Attention      []AttentionItem             `json:"attention"`
+	Plan           Plan                        `json:"plan"`
+	Artifacts      []Artifact                  `json:"artifacts"`
+	Opportunities  []Opportunity               `json:"opportunities"`
+	Experiments    []Experiment                `json:"experiments"`
+	Research       []Research                  `json:"research"`
+	Proposals      []ChangeProposal            `json:"proposals"`
+	Channels       []ChannelBinding            `json:"channels"`
+	ChannelActions []ChannelAction             `json:"channel_actions"`
+	ChannelMetrics []ChannelMetric             `json:"channel_metrics"`
+	Dispatches     []Dispatch                  `json:"dispatches"`
+	Jobs           []RunnerJob                 `json:"jobs"`
+	ContextPacks   []ContextPack               `json:"context_packs"`
+	Ideas          []IdeaProposal              `json:"ideas"`
+	Ideation       Ideation                    `json:"ideation,omitempty"`
+	Expansion      ExpansionState              `json:"expansion,omitempty"`
+	Cycle          SupervisorCycle             `json:"cycle,omitempty"`
+	Receipts       []RequestReceipt            `json:"receipts"`
+	Decisions      []InteractionDecisionRecord `json:"decisions"`
+	UpdatedAt      time.Time                   `json:"updated_at" ts_type:"string"`
 }
 
 type RequestReceipt struct {
@@ -61,28 +67,34 @@ type requestReceipt struct {
 }
 
 type aggregate struct {
-	Version        int                       `json:"version"`
-	Revision       int64                     `json:"revision"`
-	Assistant      Assistant                 `json:"assistant"`
-	Routines       []Routine                 `json:"routines"`
-	Memory         Memory                    `json:"memory"`
-	Runs           []Run                     `json:"runs"`
-	Attention      []AttentionItem           `json:"attention"`
-	Plan           Plan                      `json:"plan"`
-	Artifacts      []Artifact                `json:"artifacts"`
-	Opportunities  []Opportunity             `json:"opportunities"`
-	Proposals      []ChangeProposal          `json:"proposals"`
-	Channels       []ChannelBinding          `json:"channels"`
-	ChannelActions []ChannelAction           `json:"channel_actions"`
-	ChannelMetrics []ChannelMetric           `json:"channel_metrics"`
-	Dispatches     []Dispatch                `json:"dispatches"`
-	Jobs           []RunnerJob               `json:"jobs"`
-	ContextPacks   []ContextPack             `json:"context_packs"`
-	Ideas          []IdeaProposal            `json:"ideas"`
-	Ideation       Ideation                  `json:"ideation,omitempty"`
-	Requests       map[string]requestReceipt `json:"requests"`
-	Occurrences    map[string]string         `json:"occurrences"`
-	UpdatedAt      time.Time                 `json:"updated_at"`
+	Version        int                         `json:"version"`
+	Revision       int64                       `json:"revision"`
+	Assistant      Assistant                   `json:"assistant"`
+	Routines       []Routine                   `json:"routines"`
+	Memory         Memory                      `json:"memory"`
+	Runs           []Run                       `json:"runs"`
+	Fires          []RoutineFire               `json:"fires"`
+	Attention      []AttentionItem             `json:"attention"`
+	Plan           Plan                        `json:"plan"`
+	Artifacts      []Artifact                  `json:"artifacts"`
+	Opportunities  []Opportunity               `json:"opportunities"`
+	Experiments    []Experiment                `json:"experiments"`
+	Research       []Research                  `json:"research"`
+	Proposals      []ChangeProposal            `json:"proposals"`
+	Channels       []ChannelBinding            `json:"channels"`
+	ChannelActions []ChannelAction             `json:"channel_actions"`
+	ChannelMetrics []ChannelMetric             `json:"channel_metrics"`
+	Dispatches     []Dispatch                  `json:"dispatches"`
+	Jobs           []RunnerJob                 `json:"jobs"`
+	ContextPacks   []ContextPack               `json:"context_packs"`
+	Ideas          []IdeaProposal              `json:"ideas"`
+	Ideation       Ideation                    `json:"ideation,omitempty"`
+	Expansion      ExpansionState              `json:"expansion,omitempty"`
+	Cycle          SupervisorCycle             `json:"cycle,omitempty"`
+	Requests       map[string]requestReceipt   `json:"requests"`
+	Occurrences    map[string]string           `json:"occurrences"`
+	Decisions      []InteractionDecisionRecord `json:"decisions"`
+	UpdatedAt      time.Time                   `json:"updated_at"`
 }
 
 type storeGate struct {
@@ -93,6 +105,15 @@ type storeGate struct {
 type Store struct {
 	root string
 	gate *storeGate
+}
+
+// Root returns the absolute store root directory. It is used by components
+// that persist sibling state next to the aggregates (supervisor event queue).
+func (s *Store) Root() string {
+	if s == nil {
+		return ""
+	}
+	return s.root
 }
 
 // NewStore opens a root dedicated to assistant state. Empty paths, relative
@@ -231,6 +252,10 @@ func (s *Store) Create(in CreateInput) (Snapshot, error) {
 	a.Revision = 1
 	a.MemoryRev = 1
 	a.CreatedAt, a.UpdatedAt = now, now
+	if a.Mode == "" {
+		a.Mode = defaultAssistantMode
+	}
+	a.Policy = normalizePolicy(a.Policy)
 	if err := validateAssistant(a); err != nil {
 		return Snapshot{}, err
 	}
@@ -257,9 +282,10 @@ func (s *Store) Create(in CreateInput) (Snapshot, error) {
 	}
 	agg := &aggregate{
 		Version: aggregateVersion, Revision: 1, Assistant: a, Routines: routines,
-		Memory: Memory{Revision: 1, Items: []MemoryItem{}}, Runs: []Run{}, Attention: []AttentionItem{},
-		Plan: emptyPlan(), Artifacts: []Artifact{}, Opportunities: []Opportunity{}, Proposals: []ChangeProposal{},
-		Channels: []ChannelBinding{}, ChannelActions: []ChannelAction{}, ChannelMetrics: []ChannelMetric{},
+		Memory: Memory{Revision: 1, Items: []MemoryItem{}}, Runs: []Run{}, Fires: []RoutineFire{}, Attention: []AttentionItem{},
+		Plan: emptyPlan(), Artifacts: []Artifact{}, Opportunities: []Opportunity{}, Experiments: []Experiment{}, Research: []Research{},
+		Proposals: []ChangeProposal{},
+		Channels:  []ChannelBinding{}, ChannelActions: []ChannelAction{}, ChannelMetrics: []ChannelMetric{},
 		Requests: map[string]requestReceipt{}, Occurrences: map[string]string{}, UpdatedAt: now,
 	}
 	if in.InitialPrompt != "" {
@@ -562,6 +588,11 @@ func (s *Store) BeginChannelAction(in BeginChannelActionInput) (ChannelAction, b
 		}
 		return ChannelAction{}, false, fmt.Errorf("assistant: channel action receipt %q has no action: %w", in.RequestID, ErrCorrupt)
 	}
+	// A brand-new external action is new work: refused while the gate is not
+	// RUNNING (replay of an already-recorded action returns the receipt above).
+	if err := s.requireRunning(); err != nil {
+		return ChannelAction{}, false, err
+	}
 	ci := channelIndex(agg, intent.ChannelID)
 	if ci < 0 {
 		return ChannelAction{}, false, ErrNotFound
@@ -613,6 +644,11 @@ func (s *Store) FinishChannelAction(in FinishChannelActionInput) (ChannelAction,
 	}
 	if result, ok, receiptErr := receiptResult[ChannelAction](agg, in.RequestID, "finish_channel_action", fp); ok || receiptErr != nil {
 		return result, receiptErr
+	}
+	// Confirming an external action outcome is recovery-driven write-back:
+	// refused only while QUIESCING or PAUSED (RECOVERING re-drives it).
+	if err := s.requireResumeRunning(); err != nil {
+		return ChannelAction{}, err
 	}
 	idx := channelActionIndex(agg, in.ActionID)
 	if idx < 0 {
@@ -1037,6 +1073,9 @@ func (s *Store) trigger(in TriggerInput, occurrence bool) (Run, error) {
 	if err != nil {
 		return Run{}, err
 	}
+	if err := s.requireRunning(); err != nil {
+		return Run{}, err
+	}
 	unlock, err := s.lockAssistant(in.AssistantID)
 	if err != nil {
 		return Run{}, err
@@ -1140,6 +1179,13 @@ func (s *Store) Claim(owner string, now time.Time, lease time.Duration) (*Run, b
 	now = storeNow(now)
 	s.gate.root.Lock()
 	defer s.gate.root.Unlock()
+	wc, err := s.readWorkControlLocked()
+	if err != nil {
+		return nil, false, err
+	}
+	if wc.State != WorkRunning {
+		return nil, false, nil
+	}
 	entries, err := os.ReadDir(s.root)
 	if os.IsNotExist(err) {
 		return nil, false, nil
@@ -1210,6 +1256,7 @@ func (s *Store) Claim(owner string, now time.Time, lease time.Duration) (*Run, b
 		run.LeaseOwner = owner
 		run.LeaseFence++
 		run.LeaseUntil = now.Add(lease)
+		run.WorkEpoch = wc.Epoch
 		run.StartedAt = now
 		run.UpdatedAt = now
 		run.Revision++
@@ -1343,6 +1390,10 @@ func (s *Store) withRunLeaseRequest(runID, owner string, fence int64, requestID,
 	if err != nil {
 		return nil, err
 	}
+	wc, err := s.WorkControl()
+	if err != nil {
+		return nil, err
+	}
 	unlock, err := s.lockAssistant(assistantID)
 	if err != nil {
 		return nil, err
@@ -1362,6 +1413,9 @@ func (s *Store) withRunLeaseRequest(runID, owner string, fence int64, requestID,
 	run := &agg.Runs[idx]
 	if run.State != RunRunning || run.LeaseOwner != owner || run.LeaseFence != fence || !now.Before(run.LeaseUntil) {
 		return nil, fmt.Errorf("assistant: run %s fence %d is stale: %w", runID, fence, ErrLeaseLost)
+	}
+	if err := checkWorkEpoch(run.WorkEpoch, wc.Epoch); err != nil {
+		return nil, err
 	}
 	if err := mutate(run, now); err != nil {
 		return nil, err
@@ -1548,6 +1602,11 @@ func (s *Store) ResolveAttention(in ResolveAttentionInput) (*AttentionItem, erro
 	}
 	if result, ok, receiptErr := receiptResult[AttentionItem](agg, in.RequestID, "resolve_attention", fp); ok || receiptErr != nil {
 		return &result, receiptErr
+	}
+	// Manually confirming an external outcome is recovery-driven write-back:
+	// refused only while QUIESCING or PAUSED.
+	if err := s.requireResumeRunning(); err != nil {
+		return nil, err
 	}
 	idx := attentionIndex(agg, in.AttentionID)
 	if idx < 0 {
@@ -1954,6 +2013,9 @@ func (s *Store) read(assistantID string) (*aggregate, error) {
 	if agg.Occurrences == nil {
 		agg.Occurrences = map[string]string{}
 	}
+	if agg.Fires == nil {
+		agg.Fires = []RoutineFire{}
+	}
 	// Old aggregates predate the plan. Lazily normalize them to an empty plan so
 	// they remain readable and writable without a migration.
 	if agg.Plan.Revision == 0 {
@@ -1962,11 +2024,24 @@ func (s *Store) read(assistantID string) (*aggregate, error) {
 	if agg.Plan.Responsibilities == nil {
 		agg.Plan.Responsibilities = []Responsibility{}
 	}
+	// Legacy aggregates predate the responsibility Disposition decision state.
+	// Backfill it from the persisted Status (stable and replayable), then
+	// recompute the derived Status projection so in-package consumers and the
+	// snapshot see a consistent view. Disposition is authoritative; Status is a
+	// projection and is never independently written by the decision paths.
+	migrateResponsibilityDispositions(&agg.Plan)
+	deriveResponsibilityStatuses(&agg.Plan)
 	if agg.Artifacts == nil {
 		agg.Artifacts = []Artifact{}
 	}
 	if agg.Opportunities == nil {
 		agg.Opportunities = []Opportunity{}
+	}
+	if agg.Experiments == nil {
+		agg.Experiments = []Experiment{}
+	}
+	if agg.Research == nil {
+		agg.Research = []Research{}
 	}
 	if agg.Proposals == nil {
 		agg.Proposals = []ChangeProposal{}
@@ -1992,6 +2067,18 @@ func (s *Store) read(assistantID string) (*aggregate, error) {
 	if agg.Ideas == nil {
 		agg.Ideas = []IdeaProposal{}
 	}
+	if agg.Decisions == nil {
+		agg.Decisions = []InteractionDecisionRecord{}
+	}
+	// Legacy aggregates predate the Mode field and the newer Policy dimensions.
+	// Apply explicit, stable defaults so old data stays readable and writable
+	// without a migration: continuous is the product's long-lived mode, and each
+	// policy dimension gets its documented default. Already-set values are
+	// never overwritten, so the normalization is replayable.
+	if agg.Assistant.Mode == "" {
+		agg.Assistant.Mode = defaultAssistantMode
+	}
+	agg.Assistant.Policy = normalizePolicy(agg.Assistant.Policy)
 	if err := validateAggregate(&agg); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrCorrupt, assistantID, err)
 	}
@@ -2121,12 +2208,13 @@ func snapshotOf(agg *aggregate) Snapshot {
 	sort.Slice(receipts, func(i, j int) bool { return receipts[i].RequestID < receipts[j].RequestID })
 	return Snapshot{
 		Revision: agg.Revision, Assistant: agg.Assistant, Routines: agg.Routines,
-		Memory: agg.Memory, Runs: agg.Runs, Attention: agg.Attention,
+		Memory: agg.Memory, Runs: agg.Runs, Fires: clone(agg.Fires), Attention: agg.Attention,
 		Plan: clonePlan(agg.Plan), Artifacts: clone(agg.Artifacts), Opportunities: clone(agg.Opportunities),
+		Experiments: clone(agg.Experiments), Research: clone(agg.Research),
 		Proposals: clone(agg.Proposals),
 		Channels:  clone(agg.Channels), ChannelActions: clone(agg.ChannelActions), ChannelMetrics: clone(agg.ChannelMetrics),
 		Dispatches: clone(agg.Dispatches), Jobs: clone(agg.Jobs), ContextPacks: clone(agg.ContextPacks), Ideas: clone(agg.Ideas), Ideation: agg.Ideation,
-		Receipts: receipts, UpdatedAt: agg.UpdatedAt,
+		Expansion: agg.Expansion, Cycle: agg.Cycle, Receipts: receipts, Decisions: clone(agg.Decisions), UpdatedAt: agg.UpdatedAt,
 	}
 }
 
@@ -2383,6 +2471,19 @@ func validateAggregate(agg *aggregate) error {
 		}
 		routineIDs[routine.ID] = true
 	}
+	fireIDs := make(map[string]bool, len(agg.Fires))
+	for _, fire := range agg.Fires {
+		if err := validateRoutineFire(fire); err != nil {
+			return err
+		}
+		if fire.AssistantID != agg.Assistant.ID {
+			return fmt.Errorf("fire %s belongs to %s", fire.FireID, fire.AssistantID)
+		}
+		if fireIDs[fire.FireID] {
+			return fmt.Errorf("duplicate fire %s", fire.FireID)
+		}
+		fireIDs[fire.FireID] = true
+	}
 	runIDs := make(map[string]Run, len(agg.Runs))
 	for _, run := range agg.Runs {
 		if err := validateRun(run); err != nil {
@@ -2405,10 +2506,19 @@ func validateAggregate(agg *aggregate) error {
 		}
 		runIDs[run.ID] = run
 	}
-	for key, runID := range agg.Occurrences {
-		run, ok := runIDs[runID]
-		if !ok || !hasOccurrenceKey(run, key) {
-			return fmt.Errorf("occurrence %s references inconsistent run %s", key, runID)
+	for key, value := range agg.Occurrences {
+		run, ok := runIDs[value]
+		if !ok {
+			// The converged scheduling path records routine fires in the same
+			// ledger keyed by OccurrenceKey (value is a "fire-…" stable ID). They
+			// are idempotency records, not Run references, so they pass.
+			if strings.HasPrefix(value, "fire-") {
+				continue
+			}
+			return fmt.Errorf("occurrence %s references inconsistent run %s", key, value)
+		}
+		if !hasOccurrenceKey(run, key) {
+			return fmt.Errorf("occurrence %s references inconsistent run %s", key, value)
 		}
 	}
 	attentionIDs := make(map[string]bool, len(agg.Attention))
@@ -2435,6 +2545,19 @@ func validateAggregate(agg *aggregate) error {
 		attentionIDs[item.ID] = true
 	}
 	if err := validatePlan(agg); err != nil {
+		return err
+	}
+	researchIDs := make(map[string]bool, len(agg.Research))
+	for _, r := range agg.Research {
+		if err := validateResearch(agg, r); err != nil {
+			return err
+		}
+		if researchIDs[r.ID] {
+			return fmt.Errorf("duplicate research %s", r.ID)
+		}
+		researchIDs[r.ID] = true
+	}
+	if err := validateCycle(agg.Cycle); err != nil {
 		return err
 	}
 	channelIDs := map[string]bool{}
@@ -2522,6 +2645,24 @@ func validateAggregate(agg *aggregate) error {
 			return fmt.Errorf("assistant: invalid or duplicate idea %s", idea.ID)
 		}
 		ideaIDs[idea.ID] = true
+	}
+	decisionIDs := map[string]bool{}
+	for _, decision := range agg.Decisions {
+		if err := validateID("decision", decision.ID); err != nil {
+			return err
+		}
+		if decision.AssistantID != agg.Assistant.ID || decision.SessionID == "" || decision.InteractionID == "" || decision.CreatedAt.IsZero() {
+			return fmt.Errorf("assistant: invalid decision %s", decision.ID)
+		}
+		switch decision.Source {
+		case DecisionInfer, DecisionExperiment, DecisionUser, DecisionDeferred:
+		default:
+			return fmt.Errorf("assistant: decision %s has invalid source %q", decision.ID, decision.Source)
+		}
+		if decisionIDs[decision.ID] {
+			return fmt.Errorf("assistant: duplicate decision %s", decision.ID)
+		}
+		decisionIDs[decision.ID] = true
 	}
 	for requestID, receipt := range agg.Requests {
 		if err := validateRequestID(requestID); err != nil {

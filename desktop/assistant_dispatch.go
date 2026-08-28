@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -12,7 +11,6 @@ import (
 
 	"workground2/internal/agent"
 	"workground2/internal/assistant"
-	"workground2/internal/assistantchannel"
 	"workground2/internal/boot"
 	"workground2/internal/config"
 	"workground2/internal/control"
@@ -21,7 +19,9 @@ import (
 
 // processDispatches advances the phase-6 roles: classify pending/failed
 // Dispatches, reflect terminal Dispatches, and open cadence ideas when due. All
-// mutations are idempotent and Store-CAS-guarded.
+// mutations are idempotent and Store-CAS-guarded. It never executes Jobs — the
+// converged supervisor loop turns classified task Dispatches into managed
+// Sessions.
 func (r *AssistantRuntime) processDispatches(ctx context.Context) error {
 	assistants, err := r.store.List()
 	if err != nil {
@@ -193,188 +193,6 @@ func (r *AssistantRuntime) ideateIfDue(ctx context.Context, snapshot assistant.S
 		Trigger: assistant.IdeaTriggerCadence, Now: time.Now(),
 	})
 	return err
-}
-
-type jobCapture struct {
-	summary, text string
-	attention     bool
-	evidence      assistant.Evidence
-}
-
-func (c *jobCapture) sink(value event.Event) {
-	switch value.Kind {
-	case event.Text:
-		if len(c.text) < 1<<20 {
-			c.text += value.Text
-		}
-	case event.Message:
-		if strings.TrimSpace(value.Text) != "" {
-			c.summary = strings.TrimSpace(value.Text)
-		}
-	case event.ToolResult:
-		c.evidence.RecordToolResult(value.Tool.Name, value.Tool.Err == "")
-	case event.ApprovalRequest:
-		c.attention = true
-	case event.AskRequest:
-		c.attention = true
-	}
-}
-
-// executeJob runs one claimed Job through a headless controller and then
-// finishes or fails the Job. It keeps the user's active tab untouched.
-func (r *AssistantRuntime) executeJob(ctx context.Context, job assistant.RunnerJob) {
-	defer r.Wake()
-	a := r.app
-	workspace := ""
-	if job.Scope == assistant.ScopeWorkspace {
-		workspace = job.WorkspaceRoot
-		info, err := os.Stat(workspace)
-		if err != nil || !info.IsDir() {
-			cause := fmt.Errorf("frozen workspace unavailable: %s", workspace)
-			r.failJob(job, "workspace_unavailable", cause, false)
-			return
-		}
-	}
-	snapshot, err := r.store.Get(job.AssistantID)
-	if err != nil {
-		r.failJob(job, "snapshot", err, true)
-		return
-	}
-	capture := &jobCapture{}
-	sessionDir := config.SessionDir()
-	if workspace != "" {
-		sessionDir = config.ProjectSessionDir(workspace)
-	}
-	ctrl, err := boot.Build(ctx, boot.Options{Model: "", RequireKey: true, Sink: event.FuncSink(capture.sink), Stderr: os.Stderr, WorkspaceRoot: workspace, SessionDir: sessionDir, SessionKind: agent.SessionKindAssistant, ExtraTools: assistantchannel.Tools(r.channels, job.AssistantID, job.ID), ApprovalTimeout: 2 * time.Second, SessionRefs: a.sessionRefs, SessionRefsErr: a.sessionRefsErr})
-	if err != nil {
-		r.failJob(job, "controller_start", err, true)
-		return
-	}
-	defer ctrl.Close()
-	ctrl.SetSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
-	meta, _ := agent.EnsureBranchMeta(ctrl.SessionPath())
-	meta.SessionKind, meta.AssistantID = agent.SessionKindAssistant, job.AssistantID
-	meta.SessionSource = agent.SessionSourceAssist
-	_ = agent.SaveBranchMetaPreserveUpdated(ctrl.SessionPath(), meta)
-	if err := ctx.Err(); err != nil {
-		r.failJob(job, "runtime_stopped", err, true)
-		return
-	}
-	// Persist the session path before the model turn starts, so the timeline
-	// job row becomes navigable while the job is still running and stays
-	// navigable after completion or refresh recovery.
-	bound, err := r.jobRunner.BindSession(job, fmt.Sprintf("bind-session:%s:%d", job.ID, job.LeaseFence), ctrl.SessionPath(), time.Now())
-	if err != nil {
-		r.failJob(job, "session_bind", err, true)
-		return
-	}
-	job = *bound
-	prompt := r.jobPrompt(snapshot, job)
-	// A model turn can outlive the job lease. Keep the lease renewed under its
-	// current fence for the whole turn, so a long-running job is not recovered
-	// to waiting_attention mid-execution and left with a stale fence that can
-	// never finish. If the lease is genuinely lost (suspend, takeover), the job
-	// was already recovered: stop the turn and leave that state untouched for
-	// the explicit user retry — never record a late completion over it.
-	runErr, leaseLost := runTurnWithLease(ctx, assistantLeaseTTL/2, func() error {
-		renewed, renewErr := r.jobRunner.Renew(job, time.Now())
-		if renewErr == nil {
-			job = *renewed
-		}
-		return renewErr
-	}, func(runCtx context.Context) error {
-		return ctrl.RunWithPolicy(runCtx, prompt, assistant.PermissionPolicy(job.Policy), control.ToolApprovalAuto)
-	})
-	if leaseLost {
-		r.recordDiagnostic("job_lease_lost", fmt.Errorf("job %s lease lost during execution; job recovered to attention — retry to re-run", job.ID))
-		slog.Warn("desktop: assistant job lease lost during execution; recovered to attention", "job", job.ID)
-		return
-	}
-	if capture.attention {
-		r.failJob(job, "attention", errors.New("job requires user attention"), false)
-		return
-	}
-	if runErr != nil {
-		r.failJob(job, "turn_failed", runErr, true)
-		return
-	}
-	if missing := capture.evidence.Missing(assistant.RequiredCapabilities(job.Prompt, job.Prompt)); len(missing) > 0 {
-		failure := assistant.EvidenceFailure(missing)
-		failure.Now = time.Now()
-		failure.RetryAfter = time.Minute
-		_, failErr := r.jobRunner.Fail(job, failure)
-		if failErr != nil {
-			r.recordDiagnostic("job_evidence", failErr)
-		}
-		return
-	}
-	summary := strings.TrimSpace(assistant.StripProgressBlocks(capture.summary))
-	if summary == "" {
-		summary = strings.TrimSpace(capture.text)
-	}
-	if _, err := r.jobRunner.Finish(job, summary, time.Now()); err != nil {
-		r.recordDiagnostic("job_finish", err)
-	}
-}
-
-func (r *AssistantRuntime) failJob(job assistant.RunnerJob, code string, cause error, retryable bool) {
-	if cause == nil {
-		return
-	}
-	r.recordDiagnostic(code, cause)
-	_, err := r.jobRunner.Fail(job, assistant.Failure{Code: code, Message: cause.Error(), Retryable: retryable, OutcomeKnown: true, RetryAfter: time.Minute, Now: time.Now()})
-	if err != nil {
-		r.recordDiagnostic(code, err)
-	}
-}
-
-// runTurnWithLease runs one turn while renewing the owning lease under its
-// current fence at renewInterval. leaseLost is true when the lease could no
-// longer be renewed (the run/job was already recovered to attention); the
-// caller must then stop and leave the recovered state untouched. The turn runs
-// on a derived context that is cancelled on lease loss so no late side effects
-// or stale completions can land after recovery.
-func runTurnWithLease(ctx context.Context, renewInterval time.Duration, renew func() error, turn func(context.Context) error) (turnErr error, leaseLost bool) {
-	if renewInterval <= 0 {
-		return turn(ctx), false
-	}
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- turn(runCtx) }()
-	ticker := time.NewTicker(renewInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err(), false
-		case err := <-done:
-			return err, false
-		case <-ticker.C:
-			if err := renew(); err != nil {
-				cancel()
-				return err, true
-			}
-		}
-	}
-}
-
-func (r *AssistantRuntime) jobPrompt(snapshot assistant.Snapshot, job assistant.RunnerJob) string {
-	var b strings.Builder
-	b.WriteString("你正在执行一个长期助手的 Runner Job。\n\n")
-	fmt.Fprintf(&b, "Job 名称：%s\n", job.Name)
-	fmt.Fprintf(&b, "助手使命：\n%s\n\n本次任务：\n%s\n\n", snapshot.Assistant.Mission, job.Prompt)
-	packs := assistant.ApplicableContextPacks(snapshot.ContextPacks, job.AssistantID, job.DispatchID, job.ContextPackRevision, 4, 8000)
-	if len(packs) > 0 {
-		b.WriteString("近期反思结论（只作背景，不得跨任务重复执行已完成事项）：\n")
-		for _, pack := range packs {
-			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(pack.Conclusion))
-		}
-		b.WriteString("\n")
-	}
-	fmt.Fprintf(&b, "权限：local_write=%s, network=%s, publish=%s\n", job.Policy.LocalWrite, job.Policy.Network, job.Policy.Publish)
-	b.WriteString("\n完成后给出结论。共享计划与记忆只能通过现有 <assistant-progress> 协议提交。")
-	return b.String()
 }
 
 // assistantRoleModel adapts the App's headless role controller to the
