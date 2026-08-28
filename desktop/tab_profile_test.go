@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"workground2/internal/agent"
 	"workground2/internal/boot"
 	"workground2/internal/control"
 )
@@ -21,6 +22,25 @@ func testTab(id, root string) *WorkspaceTab {
 		model:         "deepseek-flash/deepseek-v4-flash",
 		mode:          "normal",
 		disabledMCP:   map[string]ServerView{},
+	}
+}
+
+func TestAssistantSessionProfileForcesAutoApproval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	assistantProfile := tabSessionProfileFromMeta(path, agent.BranchMeta{
+		SessionKind:      agent.SessionKindAssistant,
+		ToolApprovalMode: control.ToolApprovalAsk,
+	})
+	if assistantProfile.toolApprovalMode != control.ToolApprovalAuto {
+		t.Fatalf("assistant approval mode = %q, want auto", assistantProfile.toolApprovalMode)
+	}
+
+	normalProfile := tabSessionProfileFromMeta(path, agent.BranchMeta{
+		SessionKind:      agent.SessionKindNormal,
+		ToolApprovalMode: control.ToolApprovalAsk,
+	})
+	if normalProfile.toolApprovalMode != control.ToolApprovalAsk {
+		t.Fatalf("normal approval mode = %q, want ask", normalProfile.toolApprovalMode)
 	}
 }
 

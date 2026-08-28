@@ -15,6 +15,7 @@ import (
 	"workground2/internal/assistant"
 	"workground2/internal/assistantchannel"
 	"workground2/internal/config"
+	"workground2/internal/control"
 	"workground2/internal/event"
 	"workground2/internal/netclient"
 	"workground2/internal/permission"
@@ -65,6 +66,7 @@ func ensureAssistantSessionMeta(sessionPath, assistantID string) error {
 	}
 	meta.SessionKind = agent.SessionKindAssistant
 	meta.SessionSource = agent.SessionSourceAssist
+	meta.ToolApprovalMode = control.ToolApprovalAuto
 	if id := strings.TrimSpace(assistantID); id != "" {
 		meta.AssistantID = id
 	}
@@ -207,6 +209,7 @@ func (a *App) ensureAssistantBackgroundTab(run assistant.Run, sessionPath string
 	if tab == nil {
 		return nil, fmt.Errorf("background assistant tab was not created")
 	}
+	a.SetToolApprovalModeForTab(tab.ID, control.ToolApprovalAuto)
 	return tab, nil
 }
 

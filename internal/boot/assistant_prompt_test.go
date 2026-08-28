@@ -6,6 +6,7 @@ import (
 
 	"workground2/internal/agent"
 	"workground2/internal/config"
+	"workground2/internal/control"
 )
 
 func TestAssistantSystemPromptStripsCodingAgentRole(t *testing.T) {
@@ -60,5 +61,21 @@ func TestAssistantSkipsCodingOnlyAnchoredBootstrap(t *testing.T) {
 	}
 	if shouldUseAnchoredBootstrap(true, false, agent.SessionKindNormal) {
 		t.Fatal("non-DeepSeek session enabled DeepSeek bootstrap")
+	}
+}
+
+func TestAssistantSessionDefaultsToAutoApproval(t *testing.T) {
+	assistantCtrl := control.New(control.Options{Label: "assistant"})
+	defer assistantCtrl.Close()
+	applySessionApprovalDefault(assistantCtrl, agent.SessionKindAssistant)
+	if got := assistantCtrl.ToolApprovalMode(); got != control.ToolApprovalAuto {
+		t.Fatalf("assistant approval mode = %q, want auto", got)
+	}
+
+	normalCtrl := control.New(control.Options{Label: "normal"})
+	defer normalCtrl.Close()
+	applySessionApprovalDefault(normalCtrl, agent.SessionKindNormal)
+	if got := normalCtrl.ToolApprovalMode(); got != control.ToolApprovalAsk {
+		t.Fatalf("normal approval mode = %q, want ask", got)
 	}
 }

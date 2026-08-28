@@ -8162,6 +8162,9 @@ func tabSessionProfileFromMeta(sessionPath string, meta agent.BranchMeta) tabSes
 	profile.tokenMode = boot.NormalizeTokenMode(meta.TokenMode)
 	profile.mode = normalizeTabMode(meta.Mode)
 	profile.toolApprovalMode = normalizeToolApprovalMode(meta.ToolApprovalMode)
+	if meta.SessionKind == agent.SessionKindAssistant {
+		profile.toolApprovalMode = control.ToolApprovalAuto
+	}
 	if profile.toolApprovalMode == control.ToolApprovalAsk && tabModeHasAutoApproveTools(meta.Mode) {
 		profile.toolApprovalMode = control.ToolApprovalYolo
 	}

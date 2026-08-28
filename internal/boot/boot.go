@@ -1739,6 +1739,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 	ctrl := control.New(ctrlOpts)
+	applySessionApprovalDefault(ctrl, opts.SessionKind)
 	if browserOwner != nil {
 		browserOwner.transfer()
 	}
@@ -1765,6 +1766,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	dshTransferred = true
 	return ctrl, nil
+}
+
+func applySessionApprovalDefault(ctrl *control.Controller, kind agent.SessionKind) {
+	if ctrl != nil && kind == agent.SessionKindAssistant {
+		ctrl.SetToolApprovalMode(control.ToolApprovalAuto)
+	}
 }
 
 // shouldUseAnchoredBootstrap keeps the three-tool DeepSeek cold-start surface

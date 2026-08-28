@@ -125,6 +125,7 @@ func (c *daemonSessionControl) Create(req sessiontool.SessionCreateRequest) (str
 	if err != nil {
 		return "", err
 	}
+	setAssistantToolApproval(ctrl)
 	// Deterministic session path by stable identity (atomic O_EXCL); a concurrent
 	// loser resolves to the same file.
 	sessionPath := agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label())
@@ -141,6 +142,7 @@ func (c *daemonSessionControl) Create(req sessiontool.SessionCreateRequest) (str
 	meta.AssistantID = strings.TrimSpace(req.OwnerID)
 	meta.SessionSource = agent.SessionSourceAssist
 	meta.Purpose = req.Purpose
+	meta.ToolApprovalMode = control.ToolApprovalAuto
 	if meta.Purpose == "" {
 		meta.Purpose = agent.PurposeManaged
 	}
@@ -154,7 +156,10 @@ func (c *daemonSessionControl) Create(req sessiontool.SessionCreateRequest) (str
 		meta.WorkspaceRoot = workspace
 	}
 	meta.Status = agent.SessionStatusQueued
-	_ = agent.SaveBranchMetaPreserveUpdated(ctrl.SessionPath(), meta)
+	if err := agent.SaveBranchMetaPreserveUpdated(ctrl.SessionPath(), meta); err != nil {
+		ctrl.Close()
+		return "", fmt.Errorf("persist assistant session approval mode: %w", err)
+	}
 	if hasRequest {
 		if _, err := agent.AdvanceSessionReceipt(sessionDir, req.RequestID, agent.ReceiptMetaReady); err != nil {
 			return "", err
@@ -202,6 +207,7 @@ func (c *daemonSessionControl) requireCtrl(sessionID string) (*control.Controlle
 		if err != nil {
 			return nil, err
 		}
+		setAssistantToolApproval(ctrl)
 		c.mu.Lock()
 		c.live[sessionID] = ctrl
 		c.mu.Unlock()
@@ -246,11 +252,28 @@ func (c *daemonSessionControl) resumeCtrlLocked(sessionID string) (*control.Cont
 	if err != nil {
 		return nil, err
 	}
+	setAssistantToolApproval(ctrl)
 	ctrl.Resume(sess, path)
+	if ok && meta.ToolApprovalMode != control.ToolApprovalAuto {
+		meta.ToolApprovalMode = control.ToolApprovalAuto
+		if err := agent.SaveBranchMetaPreserveUpdated(path, meta); err != nil {
+			ctrl.Close()
+			return nil, fmt.Errorf("persist assistant session approval mode %s: %w", sessionID, err)
+		}
+	}
 	c.mu.Lock()
 	c.live[sessionID] = ctrl
 	c.mu.Unlock()
 	return ctrl, nil
+}
+
+// setAssistantToolApproval applies the invariant shared by newly-created and
+// restored Assistant controllers. It is intentionally not caller-configurable:
+// Assistant-managed work must never pause on routine tool approval prompts.
+func setAssistantToolApproval(ctrl *control.Controller) {
+	if ctrl != nil {
+		ctrl.SetToolApprovalMode(control.ToolApprovalAuto)
+	}
 }
 
 // restoreOptions builds the boot.Options a restore uses so the durable

@@ -22,8 +22,9 @@ func TestDaemonSessionControlConcurrentRestoreBuildsOneController(t *testing.T) 
 		builds.Add(1)
 		close(start) // only the first builder reaches here under restoreMu
 		<-release    // hold the lock so every concurrent caller queues behind it
-		return &control.Controller{}, nil
+		return control.New(control.Options{Label: sessionID}), nil
 	}
+	defer c.Close()
 
 	const n = 32
 	var wg sync.WaitGroup
@@ -70,8 +71,9 @@ func TestDaemonSessionControlRepeatedRestoreReusesLiveController(t *testing.T) {
 	c := newDaemonSessionControl("model", io.Discard, nil, nil)
 	c.build = func(sessionID string) (*control.Controller, error) {
 		builds.Add(1)
-		return &control.Controller{}, nil
+		return control.New(control.Options{Label: sessionID}), nil
 	}
+	defer c.Close()
 	if _, err := c.requireCtrl("session-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -80,5 +82,23 @@ func TestDaemonSessionControlRepeatedRestoreReusesLiveController(t *testing.T) {
 	}
 	if got := builds.Load(); got != 1 {
 		t.Fatalf("build calls = %d, want 1 (second require must reuse the live controller)", got)
+	}
+}
+
+func TestDaemonSessionControlRestoreForcesAutoApproval(t *testing.T) {
+	c := newDaemonSessionControl("model", io.Discard, nil, nil)
+	c.build = func(sessionID string) (*control.Controller, error) {
+		ctrl := control.New(control.Options{Label: sessionID})
+		ctrl.SetToolApprovalMode(control.ToolApprovalAsk)
+		return ctrl, nil
+	}
+	defer c.Close()
+
+	ctrl, err := c.requireCtrl("assistant-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ctrl.ToolApprovalMode(); got != control.ToolApprovalAuto {
+		t.Fatalf("restored assistant approval mode = %q, want auto", got)
 	}
 }
