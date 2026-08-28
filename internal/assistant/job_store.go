@@ -38,6 +38,13 @@ func (s *Store) ClaimJob(owner string, now time.Time, lease time.Duration) (*Run
 	now = storeNow(now)
 	s.gate.root.Lock()
 	defer s.gate.root.Unlock()
+	wc, err := s.readWorkControlLocked()
+	if err != nil {
+		return nil, false, err
+	}
+	if wc.State != WorkRunning {
+		return nil, false, nil
+	}
 	entries, err := os.ReadDir(s.root)
 	if os.IsNotExist(err) {
 		return nil, false, nil
@@ -85,6 +92,7 @@ func (s *Store) ClaimJob(owner string, now time.Time, lease time.Duration) (*Run
 		job.LeaseOwner = owner
 		job.LeaseFence++
 		job.LeaseUntil = now.Add(lease)
+		job.WorkEpoch = wc.Epoch
 		job.StartedAt = now
 		job.UpdatedAt = now
 		job.Revision++
@@ -310,6 +318,10 @@ func (s *Store) withJobLeaseRequest(jobID, owner string, fence int64, requestID,
 	if err != nil {
 		return nil, err
 	}
+	wc, err := s.WorkControl()
+	if err != nil {
+		return nil, err
+	}
 	unlock, err := s.lockAssistant(assistantID)
 	if err != nil {
 		return nil, err
@@ -329,6 +341,9 @@ func (s *Store) withJobLeaseRequest(jobID, owner string, fence int64, requestID,
 	job := &agg.Jobs[idx]
 	if job.State != JobRunning || job.LeaseOwner != owner || job.LeaseFence != fence || !now.Before(job.LeaseUntil) {
 		return nil, fmt.Errorf("assistant: job %s fence %d is stale: %w", jobID, fence, ErrLeaseLost)
+	}
+	if err := checkWorkEpoch(job.WorkEpoch, wc.Epoch); err != nil {
+		return nil, err
 	}
 	if err := mutate(job, now); err != nil {
 		return nil, err

@@ -24,7 +24,7 @@ func newHeartbeatConversionFixture(t *testing.T, tasks []HeartbeatTask) *App {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	app.assistant = &AssistantRuntime{store: store, inflight: map[string]*assistantInFlight{}, byRun: map[string]*assistantInFlight{}}
+	app.assistant = &AssistantRuntime{store: store}
 	return app
 }
 

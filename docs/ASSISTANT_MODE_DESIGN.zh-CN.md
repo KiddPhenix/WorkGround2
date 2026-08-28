@@ -1,10 +1,16 @@
 # WorkGround2 Assistant 改进设计与实施计划
 
-> 状态：规划中
+> 状态：done（已实施）
 >
 > 类型：调整现有 Assistant 功能
 >
 > 本文是 Assistant 目标行为和后续实施的唯一设计入口。已经完成的历史实现从 Git 历史查询，不在本文维护另一套旧设计。
+
+> **实施结果快照**
+>
+> 17.1–17.9 已全部落地并带测试：Assistant 执行统一收敛为普通受管 Session；Desktop 与 daemon 共用唯一主管 Session、持久事件队列、逐轮 checkpoint/receipt、自动代答、扩展/研究/实验、Routine、项目/Memory/Policy 工具和全局 `WorkControl`；Session 查询包含跨目录 `session_list/status/read`，写操作使用稳定 `request_id`；完成 Session 的 `<assistant-progress>` 在两个宿主中幂等回写 Plan。UI 展示并控制权威 Session、Plan、Routine、Learning、WorkControl、Viewport 和诊断状态。
+>
+> 旧 Run/RunnerJob 数据仅保留历史读取与迁移兼容；生产 Dispatcher 不再冻结 Job，Desktop/daemon 不再领取或推进 RunnerJob，也不再维护 Run/Job↔Session 实时双写。
 
 ## 1. 目标
 

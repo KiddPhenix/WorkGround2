@@ -83,6 +83,11 @@ func validateAssistant(a Assistant) error {
 	default:
 		return fmt.Errorf("assistant: invalid lifecycle %q", a.Lifecycle)
 	}
+	switch a.Mode {
+	case ModeFinite, ModeContinuous:
+	default:
+		return fmt.Errorf("assistant: invalid mode %q", a.Mode)
+	}
 	if err := validatePolicy(a.Policy); err != nil {
 		return err
 	}
@@ -99,12 +104,23 @@ func validatePolicy(p Policy) error {
 	for name, access := range map[string]Access{
 		"local_write": p.LocalWrite, "network": p.Network, "publish": p.Publish,
 		"delete": p.Delete, "payment": p.Payment, "secrets": p.Secrets, "private_data": p.Private,
+		"constraint_edit": p.ConstraintEdit, "isolation": p.Isolation,
 	} {
 		switch access {
 		case AccessDeny, AccessAllow, AccessApprove:
+		case "":
+			// Empty is a legacy/migrated value; the store normalizes it on read.
 		default:
 			return fmt.Errorf("assistant: invalid %s access %q", name, access)
 		}
+	}
+	if p.MaxConcurrentSessions < 0 {
+		return errors.New("assistant: max_concurrent_sessions must not be negative")
+	}
+	switch p.AutoAnswer {
+	case "", AutoAnswerAuto, AutoAnswerAsk:
+	default:
+		return fmt.Errorf("assistant: invalid auto_answer strategy %q", p.AutoAnswer)
 	}
 	return nil
 }

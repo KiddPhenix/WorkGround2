@@ -2,15 +2,16 @@ package assistant
 
 import (
 	"errors"
-	"fmt"
 	"time"
 )
 
 type ScheduleStore interface {
 	List() ([]Assistant, error)
 	Routines(string) ([]Routine, error)
-	CreateOccurrence(TriggerInput) (*Run, error)
-	AdvanceRoutine(assistantID, routineID, requestID string, expected int64, scheduledFor, now time.Time) (*Routine, error)
+	// DueRoutineFires returns the idempotent scheduled fires due at now. The
+	// scheduler no longer creates Runs; fires are turned into managed Sessions
+	// by the host control plane.
+	DueRoutineFires(now time.Time) ([]RoutineFire, error)
 }
 
 type Scheduler struct {
@@ -34,99 +35,34 @@ type ScheduleFailure struct {
 
 type TickResult struct {
 	Runs     []Run             `json:"runs"`
+	Fires    []RoutineFire     `json:"fires"`
 	Skipped  int               `json:"skipped"`
 	Failures []ScheduleFailure `json:"failures"`
 }
 
-// Tick persists each run before advancing its routine cursor. A crash between
-// those writes safely replays the same occurrence request on the next Tick.
+// Tick collects the idempotent fires due at now. The store advances each
+// routine cursor in the same write that records its fire, so a crash between
+// writes safely replays the same occurrence on the next Tick without creating
+// duplicate work.
 func (s *Scheduler) Tick(now time.Time) (TickResult, error) {
 	now = utcNow(now)
-	assistants, err := s.store.List()
-	if err != nil && len(assistants) == 0 {
-		return TickResult{}, fmt.Errorf("assistant: list scheduled assistants: %w", err)
+	if gate, ok := s.store.(interface{ WorkControl() (WorkControl, error) }); ok {
+		wc, err := gate.WorkControl()
+		if err != nil {
+			return TickResult{}, err
+		}
+		// RECOVERING re-drives unconsumed routine fires (resume_all scans them),
+		// so the scheduler admits it like RUNNING; QUIESCING/PAUSED stay quiet.
+		if wc.State != WorkRunning && wc.State != WorkRecovering {
+			return TickResult{}, nil
+		}
 	}
-	var result TickResult
-	var failures []error
+	fires, err := s.store.DueRoutineFires(now)
+	result := TickResult{Fires: fires}
 	if err != nil {
 		result.addFailure("", "", err)
-		failures = append(failures, err)
 	}
-	for _, a := range assistants {
-		if a.Lifecycle != LifecycleActive {
-			continue
-		}
-		routines, err := s.store.Routines(a.ID)
-		if err != nil {
-			result.addFailure(a.ID, "", err)
-			failures = append(failures, err)
-			continue
-		}
-		for _, routine := range routines {
-			if !routine.Enabled || routine.Schedule.Kind == ScheduleManual {
-				continue
-			}
-			cursor := routine.LastScheduledFor
-			if cursor.IsZero() {
-				cursor = routine.CreatedAt
-			}
-			latest, count, err := latestDue(routine.Schedule, cursor, now)
-			if err != nil {
-				result.addFailure(a.ID, routine.ID, err)
-				failures = append(failures, err)
-				continue
-			}
-			if count == 0 {
-				continue
-			}
-			requestID := "occurrence:" + OccurrenceKey(a.ID, routine.ID, latest)
-			if routine.CatchUp == CatchUpSkip && count > 1 {
-				if err := s.advance(routine, requestID, latest, now); err != nil {
-					result.addFailure(a.ID, routine.ID, err)
-					failures = append(failures, err)
-					continue
-				}
-				result.Skipped += count
-				continue
-			}
-			run, err := s.store.CreateOccurrence(TriggerInput{
-				AssistantID: a.ID, RoutineID: routine.ID, RequestID: requestID,
-				Trigger: TriggerScheduled, ScheduledFor: latest, Now: now,
-			})
-			if err != nil {
-				result.addFailure(a.ID, routine.ID, err)
-				failures = append(failures, err)
-				continue
-			}
-			if err := s.advance(routine, requestID, latest, now); err != nil {
-				result.addFailure(a.ID, routine.ID, err)
-				failures = append(failures, err)
-				continue
-			}
-			result.Runs = append(result.Runs, *run)
-		}
-	}
-	return result, errors.Join(failures...)
-}
-
-func (s *Scheduler) advance(routine Routine, occurrenceRequest string, scheduledFor, now time.Time) error {
-	requestID := "cursor:" + occurrenceRequest
-	_, err := s.store.AdvanceRoutine(routine.AssistantID, routine.ID, requestID, routine.Revision, scheduledFor, now)
-	if !errors.Is(err, ErrConflict) {
-		return err
-	}
-	// Concurrent ticks may both create the same occurrence. A cursor already at
-	// or past our occurrence proves the other tick completed the same commit.
-	current, readErr := s.store.Routines(routine.AssistantID)
-	if readErr != nil {
-		return errors.Join(err, readErr)
-	}
-	for _, value := range current {
-		if value.ID == routine.ID && !value.LastScheduledFor.Before(scheduledFor) {
-			return nil
-		}
-	}
-	return err
+	return result, err
 }
 
 func (r *TickResult) addFailure(assistantID, routineID string, err error) {

@@ -1,4 +1,5 @@
 export type AssistantLifecycle = "active" | "paused" | "archived";
+export type AssistantMode = "finite" | "continuous";
 export type AssistantScope = "global" | "workspace";
 export type AssistantAccess = "deny" | "allow" | "approve";
 export type AssistantRunState =
@@ -12,6 +13,8 @@ export type AssistantRunState =
   | "cancelled";
 export type AssistantMemoryKind = "charter" | "facts" | "strategy" | "open_loops" | "metrics";
 export type AssistantScheduleKind = "manual" | "interval" | "daily" | "weekly" | "biweekly" | "monthly" | "yearly";
+export type AssistantAutoAnswer = "auto" | "ask";
+export type AssistantResponsibilityDisposition = "planned" | "waiting" | "review" | "done" | "dropped";
 
 export interface AssistantPolicy {
   local_write: AssistantAccess;
@@ -21,6 +24,11 @@ export interface AssistantPolicy {
   payment: AssistantAccess;
   secrets: AssistantAccess;
   private_data: AssistantAccess;
+  constraint_edit: AssistantAccess;
+  max_concurrent_sessions?: number;
+  auto_answer?: AssistantAutoAnswer;
+  isolation?: AssistantAccess;
+  external_voice_enabled?: boolean;
 }
 
 export interface AssistantRecord {
@@ -28,6 +36,7 @@ export interface AssistantRecord {
   name: string;
   description?: string;
   mission: string;
+  mode?: AssistantMode;
   scope: AssistantScope;
   workspace_root?: string;
   lifecycle: AssistantLifecycle;
@@ -147,6 +156,7 @@ export interface AssistantResponsibility {
   done_criteria?: string;
   next_action?: string;
   status: AssistantResponsibilityStatus;
+  disposition?: AssistantResponsibilityDisposition;
   depends_on?: string[];
   block_reason?: string;
   revision: number;
@@ -531,6 +541,7 @@ export const DEFAULT_ASSISTANT_POLICY: AssistantPolicy = {
   payment: "approve",
   secrets: "approve",
   private_data: "approve",
+  constraint_edit: "approve",
 };
 
 export function assistantRequestID(action: string, id = ""): string {
@@ -545,4 +556,201 @@ export function assistantEntityID(prefix: string): string {
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
   return `${prefix}-${random}`;
+}
+
+export type AssistantWorkControlState = "running" | "quiescing" | "paused" | "recovering";
+
+export interface AssistantActiveWork {
+  kind: string;
+  id: string;
+  state: string;
+}
+
+export interface AssistantWorkControl {
+  state: AssistantWorkControlState;
+  epoch: number;
+  revision: number;
+  active: AssistantActiveWork[];
+  next_hint: string;
+  error?: string;
+}
+
+export interface AssistantWorkControlInput {
+  requestId: string;
+}
+
+export interface AssistantViewportSnapshot {
+  window_id: string;
+  workspace_id?: string;
+  visible_session_ids?: string[];
+  selected_session_id?: string;
+  observed_at: string;
+  ui_revision?: number;
+}
+
+export interface AssistantPublishViewportInput {
+  windowId: string;
+  workspaceId?: string;
+  visibleSessionIds?: string[];
+  selectedSessionId?: string;
+  uiRevision?: number;
+}
+
+// ── 受管 Session 视图与控制 ───────────────────────────────────
+
+export type AssistantSessionControlOutcome =
+  | "accepted"
+  | "already_applied"
+  | "stale"
+  | "retryable_error"
+  | "invalid"
+  | "blocked_by_policy";
+
+export interface AssistantManagedSession {
+  id: string;
+  path: string;
+  title: string;
+  preview: string;
+  status: string;
+  turns: number;
+  owner_id: string;
+  purpose: string;
+  responsibility_id?: string;
+  workspace_root?: string;
+  updated_at: string;
+}
+
+export interface AssistantSessionControlResult {
+  outcome: AssistantSessionControlOutcome;
+  session_id?: string;
+  session_status?: string;
+  revision?: number;
+  next_hint?: string;
+  message?: string;
+  at: string;
+}
+
+export interface AssistantAskOption {
+  label: string;
+  description?: string;
+}
+
+export interface AssistantAskQuestion {
+  id: string;
+  header?: string;
+  prompt: string;
+  options?: AssistantAskOption[];
+  multi?: boolean;
+}
+
+export interface AssistantSessionInteraction {
+  kind: "ask" | "approval";
+  id: string;
+  questions?: AssistantAskQuestion[];
+  due_at?: string;
+}
+
+export interface AssistantSessionStatusView {
+  id: string;
+  path: string;
+  title: string;
+  status: string;
+  turns: number;
+  purpose: string;
+  running: boolean;
+  updated_at: string;
+  interactions?: AssistantSessionInteraction[];
+}
+
+export interface AssistantSteerRequest {
+  sessionId: string;
+  text: string;
+  requestId: string;
+}
+
+export interface AssistantAnswerRequest {
+  sessionId: string;
+  interactionId: string;
+  answers: Array<{ questionId: string; selected: string[] }>;
+  requestId: string;
+}
+
+export interface AssistantSessionRequest {
+  sessionId: string;
+  requestId: string;
+}
+
+// ── 监督循环诊断 ──────────────────────────────────────────────
+
+export interface AssistantSupervisorRef {
+  id: string;
+  path: string;
+}
+
+export interface AssistantCycleObservation {
+  plan_revision: number;
+  assistant_revision: number;
+  memory_revision: number;
+  work_epoch: number;
+}
+
+export interface AssistantCycleView {
+  id: string;
+  fence: number;
+  state: string;
+  observed: AssistantCycleObservation;
+  next_step?: string;
+  revision: number;
+  updated_at: string;
+}
+
+export interface AssistantEventView {
+  id: string;
+  kind: string;
+  session_id?: string;
+  revision?: number;
+  request_id?: string;
+  payload?: string;
+  at: string;
+}
+
+export interface AssistantDecisionView {
+  id: string;
+  session_id: string;
+  interaction_id: string;
+  source?: string;
+  confidence?: number;
+  result?: string;
+  winner?: string;
+  rollback?: string;
+  due_at?: string;
+  created_at: string;
+}
+
+export interface AssistantReceiptView {
+  request_id: string;
+  operation: string;
+  created_at: string;
+}
+
+export interface AssistantSupervisorSessionView {
+  id: string;
+  title: string;
+  status: string;
+  purpose?: string;
+}
+
+export interface AssistantSupervisorDiagnostic {
+  assistant_id: string;
+  supervisor?: AssistantSupervisorRef;
+  cycle?: AssistantCycleView;
+  pending_events?: AssistantEventView[];
+  recent_decisions?: AssistantDecisionView[];
+  recent_receipts?: AssistantReceiptView[];
+  next_step?: string;
+  running_sessions?: AssistantSupervisorSessionView[];
+  failed_sessions?: AssistantSupervisorSessionView[];
+  retry_due: number;
+  diagnostics?: AssistantDiagnostic[];
+  at: string;
 }

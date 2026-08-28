@@ -17,6 +17,24 @@ const (
 	ScopeWorkspace Scope = "workspace"
 )
 
+// AssistantMode is the long-term operating mode of an Assistant (design 4.1).
+// finite completes the current batch and then stops (done) or enters
+// maintenance; continuous keeps discovering and executing the next batch.
+type AssistantMode string
+
+const (
+	// ModeFinite stops after the current plan is complete (or enters
+	// maintenance when the plan has ongoing review/maintenance items).
+	ModeFinite AssistantMode = "finite"
+	// ModeContinuous auto-expands when the plan is empty: evaluate, discover,
+	// research, rank, adopt (policy-gated) and execute the next batch.
+	ModeContinuous AssistantMode = "continuous"
+	// defaultAssistantMode is applied to legacy data whose Mode predates this
+	// field. Continuous is the product promise (a long-lived high-autonomy
+	// assistant), and auto-adoption is still gated by Policy.
+	defaultAssistantMode = ModeContinuous
+)
+
 type Access string
 
 const (
@@ -24,6 +42,21 @@ const (
 	AccessAllow   Access = "allow"
 	AccessApprove Access = "approve"
 )
+
+// AutoAnswerPolicy is the Assistant's strategy for answering ordinary pending
+// interactions on managed Sessions (design section 9). "auto" runs the full
+// decision sequence (infer -> isolated trial -> most reversible -> fail-closed);
+// "ask" is the user-declared hard gate: the Assistant waits for the user.
+type AutoAnswerPolicy string
+
+const (
+	AutoAnswerAuto AutoAnswerPolicy = "auto"
+	AutoAnswerAsk  AutoAnswerPolicy = "ask"
+)
+
+// defaultMaxConcurrentSessions is the per-assistant cap on concurrently running
+// managed Sessions when the policy does not set an explicit value.
+const defaultMaxConcurrentSessions = 3
 
 type Policy struct {
 	LocalWrite Access `json:"local_write"`
@@ -33,33 +66,83 @@ type Policy struct {
 	Payment    Access `json:"payment"`
 	Secrets    Access `json:"secrets"`
 	Private    Access `json:"private_data"`
+	// ConstraintEdit gates whether the Assistant may modify the project's
+	// authoritative constraints (project_constraints_update). It is a dedicated
+	// dimension so a project can allow constraint edits independently of general
+	// local writes. deny blocks the tool; allow/approve permit it.
+	ConstraintEdit Access `json:"constraint_edit"`
+	// MaxConcurrentSessions is the per-assistant cap on concurrently running
+	// managed Sessions (0 = the default cap). Raising it widens the policy and
+	// is refused for Assistant self-updates.
+	MaxConcurrentSessions int `json:"max_concurrent_sessions,omitempty"`
+	// AutoAnswer is the ordinary-question strategy. ask turns every ordinary
+	// interaction into a hard gate, so the Assistant never infers an answer.
+	AutoAnswer AutoAnswerPolicy `json:"auto_answer,omitempty"`
+	// Isolation gates reversible multi-candidate trials (fork Session / worktree
+	// / sandbox) for low-confidence decisions. deny disables isolated trials and
+	// forces the most-reversible single inference.
+	Isolation Access `json:"isolation,omitempty"`
+	// ExternalVoiceEnabled is the user's direct switch for publishing or
+	// speaking on the user's behalf. Only the user may flip it; the Assistant
+	// tools never expose it. false makes publish tools refuse outright while
+	// research, drafts and plan work continue.
+	ExternalVoiceEnabled bool `json:"external_voice_enabled"`
 }
 
 func DefaultPolicy() Policy {
 	return Policy{
-		LocalWrite: AccessDeny,
-		Network:    AccessDeny,
-		Publish:    AccessApprove,
-		Delete:     AccessApprove,
-		Payment:    AccessApprove,
-		Secrets:    AccessApprove,
-		Private:    AccessApprove,
+		LocalWrite:            AccessDeny,
+		Network:               AccessDeny,
+		Publish:               AccessApprove,
+		Delete:                AccessApprove,
+		Payment:               AccessApprove,
+		Secrets:               AccessApprove,
+		Private:               AccessApprove,
+		ConstraintEdit:        AccessApprove,
+		MaxConcurrentSessions: defaultMaxConcurrentSessions,
+		AutoAnswer:            AutoAnswerAuto,
+		Isolation:             AccessAllow,
 	}
 }
 
+// NormalizePolicy fills policy dimensions that predate the current model with
+// their documented defaults. It is stable and replayable: values already set
+// are never overwritten. Legacy aggregates and partial constructions go through
+// it on every read so the policy is always explicit and valid. Hosts and tools
+// that compare policy changes normalize before judging widen/narrow.
+func NormalizePolicy(p Policy) Policy {
+	if p.ConstraintEdit == "" {
+		p.ConstraintEdit = AccessApprove
+	}
+	if p.MaxConcurrentSessions == 0 {
+		p.MaxConcurrentSessions = defaultMaxConcurrentSessions
+	}
+	if p.AutoAnswer == "" {
+		p.AutoAnswer = AutoAnswerAuto
+	}
+	if p.Isolation == "" {
+		p.Isolation = AccessAllow
+	}
+	return p
+}
+
+// normalizePolicy is the internal alias used by the store's read path.
+func normalizePolicy(p Policy) Policy { return NormalizePolicy(p) }
+
 type Assistant struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Description   string    `json:"description,omitempty"`
-	Mission       string    `json:"mission"`
-	Scope         Scope     `json:"scope"`
-	WorkspaceRoot string    `json:"workspace_root,omitempty"`
-	Lifecycle     Lifecycle `json:"lifecycle"`
-	Policy        Policy    `json:"policy"`
-	MemoryRev     int64     `json:"memory_revision"`
-	Revision      int64     `json:"revision"`
-	CreatedAt     time.Time `json:"created_at" ts_type:"string"`
-	UpdatedAt     time.Time `json:"updated_at" ts_type:"string"`
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	Description   string        `json:"description,omitempty"`
+	Mission       string        `json:"mission"`
+	Mode          AssistantMode `json:"mode,omitempty"`
+	Scope         Scope         `json:"scope"`
+	WorkspaceRoot string        `json:"workspace_root,omitempty"`
+	Lifecycle     Lifecycle     `json:"lifecycle"`
+	Policy        Policy        `json:"policy"`
+	MemoryRev     int64         `json:"memory_revision"`
+	Revision      int64         `json:"revision"`
+	CreatedAt     time.Time     `json:"created_at" ts_type:"string"`
+	UpdatedAt     time.Time     `json:"updated_at" ts_type:"string"`
 }
 
 type CatchUpPolicy string
@@ -166,6 +249,7 @@ type Run struct {
 	LeaseOwner        string      `json:"lease_owner,omitempty"`
 	LeaseFence        int64       `json:"lease_fence"`
 	LeaseUntil        time.Time   `json:"lease_until,omitempty" ts_type:"string"`
+	WorkEpoch         int64       `json:"work_epoch,omitempty"`
 	ScheduledFor      time.Time   `json:"scheduled_for,omitempty" ts_type:"string"`
 	RetryAt           time.Time   `json:"retry_at,omitempty" ts_type:"string"`
 	StartedAt         time.Time   `json:"started_at,omitempty" ts_type:"string"`

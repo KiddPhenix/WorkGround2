@@ -14,7 +14,7 @@ import (
 )
 
 func TestAssistantAPICreateAndRunNowAreIdempotent(t *testing.T) {
-	service, store := newAssistantTestRuntime(t, &assistantHostStub{})
+	service, store := newAssistantTestRuntime(t)
 	app := &App{assistant: service}
 	req := AssistantCreateRequest{
 		RequestID: "create-api-1",
@@ -58,7 +58,7 @@ func TestAssistantAPICreateAndRunNowAreIdempotent(t *testing.T) {
 }
 
 func TestAssistantAPIResolveProposalAppliesTypedChange(t *testing.T) {
-	service, store := newAssistantTestRuntime(t, &assistantHostStub{})
+	service, store := newAssistantTestRuntime(t)
 	app := &App{assistant: service}
 	created, err := app.AssistantCreate(AssistantCreateRequest{
 		RequestID: "proposal-api-create",
@@ -102,7 +102,7 @@ func TestAssistantAPIResolveProposalAppliesTypedChange(t *testing.T) {
 }
 
 func TestAssistantAPIDeleteIsIdempotentAndRemovesFromList(t *testing.T) {
-	service, _ := newAssistantTestRuntime(t, &assistantHostStub{})
+	service, _ := newAssistantTestRuntime(t)
 	app := &App{assistant: service}
 	created, err := app.AssistantCreate(AssistantCreateRequest{
 		RequestID: "delete-create", Assistant: assistant.Assistant{Name: "Disposable", Mission: "Verify deletion"},
@@ -130,13 +130,13 @@ func TestAssistantAPIDeleteIsIdempotentAndRemovesFromList(t *testing.T) {
 }
 
 func TestAssistantCreateQueuesLearnFirstRun(t *testing.T) {
-	service, _ := newAssistantTestRuntime(t, &assistantHostStub{})
+	service, _ := newAssistantTestRuntime(t)
 	app := &App{assistant: service}
 	created, err := app.AssistantCreate(AssistantCreateRequest{
 		RequestID: "create-learn-first",
 		Assistant: assistant.Assistant{
 			Name: "Learning helper", Mission: "持续做好项目工作",
-			Policy: assistant.Policy{LocalWrite: assistant.AccessAllow, Network: assistant.AccessAllow, Publish: assistant.AccessApprove, Delete: assistant.AccessApprove, Payment: assistant.AccessApprove, Secrets: assistant.AccessApprove, Private: assistant.AccessApprove},
+			Policy: assistant.Policy{LocalWrite: assistant.AccessAllow, Network: assistant.AccessAllow, Publish: assistant.AccessApprove, Delete: assistant.AccessApprove, Payment: assistant.AccessApprove, Secrets: assistant.AccessApprove, Private: assistant.AccessApprove, ConstraintEdit: assistant.AccessApprove},
 		},
 		InitialPrompt: "先学习一下再干",
 	})
@@ -149,7 +149,7 @@ func TestAssistantCreateQueuesLearnFirstRun(t *testing.T) {
 }
 
 func TestAssistantSubmitInputRecordsDirectPromptAndIsIdempotent(t *testing.T) {
-	service, store := newAssistantTestRuntime(t, &assistantHostStub{})
+	service, store := newAssistantTestRuntime(t)
 	app := &App{assistant: service}
 	created, err := app.AssistantCreate(AssistantCreateRequest{
 		RequestID: "submit-create", Assistant: assistant.Assistant{Name: "Helper", Mission: "Stay healthy"},
@@ -198,7 +198,6 @@ func TestAssistantListKeepsHealthyItemsAndReportsCorruption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssistantRuntime: %v", err)
 	}
-	service.host = &assistantHostStub{}
 	app := &App{assistant: service}
 	created, err := app.AssistantCreate(AssistantCreateRequest{
 		RequestID: "list-healthy", Assistant: assistant.Assistant{Name: "Healthy", Mission: "Stay visible"},
@@ -229,7 +228,7 @@ func TestAssistantListKeepsHealthyItemsAndReportsCorruption(t *testing.T) {
 }
 
 func TestAssistantListClassifiesRuntimeDiagnosticsSeparately(t *testing.T) {
-	service, _ := newAssistantTestRuntime(t, &assistantHostStub{})
+	service, _ := newAssistantTestRuntime(t)
 	app := &App{assistant: service}
 	service.recordDiagnostic("progress_apply", errors.New("invalid transition"))
 
@@ -249,7 +248,6 @@ func TestNewAssistantRuntimeUsesRequestedStoreRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssistantRuntime: %v", err)
 	}
-	service.host = &assistantHostStub{}
 	app.assistant = service
 	created, err := app.AssistantCreate(AssistantCreateRequest{
 		RequestID: "path-create",
@@ -273,7 +271,6 @@ func TestAssistantPutChannelStoresCredentialOutsideAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.host = &assistantHostStub{}
 	app := &App{assistant: service}
 	created, err := app.AssistantCreate(AssistantCreateRequest{RequestID: "channel-create", Assistant: assistant.Assistant{Name: "Promo", Mission: "promote"}})
 	if err != nil {
@@ -373,7 +370,7 @@ func TestCreateAssistantWorkspaceCreatesAndIsIdempotent(t *testing.T) {
 }
 
 func TestAssistantAPISubmitDispatchIdeateFlow(t *testing.T) {
-	service, store := newAssistantTestRuntime(t, &assistantHostStub{})
+	service, store := newAssistantTestRuntime(t)
 	app := &App{assistant: service}
 	created, err := app.AssistantCreate(AssistantCreateRequest{
 		RequestID: "dispatch-create",
@@ -401,18 +398,20 @@ func TestAssistantAPISubmitDispatchIdeateFlow(t *testing.T) {
 		t.Fatalf("classifyPending: %v", err)
 	}
 	snapshot, _ := store.Get(created.Assistant.ID)
-	if len(snapshot.Dispatches) != 1 || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].State != assistant.JobQueued {
-		t.Fatalf("expected one dispatch and one queued job, got %d dispatches %d jobs", len(snapshot.Dispatches), len(snapshot.Jobs))
+	if len(snapshot.Dispatches) != 1 || len(snapshot.Jobs) != 0 {
+		t.Fatalf("expected one classified dispatch and no frozen jobs, got %d dispatches %d jobs", len(snapshot.Dispatches), len(snapshot.Jobs))
 	}
 	if snapshot.Dispatches[0].Kind != assistant.DispatchTask {
 		t.Fatalf("expected classified task, got %+v", snapshot.Dispatches[0])
 	}
-	job, ok, err := store.ClaimJob("desktop-test", time.Now(), time.Minute)
-	if err != nil || !ok {
-		t.Fatalf("ClaimJob: job=%+v ok=%v err=%v", job, ok, err)
-	}
-	if _, err := store.FinishJob(assistant.FinishJobInput{RequestID: "finish-dispatch-1", JobID: job.ID, LeaseOwner: job.LeaseOwner, LeaseFence: job.LeaseFence, Summary: "测试通过", Now: time.Now()}); err != nil {
-		t.Fatalf("FinishJob: %v", err)
+	// The supervisor creates a managed Session for the task Dispatch; the stub
+	// host cannot run a real Session, so mark the Dispatch executed directly to
+	// model the Session's terminal state before reflection.
+	executed, err := store.MarkDispatchExecuted(assistant.MarkDispatchExecutedInput{
+		RequestID: "executed-dispatch-1", AssistantID: created.Assistant.ID, DispatchID: dispatch.ID, Now: time.Now(),
+	})
+	if err != nil || executed.State != assistant.DispatchExecuted {
+		t.Fatalf("MarkDispatchExecuted: %+v err=%v", executed, err)
 	}
 	if _, err := service.reflector.Reflect(context.Background(), created.Assistant.ID, dispatch.ID, "reflect-dispatch-1", time.Now()); err != nil {
 		t.Fatalf("Reflect: %v", err)

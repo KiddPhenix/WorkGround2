@@ -18,6 +18,15 @@ type Runner interface {
 	Run(ctx context.Context, input string) error
 }
 
+// ContinueRunner is the optional checkpoint-resume extension of Runner. A
+// runner that implements it can pick up an interrupted model/tool round from
+// the current session history without appending a second copy of the user
+// turn. Hosts (desktop/daemon resume) type-assert it before continuing a
+// session whose InFlightTurnMeta says a round is unfinished.
+type ContinueRunner interface {
+	Continue(ctx context.Context) error
+}
+
 // PlannerPlanApprover lets an interactive host authenticate a planner-authored
 // approval request before the executor starts.
 type PlannerPlanApprover interface {
@@ -304,6 +313,16 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 		}
 	}
 	return runExecutor(ctx, plan)
+}
+
+// Continue resumes an interrupted executor round from the current history.
+// The planner phase is deliberately skipped: a resumed round already has its
+// plan (or is mid-tool-loop), so re-planning would repeat external reasoning.
+// It satisfies agent.ContinueRunner so Controller.ContinueTurn works for
+// two-model controllers too.
+func (c *Coordinator) Continue(ctx context.Context) error {
+	c.sink.Emit(event.Event{Kind: event.TurnStarted})
+	return c.executor.Continue(ctx)
 }
 
 var plannerApprovalPhrases = []string{

@@ -136,6 +136,65 @@ api_key_env = "WorkGround2_TEST_KEY_UNSET"
 	}
 }
 
+// TestBuildDefaultSharedWorkGate proves Build mounts the global assistant store
+// workcontrol.json by default, so CLI/serve/bot sessions share the same
+// pause/resume fence as Desktop and the daemon. A paused gate refuses the turn;
+// a missing file leaves the session unfenced.
+func TestBuildDefaultSharedWorkGate(t *testing.T) {
+	stateHome := isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	writeFile(t, dir, "WorkGround2.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-retrieval-tool-test"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "WorkGround2_TEST_KEY_UNSET"
+`)
+
+	// No workcontrol.json yet: Build succeeds and the session is unfenced.
+	registerBootRetrievalToolTestProvider()
+	prov := testutil.NewMock("boot-retrieval-tool-test", testutil.Turn{Text: "ok"})
+	setBootRetrievalToolTestProvider(t, prov)
+	ctrl, err := Build(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("Build without gate file: %v", err)
+	}
+	if err := ctrl.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run without gate file = %v, want nil (unfenced)", err)
+	}
+	ctrl.Close()
+
+	// Plant a paused global gate at the default location and rebuild: the new
+	// session must be refused before any model turn runs.
+	gatePath := filepath.Join(stateHome, "assistants", "workcontrol.json")
+	if err := os.MkdirAll(filepath.Dir(gatePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gatePath, []byte(`{"state":"paused","epoch":7,"fence":"x","revision":3}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh provider so the second Build gets its own mock instance.
+	prov2 := testutil.NewMock("boot-retrieval-tool-test", testutil.Turn{Text: "ok"})
+	setBootRetrievalToolTestProvider(t, prov2)
+	ctrl2, err := Build(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("Build with paused gate: %v", err)
+	}
+	defer ctrl2.Close()
+	err = ctrl2.Run(context.Background(), "hi")
+	if err == nil || !strings.Contains(err.Error(), "work paused (epoch 7)") {
+		t.Fatalf("Run with default paused gate = %v, want refusal naming epoch 7", err)
+	}
+}
+
 func TestBuildRegistersUsableHistoryAndMemoryRetrievalTools(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)

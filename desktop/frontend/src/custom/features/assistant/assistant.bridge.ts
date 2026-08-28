@@ -2,6 +2,7 @@ import { app } from "../../../lib/bridge";
 import type { ProjectNode } from "../../../lib/types";
 import type {
   AssistantAttentionItem,
+  AssistantAnswerRequest,
   AssistantCancelInput,
   AssistantCancelJobInput,
   AssistantChannel,
@@ -13,6 +14,7 @@ import type {
   AssistantDispatchStreamEvent,
   AssistantIdeateInput,
   AssistantIdeaProposal,
+  AssistantManagedSession,
   AssistantMemory,
   AssistantMemoryInput,
   AssistantRecord,
@@ -28,10 +30,19 @@ import type {
   AssistantRun,
   AssistantRunNowInput,
   AssistantRunnerJob,
+  AssistantSessionControlResult,
+  AssistantSessionRequest,
+  AssistantSessionStatusView,
   AssistantSnapshot,
+  AssistantSteerRequest,
   AssistantSubmitInput,
   AssistantSubmitInputInput,
+  AssistantSupervisorDiagnostic,
   AssistantUpdateInput,
+  AssistantWorkControl,
+  AssistantWorkControlInput,
+  AssistantViewportSnapshot,
+  AssistantPublishViewportInput,
 } from "./assistant.types";
 
 export function normalizeAssistantList(value: unknown): AssistantListResult {
@@ -126,6 +137,64 @@ export function assistantCancelJob(input: AssistantCancelJobInput): Promise<Assi
 
 export function assistantPickWorkspace(defaultDir = ""): Promise<string> {
   return app.PickAssistantWorkspace(defaultDir) as Promise<string>;
+}
+
+export function assistantWorkControl(): Promise<AssistantWorkControl> {
+  return app.AssistantWorkControl() as Promise<AssistantWorkControl>;
+}
+
+export function assistantPauseAll(input: AssistantWorkControlInput): Promise<AssistantWorkControl> {
+  return app.AssistantPauseAll(input) as Promise<AssistantWorkControl>;
+}
+
+export function assistantResumeAll(input: AssistantWorkControlInput): Promise<AssistantWorkControl> {
+  return app.AssistantResumeAll(input) as Promise<AssistantWorkControl>;
+}
+
+export function assistantPauseForRestart(input: AssistantWorkControlInput): Promise<AssistantWorkControl> {
+  return app.AssistantPauseForRestart(input) as Promise<AssistantWorkControl>;
+}
+
+export function assistantPublishViewport(input: AssistantPublishViewportInput): void {
+  app.AssistantPublishViewport(input);
+}
+
+export function assistantViewport(): Promise<[AssistantViewportSnapshot, boolean]> {
+  return app.AssistantViewport() as Promise<[AssistantViewportSnapshot, boolean]>;
+}
+
+// ── 受管 Session 只读视图与用户控制 ──────────────────────────
+
+export function assistantManagedSessions(assistantID: string): Promise<AssistantManagedSession[]> {
+  return app.AssistantManagedSessions(assistantID) as Promise<AssistantManagedSession[]>;
+}
+
+export function assistantSessionStatus(sessionID: string): Promise<AssistantSessionStatusView> {
+  return app.AssistantSessionStatus(sessionID) as Promise<AssistantSessionStatusView>;
+}
+
+export function assistantSessionSteer(req: AssistantSteerRequest): Promise<AssistantSessionControlResult> {
+  return app.AssistantSessionSteer(req) as Promise<AssistantSessionControlResult>;
+}
+
+export function assistantSessionAnswer(req: AssistantAnswerRequest): Promise<AssistantSessionControlResult> {
+  return app.AssistantSessionAnswer(req) as Promise<AssistantSessionControlResult>;
+}
+
+export function assistantSessionCancel(req: AssistantSessionRequest): Promise<AssistantSessionControlResult> {
+  return app.AssistantSessionCancel(req) as Promise<AssistantSessionControlResult>;
+}
+
+export function assistantSessionResume(req: AssistantSessionRequest): Promise<AssistantSessionControlResult> {
+  return app.AssistantSessionResume(req) as Promise<AssistantSessionControlResult>;
+}
+
+export function assistantSessionFork(req: AssistantSessionRequest): Promise<AssistantSessionControlResult> {
+  return app.AssistantSessionFork(req) as Promise<AssistantSessionControlResult>;
+}
+
+export function assistantSupervisorDiagnostic(assistantID: string): Promise<AssistantSupervisorDiagnostic> {
+  return app.AssistantSupervisorDiagnostic(assistantID) as Promise<AssistantSupervisorDiagnostic>;
 }
 
 // onAssistantDispatchStream subscribes to the typed inline live-reply event

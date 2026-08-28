@@ -124,19 +124,22 @@ func TestSchedulerCoalescesAndRepeatTickIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Runs) != 1 || !result.Runs[0].ScheduledFor.Equal(start.Add(5*time.Hour)) {
-		t.Fatalf("unexpected runs: %#v", result.Runs)
+	if len(result.Fires) != 1 || !result.Fires[0].ScheduledFor.Equal(start.Add(5*time.Hour)) {
+		t.Fatalf("unexpected fires: %#v", result.Fires)
+	}
+	if len(result.Runs) != 0 {
+		t.Fatalf("scheduler must not create Runs: %#v", result.Runs)
 	}
 	again, err := scheduler.Tick(start.Add(5*time.Hour + 30*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(again.Runs) != 0 || store.createCalls != 1 {
-		t.Fatalf("repeat tick created work: result=%#v calls=%d", again, store.createCalls)
+	if len(again.Fires) != 0 || store.fireCalls != 1 {
+		t.Fatalf("repeat tick created work: result=%#v calls=%d", again, store.fireCalls)
 	}
 }
 
-func TestSchedulerConcurrentTickCreatesOneOccurrence(t *testing.T) {
+func TestSchedulerConcurrentTickCreatesOneFire(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
 	store := newScheduleFake(start, CatchUpCoalesceLatest)
@@ -158,12 +161,12 @@ func TestSchedulerConcurrentTickCreatesOneOccurrence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if store.uniqueRuns() != 1 {
-		t.Fatalf("unique runs=%d want=1", store.uniqueRuns())
+	if store.uniqueFires() != 1 {
+		t.Fatalf("unique fires=%d want=1", store.uniqueFires())
 	}
 }
 
-func TestSchedulerSkipAdvancesWithoutRun(t *testing.T) {
+func TestSchedulerSkipAdvancesWithoutFire(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
 	store := newScheduleFake(start, CatchUpSkip)
@@ -172,17 +175,20 @@ func TestSchedulerSkipAdvancesWithoutRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Skipped != 3 || len(result.Runs) != 0 || store.createCalls != 0 {
-		t.Fatalf("unexpected skip result: %#v calls=%d", result, store.createCalls)
+	if len(result.Fires) != 0 || len(result.Runs) != 0 || store.fireCalls != 0 {
+		t.Fatalf("unexpected skip result: %#v calls=%d", result, store.fireCalls)
+	}
+	if !store.cursor().Equal(start.Add(3 * time.Hour)) {
+		t.Fatalf("skip did not advance cursor: %s", store.cursor())
 	}
 }
 
 type scheduleFake struct {
-	mu          sync.Mutex
-	assistant   Assistant
-	routine     Routine
-	runs        map[string]Run
-	createCalls int
+	mu        sync.Mutex
+	assistant Assistant
+	routine   Routine
+	fires     map[string]string
+	fireCalls int
 }
 
 func newScheduleFake(start time.Time, catchUp CatchUpPolicy) *scheduleFake {
@@ -193,7 +199,7 @@ func newScheduleFake(start time.Time, catchUp CatchUpPolicy) *scheduleFake {
 			Schedule: Schedule{Kind: ScheduleInterval, IntervalSeconds: 3600},
 			Revision: 1, CreatedAt: start,
 		},
-		runs: make(map[string]Run),
+		fires: make(map[string]string),
 	}
 }
 
@@ -209,35 +215,48 @@ func (f *scheduleFake) Routines(string) ([]Routine, error) {
 	return []Routine{f.routine}, nil
 }
 
-func (f *scheduleFake) CreateOccurrence(input TriggerInput) (*Run, error) {
+func (f *scheduleFake) DueRoutineFires(now time.Time) ([]RoutineFire, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.createCalls++
-	if run, ok := f.runs[input.RequestID]; ok {
-		return &run, nil
+	routine := f.routine
+	cursor := routine.LastScheduledFor
+	if cursor.IsZero() {
+		cursor = routine.CreatedAt
 	}
-	run := Run{ID: StableID("run", input.RequestID), AssistantID: input.AssistantID, RoutineID: input.RoutineID,
-		RequestID: input.RequestID, Trigger: TriggerScheduled, State: RunQueued, ScheduledFor: input.ScheduledFor}
-	f.runs[input.RequestID] = run
-	return &run, nil
-}
-
-func (f *scheduleFake) AdvanceRoutine(_, _, _ string, expected int64, scheduledFor, _ time.Time) (*Routine, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.routine.Revision != expected {
-		return nil, &ConflictError{Entity: "routine", ID: f.routine.ID, Expected: expected, Actual: f.routine.Revision}
+	latest, count, err := latestDue(routine.Schedule, cursor, now)
+	if err != nil || count == 0 {
+		return nil, err
 	}
-	f.routine.LastScheduledFor = scheduledFor
+	if routine.CatchUp == CatchUpSkip && count > 1 {
+		f.routine.LastScheduledFor = latest
+		f.routine.Revision++
+		return nil, nil
+	}
+	key := OccurrenceKey(f.assistant.ID, routine.ID, latest)
+	if f.fires[key] != "" {
+		return nil, nil
+	}
+	fire := RoutineFire{
+		FireID: StableID("fire", key), AssistantID: f.assistant.ID,
+		RoutineID: routine.ID, Title: routine.Title, Prompt: routine.Prompt, ScheduledFor: latest,
+	}
+	f.fires[key] = fire.FireID
+	f.fireCalls++
+	f.routine.LastScheduledFor = latest
 	f.routine.Revision++
-	value := f.routine
-	return &value, nil
+	return []RoutineFire{fire}, nil
 }
 
-func (f *scheduleFake) uniqueRuns() int {
+func (f *scheduleFake) uniqueFires() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.runs)
+	return len(f.fires)
+}
+
+func (f *scheduleFake) cursor() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.routine.LastScheduledFor
 }
 
 var _ ScheduleStore = (*scheduleFake)(nil)

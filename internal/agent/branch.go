@@ -28,6 +28,27 @@ const (
 	SessionKindAssistant SessionKind = "assistant"
 )
 
+// SessionPurpose labels why a session exists. It is durable metadata recorded
+// at creation and is orthogonal to the runtime-derived SessionStatus: a
+// supervisor session stays a supervisor across restarts regardless of whether
+// it is currently thinking or waiting.
+type SessionPurpose string
+
+const (
+	// PurposeSupervisor marks the single long-running session an Assistant uses
+	// to plan and manage its other sessions. Uniqueness is enforced by the
+	// Assistant runtime, not by this constant alone.
+	PurposeSupervisor SessionPurpose = "supervisor"
+	// PurposeManaged marks a session an Assistant created to carry out one
+	// piece of work from its plan.
+	PurposeManaged SessionPurpose = "managed"
+	// PurposeResearch marks a bounded research session (web, GitHub, docs).
+	PurposeResearch SessionPurpose = "research"
+	// PurposeExperiment marks an isolated trial for a reversible low-confidence
+	// decision.
+	PurposeExperiment SessionPurpose = "experiment"
+)
+
 // BranchMeta is the small sidecar record that turns flat session files into a
 // navigable conversation tree. The conversation itself remains in the .jsonl
 // file; metadata lives beside it at <session>.meta.
@@ -98,6 +119,26 @@ type BranchMeta struct {
 	// AssistantID is the durable Assistant identity bound to this session (only
 	// set when SessionKind == "assistant").
 	AssistantID string `json:"assistant_id,omitempty"`
+	// ResponsibilityID is the durable plan responsibility this session executes
+	// (set when the Assistant creates it for a specific plan item). It is the
+	// join key for deriving a responsibility's active/failed/completed state
+	// from the Session subsystem without writing execution state to the plan.
+	ResponsibilityID string `json:"responsibility_id,omitempty"`
+	// CreateRequestID is the stable idempotency key the host used to create
+	// this session (request_id of session_create/advance). Replays resolve to
+	// the same Session; the receipt directory records the binding.
+	CreateRequestID string `json:"create_request_id,omitempty"`
+	// Purpose is the durable reason this session exists (supervisor, managed,
+	// research, experiment). Empty means no explicit purpose was recorded.
+	Purpose SessionPurpose `json:"purpose,omitempty"`
+	// Status is the durable execution lifecycle of this session (queued,
+	// running, waiting, completed, failed, cancelled). It is the Assistant
+	// host's responsibility to advance it; an empty value is derived on read.
+	Status SessionStatus `json:"status,omitempty"`
+	// Failure is the durable classification of this session's last failure
+	// (see session_failure.go). session_retry reads it to decide whether an
+	// in-place retry is safe; an empty value means no failure was recorded.
+	Failure *SessionFailure `json:"failure,omitempty"`
 }
 
 // BranchMetaCountsVersion is stamped into BranchMeta.SchemaVersion whenever a
@@ -258,6 +299,18 @@ func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta) {
 	}
 	if next.AssistantID == "" {
 		next.AssistantID = existing.AssistantID
+	}
+	if next.ResponsibilityID == "" {
+		next.ResponsibilityID = existing.ResponsibilityID
+	}
+	if next.CreateRequestID == "" {
+		next.CreateRequestID = existing.CreateRequestID
+	}
+	if next.Purpose == "" {
+		next.Purpose = existing.Purpose
+	}
+	if next.Status == "" {
+		next.Status = existing.Status
 	}
 	if existing.Revision > next.Revision {
 		next.Revision = existing.Revision

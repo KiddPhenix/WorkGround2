@@ -1123,7 +1123,49 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		}
 	}
 	a.session.Add(provider.Message{Role: provider.RoleUser, Content: input, Images: userImages(ctx), Origin: userOrigin(ctx)})
+	return a.runSteps(ctx, input)
+}
 
+// Continue resumes an interrupted model/tool round from the current session
+// history without appending a second copy of the user turn. It is the
+// checkpoint-resume counterpart of Run: the transcript already carries the
+// user prompt (and any persisted tool results), so the runner picks the round
+// up from there instead of re-submitting the last user message. A session that
+// has no in-flight round should not be Continue'd — resume paths must check
+// InFlightTurnMeta first.
+func (a *Agent) Continue(ctx context.Context) error {
+	defer a.clearSteerQueue()
+	a.steerMu.Lock()
+	a.steerConsumed = false
+	a.steerMu.Unlock()
+	if a.evidence != nil {
+		a.evidence.Reset()
+	}
+	a.repeatSuccessCounts = nil
+	a.readOnlyStreak = 0
+	a.readOnlyNudgeSent = false
+	a.readOnlyNudgeDue = false
+	a.sink.Emit(event.Event{Kind: event.TurnStarted})
+	return a.runSteps(ctx, lastUserTurn(a.session.Snapshot()))
+}
+
+// lastUserTurn returns the Content of the final user-role message in msgs, or
+// "" when there is none.
+func lastUserTurn(msgs []provider.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == provider.RoleUser && strings.TrimSpace(msgs[i].Content) != "" {
+			return msgs[i].Content
+		}
+	}
+	return ""
+}
+
+// runSteps is the shared turn-driving loop of Run and Continue: it consumes
+// queued steers, streams model turns, executes tool calls, and converges on a
+// final answer or a resumable pause. Run reaches it right after appending the
+// new user message; Continue reaches it with the history already carrying the
+// user turn, so an interrupted model/tool round resumes in place.
+func (a *Agent) runSteps(ctx context.Context, input string) error {
 	finalReadinessBlocks := 0
 	emptyFinalBlocks := 0
 	handoffNudges := 0

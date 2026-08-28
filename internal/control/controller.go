@@ -55,6 +55,7 @@ import (
 	"workground2/internal/tool"
 	"workground2/internal/vocabulary"
 	"workground2/internal/work"
+	"workground2/internal/workgate"
 )
 
 // ErrTurnRunning reports that a caller tried to start a second foreground turn
@@ -76,6 +77,16 @@ type Controller struct {
 	guardianPath string            // persisted guardian session file ("" when disabled)
 	sink         event.Sink
 	policy       permission.Policy
+	// gate, when non-nil, fences model turns and tool execution behind the
+	// shared persistent work-control gate (assistant pause/resume). Read via
+	// workGate()/workGateLocked(); set via SetWorkGate or boot.Options.WorkGate.
+	gate workgate.Gate
+	// turnEpoch is the work-gate epoch captured when the current turn started
+	// (0 while no fenced turn is in flight). Persist writes consult it before
+	// touching disk so a pause/resume that lands mid-turn refuses the late
+	// transcript/meta write instead of letting it land after the fence moved.
+	// Guarded by mu.
+	turnEpoch int64
 
 	label        string
 	modelRef     string
@@ -472,6 +483,10 @@ type Options struct {
 	// Controller exposes it so a future WorkRunner can dispatch Task
 	// execution into Controller sessions.
 	TaskExecutor work.TaskExecutor
+	// WorkGate is the optional persistent work gate. When non-nil, model turns
+	// (Submit/Run/RunTurn and friends) and tool execution are refused while the
+	// gate is not RUNNING. Nil (the default) keeps the session unfenced.
+	WorkGate workgate.Gate
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -534,6 +549,7 @@ func New(opts Options) *Controller {
 		workV2Enabled:              opts.WorkV2Enabled,
 		workViews:                  opts.WorkViews,
 		taskExec:                   taskExec,
+		gate:                       opts.WorkGate,
 		actionRoot:                 actionRoot,
 		actionRootCancel:           actionRootCancel,
 		actionRuns:                 make(map[string]map[uint64]context.CancelFunc),
@@ -558,7 +574,10 @@ func New(opts Options) *Controller {
 	cmdsInit := opts.Commands
 	c.commands.Store(&cmdsInit)
 	if c.executor != nil {
-		c.executor.SetGate(c.permissionGate)
+		// The executor gate consults the work gate first (when installed), then
+		// delegates to the swappable permission gate. The wrapper keeps the
+		// permission gate identity stable for refreshInteractiveGateLocked.
+		c.executor.SetGate(&executorWorkGate{inner: c.permissionGate, c: c})
 		c.executor.SetPreEditHook(func(ch diff.Change) {
 			c.checkpoints.snapshot(ch)
 		})
@@ -566,6 +585,15 @@ func New(opts Options) *Controller {
 	}
 	c.initWorkRefresh(opts.WorkBlockSources, opts.WorkRefreshClock, opts.WorkOffline)
 	return c
+}
+
+// SetWorkGate installs (or clears) the persistent work gate consulted before
+// every model turn and tool call. A nil gate disables fencing, restoring the
+// default unfenced behavior.
+func (c *Controller) SetWorkGate(g workgate.Gate) {
+	c.mu.Lock()
+	c.gate = g
+	c.mu.Unlock()
 }
 
 // SetDisplayRecorder installs an optional hook used by frontends that persist a
@@ -685,6 +713,13 @@ func (c *Controller) tryRunGuarded(body func(ctx context.Context) error) bool {
 // tryRunGuardedWithSetup reserves a turn and applies setup while holding the
 // same controller lock. setup must not lock c.mu itself.
 func (c *Controller) tryRunGuardedWithSetup(body func(ctx context.Context) error, setup func() []chan approvalReply) bool {
+	// Fence the turn before any executor work starts: a paused work gate refuses
+	// the turn with an explicit notice instead of silently running.
+	epoch, err := c.checkWorkGate()
+	if err != nil {
+		c.notice(err.Error())
+		return false
+	}
 	c.mu.Lock()
 	if c.running {
 		c.mu.Unlock()
@@ -698,6 +733,7 @@ func (c *Controller) tryRunGuardedWithSetup(body func(ctx context.Context) error
 	c.cancel = cancel
 	c.running = true
 	c.canceling = false
+	c.beginTurnEpochLocked(epoch)
 	c.mu.Unlock()
 	for _, reply := range pending {
 		reply <- approvalReply{allow: true}
@@ -715,6 +751,11 @@ func (c *Controller) tryRunGuardedWithSetup(body func(ctx context.Context) error
 	go func() {
 		defer cancel()
 		defer func() {
+			c.mu.Lock()
+			c.clearTurnEpochLocked()
+			c.mu.Unlock()
+		}()
+		defer func() {
 			if r := recover(); r != nil {
 				c.mu.Lock()
 				c.running = false
@@ -725,6 +766,13 @@ func (c *Controller) tryRunGuardedWithSetup(body func(ctx context.Context) error
 			}
 		}()
 		err := body(ctx)
+		// A pause/resume moved the gate epoch while the turn was in flight: the
+		// result is stale and must not be presented as fresh work.
+		if err == nil && epoch != 0 {
+			if cur := c.workEpoch(); cur != epoch {
+				err = staleWorkError(cur)
+			}
+		}
 		c.mu.Lock()
 		c.running = false
 		c.cancel = nil
@@ -784,6 +832,10 @@ func (c *Controller) runTurn(ctx context.Context, input string) error {
 // composition, checkpoints, hooks, and plan approval. It is for transports that
 // need a blocking request/response boundary, such as ACP session/prompt.
 func (c *Controller) RunTurn(ctx context.Context, input string) error {
+	epoch, err := c.checkWorkGate()
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	c.mu.Lock()
 	if c.running {
@@ -794,17 +846,25 @@ func (c *Controller) RunTurn(ctx context.Context, input string) error {
 	c.cancel = cancel
 	c.running = true
 	c.canceling = false
+	c.beginTurnEpochLocked(epoch)
 	c.mu.Unlock()
 
 	defer func() {
 		c.mu.Lock()
+		c.clearTurnEpochLocked()
 		c.running = false
 		c.cancel = nil
 		c.canceling = false
 		c.mu.Unlock()
 		cancel()
 	}()
-	return c.runTurn(ctx, input)
+	err = c.runTurn(ctx, input)
+	if err == nil && epoch != 0 {
+		if cur := c.workEpoch(); cur != epoch {
+			return staleWorkError(cur)
+		}
+	}
+	return err
 }
 
 func (c *Controller) runTurnWithRaw(ctx context.Context, input, raw string) error {
@@ -1522,6 +1582,14 @@ func (c *Controller) notice(text string) {
 // headless `WorkGround2 run` path, where the Sink renders to stdout and the caller
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
 func (c *Controller) Run(ctx context.Context, input string) error {
+	epoch, err := c.checkWorkGate()
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.beginTurnEpochLocked(epoch)
+	c.mu.Unlock()
+	defer c.clearTurnEpoch()
 	c.maybeSessionStart(ctx)
 	parentSession := c.parentSessionID()
 	ctx = agent.WithParentSession(ctx, parentSession)
@@ -1559,7 +1627,13 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 	}
 	c.markInFlightTurn(startMessages, true)
 	defer c.clearInFlightTurn()
-	return c.runner.Run(ctx, input)
+	err = c.runner.Run(ctx, input)
+	if err == nil && epoch != 0 {
+		if cur := c.workEpoch(); cur != epoch {
+			return staleWorkError(cur)
+		}
+	}
+	return err
 }
 
 // RunWithPolicy is the synchronous headless counterpart of
@@ -1577,6 +1651,76 @@ func (c *Controller) RunWithPolicy(ctx context.Context, input string, policy per
 		reply <- approvalReply{allow: true}
 	}
 	return c.Run(ctx, input)
+}
+
+// ContinueTurn resumes an interrupted model/tool round from the session's
+// current history without appending a second copy of the user turn. It is the
+// checkpoint-resume counterpart of Run: the transcript already carries the
+// user prompt (and any persisted tool results), so the runner picks the round
+// up from there. Callers (desktop/daemon resume) must first confirm the
+// session has an unfinished round — ContinueTurn refuses to invent work for a
+// session whose transcript ends on a completed turn.
+func (c *Controller) ContinueTurn(ctx context.Context) error {
+	// Refuse to invent work: continue only when the transcript ends on a real
+	// user turn (the interrupted round's boundary after the partial tail was
+	// stripped). Hosts check this too; this is the controller-side guard so a
+	// session with a completed final turn is never re-driven.
+	if !c.historyEndsAtUserTurn() {
+		return errors.New("session has no unfinished round to resume")
+	}
+	epoch, err := c.checkResumeGate()
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.beginTurnEpochLocked(epoch)
+	c.mu.Unlock()
+	defer c.clearTurnEpoch()
+	cont, ok := c.runner.(agent.ContinueRunner)
+	if !ok {
+		return fmt.Errorf("session runner does not support checkpoint continue")
+	}
+	c.maybeSessionStart(ctx)
+	parentSession := c.parentSessionID()
+	ctx = agent.WithParentSession(ctx, parentSession)
+	ctx = jobs.WithSession(ctx, parentSession)
+	startMessages := c.messageCount()
+	c.touchSessionActivity()
+	defer c.snapshotActivityIfChanged(startMessages)
+	if c.guardianSess != nil {
+		c.guardianSess.ResetTurn()
+	}
+	c.markInFlightTurn(startMessages, true)
+	defer c.clearInFlightTurn()
+	err = cont.Continue(ctx)
+	if err == nil && epoch != 0 {
+		if cur := c.workEpoch(); cur != epoch {
+			return staleWorkError(cur)
+		}
+	}
+	return err
+}
+
+// historyEndsAtUserTurn reports whether the controller's transcript ends on a
+// real user-role message (the boundary of an interrupted round after the
+// partial assistant/tool tail was stripped). It prefers the live executor
+// session, and falls back to the durable session file at SessionPath — the
+// shape a restart sees. It is the authoritative checkpoint: an unfinished
+// round always leaves the last durable message as the user turn, while a
+// completed session ends on an assistant answer.
+func (c *Controller) historyEndsAtUserTurn() bool {
+	var msgs []provider.Message
+	if c.executor != nil {
+		msgs = c.executor.Session().Snapshot()
+	} else if path := c.SessionPath(); path != "" {
+		if sess, err := agent.LoadSession(path); err == nil {
+			msgs = sess.Snapshot()
+		}
+	}
+	if len(msgs) == 0 {
+		return false
+	}
+	return msgs[len(msgs)-1].Role == provider.RoleUser
 }
 
 // Cancel aborts the in-flight turn and every currently executing Block Action
@@ -2740,7 +2884,22 @@ func (c *Controller) ForkSession(turn int, name string) (string, error) {
 	return c.forkNamed(turn, name, false)
 }
 
+// ForkSessionAt is ForkSession with an explicit output path. It is the
+// deterministic fork entry point hosts (desktop/daemon session_fork) use: the
+// path is derived from (parent, requestID) and claimed via the Session receipt
+// BEFORE the fork executes, so a crash between receipt, fork and metadata
+// inheritance never creates a second branch. The parent's Assistant identity
+// (AssistantID/Purpose/WorkspaceRoot/SessionKind/SessionSource) is inherited
+// onto the branch so the fork stays visible to the same owner and workspace.
+func (c *Controller) ForkSessionAt(turn int, name, forkPath string) (string, error) {
+	return c.forkNamedAt(turn, name, forkPath, false)
+}
+
 func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string, error) {
+	return c.forkNamedAt(turn, name, "", switchToFork)
+}
+
+func (c *Controller) forkNamedAt(turn int, name, forkPath string, switchToFork bool) (string, error) {
 	if c.executor == nil {
 		return "", c.rewindFail(fmt.Errorf("checkpoints unavailable"))
 	}
@@ -2770,12 +2929,15 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 	sess := agent.NewSession("")
 	sess.Messages = forked
 
-	newPath := agent.NewSessionPath(c.sessionDir, c.label)
+	newPath := strings.TrimSpace(forkPath)
+	if newPath == "" {
+		newPath = agent.NewSessionPath(c.sessionDir, c.label)
+	}
 	if err := sess.Save(newPath); err != nil {
 		return "", c.rewindFail(err)
 	}
 	forkPreview, forkTurns := agent.SessionPreviewFromMessages(forked)
-	if err := agent.SaveBranchMeta(newPath, agent.BranchMeta{
+	meta := agent.BranchMeta{
 		Name:             strings.TrimSpace(name),
 		ParentID:         parentID,
 		ForkTurn:         turn,
@@ -2783,7 +2945,20 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		Preview:          forkPreview,
 		Turns:            forkTurns,
 		SchemaVersion:    agent.BranchMetaCountsVersion,
-	}); err != nil {
+	}
+	// Inherit the parent's Assistant identity onto the fork so the branch
+	// stays owned by the same assistant/workspace and purpose, and the plan
+	// item keeps pointing at the same responsibility.
+	if pm, ok, err := agent.LoadBranchMeta(parentPath); err == nil && ok {
+		meta.SessionKind = pm.SessionKind
+		meta.AssistantID = pm.AssistantID
+		meta.SessionSource = pm.SessionSource
+		meta.Purpose = pm.Purpose
+		meta.WorkspaceRoot = pm.WorkspaceRoot
+		meta.Scope = pm.Scope
+		meta.ResponsibilityID = pm.ResponsibilityID
+	}
+	if err := agent.SaveBranchMeta(newPath, meta); err != nil {
 		return "", c.rewindFail(err)
 	}
 	if switchToFork {
@@ -3161,6 +3336,14 @@ func (c *Controller) snapshot(markActivity, forceRewrite bool) error {
 	c.snapshotMu.Lock()
 	defer c.snapshotMu.Unlock()
 
+	// Fence before any persist write: a pause/resume that moved the gate epoch
+	// while this turn was in flight must not land its late transcript on disk.
+	// The in-flight marker survives (clearInFlightTurn also respects the fence),
+	// so the interrupted round stays recoverable as the recovery intent.
+	if err := c.checkTurnWriteGate(); err != nil {
+		return fmt.Errorf("%w; transcript write refused", err)
+	}
+
 	c.mu.Lock()
 	path := c.sessionPath
 	modelRef := c.modelRef
@@ -3487,6 +3670,13 @@ func (c *Controller) markInFlightTurn(startMessageIndex int, preserveUser bool) 
 func (c *Controller) clearInFlightTurn() {
 	path := c.SessionPath()
 	if path == "" {
+		return
+	}
+	// Respect the turn fence: if a pause/resume moved the gate epoch while the
+	// turn was in flight, keep the in-flight marker so the interrupted round
+	// survives as the recovery intent (resume_all re-drives it via ContinueTurn).
+	if err := c.checkTurnWriteGate(); err != nil {
+		slog.Debug("controller: keep in-flight marker across work fence", "err", err)
 		return
 	}
 	if err := agent.ClearSessionInFlightTurn(path); err != nil {

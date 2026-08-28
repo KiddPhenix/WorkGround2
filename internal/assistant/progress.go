@@ -74,6 +74,18 @@ func (s *Store) CompleteRunWithProgress(in CompleteRunInput) (*Run, error) {
 	if run.State != RunRunning || run.LeaseOwner != in.LeaseOwner || run.LeaseFence != in.LeaseFence || !now.Before(run.LeaseUntil) {
 		return nil, fmt.Errorf("assistant: run %s fence %d is stale: %w", in.RunID, in.LeaseFence, ErrLeaseLost)
 	}
+	// The run was claimed under an older work generation: its completion is a
+	// late result and must not move the plan (the pause/resume fence moved).
+	if wc, err := s.WorkControl(); err != nil {
+		return nil, err
+	} else if err := checkWorkEpoch(run.WorkEpoch, wc.Epoch); err != nil {
+		return nil, err
+	}
+	// New plan writes are refused while the gate is QUIESCING or PAUSED;
+	// recovery-driven write-back (RECOVERING) is admitted by requireResumeRunning.
+	if err := s.requireResumeRunning(); err != nil {
+		return nil, err
+	}
 	selected, err := applyProgress(agg, in.Progress, run.ID, now)
 	if err != nil {
 		return nil, err
@@ -111,6 +123,371 @@ func (s *Store) CompleteRunWithProgress(in CompleteRunInput) (*Run, error) {
 		return nil, err
 	}
 	return &result, nil
+}
+
+// RecordProgressInput applies a progress patch to the plan without a Run — the
+// converged write-back path for supervisor-driven managed Sessions.
+type RecordProgressInput struct {
+	RequestID   string
+	AssistantID string
+	SessionID   string // optional, for traceability of which Session produced the patch
+	Progress    ProgressBlock
+	Now         time.Time
+}
+
+// RecordProgress applies a validated progress block to the plan atomically and
+// idempotently by request ID. It is the Session-completion write-back for the
+// new flow: the supervisor parses a completed managed Session's
+// <assistant-progress> and records it here, so the plan stays the single source
+// of decision state while the Session stays the single source of execution.
+func (s *Store) RecordProgress(in RecordProgressInput) error {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return err
+	}
+	if err := validateID("assistant", in.AssistantID); err != nil {
+		return err
+	}
+	if err := validateProgressBlock(in.Progress); err != nil {
+		return err
+	}
+	fp, err := inputFingerprint(struct {
+		AssistantID, SessionID string
+		Progress               ProgressBlock
+	}{in.AssistantID, strings.TrimSpace(in.SessionID), in.Progress})
+	if err != nil {
+		return err
+	}
+	unlock, err := s.lockAssistant(in.AssistantID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	agg, err := s.read(in.AssistantID)
+	if err != nil {
+		return err
+	}
+	if _, ok, receiptErr := receiptResult[struct{}](agg, in.RequestID, "record_progress", fp); ok || receiptErr != nil {
+		return receiptErr
+	}
+	// Plan write-back is refused while the gate is QUIESCING or PAUSED;
+	// RECOVERING (resume_all re-drive) is admitted.
+	if err := s.requireResumeRunning(); err != nil {
+		return err
+	}
+	now := storeNow(in.Now)
+	if _, err := applyProgress(agg, in.Progress, "", now); err != nil {
+		return err
+	}
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "record_progress", fp, struct{}{}, now); err != nil {
+		return err
+	}
+	if err := validateAggregate(agg); err != nil {
+		return fmt.Errorf("%w: record progress: %v", ErrCorrupt, err)
+	}
+	return s.write(agg)
+}
+
+// SetResponsibilityDispositionInput moves one responsibility to a new durable
+// decision state (planned|waiting|review|done|dropped). It is the supervisor's
+// plan-decision write: work completion evidence arrives via RecordProgress
+// (Complete), verification outcome via this operation (review->done), and a
+// failed/abandoned direction via dropped. It never records execution state.
+type SetResponsibilityDispositionInput struct {
+	RequestID        string
+	AssistantID      string
+	ResponsibilityID string
+	Disposition      ResponsibilityDisposition
+	ExpectedPlanRev  int64
+	Now              time.Time
+}
+
+// SetResponsibilityDisposition applies one decision-state transition under a
+// plan revision CAS, idempotently by request ID. A terminal decision (done or
+// dropped) is final; everything else may move among the decision states. The
+// derived Status projection is refreshed before the single atomic write.
+func (s *Store) SetResponsibilityDisposition(in SetResponsibilityDispositionInput) (Responsibility, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return Responsibility{}, err
+	}
+	if err := validateID("assistant", in.AssistantID); err != nil {
+		return Responsibility{}, err
+	}
+	if err := validateID("responsibility", in.ResponsibilityID); err != nil {
+		return Responsibility{}, err
+	}
+	if !validDisposition(in.Disposition) || in.Disposition == "" {
+		return Responsibility{}, fmt.Errorf("assistant: invalid disposition %q", in.Disposition)
+	}
+	fp, err := inputFingerprint(struct {
+		AssistantID, ResponsibilityID string
+		Disposition                   ResponsibilityDisposition
+		ExpectedPlanRev               int64
+	}{in.AssistantID, in.ResponsibilityID, in.Disposition, in.ExpectedPlanRev})
+	if err != nil {
+		return Responsibility{}, err
+	}
+	unlock, err := s.lockAssistant(in.AssistantID)
+	if err != nil {
+		return Responsibility{}, err
+	}
+	defer unlock()
+	agg, err := s.read(in.AssistantID)
+	if err != nil {
+		return Responsibility{}, err
+	}
+	if result, ok, receiptErr := receiptResult[Responsibility](agg, in.RequestID, "set_resp_disposition", fp); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	if err := s.requireResumeRunning(); err != nil {
+		return Responsibility{}, err
+	}
+	if in.ExpectedPlanRev != 0 && agg.Plan.Revision != in.ExpectedPlanRev {
+		return Responsibility{}, conflict("plan", in.AssistantID, in.ExpectedPlanRev, agg.Plan.Revision)
+	}
+	idx := responsibilityIndex(agg, in.ResponsibilityID)
+	if idx < 0 {
+		return Responsibility{}, ErrNotFound
+	}
+	r := &agg.Plan.Responsibilities[idx]
+	if r.Disposition == in.Disposition {
+		return clone(*r), nil // same decision; idempotent no-op
+	}
+	if r.Disposition == DispositionDone || r.Disposition == DispositionDropped {
+		return Responsibility{}, fmt.Errorf("%w: responsibility %s is terminal (%s)", ErrTransition, in.ResponsibilityID, r.Disposition)
+	}
+	now := storeNow(in.Now)
+	r.Disposition = in.Disposition
+	if in.Disposition == DispositionDone || in.Disposition == DispositionDropped {
+		r.BlockReason = ""
+	}
+	r.Revision++
+	r.UpdatedAt = now
+	agg.Plan.Revision++
+	deriveResponsibilityStatuses(&agg.Plan)
+	result := clone(*r)
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "set_resp_disposition", fp, result, now); err != nil {
+		return Responsibility{}, err
+	}
+	if err := validateAggregate(agg); err != nil {
+		return Responsibility{}, fmt.Errorf("%w: set responsibility disposition: %v", ErrCorrupt, err)
+	}
+	if err := s.write(agg); err != nil {
+		return Responsibility{}, err
+	}
+	return result, nil
+}
+
+// AdoptOpportunityInput promotes one opportunity to a durable responsibility
+// (the Adopt stage of the expansion loop). The caller must have passed the
+// Rank gate (continuous mode + policy + evidence); the store re-checks the
+// duplicate and evidence invariants so adoption is safe under replay.
+type AdoptOpportunityInput struct {
+	RequestID     string
+	AssistantID   string
+	OpportunityID string
+	Alias         string // optional stable alias for the new responsibility
+	Now           time.Time
+}
+
+// AdoptOpportunity converts one opportunity into a planned responsibility,
+// idempotently by request ID. Adoption marks the opportunity as adopted and
+// never executes anything itself: the Execute stage creates the managed Session
+// through the normal advance path. Duplicate objectives and missing evidence
+// are refused so a replayed or guessed adoption cannot create a second plan
+// item or promote a model guess.
+func (s *Store) AdoptOpportunity(in AdoptOpportunityInput) (Responsibility, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return Responsibility{}, err
+	}
+	if err := validateID("assistant", in.AssistantID); err != nil {
+		return Responsibility{}, err
+	}
+	if err := validateID("opportunity", in.OpportunityID); err != nil {
+		return Responsibility{}, err
+	}
+	in.Alias = strings.TrimSpace(in.Alias)
+	if in.Alias != "" && !validAlias(in.Alias) {
+		return Responsibility{}, fmt.Errorf("assistant: invalid responsibility alias %q", in.Alias)
+	}
+	fp, err := inputFingerprint(struct {
+		AssistantID, OpportunityID, Alias string
+	}{in.AssistantID, in.OpportunityID, in.Alias})
+	if err != nil {
+		return Responsibility{}, err
+	}
+	unlock, err := s.lockAssistant(in.AssistantID)
+	if err != nil {
+		return Responsibility{}, err
+	}
+	defer unlock()
+	agg, err := s.read(in.AssistantID)
+	if err != nil {
+		return Responsibility{}, err
+	}
+	if result, ok, receiptErr := receiptResult[Responsibility](agg, in.RequestID, "adopt_opportunity", fp); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	if err := s.requireResumeRunning(); err != nil {
+		return Responsibility{}, err
+	}
+	now := storeNow(in.Now)
+	idx := -1
+	for i := range agg.Opportunities {
+		if agg.Opportunities[i].ID == in.OpportunityID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return Responsibility{}, ErrNotFound
+	}
+	opp := &agg.Opportunities[idx]
+	if !opp.AdoptedAt.IsZero() {
+		// Already adopted by a prior pass: return the resulting responsibility
+		// if one exists, else report as already applied.
+		for _, r := range agg.Plan.Responsibilities {
+			if strings.TrimSpace(r.Objective) == strings.TrimSpace(opp.Objective) {
+				return clone(r), nil
+			}
+		}
+		return Responsibility{}, nil
+	}
+	objective := strings.TrimSpace(opp.Objective)
+	if objective == "" {
+		return Responsibility{}, errors.New("assistant: opportunity has no objective to adopt")
+	}
+	if duplicateObjective(agg, objective, in.OpportunityID) {
+		return Responsibility{}, fmt.Errorf("assistant: duplicate opportunity objective %q: %w", objective, ErrConflict)
+	}
+	if !opportunityHasEvidence(snapshotOf(agg), *opp) {
+		return Responsibility{}, fmt.Errorf("assistant: opportunity %s lacks verified evidence: %w", in.OpportunityID, ErrBlocked)
+	}
+	alias := in.Alias
+	if alias == "" {
+		alias = objectiveAlias(objective)
+	}
+	// Ensure the alias is unique; fall back to a suffixed form on collision.
+	base := alias
+	for i := 1; duplicateAlias(agg, alias); i++ {
+		alias = fmt.Sprintf("%s-%d", base, i)
+	}
+	resp := Responsibility{
+		ID:           StableID("resp", agg.Assistant.ID+"/"+alias),
+		AssistantID:  agg.Assistant.ID,
+		Alias:        alias,
+		Objective:    objective,
+		DoneCriteria: opp.Reason,
+		Disposition:  DispositionPlanned,
+		Revision:     1,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	agg.Plan.Responsibilities = append(agg.Plan.Responsibilities, resp)
+	agg.Plan.Revision++
+	opp.AdoptedAt = now
+	opp.Revision++
+	deriveResponsibilityStatuses(&agg.Plan)
+	result := clone(resp)
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "adopt_opportunity", fp, result, now); err != nil {
+		return Responsibility{}, err
+	}
+	if err := validateAggregate(agg); err != nil {
+		return Responsibility{}, fmt.Errorf("%w: adopt opportunity: %v", ErrCorrupt, err)
+	}
+	if err := s.write(agg); err != nil {
+		return Responsibility{}, err
+	}
+	return result, nil
+}
+
+func duplicateAlias(agg *aggregate, alias string) bool {
+	for _, r := range agg.Plan.Responsibilities {
+		if r.Alias == alias {
+			return true
+		}
+	}
+	return false
+}
+
+// objectiveAlias derives a stable alias from an objective: lowercased,
+// non-alphanumeric runs collapsed to '-', capped at 64 chars. Empty results
+// fall back to "opportunity".
+func objectiveAlias(objective string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range objective {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r - 'A' + 'a')
+			lastDash = false
+		case r == '_' || r == '-':
+			if !lastDash {
+				b.WriteRune('-')
+				lastDash = true
+			}
+		default:
+			if !lastDash {
+				b.WriteRune('-')
+				lastDash = true
+			}
+		}
+	}
+	alias := strings.Trim(b.String(), "-")
+	if alias == "" {
+		return "opportunity"
+	}
+	if len(alias) > 64 {
+		alias = alias[:64]
+	}
+	return alias
+}
+
+// RecordSessionTranscriptInput parses a completed managed Session's transcript
+// and applies its <assistant-progress> to the plan.
+type RecordSessionTranscriptInput struct {
+	RequestID   string
+	AssistantID string
+	SessionID   string
+	Transcript  string
+	Now         time.Time
+}
+
+// RecordSessionTranscript is the write-back glue for the new flow: it extracts
+// every <assistant-progress> block from a completed Session's raw transcript,
+// merges them, and applies them to the plan via RecordProgress. It is idempotent
+// under RequestID, and malformed blocks are surfaced rather than silently
+// dropped.
+func (s *Store) RecordSessionTranscript(in RecordSessionTranscriptInput) error {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return err
+	}
+	if err := validateID("assistant", in.AssistantID); err != nil {
+		return err
+	}
+	blocks, errs := ParseProgressBlocks(in.Transcript)
+	if len(blocks) == 0 {
+		if len(errs) > 0 {
+			return fmt.Errorf("assistant: parse session progress: %w", errors.Join(errs...))
+		}
+		return nil
+	}
+	merged := MergeProgressBlocks(blocks)
+	if err := s.RecordProgress(RecordProgressInput{
+		RequestID: in.RequestID, AssistantID: in.AssistantID, SessionID: in.SessionID,
+		Progress: merged, Now: in.Now,
+	}); err != nil {
+		return err
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("assistant: some session progress blocks were malformed: %w", errors.Join(errs...))
+	}
+	return nil
 }
 
 // applyProgress applies one progress block to the plan in place. It returns the
@@ -190,7 +567,7 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 			Objective:    objective,
 			DoneCriteria: strings.TrimSpace(d.DoneCriteria),
 			NextAction:   strings.TrimSpace(d.NextAction),
-			Status:       RespBlocked,
+			Disposition:  DispositionPlanned,
 			Revision:     1,
 			CreatedAt:    now,
 			UpdatedAt:    now,
@@ -220,7 +597,7 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 		if sameStrings(r.DependsOn, deps) {
 			continue
 		}
-		if r.Status == RespDone && !depsDone(agg, deps) {
+		if r.Disposition == DispositionDone && !depsDone(agg, deps) {
 			return "", fmt.Errorf("assistant: done responsibility %s cannot gain incomplete dependencies: %w", dc.alias, ErrTransition)
 		}
 		r.DependsOn = deps
@@ -256,16 +633,26 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 		changed = true
 	}
 
-	for i, d := range b.Opportunities {
+	for _, d := range b.Opportunities {
 		respID, err := resolveRespAlias(aliasToID, d.Resp)
 		if err != nil {
 			return "", err
 		}
+		objective := strings.TrimSpace(d.Objective)
+		// Stable dedup: an identical objective already present (as an
+		// opportunity or a responsibility) is a no-op, never a second entry.
+		if duplicateObjective(agg, objective) {
+			continue
+		}
 		agg.Opportunities = append(agg.Opportunities, Opportunity{
-			ID:          StableID("opp", fmt.Sprintf("%s/%s/%d", runID, d.Resp, i)),
+			// The objective participates in the stable ID so distinct
+			// opportunities never collide when runID is empty (RecordProgress)
+			// while the same objective stays deterministically identical.
+			ID:          StableID("opp", fmt.Sprintf("%s/%s/%s", runID, d.Resp, objective)),
 			AssistantID: agg.Assistant.ID,
 			RespID:      respID,
 			RunID:       runID,
+			Objective:   objective,
 			Reason:      strings.TrimSpace(d.Reason),
 			Revision:    1,
 			CreatedAt:   now,
@@ -304,7 +691,7 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 			return "", ErrNotFound
 		}
 		r := &agg.Plan.Responsibilities[idx]
-		if r.Status == RespDone {
+		if r.Disposition == DispositionDone {
 			continue
 		}
 		if !depsDoneIncluding(agg, r.DependsOn, completeSet, idToAlias) {
@@ -315,10 +702,13 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 		respID, _ := resolveRespAlias(aliasToID, alias)
 		idx := responsibilityIndex(agg, respID)
 		r := &agg.Plan.Responsibilities[idx]
-		if r.Status == RespDone {
+		if r.Disposition == DispositionDone {
 			continue
 		}
-		r.Status = RespDone
+		// Completion is a durable decision, not an execution state: only the
+		// disposition moves to done. The Status projection is recomputed from
+		// the whole plan below.
+		r.Disposition = DispositionDone
 		r.BlockReason = ""
 		r.Revision++
 		r.UpdatedAt = now
@@ -345,20 +735,15 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 			return "", ErrNotFound
 		}
 		r := &agg.Plan.Responsibilities[idx]
-		if r.Status == RespActive {
-			continue
-		}
-		if r.Status == RespDone {
+		if r.Disposition == DispositionDone {
 			return "", fmt.Errorf("assistant: done responsibility %s cannot be activated: %w", alias, ErrTransition)
 		}
 		if !depsDone(agg, r.DependsOn) {
 			return "", fmt.Errorf("assistant: responsibility %s dependencies are incomplete: %w", alias, ErrBlocked)
 		}
-		r.Status = RespActive
-		r.BlockReason = ""
-		r.Revision++
-		r.UpdatedAt = now
-		changed = true
+		// "active" is execution state and derives from the associated Session,
+		// so it is never persisted to the plan (design 4.2). The marker is
+		// validated for a real, workable responsibility and then dropped.
 	}
 
 	selected := ""
@@ -372,6 +757,10 @@ func applyProgress(agg *aggregate, b ProgressBlock, runID string, now time.Time)
 	if changed {
 		agg.Plan.Revision++
 	}
+	// The plan only persists decision states; recompute the derived Status
+	// projection so the aggregate (and the written JSON) stays consistent with
+	// the decisions.
+	deriveResponsibilityStatuses(&agg.Plan)
 	return selected, nil
 }
 
@@ -412,40 +801,26 @@ func guardRespActive(agg *aggregate, respID, alias string) error {
 	if idx < 0 {
 		return ErrNotFound
 	}
-	if agg.Plan.Responsibilities[idx].Status == RespDone {
+	if agg.Plan.Responsibilities[idx].Disposition == DispositionDone {
 		return fmt.Errorf("assistant: responsibility %s is already done: %w", alias, ErrTransition)
 	}
 	return nil
 }
 
-// recomputeReadiness keeps readiness consistent with the dependency graph. It
-// promotes blocked responsibilities whose dependencies are all done and demotes
-// ready or active responsibilities that gained an incomplete dependency. Done
-// and failed responsibilities are terminal and are left untouched.
+// recomputeReadiness refreshes the derived BlockReason evidence from the
+// dependency graph. Decision states never move here: ready/blocked are derived
+// projections (deriveResponsibilityStatuses), and done/dropped are terminal.
 func recomputeReadiness(agg *aggregate, idToAlias map[string]string, now time.Time, changed *bool) {
 	for i := range agg.Plan.Responsibilities {
 		r := &agg.Plan.Responsibilities[i]
-		if r.Status == RespDone || r.Status == RespFailed {
+		if r.Disposition == DispositionDone || r.Disposition == DispositionDropped {
 			continue
 		}
-		if depsDone(agg, r.DependsOn) {
-			if r.Status == RespBlocked {
-				r.Status = RespReady
-				r.BlockReason = ""
-				r.Revision++
-				r.UpdatedAt = now
-				*changed = true
-			}
-			continue
+		reason := ""
+		if !depsDone(agg, r.DependsOn) {
+			reason = blockReason(agg, r.DependsOn, idToAlias)
 		}
-		reason := blockReason(agg, r.DependsOn, idToAlias)
-		if r.Status != RespBlocked {
-			r.Status = RespBlocked
-			r.BlockReason = reason
-			r.Revision++
-			r.UpdatedAt = now
-			*changed = true
-		} else if r.BlockReason != reason {
+		if r.BlockReason != reason {
 			r.BlockReason = reason
 			r.Revision++
 			r.UpdatedAt = now
@@ -457,7 +832,7 @@ func recomputeReadiness(agg *aggregate, idToAlias map[string]string, now time.Ti
 func depsDone(agg *aggregate, deps []string) bool {
 	for _, dep := range deps {
 		idx := responsibilityIndex(agg, dep)
-		if idx < 0 || agg.Plan.Responsibilities[idx].Status != RespDone {
+		if idx < 0 || agg.Plan.Responsibilities[idx].Disposition != DispositionDone {
 			return false
 		}
 	}
@@ -473,7 +848,7 @@ func depsDoneIncluding(agg *aggregate, deps []string, doneAliases map[string]boo
 		if idx < 0 {
 			return false
 		}
-		if agg.Plan.Responsibilities[idx].Status == RespDone {
+		if agg.Plan.Responsibilities[idx].Disposition == DispositionDone {
 			continue
 		}
 		if doneAliases[idToAlias[dep]] {
@@ -496,11 +871,41 @@ func sameStrings(a, b []string) bool {
 	return true
 }
 
+// duplicateObjective reports whether an objective (trimmed) is already present
+// as a responsibility objective/alias or an opportunity objective (optionally
+// excluding one opportunity ID — the candidate being adopted), so repeated
+// discovery never floods the opportunity pool and adoption never counts the
+// candidate against itself.
+func duplicateObjective(agg *aggregate, objective string, excludeOpportunityID ...string) bool {
+	objective = strings.TrimSpace(objective)
+	if objective == "" {
+		return false
+	}
+	for _, r := range agg.Plan.Responsibilities {
+		if strings.TrimSpace(r.Objective) == objective || strings.TrimSpace(r.Alias) == objective {
+			return true
+		}
+	}
+	exclude := ""
+	if len(excludeOpportunityID) > 0 {
+		exclude = excludeOpportunityID[0]
+	}
+	for _, o := range agg.Opportunities {
+		if o.ID == exclude {
+			continue
+		}
+		if strings.TrimSpace(o.Objective) == objective {
+			return true
+		}
+	}
+	return false
+}
+
 func blockReason(agg *aggregate, deps []string, idToAlias map[string]string) string {
 	var pending []string
 	for _, dep := range deps {
 		idx := responsibilityIndex(agg, dep)
-		if idx < 0 || agg.Plan.Responsibilities[idx].Status != RespDone {
+		if idx < 0 || agg.Plan.Responsibilities[idx].Disposition != DispositionDone {
 			label := dep
 			if alias, ok := idToAlias[dep]; ok {
 				label = alias

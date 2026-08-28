@@ -94,10 +94,11 @@ func jobsForDispatch(jobs []RunnerJob, dispatchID string) []RunnerJob {
 	return out
 }
 
-// DispatchesReadyForReflection returns Dispatches whose jobs are all terminal
-// and which have no ContextPack yet, plus previously failed reflections whose
-// bounded backoff has elapsed. It is a pure projection the host loop uses to
-// decide what to reflect.
+// DispatchesReadyForReflection returns Dispatches whose managed Session reached
+// a terminal state (DispatchExecuted) and which have no ContextPack yet, plus
+// previously failed reflections whose bounded backoff has elapsed. Legacy
+// Dispatches with frozen Jobs remain supported read-only: their jobs being all
+// terminal still counts as ready.
 func DispatchesReadyForReflection(snapshot Snapshot, now time.Time) []Dispatch {
 	hasPack := func(dispatchID string) bool {
 		for i := range snapshot.ContextPacks {
@@ -107,7 +108,7 @@ func DispatchesReadyForReflection(snapshot Snapshot, now time.Time) []Dispatch {
 		}
 		return false
 	}
-	terminal := func(dispatchID string) bool {
+	jobsTerminal := func(dispatchID string) bool {
 		found := false
 		for i := range snapshot.Jobs {
 			if snapshot.Jobs[i].DispatchID != dispatchID {
@@ -125,11 +126,11 @@ func DispatchesReadyForReflection(snapshot Snapshot, now time.Time) []Dispatch {
 		if hasPack(d.ID) {
 			continue
 		}
-		if !terminal(d.ID) {
+		if d.State != DispatchExecuted && !jobsTerminal(d.ID) {
 			continue
 		}
 		switch d.State {
-		case DispatchClassified:
+		case DispatchClassified, DispatchExecuted:
 			out = append(out, d)
 		case DispatchReflectionFailed:
 			if d.RetryAt.IsZero() || !d.RetryAt.After(now) {

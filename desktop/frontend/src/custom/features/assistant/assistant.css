@@ -974,3 +974,47 @@ button.assistant-run-state:focus-visible {
 .assistant-create__workspace-chooser-note { display: flex; align-items: center; gap: 6px; margin: 0; color: #96918b; font-size: 12px; }
 .assistant-create__workspace-chooser-error { color: #e0a35c; }
 .assistant-create__workspace-chooser-hint { margin: 0; color: #6f6a64; font-size: 11px; }
+
+.assistant-work-control { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid #2e2b28; border-radius: 8px; margin-bottom: 8px; }
+.assistant-work-control__state { font-size: 12px; color: #96918b; }
+.assistant-work-control__state--paused { color: #e0a35c; }
+.assistant-work-control__state--running { color: #7fb77f; }
+.assistant-work-control__state--quiescing { color: #d8b26a; }
+.assistant-work-control__state--recovering { color: #8fb3d9; }
+.assistant-work-control__error { font-size: 11px; color: #e08a7f; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-work-control button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: none; background: transparent; color: #c9c4bf; border-radius: 6px; cursor: pointer; }
+.assistant-work-control button:hover:not(:disabled) { background: #2e2b28; color: #fff; }
+.assistant-work-control button:disabled { opacity: 0.4; cursor: default; }
+
+/* ── 受管 Session 区 ─────────────────────────────────────────── */
+.assistant-managed { display: grid; gap: 8px; margin-bottom: 8px; }
+.assistant-managed__empty { margin: 0; color: #6f6a64; font-size: 12px; padding: 4px 8px; }
+.assistant-session-card { border: 1px solid #2e2b28; border-radius: 10px; padding: 8px 10px; background: rgba(19, 21, 25, 0.5); }
+.assistant-session-card.is-selected { border-color: #8fb3d9; }
+.assistant-session-card__head { display: flex; align-items: center; gap: 8px; }
+.assistant-session-card__head strong { font-size: 13px; color: #e8e4df; }
+.assistant-session-card__meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 0; color: #96918b; font-size: 11px; }
+.assistant-session-card__meta code { font-family: Consolas, "Courier New", monospace; color: #8fb3d9; }
+.assistant-session-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.assistant-session-card__steer { display: flex; gap: 4px; flex: 1 1 220px; }
+.assistant-session-card__steer input, .assistant-session-card__answer input { flex: 1; min-width: 0; }
+.assistant-session-outcome { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #d8b26a; }
+.assistant-session-outcome--accepted { color: #7fb77f; }
+.assistant-session-outcome--already_applied { color: #8fb3d9; }
+.assistant-session-outcome--stale { color: #e0a35c; }
+.assistant-session-outcome--retryable_error { color: #e0a35c; }
+.assistant-session-outcome--invalid { color: #e08a7f; }
+.assistant-session-outcome--blocked_by_policy { color: #e08a7f; }
+.assistant-session-interaction { margin: 6px 0 0; padding: 6px 8px; border: 1px dashed #2e2b28; border-radius: 8px; font-size: 12px; color: #c9c4bf; }
+.assistant-session-interaction__answer { display: flex; gap: 4px; margin-top: 6px; }
+
+/* ── 监督诊断面板 ───────────────────────────────────────────── */
+.assistant-supervisor { border: 1px solid #2e2b28; border-radius: 10px; margin-bottom: 8px; overflow: hidden; }
+.assistant-supervisor__head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 10px; background: none; border: none; color: #c9c4bf; font-size: 12px; cursor: pointer; text-align: left; }
+.assistant-supervisor__head:hover { background: #1c1e22; }
+.assistant-supervisor__body { display: grid; gap: 8px; padding: 0 10px 10px; font-size: 12px; color: #96918b; }
+.assistant-supervisor__row { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.assistant-supervisor__row strong { color: #c9c4bf; font-weight: 600; }
+.assistant-supervisor__list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.assistant-supervisor__list li { display: flex; gap: 8px; align-items: baseline; }
+.assistant-supervisor__list code { font-family: Consolas, "Courier New", monospace; color: #8fb3d9; }

@@ -185,11 +185,20 @@ func (s *Store) OpenDispatch(in OpenDispatchInput) (Dispatch, error) {
 	if agg.Assistant.Lifecycle != LifecycleActive {
 		return Dispatch{}, fmt.Errorf("assistant: %s is %s: %w", in.AssistantID, agg.Assistant.Lifecycle, ErrTransition)
 	}
+	// New dispatches (new work) are refused while the gate is not RUNNING;
+	// replay of an already-recorded dispatch returns the receipt result above.
+	if err := s.requireRunning(); err != nil {
+		return Dispatch{}, err
+	}
 	now := storeNow(in.Now)
+	wc, err := s.WorkControl()
+	if err != nil {
+		return Dispatch{}, err
+	}
 	dispatch := Dispatch{
 		ID: StableID("dispatch", in.AssistantID+"/"+in.RequestID), AssistantID: in.AssistantID,
 		RequestID: in.RequestID, Input: in.Input, State: DispatchPendingClassification,
-		Revision: 1, CreatedAt: now, UpdatedAt: now,
+		WorkEpoch: wc.Epoch, Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	agg.Dispatches = append(agg.Dispatches, dispatch)
 	touch(agg, now)
@@ -257,11 +266,21 @@ func (s *Store) ClassifyDispatch(in ClassifyDispatchInput) (Dispatch, error) {
 	if dispatch.AssistantID != in.AssistantID {
 		return Dispatch{}, fmt.Errorf("assistant: dispatch %s belongs to %s: %w", in.DispatchID, dispatch.AssistantID, ErrNotFound)
 	}
-	if dispatch.State == DispatchClassified || dispatch.State == DispatchReflected {
+	if dispatch.State == DispatchClassified || dispatch.State == DispatchReflected || dispatch.State == DispatchExecuted {
 		return clone(*dispatch), nil
 	}
 	if dispatch.State != DispatchPendingClassification && dispatch.State != DispatchClassificationFailed {
 		return Dispatch{}, fmt.Errorf("%w: cannot classify dispatch in %s", ErrTransition, dispatch.State)
+	}
+	// The dispatch was opened under an older work generation: its late
+	// classification is a stale-fence write and must not spawn jobs.
+	if wc, err := s.WorkControl(); err != nil {
+		return Dispatch{}, err
+	} else if err := checkWorkEpoch(dispatch.WorkEpoch, wc.Epoch); err != nil {
+		return Dispatch{}, err
+	}
+	if err := s.requireResumeRunning(); err != nil {
+		return Dispatch{}, err
 	}
 	now := storeNow(in.Now)
 	watermark := agg.Revision
@@ -287,6 +306,136 @@ func (s *Store) ClassifyDispatch(in ClassifyDispatchInput) (Dispatch, error) {
 	result := clone(*dispatch)
 	touch(agg, now)
 	if err := putReceipt(agg, in.RequestID, "classify_dispatch", fingerprint, result, now); err != nil {
+		return Dispatch{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return Dispatch{}, err
+	}
+	return result, nil
+}
+
+// BindDispatchSessionInput records the managed Session the supervisor created to
+// execute a classified Dispatch.
+type BindDispatchSessionInput struct {
+	RequestID   string
+	AssistantID string
+	DispatchID  string
+	SessionID   string
+	Now         time.Time
+}
+
+// BindDispatchSession durably links a classified Dispatch to its execution
+// Session and is idempotent by request ID. It is the new-flow execution target
+// bookkeeping that replaces the frozen RunnerJob.
+func (s *Store) BindDispatchSession(in BindDispatchSessionInput) (Dispatch, error) {
+	if err := validateID("assistant", in.AssistantID); err != nil {
+		return Dispatch{}, err
+	}
+	if err := validateID("dispatch", in.DispatchID); err != nil {
+		return Dispatch{}, err
+	}
+	if err := validateRequestID(in.RequestID); err != nil {
+		return Dispatch{}, err
+	}
+	in.SessionID = strings.TrimSpace(in.SessionID)
+	if in.SessionID == "" {
+		return Dispatch{}, errors.New("assistant: session id is required")
+	}
+	fp, err := inputFingerprint(struct {
+		DispatchID string
+		SessionID  string
+	}{in.DispatchID, in.SessionID})
+	if err != nil {
+		return Dispatch{}, err
+	}
+	unlock, err := s.lockAssistant(in.AssistantID)
+	if err != nil {
+		return Dispatch{}, err
+	}
+	defer unlock()
+	agg, err := s.read(in.AssistantID)
+	if err != nil {
+		return Dispatch{}, err
+	}
+	if result, ok, receiptErr := receiptResult[Dispatch](agg, in.RequestID, "bind_dispatch_session", fp); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	idx := dispatchIndex(agg, in.DispatchID)
+	if idx < 0 {
+		return Dispatch{}, ErrNotFound
+	}
+	dispatch := &agg.Dispatches[idx]
+	now := storeNow(in.Now)
+	dispatch.SessionID = in.SessionID
+	dispatch.Revision++
+	dispatch.UpdatedAt = now
+	result := clone(*dispatch)
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "bind_dispatch_session", fp, result, now); err != nil {
+		return Dispatch{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return Dispatch{}, err
+	}
+	return result, nil
+}
+
+// MarkDispatchExecutedInput marks a Dispatch as executed when its managed
+// Session reached a terminal state, so it becomes reflection-ready.
+type MarkDispatchExecutedInput struct {
+	RequestID   string
+	AssistantID string
+	DispatchID  string
+	Now         time.Time
+}
+
+// MarkDispatchExecuted transitions a classified (or reflection-failed) Dispatch
+// to the executed state, the converged precondition for reflection. It is
+// idempotent and never applies to an already-reflected Dispatch.
+func (s *Store) MarkDispatchExecuted(in MarkDispatchExecutedInput) (Dispatch, error) {
+	if err := validateID("assistant", in.AssistantID); err != nil {
+		return Dispatch{}, err
+	}
+	if err := validateID("dispatch", in.DispatchID); err != nil {
+		return Dispatch{}, err
+	}
+	if err := validateRequestID(in.RequestID); err != nil {
+		return Dispatch{}, err
+	}
+	fp, err := inputFingerprint(struct{ DispatchID string }{in.DispatchID})
+	if err != nil {
+		return Dispatch{}, err
+	}
+	unlock, err := s.lockAssistant(in.AssistantID)
+	if err != nil {
+		return Dispatch{}, err
+	}
+	defer unlock()
+	agg, err := s.read(in.AssistantID)
+	if err != nil {
+		return Dispatch{}, err
+	}
+	if result, ok, receiptErr := receiptResult[Dispatch](agg, in.RequestID, "mark_dispatch_executed", fp); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	idx := dispatchIndex(agg, in.DispatchID)
+	if idx < 0 {
+		return Dispatch{}, ErrNotFound
+	}
+	dispatch := &agg.Dispatches[idx]
+	if dispatch.State == DispatchReflected || dispatch.State == DispatchExecuted {
+		return clone(*dispatch), nil
+	}
+	if dispatch.State != DispatchClassified && dispatch.State != DispatchReflectionFailed {
+		return Dispatch{}, fmt.Errorf("%w: cannot mark dispatch in %s as executed", ErrTransition, dispatch.State)
+	}
+	now := storeNow(in.Now)
+	dispatch.State = DispatchExecuted
+	dispatch.Revision++
+	dispatch.UpdatedAt = now
+	result := clone(*dispatch)
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "mark_dispatch_executed", fp, result, now); err != nil {
 		return Dispatch{}, err
 	}
 	if err := s.write(agg); err != nil {
@@ -332,7 +481,7 @@ func (s *Store) FailDispatch(in FailDispatchInput) (Dispatch, error) {
 		return Dispatch{}, ErrNotFound
 	}
 	dispatch := &agg.Dispatches[idx]
-	if dispatch.State == DispatchClassified || dispatch.State == DispatchReflected {
+	if dispatch.State == DispatchClassified || dispatch.State == DispatchReflected || dispatch.State == DispatchExecuted {
 		return clone(*dispatch), nil
 	}
 	failure.Code = strings.TrimSpace(failure.Code)
@@ -407,8 +556,8 @@ func (s *Store) ReflectDispatch(in ReflectInput) (ContextPack, error) {
 	if existing := contextPackForDispatch(agg, in.DispatchID); existing != nil {
 		return clone(*existing), nil
 	}
-	if !dispatchJobsTerminal(agg, in.DispatchID) {
-		return ContextPack{}, fmt.Errorf("%w: dispatch %s still has non-terminal jobs", ErrTransition, in.DispatchID)
+	if dispatch.State != DispatchExecuted && !dispatchJobsTerminal(agg, in.DispatchID) {
+		return ContextPack{}, fmt.Errorf("%w: dispatch %s has not reached a terminal execution state", ErrTransition, in.DispatchID)
 	}
 	now := storeNow(in.Now)
 	pack := ContextPack{
@@ -471,8 +620,8 @@ func (s *Store) FailReflection(in FailReflectionInput) (Dispatch, error) {
 	if contextPackForDispatch(agg, in.DispatchID) != nil {
 		return clone(*dispatch), nil
 	}
-	if !dispatchJobsTerminal(agg, in.DispatchID) {
-		return Dispatch{}, fmt.Errorf("%w: dispatch %s still has non-terminal jobs", ErrTransition, in.DispatchID)
+	if dispatch.State != DispatchExecuted && !dispatchJobsTerminal(agg, in.DispatchID) {
+		return Dispatch{}, fmt.Errorf("%w: dispatch %s has not reached a terminal execution state", ErrTransition, in.DispatchID)
 	}
 	now := storeNow(in.Failure.Now)
 	failure := in.Failure
@@ -706,10 +855,13 @@ func (s *Store) ResolveIdea(in ResolveIdeaInput) (IdeaProposal, error) {
 			agg.Plan.Responsibilities = append(agg.Plan.Responsibilities, Responsibility{
 				ID: StableID("resp", idea.AssistantID+"/"+idea.Responsibility), AssistantID: idea.AssistantID,
 				Alias: idea.Responsibility, Objective: idea.Objective, DoneCriteria: idea.DoneCriteria,
-				NextAction: idea.NextAction, Status: RespReady,
+				NextAction: idea.NextAction, Disposition: DispositionPlanned,
 				Revision: 1, CreatedAt: now, UpdatedAt: now,
 			})
 			agg.Plan.Revision++
+			// The plan persists decision states only; refresh the derived Status
+			// projection so the written JSON stays consistent.
+			deriveResponsibilityStatuses(&agg.Plan)
 		}
 		idea.State = IdeaAccepted
 	} else if !superseded {
@@ -879,9 +1031,10 @@ func successfulTaskDispatchesSince(agg *aggregate, since time.Time) int {
 		if d.ClassifiedAt.Before(since) {
 			continue
 		}
-		if dispatchSucceeded(agg, d.ID) {
-			count++
-		}
+		// Reflection implies the managed Session reached a terminal state and its
+		// results were written back, which is the converged "successful task"
+		// signal (no longer coupled to frozen Runner Jobs).
+		count++
 	}
 	return count
 }

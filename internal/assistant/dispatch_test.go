@@ -61,6 +61,44 @@ func classifyTask(t *testing.T, store *Store, assistantID, requestID string, now
 	return mustDispatch(t, d, assistantID, requestID, "请扫描项目最近修改并跑测试", now)
 }
 
+// classifyTaskWithJob opens and classifies a Dispatch directly through the
+// Store with exactly one queued Runner Job, bypassing the Dispatcher. It exists
+// for JobRunner tests that still exercise the legacy frozen-Job path.
+func classifyTaskWithJob(t *testing.T, store *Store, assistantID, requestID string, now time.Time) Dispatch {
+	t.Helper()
+	dispatch, err := store.OpenDispatch(OpenDispatchInput{AssistantID: assistantID, RequestID: requestID, Input: "请扫描项目最近修改并跑测试", Now: now})
+	if err != nil {
+		t.Fatalf("OpenDispatch: %v", err)
+	}
+	if _, err := store.ClassifyDispatch(ClassifyDispatchInput{
+		AssistantID: assistantID, DispatchID: dispatch.ID, RequestID: "classify:" + requestID,
+		Kind: DispatchTask, Reply: "ok",
+		Jobs: []JobSpec{{Name: "execute", Kind: DispatchTask, Prompt: "do it"}},
+		Now:  now,
+	}); err != nil {
+		t.Fatalf("ClassifyDispatch: %v", err)
+	}
+	return dispatch
+}
+
+// markDispatchExecuted transitions a classified Dispatch to DispatchExecuted so
+// it becomes reflection-ready under the supervisor-managed Session flow.
+func markDispatchExecuted(t *testing.T, store *Store, assistantID, dispatchID string, now time.Time) {
+	t.Helper()
+	executed, err := store.MarkDispatchExecuted(MarkDispatchExecutedInput{
+		RequestID:   "executed:" + dispatchID,
+		AssistantID: assistantID,
+		DispatchID:  dispatchID,
+		Now:         now,
+	})
+	if err != nil {
+		t.Fatalf("MarkDispatchExecuted: %v", err)
+	}
+	if executed.State != DispatchExecuted {
+		t.Fatalf("expected dispatch executed, got %s", executed.State)
+	}
+}
+
 func finishDispatchJob(t *testing.T, store *Store, owner string, now time.Time) {
 	t.Helper()
 	r, err := NewJobRunner(store, owner, time.Hour)
@@ -96,19 +134,16 @@ func TestDispatcherClassifiesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	jobs := jobsForDispatch(snapshot.Jobs, first.ID)
-	if len(jobs) != 1 || jobs[0].Name != "execute" || jobs[0].State != JobQueued {
-		t.Fatalf("expected one queued execute job, got %+v", jobs)
-	}
-	if jobs[0].Policy != snapshot.Assistant.Policy {
-		t.Fatalf("job policy not frozen from assistant: %+v", jobs[0].Policy)
+	if len(jobs) != 0 {
+		t.Fatalf("expected zero jobs (dispatcher no longer freezes jobs), got %+v", jobs)
 	}
 	again := mustDispatch(t, d, "helper-a", "req-1", "请扫描项目最近修改并跑测试", now.Add(time.Minute))
 	if again.ID != first.ID || again.State != DispatchClassified {
 		t.Fatalf("replay diverged: %s vs %s", again.ID, first.ID)
 	}
 	snapshot, _ = store.Get("helper-a")
-	if got := len(jobsForDispatch(snapshot.Jobs, first.ID)); got != 1 {
-		t.Fatalf("expected no duplicate jobs, got %d", got)
+	if got := len(jobsForDispatch(snapshot.Jobs, first.ID)); got != 0 {
+		t.Fatalf("expected zero jobs after replay, got %d", got)
 	}
 }
 
@@ -204,16 +239,10 @@ func TestDispatcherMalformedJSONKeepsInputRetryable(t *testing.T) {
 	}
 }
 
-func TestDispatcherRejectsMoreThanThreeJobs(t *testing.T) {
-	store := testStore(t, t.TempDir())
-	mustCreate(t, store, "helper-a")
-	jobs := `[{"name":"a","kind":"task","prompt":"1"},{"name":"b","kind":"task","prompt":"2"},{"name":"c","kind":"task","prompt":"3"},{"name":"d","kind":"task","prompt":"4"}]`
-	d, _ := NewDispatcher(store, roleModel(dispatcherJSON("task", "ok", jobs)))
-	dispatch := mustDispatch(t, d, "helper-a", "req-1", "请扫描项目", testEpoch)
-	if dispatch.State != DispatchClassificationFailed {
-		t.Fatalf("expected classification_failed for >3 jobs, got %s", dispatch.State)
-	}
-}
+// TestDispatcherRejectsMoreThanThreeJobs was removed: the Dispatcher no longer
+// freezes Runner Jobs (it classifies with Jobs: nil), so rejecting a >3-job
+// classification is obsolete. ParseDispatcherOutput still bounds the classifier
+// job count via maxDispatcherJobs independently of the Store.
 
 func TestDispatcherRejectsPermissionFieldInjection(t *testing.T) {
 	store := testStore(t, t.TempDir())
@@ -289,7 +318,7 @@ func TestJobRunnerEnforcesConcurrencyCap(t *testing.T) {
 func TestJobRunnerLeaseRecovery(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
-	_ = classifyTask(t, store, "helper-a", "req-1", testEpoch)
+	_ = classifyTaskWithJob(t, store, "helper-a", "req-1", testEpoch)
 	r, _ := NewJobRunner(store, "owner", time.Minute)
 	acquired, err := r.Acquire(testEpoch)
 	if err != nil || acquired.Job == nil {
@@ -311,7 +340,7 @@ func TestJobRunnerLeaseRecovery(t *testing.T) {
 func TestJobRunnerLeaseLossRetryRecovery(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
-	_ = classifyTask(t, store, "helper-a", "req-1", testEpoch)
+	_ = classifyTaskWithJob(t, store, "helper-a", "req-1", testEpoch)
 	r, _ := NewJobRunner(store, "owner", time.Minute)
 	acquired, err := r.Acquire(testEpoch)
 	if err != nil || acquired.Job == nil {
@@ -379,7 +408,7 @@ func TestJobRunnerLeaseLossRetryRecovery(t *testing.T) {
 func TestJobRunnerBindSession(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
-	_ = classifyTask(t, store, "helper-a", "req-1", testEpoch)
+	_ = classifyTaskWithJob(t, store, "helper-a", "req-1", testEpoch)
 	r, _ := NewJobRunner(store, "owner", time.Minute)
 	acquired, err := r.Acquire(testEpoch)
 	if err != nil || acquired.Job == nil {
@@ -433,7 +462,7 @@ func TestJobRunnerBindSession(t *testing.T) {
 func TestJobRunnerFailureRetriesAndCompletes(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
-	_ = classifyTask(t, store, "helper-a", "req-1", testEpoch)
+	_ = classifyTaskWithJob(t, store, "helper-a", "req-1", testEpoch)
 	r, _ := NewJobRunner(store, "owner", time.Hour)
 	acquired, _ := r.Acquire(testEpoch)
 	failed, err := r.Fail(*acquired.Job, Failure{Code: "boom", Message: "failed", Retryable: true, OutcomeKnown: true, RetryAfter: time.Minute, Now: testEpoch})
@@ -458,7 +487,7 @@ func TestReflectDispatchExactlyOnce(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
 	dispatch := classifyTask(t, store, "helper-a", "req-1", testEpoch)
-	finishDispatchJob(t, store, "owner", testEpoch)
+	markDispatchExecuted(t, store, "helper-a", dispatch.ID, testEpoch)
 	r, _ := NewReflector(store, roleModel(reflectOutput("done")))
 	pack, err := r.Reflect(context.Background(), "helper-a", dispatch.ID, "reflect-1", testEpoch.Add(time.Hour))
 	if err != nil || pack.Conclusion != "done" {
@@ -477,14 +506,17 @@ func TestReflectDispatchExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestReflectDispatchRejectsNonTerminalJobs(t *testing.T) {
+// TestReflectDispatchRejectsNonExecutedDispatch proves a classified Dispatch
+// that has neither reached DispatchExecuted nor had all of its legacy frozen
+// jobs terminate is refused by reflection.
+func TestReflectDispatchRejectsNonExecutedDispatch(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
 	dispatch := classifyTask(t, store, "helper-a", "req-1", testEpoch)
 	r, _ := NewReflector(store, roleModel(reflectOutput("done")))
 	_, err := r.Reflect(context.Background(), "helper-a", dispatch.ID, "reflect-1", testEpoch)
 	if !errors.Is(err, ErrTransition) {
-		t.Fatalf("expected transition error for non-terminal jobs, got %v", err)
+		t.Fatalf("expected transition error for non-executed dispatch, got %v", err)
 	}
 }
 
@@ -492,7 +524,7 @@ func TestReflectorModelFailurePersistsBackoff(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
 	dispatch := classifyTask(t, store, "helper-a", "req-1", testEpoch)
-	finishDispatchJob(t, store, "owner", testEpoch)
+	markDispatchExecuted(t, store, "helper-a", dispatch.ID, testEpoch)
 	r, _ := NewReflector(store, roleModelErr(errors.New("model unavailable")))
 	_, err := r.Reflect(context.Background(), "helper-a", dispatch.ID, "reflect-1", testEpoch.Add(time.Hour))
 	if err == nil {
@@ -503,9 +535,18 @@ func TestReflectorModelFailurePersistsBackoff(t *testing.T) {
 	if d.State != DispatchReflectionFailed || d.RetryAt.IsZero() || !d.RetryAt.After(testEpoch.Add(time.Hour)) {
 		t.Fatalf("expected reflection_failed with backoff, got state=%s retry_at=%v", d.State, d.RetryAt)
 	}
+	// The supervisor retries a failed reflection after the bounded backoff by
+	// re-marking the Dispatch executed (MarkDispatchExecuted accepts the
+	// reflection_failed state), which makes it reflection-ready again.
+	if _, err := store.MarkDispatchExecuted(MarkDispatchExecutedInput{
+		RequestID: "executed-retry", AssistantID: "helper-a", DispatchID: dispatch.ID, Now: testEpoch.Add(2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("MarkDispatchExecuted retry: %v", err)
+	}
+	snapshot, _ = store.Get("helper-a")
 	ready := DispatchesReadyForReflection(snapshot, testEpoch.Add(2*time.Hour))
-	if len(ready) == 0 {
-		t.Fatal("expected reflection to be retryable after backoff")
+	if len(ready) != 1 || ready[0].State != DispatchExecuted {
+		t.Fatalf("expected reflection to be retryable after backoff, got %+v", ready)
 	}
 }
 
@@ -513,7 +554,7 @@ func TestReflectorInvalidJSONPersistsBackoff(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
 	dispatch := classifyTask(t, store, "helper-a", "req-1", testEpoch)
-	finishDispatchJob(t, store, "owner", testEpoch)
+	markDispatchExecuted(t, store, "helper-a", dispatch.ID, testEpoch)
 	r, _ := NewReflector(store, roleModel("not json"))
 	if _, err := r.Reflect(context.Background(), "helper-a", dispatch.ID, "reflect-1", testEpoch.Add(time.Hour)); err == nil {
 		t.Fatal("expected invalid JSON reflection failure")
@@ -548,7 +589,7 @@ func TestStoreRejectsOverboundedContextPack(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
 	dispatch := classifyTask(t, store, "helper-a", "req-1", testEpoch)
-	finishDispatchJob(t, store, "owner", testEpoch)
+	markDispatchExecuted(t, store, "helper-a", dispatch.ID, testEpoch)
 	_, err := store.ReflectDispatch(ReflectInput{
 		AssistantID: "helper-a", DispatchID: dispatch.ID, RequestID: "reflect-1",
 		Content: ContextPackContent{Conclusion: strings.Repeat("x", contextPackMaxBytes+1)},
@@ -597,7 +638,9 @@ func TestIdeationCadenceFiveSuccessfulTasks(t *testing.T) {
 		t.Fatalf("expected not due at start, got due=%v err=%v", due, err)
 	}
 	for i := 0; i < ideaCadenceSuccessfulTasks; i++ {
-		dispatch := classifyTask(t, store, "helper-a", "req-"+string(rune('a'+i)), testEpoch.Add(time.Duration(i)*time.Minute))
+		// The ideation cadence counts "successful tasks" via succeeded frozen
+		// Jobs (successfulTaskDispatchesSince), so exercise the legacy job path.
+		dispatch := classifyTaskWithJob(t, store, "helper-a", "req-"+string(rune('a'+i)), testEpoch.Add(time.Duration(i)*time.Minute))
 		finishDispatchJob(t, store, "owner", testEpoch.Add(time.Duration(i)*time.Minute))
 		r, _ := NewReflector(store, roleModel(reflectOutput("done")))
 		if _, err := r.Reflect(context.Background(), "helper-a", dispatch.ID, "reflect-"+string(rune('a'+i)), testEpoch.Add(time.Hour+time.Duration(i)*time.Minute)); err != nil {
@@ -635,6 +678,36 @@ func TestIdeatorCadenceGatedAndManualAllowed(t *testing.T) {
 	}
 	if _, err := id.Ideate(context.Background(), OpenIdeaInput{AssistantID: "helper-a", RequestID: "idea-manual", Trigger: IdeaTriggerManual, Now: testEpoch}); err != nil {
 		t.Fatalf("manual ideate: %v", err)
+	}
+}
+
+func TestIdeatorReplaySkipsModelAndRejectsTriggerConflict(t *testing.T) {
+	store := testStore(t, t.TempDir())
+	mustCreate(t, store, "helper-a")
+	var calls atomic.Int32
+	id, _ := NewIdeator(store, RoleModelFunc(func(context.Context, string) (string, error) {
+		if calls.Add(1) == 1 {
+			return ideatorOutput(), nil
+		}
+		return `{"summary":"different nondeterministic output"}`, nil
+	}))
+	in := OpenIdeaInput{AssistantID: "helper-a", RequestID: "idea-replay", Trigger: IdeaTriggerManual, Now: testEpoch}
+	first, err := id.Ideate(context.Background(), in)
+	if err != nil {
+		t.Fatalf("first Ideate: %v", err)
+	}
+	second, err := id.Ideate(context.Background(), in)
+	if err != nil {
+		t.Fatalf("replayed Ideate: %v", err)
+	}
+	if second.ID != first.ID || second.Summary != first.Summary || calls.Load() != 1 {
+		t.Fatalf("replay = %+v, first = %+v, model calls = %d", second, first, calls.Load())
+	}
+	_, err = id.Ideate(context.Background(), OpenIdeaInput{
+		AssistantID: "helper-a", RequestID: in.RequestID, Trigger: IdeaTriggerCadence, Now: testEpoch,
+	})
+	if !errors.Is(err, ErrIdempotency) || calls.Load() != 1 {
+		t.Fatalf("trigger conflict err = %v, model calls = %d", err, calls.Load())
 	}
 }
 
@@ -760,7 +833,7 @@ func TestResolveIdeaSupersedesConflictingResponsibilityWithoutPartialMemory(t *t
 	}
 }
 
-func TestRestartRecoveryPreservesDispatchAndJobs(t *testing.T) {
+func TestRestartRecoveryPreservesDispatch(t *testing.T) {
 	root := t.TempDir()
 	store := testStore(t, root)
 	mustCreate(t, store, "helper-a")
@@ -770,11 +843,11 @@ func TestRestartRecoveryPreservesDispatchAndJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get after reopen: %v", err)
 	}
-	if len(snapshot.Dispatches) != 1 || len(snapshot.Jobs) != 1 {
-		t.Fatalf("expected dispatch+job after reopen, got %d dispatches %d jobs", len(snapshot.Dispatches), len(snapshot.Jobs))
+	if len(snapshot.Dispatches) != 1 || len(snapshot.Jobs) != 0 {
+		t.Fatalf("expected one dispatch and zero jobs after reopen, got %d dispatches %d jobs", len(snapshot.Dispatches), len(snapshot.Jobs))
 	}
-	if snapshot.Dispatches[0].State != DispatchClassified || snapshot.Jobs[0].State != JobQueued {
-		t.Fatalf("unexpected state after reopen: %+v %+v", snapshot.Dispatches[0], snapshot.Jobs[0])
+	if snapshot.Dispatches[0].State != DispatchClassified {
+		t.Fatalf("unexpected state after reopen: %+v", snapshot.Dispatches[0])
 	}
 }
 
@@ -817,7 +890,7 @@ func TestReflectDispatchConvergesOnExistingPackSameRequest(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
 	dispatch := classifyTask(t, store, "helper-a", "req-1", testEpoch)
-	finishDispatchJob(t, store, "owner", testEpoch)
+	markDispatchExecuted(t, store, "helper-a", dispatch.ID, testEpoch)
 
 	first, err := store.ReflectDispatch(ReflectInput{
 		AssistantID: "helper-a", DispatchID: dispatch.ID, RequestID: "reflect-1",
@@ -849,7 +922,7 @@ func TestReflectDispatchSameRequestDifferentDispatchConflicts(t *testing.T) {
 	store := testStore(t, t.TempDir())
 	mustCreate(t, store, "helper-a")
 	dispatch := classifyTask(t, store, "helper-a", "req-1", testEpoch)
-	finishDispatchJob(t, store, "owner", testEpoch)
+	markDispatchExecuted(t, store, "helper-a", dispatch.ID, testEpoch)
 	if _, err := store.ReflectDispatch(ReflectInput{
 		AssistantID: "helper-a", DispatchID: dispatch.ID, RequestID: "reflect-1",
 		Content: ContextPackContent{Conclusion: "done"},
@@ -859,7 +932,7 @@ func TestReflectDispatchSameRequestDifferentDispatchConflicts(t *testing.T) {
 	}
 
 	other := classifyTask(t, store, "helper-a", "req-2", testEpoch.Add(30*time.Minute))
-	finishDispatchJob(t, store, "owner", testEpoch.Add(30*time.Minute))
+	markDispatchExecuted(t, store, "helper-a", other.ID, testEpoch.Add(30*time.Minute))
 	_, err := store.ReflectDispatch(ReflectInput{
 		AssistantID: "helper-a", DispatchID: other.ID, RequestID: "reflect-1",
 		Content: ContextPackContent{Conclusion: "other"},
