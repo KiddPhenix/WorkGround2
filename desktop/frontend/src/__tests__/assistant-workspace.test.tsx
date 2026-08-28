@@ -6,9 +6,9 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { AssistantSidebarEntry, AssistantWorkspace, AssistantJobRow, AttentionInbox, DiagnosticsEditor, OverviewEditor, ProposalInbox, RunHistory, assistantDiagnosticWarning, sortedDiagnostics } from "../custom/features/assistant/AssistantWorkspace";
 import { assistantCopy } from "../custom/features/assistant/assistant.copy";
-import { assistantGet } from "../custom/features/assistant/assistant.bridge";
+import { assistantGet, emitMockAssistantDispatchStream } from "../custom/features/assistant/assistant.bridge";
 import type { AssistantDiagnostic, AssistantRun, AssistantRunnerJob, AssistantSnapshot } from "../custom/features/assistant/assistant.types";
-import { getMockSessionControlCalls, getMockViewportPublishes, resetMockSessionControlCalls, resetMockViewportPublishes, setMockAssistantManagedSessions, setMockAssistantSessionStatus, setMockAssistantSessionSteerShouldFail, setMockAssistantSupervisorDiagnostic } from "../lib/bridge";
+import { getMockSessionControlCalls, getMockViewportPublishes, resetMockSessionControlCalls, resetMockViewportPublishes, setMockAssistantManagedSessions, setMockAssistantSessionCancelShouldFail, setMockAssistantSessionStatus, setMockAssistantSupervisorDiagnostic } from "../lib/bridge";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 
@@ -211,8 +211,29 @@ const submittedDispatch = submittedSnapshot.dispatches?.find((dispatch) => dispa
 ok(submittedDispatch !== undefined, "direct input is durably visible as a Dispatch after refresh");
 ok(!submittedSnapshot.routines.some((routine) => routine.id.startsWith("adhoc-")), "direct input does not create or overwrite an adhoc Routine");
 ok(host.querySelector(".assistant-live-reply")?.textContent?.includes("收到，我来处理") ?? false, "accepted input exposes the Dispatcher reply inside the handoff dock");
+ok(host.querySelector(".assistant-live-reply__viewport") !== null, "Dispatcher reply has a dedicated bounded live viewport");
 ok(handoffInput?.disabled === false, "composer unlocks as soon as the durable Dispatch is accepted");
 ok(host.querySelector(".assistant-event__prompt")?.textContent?.includes("排查构建失败") ?? false, "timeline keeps the submitted original text separate from the result");
+
+// ── Dispatcher 实时回复：等待 → 累计流文本 → 最终结果 ────────
+await act(async () => {
+  emitMockAssistantDispatchStream({ assistantId: "assistant-code-project", dispatchId: "dispatch-live", requestId: "req-live", sequence: 9001, phase: "accepted" });
+});
+ok(host.querySelector('.assistant-live-reply[data-phase="accepted"] .assistant-live-reply__viewport')?.textContent?.includes("等待实时回复") ?? false, "accepted phase reserves a visible live-reply viewport");
+await act(async () => {
+  emitMockAssistantDispatchStream({ assistantId: "assistant-code-project", dispatchId: "dispatch-live", requestId: "req-live", sequence: 9002, phase: "streaming", reply: "正在检查项目" });
+});
+ok(host.querySelector('.assistant-live-reply[data-phase="streaming"] .assistant-live-reply__viewport')?.textContent?.includes("正在检查项目") ?? false, "first Dispatcher stream update is visible immediately");
+ok(host.querySelector(".assistant-live-reply__caret") !== null, "streaming reply shows an active caret");
+await act(async () => {
+  emitMockAssistantDispatchStream({ assistantId: "assistant-code-project", dispatchId: "dispatch-live", requestId: "req-live", sequence: 9003, phase: "streaming", reply: "正在检查项目，已定位受管 Session。" });
+});
+ok(host.querySelector(".assistant-live-reply__viewport")?.textContent?.includes("已定位受管 Session") ?? false, "later cumulative stream text replaces the earlier preview");
+await act(async () => {
+  emitMockAssistantDispatchStream({ assistantId: "assistant-code-project", dispatchId: "dispatch-live", requestId: "req-live", sequence: 9004, phase: "committed", reply: "已定位受管 Session。", jobCount: 1 });
+});
+ok(host.querySelector('.assistant-live-reply[data-phase="committed"]')?.textContent?.includes("已定位受管 Session") ?? false, "committed Dispatcher reply remains visible in the same viewport");
+ok(host.querySelector(".assistant-live-reply__caret") === null, "committed reply removes the streaming caret");
 
 const manage = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;
 await act(async () => { manage?.click(); });
@@ -560,20 +581,15 @@ ok(
   "read-only job row renders no retry/stop operations",
 );
 
-// ── 受管 Session 区：派生状态投影 + 控制操作 + 结果词表 ────────
+// ── 受管 Session 区：紧凑列表 + 打开/停止 ────────────────────
 resetMockSessionControlCalls();
 setMockAssistantManagedSessions([
   { id: "scan-session", path: "/mock/sessions/scan-session.jsonl", title: "扫描修改", preview: "", status: "running", turns: 2, owner_id: "assistant-code-project", purpose: "managed", responsibility_id: "resp-scan", workspace_root: "~/projects/WorkGround2", updated_at: "2026-08-28T02:00:00Z" },
   { id: "release-session", path: "/mock/sessions/release-session.jsonl", title: "发布准备", preview: "", status: "failed", turns: 1, owner_id: "assistant-code-project", purpose: "managed", updated_at: "2026-08-28T01:00:00Z" },
 ]);
-setMockAssistantSessionStatus({
-  "scan-session": {
-    id: "scan-session", path: "/mock/sessions/scan-session.jsonl", title: "扫描修改", status: "running", turns: 2, purpose: "managed", running: true, updated_at: "2026-08-28T02:00:00Z",
-    interactions: [{ kind: "ask", id: "ask-1", questions: [{ id: "q1", prompt: "选择发布环境？", options: [{ label: "测试" }, { label: "生产" }] }] }],
-  },
-});
+openedSession = null;
 await act(async () => {
-  root.render(<LocaleProvider><ToastProvider><AssistantWorkspace key="managed-sessions" /></ToastProvider></LocaleProvider>);
+  root.render(<LocaleProvider><ToastProvider><AssistantWorkspace key="managed-sessions" onOpenSession={(target) => { openedSession = target; }} /></ToastProvider></LocaleProvider>);
   await new Promise((resolve) => setTimeout(resolve, 40));
 });
 ok(host.querySelector(".assistant-managed") !== null, "managed session section renders");
@@ -582,48 +598,27 @@ const managedCard = (sessionID: string) => host.querySelector(`[data-session-id=
 const runningCard = managedCard("scan-session");
 const failedCard = managedCard("release-session");
 ok(runningCard !== null && failedCard !== null, "managed section lists running and failed sessions");
+ok(host.querySelectorAll(".assistant-managed__row").length === 2, "each managed Session occupies one compact list row");
+ok((host.querySelector(".assistant-managed__head")?.textContent?.includes("运行目的") && host.querySelector(".assistant-managed__head")?.textContent?.includes("运行状态") && host.querySelector(".assistant-managed__head")?.textContent?.includes("时间")) ?? false, "compact list exposes purpose, state, and time columns");
+ok(runningCard?.querySelector(".assistant-managed__purpose")?.textContent === "扫描修改", "session title is used as the run purpose");
 ok(runningCard?.textContent?.includes("运行中") ?? false, "running session shows its derived status");
-ok((runningCard?.textContent?.includes("归属助手") && runningCard?.textContent?.includes("assistant-code-project")) ?? false, "owner identity is shown");
-ok((runningCard?.textContent?.includes("责任") && runningCard?.textContent?.includes("resp-scan")) ?? false, "bound responsibility is shown");
-ok((runningCard?.textContent?.includes("工作区") && runningCard?.textContent?.includes("~/projects/WorkGround2")) ?? false, "workspace root is shown");
-ok(runningCard?.textContent?.includes("最后更新") ?? false, "update time is shown");
+ok(runningCard?.querySelector("time")?.getAttribute("dateTime") === "2026-08-28T02:00:00Z", "update time keeps the exact machine-readable timestamp");
 ok(failedCard?.textContent?.includes("失败") ?? false, "failed session shows its derived status");
+ok(!runningCard?.textContent?.includes("归属助手") && !runningCard?.textContent?.includes("工作区"), "owner and workspace metadata no longer consume row space");
+ok(runningCard?.querySelector("input") === null && !runningCard?.textContent?.includes("发送指导") && !runningCard?.textContent?.includes("分叉"), "guidance, answer, resume, and fork controls are removed from the compact list");
+
+// 打开 Session
+const cardButton = (card: HTMLElement | null, label: string) => [...(card?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.includes(label)) as HTMLButtonElement | undefined;
+await act(async () => { cardButton(runningCard, "打开 Session")?.click(); });
+ok(openedSession?.sessionPath === "/mock/sessions/scan-session.jsonl" && openedSession?.workspaceRoot === "~/projects/WorkGround2", "open action routes to the exact managed Session");
 
 // 停止（cancel）→ accepted 结果词表
-const cardButton = (card: HTMLElement | null, label: string) => [...(card?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.includes(label)) as HTMLButtonElement | undefined;
 await act(async () => { cardButton(runningCard, "停止")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
 let controlCalls = getMockSessionControlCalls();
 ok(controlCalls.some((call) => call.op === "cancel" && call.sessionId === "scan-session"), "stop submits a session cancel intent");
 ok(controlCalls.find((call) => call.op === "cancel")?.requestId.startsWith("desktop-assistant:") ?? false, "cancel carries a stable request_id");
 ok(managedCard("scan-session")?.querySelector(".assistant-session-outcome--accepted")?.textContent?.includes("已受理") ?? false, "accepted outcome is displayed");
-
-// 指导（steer）
-const steerInput = managedCard("scan-session")?.querySelector('input[aria-label^="指导"]') as HTMLInputElement | null;
-const steerSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set;
-act(() => {
-  steerSetter?.call(steerInput, "先做扫描再汇报");
-  reactProps<{ onChange: (event: { target: HTMLInputElement }) => void }>(steerInput!).onChange({ target: steerInput! });
-});
-await act(async () => { cardButton(managedCard("scan-session"), "发送指导")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
-controlCalls = getMockSessionControlCalls();
-ok(controlCalls.some((call) => call.op === "steer" && call.text === "先做扫描再汇报"), "steer submits the typed guidance");
-ok((managedCard("scan-session")?.querySelector('input[aria-label^="指导"]') as HTMLInputElement | null)?.value === "", "accepted steer clears the draft");
-
-// 回答 pending interaction
-const answerOption = [...(managedCard("scan-session")?.querySelectorAll("button") ?? [])].find((button) => button.textContent?.trim() === "生产") as HTMLButtonElement | undefined;
-ok(answerOption !== undefined, "pending ask exposes its options");
-await act(async () => { answerOption?.click(); });
-const answerSend = cardButton(managedCard("scan-session"), "提交回答");
-ok(answerSend !== undefined && !answerSend.disabled, "answer can be submitted after selecting an option");
-await act(async () => { answerSend?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
-controlCalls = getMockSessionControlCalls();
-ok(controlCalls.some((call) => call.op === "answer" && call.sessionId === "scan-session"), "answer submits a session answer intent");
-
-// 恢复（resume）失败 Session、分叉（fork）
-await act(async () => { cardButton(managedCard("release-session"), "恢复")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
-ok(getMockSessionControlCalls().some((call) => call.op === "resume" && call.sessionId === "release-session"), "resume submits a session resume intent");
-await act(async () => { cardButton(managedCard("scan-session"), "分叉")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
-ok(getMockSessionControlCalls().some((call) => call.op === "fork" && call.sessionId === "scan-session"), "fork submits a session fork intent");
+ok(cardButton(failedCard, "停止")?.disabled === true, "terminal Session keeps a visible but disabled stop action");
 
 // ── 监督诊断面板：后端 DTO 复用 ───────────────────────────────
 setMockAssistantSupervisorDiagnostic({
@@ -658,7 +653,7 @@ ok(host.textContent?.includes("advance 1 executable responsibilities") ?? false,
 ok(host.textContent?.includes("待重试") ?? false, "retry due label is shown");
 ok(host.textContent?.includes("release-session") ?? false, "failed supervisor session is shown");
 
-// ── viewport：真实选中/可见状态发布，revision 单调递增 ────────
+// ── viewport：紧凑列表只发布可见状态，不制造隐式选中 ────────
 resetMockViewportPublishes();
 setMockAssistantManagedSessions([
   { id: "scan-session", path: "/mock/sessions/scan-session.jsonl", title: "扫描修改", preview: "", status: "running", turns: 2, owner_id: "assistant-code-project", purpose: "managed", responsibility_id: "resp-scan", workspace_root: "~/projects/WorkGround2", updated_at: "2026-08-28T02:00:00Z" },
@@ -671,56 +666,38 @@ await act(async () => {
 });
 const viewportPublishes = getMockViewportPublishes();
 ok(viewportPublishes.length >= 1, "workspace publishes a viewport observation");
-const beforeSelectPublish = viewportPublishes[viewportPublishes.length - 1];
-ok(beforeSelectPublish?.windowId === "assistant-main" && beforeSelectPublish?.workspaceId === "~/projects/WorkGround2", "viewport carries the workspace");
-ok((beforeSelectPublish?.visibleSessionIds?.includes("scan-session") && beforeSelectPublish?.visibleSessionIds?.includes("release-session")) ?? false, "viewport lists the visible managed sessions");
-await act(async () => { managedCard("scan-session")?.querySelector(".assistant-session-card__select")?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true })); await new Promise((resolve) => setTimeout(resolve, 10)); });
-const afterSelectPublishes = getMockViewportPublishes();
-const selectedPublish = afterSelectPublishes[afterSelectPublishes.length - 1];
-ok(selectedPublish?.selectedSessionId === "scan-session", "selecting a session publishes it as the viewport selection");
-const selectedRev = Number(selectedPublish?.uiRevision ?? 0);
-const beforeRev = Number(beforeSelectPublish?.uiRevision ?? 0);
-ok(selectedRev > beforeRev, `viewport revision is monotonic across selection changes (${selectedRev} > ${beforeRev})`);
+const visiblePublish = viewportPublishes[viewportPublishes.length - 1];
+ok(visiblePublish?.windowId === "assistant-main" && visiblePublish?.workspaceId === "~/projects/WorkGround2", "viewport carries the workspace");
+ok((visiblePublish?.visibleSessionIds?.includes("scan-session") && visiblePublish?.visibleSessionIds?.includes("release-session")) ?? false, "viewport lists the visible managed sessions");
+ok(visiblePublish?.selectedSessionId === "", "compact list does not publish a hidden selected Session");
 
 // ── 同一次失败重试复用同一 request_id ─────────────────────────
 resetMockSessionControlCalls();
 setMockAssistantManagedSessions([
   { id: "scan-session", path: "/mock/sessions/scan-session.jsonl", title: "扫描修改", preview: "", status: "running", turns: 2, owner_id: "assistant-code-project", purpose: "managed", workspace_root: "~/projects/WorkGround2", updated_at: "2026-08-28T02:00:00Z" },
 ]);
-setMockAssistantSessionStatus(null);
-setMockAssistantSessionSteerShouldFail(true);
+setMockAssistantSessionCancelShouldFail(true);
 await act(async () => {
   root.render(<LocaleProvider><ToastProvider><AssistantWorkspace key="retry" /></ToastProvider></LocaleProvider>);
   await new Promise((resolve) => setTimeout(resolve, 40));
 });
-const retrySteerInput = managedCard("scan-session")?.querySelector('input[aria-label^="指导"]') as HTMLInputElement | null;
-act(() => {
-  steerSetter?.call(retrySteerInput, "继续扫描");
-  reactProps<{ onChange: (event: { target: HTMLInputElement }) => void }>(retrySteerInput!).onChange({ target: retrySteerInput! });
-});
-await act(async () => { cardButton(managedCard("scan-session"), "发送指导")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+await act(async () => { cardButton(managedCard("scan-session"), "停止")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
 let retryCalls = getMockSessionControlCalls();
-ok(retryCalls.length === 1, "first steer attempt reaches the backend");
+ok(retryCalls.length === 1, "first stop attempt reaches the backend");
 const firstRequestID = retryCalls[0]?.requestId ?? "";
-ok(managedCard("scan-session")?.querySelector(".assistant-session-outcome--retryable_error") !== null, "failed steer surfaces a retryable error outcome");
-ok((managedCard("scan-session")?.querySelector('input[aria-label^="指导"]') as HTMLInputElement | null)?.value === "继续扫描", "failed steer keeps the draft for a safe retry");
-await act(async () => { cardButton(managedCard("scan-session"), "发送指导")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+ok(managedCard("scan-session")?.querySelector(".assistant-session-outcome--retryable_error") !== null, "failed stop surfaces a retryable error outcome");
+await act(async () => { cardButton(managedCard("scan-session"), "停止")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
 retryCalls = getMockSessionControlCalls();
 ok(retryCalls.length === 2 && retryCalls[1]?.requestId === firstRequestID, "retry after the same failure reuses the same request_id");
-setMockAssistantSessionSteerShouldFail(false);
-await act(async () => { cardButton(managedCard("scan-session"), "发送指导")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+setMockAssistantSessionCancelShouldFail(false);
+await act(async () => { cardButton(managedCard("scan-session"), "停止")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
 retryCalls = getMockSessionControlCalls();
 ok(retryCalls.length === 3 && retryCalls[2]?.requestId === firstRequestID, "recovering retry reuses the pending request_id until accepted");
-ok(managedCard("scan-session")?.querySelector(".assistant-session-outcome--accepted") !== null, "recovered steer shows the accepted outcome");
-act(() => {
-  const freshSteerInput = managedCard("scan-session")?.querySelector('input[aria-label^="指导"]') as HTMLInputElement | null;
-  steerSetter?.call(freshSteerInput, "换个方向");
-  reactProps<{ onChange: (event: { target: HTMLInputElement }) => void }>(freshSteerInput!).onChange({ target: freshSteerInput! });
-});
-await act(async () => { cardButton(managedCard("scan-session"), "发送指导")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+ok(managedCard("scan-session")?.querySelector(".assistant-session-outcome--accepted") !== null, "recovered stop shows the accepted outcome");
+await act(async () => { cardButton(managedCard("scan-session"), "停止")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
 retryCalls = getMockSessionControlCalls();
-ok(retryCalls.length === 4 && retryCalls[3]?.requestId !== firstRequestID, "a new steer after acceptance gets a fresh request_id");
-setMockAssistantSessionSteerShouldFail(false);
+ok(retryCalls.length === 4 && retryCalls[3]?.requestId !== firstRequestID, "a new stop after acceptance gets a fresh request_id");
+setMockAssistantSessionCancelShouldFail(false);
 setMockAssistantManagedSessions(null);
 setMockAssistantSessionStatus(null);
 setMockAssistantSupervisorDiagnostic(null);

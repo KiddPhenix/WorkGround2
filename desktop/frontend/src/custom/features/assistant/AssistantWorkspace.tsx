@@ -48,12 +48,7 @@ import {
   assistantResume,
   assistantRetryDispatch,
   assistantRunNow,
-  assistantSessionAnswer,
   assistantSessionCancel,
-  assistantSessionFork,
-  assistantSessionResume,
-  assistantSessionStatus,
-  assistantSessionSteer,
   assistantSubmit,
   assistantSupervisorDiagnostic,
   assistantUpdate,
@@ -80,8 +75,6 @@ import {
   type AssistantScheduleKind,
   type AssistantSessionControlOutcome,
   type AssistantSessionControlResult,
-  type AssistantSessionInteraction,
-  type AssistantSessionStatusView,
   type AssistantSnapshot,
   type AssistantSupervisorDiagnostic,
 } from "./assistant.types";
@@ -291,6 +284,7 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
   const [handoff, setHandoff] = useState("");
   const [handoffNotice, setHandoffNotice] = useState(false);
   const [liveReply, setLiveReply] = useState<AssistantLiveReply | null>(null);
+  const liveReplyViewportRef = useRef<HTMLDivElement>(null);
   const today = useMemo(() => new Date(), [data.snapshot?.revision]);
   const timeline = useMemo(() => data.snapshot ? timelineEntries(data.snapshot, today, locale, copy) : [], [copy, data.snapshot, locale, today]);
   const openAttention = data.snapshot?.attention.filter((item) => attentionInboxAction(item, data.snapshot?.runs.find((run) => run.id === item.run_id)) !== "none").length ?? 0;
@@ -414,12 +408,16 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
 
   useEffect(() => { setLiveReply(null); }, [selectedAssistantID]);
 
+  useEffect(() => {
+    if (liveReply?.phase !== "streaming") return;
+    const viewport = liveReplyViewportRef.current;
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  }, [liveReply?.phase, liveReply?.reply]);
+
   // ── 受管 Session 区：只读投影 + 用户控制（控制见 section 组件） ──
   const [managedSessions, setManagedSessions] = useState<AssistantManagedSession[]>([]);
-  const [selectedSessionID, setSelectedSessionID] = useState<string | undefined>(undefined);
   const [managedReload, setManagedReload] = useState(0);
   useEffect(() => {
-    setSelectedSessionID(undefined);
     setManagedSessions([]);
     const id = data.selectedID;
     if (!id) return;
@@ -454,10 +452,10 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
       windowId: "assistant-main",
       workspaceId: current.workspace_root ?? "",
       visibleSessionIds: visibleSessionIDs,
-      selectedSessionId: selectedSessionID ?? "",
+      selectedSessionId: "",
       uiRevision: viewportRef.current.revision,
     });
-  }, [data.snapshot?.assistant.id, data.snapshot?.assistant.workspace_root, visibleSessionKey, selectedSessionID]);
+  }, [data.snapshot?.assistant.id, data.snapshot?.assistant.workspace_root, visibleSessionKey]);
 
   const handleHandoffKeyDown = useCallback((event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (isComposerSubmitKey(event, submitKey, composingRef.current)) {
@@ -553,26 +551,30 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
           )}
         </div>
         {liveReply && liveReply.assistantId === assistant.id && (
-          <div className="assistant-live-reply" role="status" aria-live="polite">
-            <Bot size={14} className="assistant-live-reply__mark" aria-hidden="true" />
-            <div className="assistant-live-reply__body">
-              {liveReply.phase === "accepted" ? (
-                <span className="assistant-live-reply__label">{copy.assistantUnderstanding}</span>
-              ) : liveReply.phase === "streaming" ? (
-                <>
-                  <span className="assistant-live-reply__label">{copy.assistantReplying}</span>
-                  {liveReply.reply ? <span className="assistant-live-reply__text">{liveReply.reply}<span className="assistant-live-reply__caret" aria-hidden="true" /></span> : null}
-                </>
-              ) : liveReply.phase === "committed" ? (
-                <>
-                  <span className="assistant-live-reply__label">{liveReply.jobCount > 0 ? `${copy.understood} · ${copy.arrangedWork.replace("{n}", String(liveReply.jobCount))}` : copy.replied}</span>
-                  {liveReply.reply ? <span className="assistant-live-reply__text">{liveReply.reply}</span> : null}
-                </>
+          <div className="assistant-live-reply" data-phase={liveReply.phase}>
+            <div className="assistant-live-reply__head">
+              <Bot size={14} className="assistant-live-reply__mark" aria-hidden="true" />
+              <span className={liveReply.phase === "failed" ? "assistant-live-reply__error" : "assistant-live-reply__label"}>
+                {liveReply.phase === "accepted"
+                  ? copy.assistantUnderstanding
+                  : liveReply.phase === "streaming"
+                    ? copy.assistantReplying
+                    : liveReply.phase === "committed"
+                      ? (liveReply.jobCount > 0 ? `${copy.understood} · ${copy.arrangedWork.replace("{n}", String(liveReply.jobCount))}` : copy.replied)
+                      : copy.classificationFailed}
+              </span>
+              {(liveReply.phase === "accepted" || liveReply.phase === "streaming") ? <span className="assistant-live-reply__pulse" aria-hidden="true" /> : null}
+              {liveReply.phase === "failed" ? (
+                <button type="button" className="assistant-live-reply__retry" disabled={Boolean(busy)} onClick={() => void retryClassification(liveReply.dispatchId)}><RefreshCw size={12} />{copy.retry}</button>
+              ) : null}
+            </div>
+            <div ref={liveReplyViewportRef} className="assistant-live-reply__viewport" role="status" aria-live="polite" aria-atomic="false">
+              {liveReply.phase === "failed" ? (
+                <span className="assistant-live-reply__error">{liveReply.error || copy.classificationFailed}</span>
+              ) : liveReply.reply ? (
+                <span className="assistant-live-reply__text">{liveReply.reply}{liveReply.phase === "streaming" ? <span className="assistant-live-reply__caret" aria-hidden="true" /> : null}</span>
               ) : (
-                <>
-                  <span className="assistant-live-reply__error">{copy.classificationFailed}</span>
-                  <button type="button" className="assistant-live-reply__retry" disabled={Boolean(busy)} onClick={() => void retryClassification(liveReply.dispatchId)}><RefreshCw size={12} />{copy.retry}</button>
-                </>
+                <span className="assistant-live-reply__empty">{copy.liveReplyWaiting}{liveReply.phase === "accepted" ? <span className="assistant-live-reply__caret" aria-hidden="true" /> : null}</span>
               )}
             </div>
           </div>
@@ -582,8 +584,6 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
       <AssistantManagedSessionsSection
         assistant={assistant}
         sessions={managedSessions}
-        selectedSessionID={selectedSessionID}
-        onSelect={setSelectedSessionID}
         onOpenSession={onOpenSession}
         onChanged={() => setManagedReload((value) => value + 1)}
         copy={copy}
@@ -691,11 +691,9 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
   );
 }
 
-// ── 受管 Session 区（设计 16.2）───────────────────────────────
-// 只读投影 + 用户控制：展示派生状态、owner/purpose/responsibility/workspace/
-// 最后更新；提供打开、指导、回答、停止、恢复、分叉。每个控制操作使用稳定
-// request_id（assistantIntentKey + pendingAssistantRequest），同一次失败重试
-// 复用同一个 request_id，accepted/already_applied 后释放以便下次新操作。
+// ── 受管 Session 紧凑列表 ────────────────────────────────────
+// 只展示用户判断和控制运行所需的信息：运行目的、状态、更新时间、打开与停止。
+// 停止沿用稳定 request_id；失败重试复用同一 ID，成功后释放。
 
 function sessionStatusLabel(status: string, copy: ReturnType<typeof assistantCopy>): string {
   switch (status) {
@@ -719,34 +717,16 @@ function sessionOutcomeLabel(outcome: AssistantSessionControlOutcome, copy: Retu
   }
 }
 
-function AssistantManagedSessionsSection({ assistant, sessions, selectedSessionID, onSelect, onOpenSession, onChanged, copy }: {
+function AssistantManagedSessionsSection({ assistant, sessions, onOpenSession, onChanged, copy }: {
   assistant: AssistantRecord;
   sessions: AssistantManagedSession[];
-  selectedSessionID?: string;
-  onSelect: (sessionID: string | undefined) => void;
   onOpenSession?: (target: AssistantSessionTarget) => void;
   onChanged: () => void;
   copy: ReturnType<typeof assistantCopy>;
 }) {
   const { locale } = useI18n();
-  const [statuses, setStatuses] = useState<Record<string, AssistantSessionStatusView>>({});
   const [busyID, setBusyID] = useState("");
-  const [steerDrafts, setSteerDrafts] = useState<Record<string, string>>({});
-  const [answers, setAnswers] = useState<Record<string, Record<string, string[]>>>({});
   const [outcomes, setOutcomes] = useState<Record<string, AssistantSessionControlResult>>({});
-
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      const next: Record<string, AssistantSessionStatusView> = {};
-      await Promise.all(sessions.map(async (session) => {
-        try { next[session.id] = await assistantSessionStatus(session.id); } catch { /* session may be gone */ }
-      }));
-      if (alive) setStatuses(next);
-    };
-    void load();
-    return () => { alive = false; };
-  }, [sessions]);
 
   // 稳定 request_id：key 固定为 (action, assistant, session)；失败不释放，
   // 重试复用同一 request_id；accepted/already_applied 后释放。
@@ -772,149 +752,58 @@ function AssistantManagedSessionsSection({ assistant, sessions, selectedSessionI
     }
   };
 
-  const sendSteer = (session: AssistantManagedSession) => {
-    const text = (steerDrafts[session.id] ?? "").trim();
-    if (!text) return;
-    // 失败时保留草稿（意图仍待提交），accepted/already_applied 后才清空。
-    void runControl("steer", session.id, async (requestId) => {
-      const result = await assistantSessionSteer({ sessionId: session.id, text, requestId });
-      if (result.outcome === "accepted" || result.outcome === "already_applied") {
-        setSteerDrafts((prev) => ({ ...prev, [session.id]: "" }));
-      }
-      return result;
-    });
-  };
-
-  const toggleAnswer = (interactionID: string, questionID: string, label: string) => {
-    setAnswers((prev) => {
-      const current = prev[interactionID] ?? {};
-      const selected = new Set(current[questionID] ?? []);
-      if (selected.has(label)) selected.delete(label); else selected.add(label);
-      return { ...prev, [interactionID]: { ...current, [questionID]: [...selected] } };
-    });
-  };
-
-  const sendAnswer = (session: AssistantManagedSession, interaction: AssistantSessionInteraction) => {
-    const answersFor = answers[interaction.id] ?? {};
-    const payload = (interaction.questions ?? [])
-      .filter((question) => (answersFor[question.id] ?? []).length > 0)
-      .map((question) => ({ questionId: question.id, selected: answersFor[question.id] ?? [] }));
-    if (payload.length === 0) return;
-    void runControl("answer", session.id, async (requestId) => {
-      const result = await assistantSessionAnswer({ sessionId: session.id, interactionId: interaction.id, answers: payload, requestId });
-      if (result.outcome === "accepted" || result.outcome === "already_applied") {
-        setAnswers((prev) => { const next = { ...prev }; delete next[interaction.id]; return next; });
-      }
-      return result;
-    });
-  };
-
   if (sessions.length === 0) {
     return <div className="assistant-managed" aria-label={copy.managedSessions}><h2 className="assistant-managed__title">{copy.managedSessions}</h2><p className="assistant-managed__empty">{copy.managedSessionsEmpty}</p></div>;
   }
   return (
     <div className="assistant-managed" aria-label={copy.managedSessions}>
       <h2 className="assistant-managed__title">{copy.managedSessions}</h2>
-      {sessions.map((session) => {
-        const selected = selectedSessionID === session.id;
-        const status = statuses[session.id];
-        const interactions = (status?.interactions ?? []).filter((item) => item.kind === "ask");
-        const workspace = session.workspace_root || assistant.workspace_root || "";
-        const target: AssistantSessionTarget = {
-          scope: workspace ? "project" : "global",
-          workspaceRoot: workspace,
-          sessionPath: session.path,
-          assistantID: assistant.id,
-          assistantName: assistant.name,
-        };
-        const sessionOutcomes = Object.entries(outcomes).filter(([key]) => key.startsWith(`${session.id}:`));
-        return (
-          <article key={session.id} className={`assistant-session-card${selected ? " is-selected" : ""}`} data-session-id={session.id}>
-            <header className="assistant-session-card__head">
-              <button
-                type="button"
-                className="assistant-session-card__select"
-                aria-pressed={selected}
-                onClick={() => onSelect(selected ? undefined : session.id)}
-              >
-                {session.title || session.id}
-              </button>
-              <span className={`assistant-run-state assistant-run-state--${session.status}`}>{sessionStatusLabel(session.status, copy)}</span>
-              {target && onOpenSession && (
-                <button type="button" className="assistant-text-action" aria-label={`${session.title || session.id}，${copy.sessionOpen}`} onClick={() => onOpenSession(target)}><ExternalLink size={12} />{copy.sessionOpen}</button>
-              )}
-            </header>
-            <p className="assistant-session-card__meta">
-              <span>{copy.sessionOwner}：{session.owner_id}</span>
-              {session.purpose ? <span>{copy.sessionPurpose}：{session.purpose}</span> : null}
-              {session.responsibility_id ? <span>{copy.sessionResponsibility}：<code>{session.responsibility_id}</code></span> : null}
-              {workspace ? <span>{copy.sessionWorkspace}：<code>{workspace}</code></span> : null}
-              {session.updated_at ? <span>{copy.sessionUpdated}：{formatTimelineTime(new Date(session.updated_at), locale)}</span> : null}
-            </p>
-            {interactions.map((interaction) => {
-              const answerState = answers[interaction.id] ?? {};
-              const hasSelection = (interaction.questions ?? []).some((question) => (answerState[question.id] ?? []).length > 0);
-              return (
-                <div key={interaction.id} className="assistant-session-interaction">
-                  <span>{copy.sessionPendingAsk}</span>
-                  {(interaction.questions ?? []).map((question) => (
-                    <div key={question.id}>
-                      <span>{question.prompt}</span>
-                      <div className="assistant-session-card__actions">
-                        {(question.options ?? []).map((option) => {
-                          const on = (answerState[question.id] ?? []).includes(option.label);
-                          return (
-                            <button
-                              key={option.label}
-                              type="button"
-                              className={`assistant-text-action${on ? " is-active" : ""}`}
-                              aria-pressed={on}
-                              onClick={() => toggleAnswer(interaction.id, question.id, option.label)}
-                            >
-                              {on ? <Check size={12} /> : null}{option.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                  <div className="assistant-session-interaction__answer">
-                    <button className="assistant-button" type="button" disabled={Boolean(busyID) || !hasSelection} onClick={() => sendAnswer(session, interaction)}><Send size={12} />{copy.sessionAnswerSend}</button>
-                  </div>
-                </div>
-              );
-            })}
-            <div className="assistant-session-card__actions">
-              <div className="assistant-session-card__steer">
-                <input
-                  type="text"
-                  value={steerDrafts[session.id] ?? ""}
-                  placeholder={copy.sessionSteerPlaceholder}
-                  aria-label={`${copy.sessionSteer} ${session.title || session.id}`}
-                  disabled={Boolean(busyID)}
-                  onChange={(event) => setSteerDrafts((prev) => ({ ...prev, [session.id]: event.target.value }))}
-                  onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); sendSteer(session); } }}
-                />
-                <button className="assistant-text-action" type="button" disabled={Boolean(busyID) || !(steerDrafts[session.id] ?? "").trim()} onClick={() => sendSteer(session)}><Send size={12} />{copy.sessionSteerSend}</button>
+      <div className="assistant-managed__list" role="table">
+        <div className="assistant-managed__head" role="row">
+          <span role="columnheader">{copy.sessionPurpose}</span>
+          <span role="columnheader">{copy.sessionStatus}</span>
+          <span role="columnheader">{copy.sessionUpdated}</span>
+          <span role="columnheader" aria-label={copy.sessionActions} />
+        </div>
+        {sessions.map((session) => {
+          const workspace = session.workspace_root || assistant.workspace_root || "";
+          const canStop = session.status === "running" || session.status === "waiting" || session.status === "retrying";
+          const cancelOutcome = outcomes[`${session.id}:cancel`];
+          const target: AssistantSessionTarget = {
+            scope: workspace ? "project" : "global",
+            workspaceRoot: workspace,
+            sessionPath: session.path,
+            assistantID: assistant.id,
+            assistantName: assistant.name,
+          };
+          return (
+            <article key={session.id} className="assistant-managed__row" data-session-id={session.id} role="row">
+              <strong className="assistant-managed__purpose" role="cell" title={session.title || session.id}>{session.title || session.id}</strong>
+              <span className={`assistant-run-state assistant-run-state--${session.status}`} role="cell">{sessionStatusLabel(session.status, copy)}</span>
+              <time role="cell" dateTime={session.updated_at || undefined} title={session.updated_at || undefined}>
+                {session.updated_at ? formatTimelineTime(new Date(session.updated_at), locale) : "—"}
+              </time>
+              <div className="assistant-managed__actions" role="cell">
+                {onOpenSession ? (
+                  <button type="button" className="assistant-text-action" aria-label={`${session.title || session.id}，${copy.sessionOpen}`} onClick={() => onOpenSession(target)}><ExternalLink size={12} />{copy.sessionOpen}</button>
+                ) : null}
+                <button
+                  className="assistant-text-action"
+                  type="button"
+                  aria-label={`${session.title || session.id}，${copy.sessionCancel}`}
+                  disabled={Boolean(busyID) || !canStop}
+                  onClick={() => void runControl("cancel", session.id, (requestId) => assistantSessionCancel({ sessionId: session.id, requestId }))}
+                ><X size={12} />{copy.sessionCancel}</button>
+                {cancelOutcome ? (
+                  <span className={`assistant-session-outcome assistant-session-outcome--${cancelOutcome.outcome}`} role="status" title={cancelOutcome.message || cancelOutcome.next_hint}>
+                    {sessionOutcomeLabel(cancelOutcome.outcome, copy)}
+                  </span>
+                ) : null}
               </div>
-              {session.status === "running" || session.status === "waiting" || session.status === "retrying" ? (
-                <button className="assistant-text-action" type="button" disabled={Boolean(busyID)} onClick={() => void runControl("cancel", session.id, (requestId) => assistantSessionCancel({ sessionId: session.id, requestId }))}><X size={12} />{copy.sessionCancel}</button>
-              ) : null}
-              {session.status !== "running" ? (
-                <button className="assistant-text-action" type="button" disabled={Boolean(busyID)} onClick={() => void runControl("resume", session.id, (requestId) => assistantSessionResume({ sessionId: session.id, requestId }))}><Play size={12} />{copy.sessionResume}</button>
-              ) : null}
-              <button className="assistant-text-action" type="button" disabled={Boolean(busyID)} onClick={() => void runControl("fork", session.id, (requestId) => assistantSessionFork({ sessionId: session.id, requestId }))}><ChevronRight size={12} />{copy.sessionFork}</button>
-            </div>
-            {sessionOutcomes.map(([key, result]) => (
-              <p key={key} className={`assistant-session-outcome assistant-session-outcome--${result.outcome}`} role="status">
-                <span>{sessionOutcomeLabel(result.outcome, copy)}</span>
-                {result.next_hint && result.next_hint !== result.outcome ? <span>· {result.next_hint}</span> : null}
-                {result.message ? <span>· {result.message}</span> : null}
-              </p>
-            ))}
-          </article>
-        );
-      })}
+            </article>
+          );
+        })}
+      </div>
     </div>
   );
 }

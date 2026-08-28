@@ -1438,7 +1438,7 @@ let mockManagedSessionsSource: AssistantManagedSession[] | null = null;
 let mockSessionStatusSource: Record<string, AssistantSessionStatusView> | null = null;
 let mockDiagnosticSource: AssistantSupervisorDiagnostic | null = null;
 let mockSessionControlCalls: Array<{ op: string; sessionId: string; requestId: string; text?: string }> = [];
-let mockSessionSteerShouldFail = false;
+let mockSessionCancelShouldFail = false;
 let mockViewportPublishes: AssistantPublishViewportInput[] = [];
 
 /** Test-only override for AssistantManagedSessions; null restores the canned default. */
@@ -1456,9 +1456,9 @@ export function setMockAssistantSupervisorDiagnostic(diag: AssistantSupervisorDi
   mockDiagnosticSource = diag;
 }
 
-/** Test-only switch: the next AssistantSessionSteer call throws instead of accepting. */
-export function setMockAssistantSessionSteerShouldFail(fail: boolean): void {
-  mockSessionSteerShouldFail = fail;
+/** Test-only switch: AssistantSessionCancel throws after recording the call. */
+export function setMockAssistantSessionCancelShouldFail(fail: boolean): void {
+  mockSessionCancelShouldFail = fail;
 }
 
 /** Returns a copy of every recorded Assistant session-control call (op/sessionId/requestId). */
@@ -5529,7 +5529,6 @@ function makeMockApp(): AppBindings {
     },
     async AssistantSessionSteer(input: AssistantSteerRequest): Promise<AssistantSessionControlResult> {
       mockSessionControlCalls.push({ op: "steer", sessionId: input.sessionId, requestId: input.requestId, text: input.text });
-      if (mockSessionSteerShouldFail) throw new Error("steer 网络失败");
       return { outcome: "accepted", session_id: input.sessionId, at: new Date().toISOString() };
     },
     async AssistantSessionAnswer(input: AssistantAnswerRequest): Promise<AssistantSessionControlResult> {
@@ -5538,6 +5537,7 @@ function makeMockApp(): AppBindings {
     },
     async AssistantSessionCancel(input: AssistantSessionRequest): Promise<AssistantSessionControlResult> {
       mockSessionControlCalls.push({ op: "cancel", sessionId: input.sessionId, requestId: input.requestId });
+      if (mockSessionCancelShouldFail) throw new Error("cancel 网络失败");
       return { outcome: "accepted", session_id: input.sessionId, at: new Date().toISOString() };
     },
     async AssistantSessionResume(input: AssistantSessionRequest): Promise<AssistantSessionControlResult> {
