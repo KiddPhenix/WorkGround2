@@ -159,6 +159,7 @@ func (h *desktopSupervisorHost) EnsureSupervisorSession(a assistant.Assistant) (
 	meta.AssistantID = a.ID
 	meta.SessionSource = agent.SessionSourceAssist
 	meta.Purpose = agent.PurposeSupervisor
+	meta.ToolApprovalMode = control.ToolApprovalAuto
 	if err := agent.SaveBranchMetaPreserveUpdated(stablePath, meta); err != nil {
 		return assistant.SupervisorSessionRef{}, err
 	}

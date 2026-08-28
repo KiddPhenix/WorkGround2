@@ -13,6 +13,7 @@ import (
 	"workground2/internal/assistant"
 	"workground2/internal/boot"
 	"workground2/internal/config"
+	"workground2/internal/control"
 	"workground2/internal/event"
 	"workground2/internal/provider"
 	"workground2/internal/tool"
@@ -186,6 +187,7 @@ func (h *daemonSupervisorHost) EnsureSupervisorSession(a assistant.Assistant) (a
 	meta.AssistantID = a.ID
 	meta.SessionSource = agent.SessionSourceAssist
 	meta.Purpose = agent.PurposeSupervisor
+	meta.ToolApprovalMode = control.ToolApprovalAuto
 	if err := agent.SaveBranchMetaPreserveUpdated(stablePath, meta); err != nil {
 		ctrl.Close()
 		return assistant.SupervisorSessionRef{}, err

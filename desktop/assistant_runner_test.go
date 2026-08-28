@@ -13,6 +13,7 @@ import (
 
 	"workground2/internal/agent"
 	"workground2/internal/assistant"
+	"workground2/internal/control"
 	"workground2/internal/event"
 	"workground2/internal/permission"
 	"workground2/internal/tool/sessiontool"
@@ -257,6 +258,9 @@ func TestEnsureAssistantSessionMetaStampsAssistSource(t *testing.T) {
 	}
 	if meta.SessionKind != agent.SessionKindAssistant || meta.SessionSource != agent.SessionSourceAssist || meta.AssistantID != "assistant-source" {
 		t.Fatalf("assistant identity = kind %q source %q id %q", meta.SessionKind, meta.SessionSource, meta.AssistantID)
+	}
+	if meta.ToolApprovalMode != control.ToolApprovalAuto {
+		t.Fatalf("assistant approval mode = %q, want auto", meta.ToolApprovalMode)
 	}
 }
 
