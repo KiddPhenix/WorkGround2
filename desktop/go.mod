@@ -14,16 +14,16 @@ require workground2 v0.0.0
 require (
 	aead.dev/minisign v0.3.0
 	fyne.io/systray v1.12.2
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/minio/selfupdate v0.6.0
-	github.com/shirou/gopsutil/v4 v4.26.4
-	github.com/wailsapp/wails/v2 v2.12.0
-	golang.org/x/image v0.43.0
-	golang.org/x/mod v0.37.0
+	github.com/shirou/gopsutil/v4 v4.26.7
+	github.com/wailsapp/wails/v2 v2.15.0
+	golang.org/x/image v0.45.0
+	golang.org/x/mod v0.38.0
 	golang.org/x/sys v0.47.0
-	golang.org/x/text v0.38.0
+	golang.org/x/text v0.41.0
 )
 
 require (
@@ -35,7 +35,7 @@ require (
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
-	github.com/ebitengine/purego v0.10.0 // indirect
+	github.com/ebitengine/purego v0.10.2 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
