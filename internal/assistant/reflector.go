@@ -42,7 +42,7 @@ func (r *Reflector) Reflect(ctx context.Context, assistantID, dispatchID, reques
 	}
 	jobs := jobsForDispatch(snapshot.Jobs, dispatchID)
 	prompt := ReflectorPrompt(snapshot, dispatch, jobs)
-	text, modelErr := r.model.Complete(ctx, prompt)
+	text, modelErr := r.model.Complete(WithRoleContext(ctx, snapshot.Assistant), prompt)
 	if modelErr != nil {
 		return ContextPack{}, r.fail(assistantID, dispatchID, snapshot, "reflection_model_unavailable", modelErr, now)
 	}

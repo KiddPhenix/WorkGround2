@@ -18,6 +18,7 @@ import (
 	"workground2/internal/netclient"
 	"workground2/internal/provider"
 	"workground2/internal/tool"
+	"workground2/internal/tool/assistanttool"
 	"workground2/internal/tool/sessiontool"
 )
 
@@ -104,7 +105,7 @@ func New(opts Options) (*Runtime, error) {
 		ideator: ideator, autoAnswer: autoAnswer, leader: leader, channels: channels, opts: opts,
 	}
 	r.sessionControl = newDaemonSessionControl(opts.Model, opts.Stderr, store, func(assistantID, executionID string) []tool.Tool {
-		return assistantchannel.Tools(r.channels, assistantID, executionID)
+		return daemonManagedSessionTools(r, assistantID, executionID)
 	})
 	// The shared supervisor executor drives the same core the desktop uses:
 	// atomic supervisor Session, durable event queue, real Controller turns.
@@ -141,6 +142,56 @@ func New(opts Options) (*Runtime, error) {
 	}
 	r.executor = executor
 	return r, nil
+}
+
+// daemonManagedSessionTools gives headless managed Sessions the same durable
+// context and Session-control surface as desktop managed Sessions. Supervisor
+// Sessions do not use this function; daemonSupervisorTools keeps their surface
+// independently read-only.
+func daemonManagedSessionTools(r *Runtime, assistantID, executionID string) []tool.Tool {
+	if r == nil || r.store == nil || r.sessionControl == nil || strings.TrimSpace(assistantID) == "" {
+		return nil
+	}
+	tools := assistantchannel.Tools(r.channels, assistantID, executionID)
+	queryDirs := daemonSupervisorDirs(r)
+	dir := config.SessionDir()
+	workspace := ""
+	if snapshot, err := r.store.Get(assistantID); err == nil && snapshot.Assistant.Scope == assistant.ScopeWorkspace {
+		workspace = snapshot.Assistant.WorkspaceRoot
+	}
+	control := sessiontool.BindOwner(r.sessionControl, assistantID, workspace)
+	tools = append(tools,
+		sessiontool.NewSessionListToolDirs(queryDirs),
+		sessiontool.NewSessionStatusToolDirs(queryDirs),
+		sessiontool.NewSessionReadToolDirs(queryDirs),
+		sessiontool.NewSessionSteerTool(control, dir),
+		sessiontool.NewInteractionAnswerTool(control, dir),
+		sessiontool.NewSessionCancelTool(control, dir),
+		sessiontool.NewSessionResumeTool(control, dir),
+		sessiontool.NewSessionRetryTool(control, dir),
+		sessiontool.NewSessionForkTool(control, dir),
+		sessiontool.NewSessionCreateTool(control, dir),
+		sessiontool.NewInteractionListTool(control, dir),
+	)
+	tools = append(tools,
+		assistanttool.NewScheduleListTool(r.store, assistantID),
+		assistanttool.NewScheduleGetTool(r.store, assistantID),
+		assistanttool.NewScheduleCreateTool(r.store, assistantID),
+		assistanttool.NewScheduleUpdateTool(r.store, assistantID),
+		assistanttool.NewSchedulePauseTool(r.store, assistantID),
+		assistanttool.NewScheduleResumeTool(r.store, assistantID),
+		assistanttool.NewScheduleDeleteTool(r.store, assistantID),
+		assistanttool.NewScheduleRunNowTool(r.store, assistantID),
+		assistanttool.NewMemorySearchTool(r.store, assistantID),
+		assistanttool.NewMemoryRememberTool(r.store, assistantID),
+		assistanttool.NewMemoryForgetTool(r.store, assistantID),
+		assistanttool.NewPolicyGetTool(r.store, assistantID),
+		assistanttool.NewPolicyUpdateTool(r.store, assistantID),
+		assistanttool.NewProjectStatusTool(r.store, assistantID),
+		assistanttool.NewProjectConstraintsGetTool(r.store, assistantID),
+		assistanttool.NewProjectConstraintsPatchTool(r.store, assistantID),
+	)
+	return tools
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -206,9 +257,15 @@ func (r *Runtime) RunOnce(ctx context.Context) error {
 	issues := []error{scheduleErr, collectErr}
 	for _, fire := range result.Fires {
 		requestID := assistant.StableID("request", "routine-fire/"+fire.FireID)
+		snapshot, snapshotErr := r.store.Get(fire.AssistantID)
+		if snapshotErr != nil {
+			issues = append(issues, snapshotErr)
+			continue
+		}
 		sessionID, err := r.sessionControl.Create(sessiontool.SessionCreateRequest{
-			Title: fire.Title, Prompt: fire.Prompt, OwnerID: fire.AssistantID,
+			Title: fire.Title, Prompt: assistant.ManagedSessionPrompt(snapshot, fire.Prompt), IntentPrompt: fire.Prompt, OwnerID: fire.AssistantID,
 			Purpose:   agent.PurposeManaged,
+			Workspace: snapshot.Assistant.WorkspaceRoot,
 			RequestID: requestID,
 		})
 		if err != nil {

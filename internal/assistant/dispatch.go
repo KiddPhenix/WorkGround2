@@ -202,7 +202,8 @@ type JobSpec struct {
 }
 
 // Classification is the Dispatcher's bounded output: one user-facing reply and
-// zero or more job specs.
+// a compatibility Jobs field. The converged execution path creates a managed
+// Session for task Dispatches and does not persist these job specs.
 type Classification struct {
 	Kind  DispatchKind `json:"kind"`
 	Reply string       `json:"reply"`

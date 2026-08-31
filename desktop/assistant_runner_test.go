@@ -51,6 +51,12 @@ func (c *recordingSessionControl) created() int {
 	return len(c.creates)
 }
 
+func (c *recordingSessionControl) createdRequest(index int) sessiontool.SessionCreateRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.creates[index]
+}
+
 var _ sessiontool.SessionControl = (*recordingSessionControl)(nil)
 
 // testSupervisorHost is the minimal host fake the test runtime wires into the
@@ -290,7 +296,7 @@ func TestAssistantConvergedPathsCreateNoRunsOrJobs(t *testing.T) {
 		RequestID: "create-converged",
 		Assistant: assistant.Assistant{
 			ID: "helper-converged", Name: "Helper", Mission: "Keep scanning",
-			Scope: assistant.ScopeGlobal, Lifecycle: assistant.LifecycleActive, Policy: assistant.DefaultPolicy(),
+			Scope: assistant.ScopeWorkspace, WorkspaceRoot: t.TempDir(), Lifecycle: assistant.LifecycleActive, Policy: assistant.DefaultPolicy(),
 		},
 		Routines: []assistant.Routine{{
 			ID: "routine-converged", Title: "Scan", Prompt: "Scan now", Enabled: true,
@@ -312,6 +318,9 @@ func TestAssistantConvergedPathsCreateNoRunsOrJobs(t *testing.T) {
 	if control.created() != 1 {
 		t.Fatalf("routine fire did not create a managed Session: %d", control.created())
 	}
+	if req := control.createdRequest(0); req.Workspace != snapshot.Assistant.WorkspaceRoot || req.IntentPrompt != "Scan now" || req.Prompt == req.IntentPrompt || !strings.Contains(req.Prompt, "memory_search") {
+		t.Fatalf("routine managed context = %#v", req)
+	}
 
 	// Supervisor advance -> managed Session.
 	a := snapshot.Assistant
@@ -329,6 +338,9 @@ func TestAssistantConvergedPathsCreateNoRunsOrJobs(t *testing.T) {
 	if control.created() != 2 {
 		t.Fatalf("supervisor advance did not create a managed Session: %d", control.created())
 	}
+	if req := control.createdRequest(1); req.Workspace != snapshot.Assistant.WorkspaceRoot || req.IntentPrompt != "run the scan" || req.Prompt == req.IntentPrompt || !strings.Contains(req.Prompt, "责任图") {
+		t.Fatalf("responsibility managed context = %#v", req)
+	}
 
 	// Task Dispatch -> managed Session (classify then advance).
 	if _, err := store.OpenDispatch(assistant.OpenDispatchInput{
@@ -343,6 +355,9 @@ func TestAssistantConvergedPathsCreateNoRunsOrJobs(t *testing.T) {
 	service.advanceClassifiedDispatches(time.Now())
 	if control.created() != 3 {
 		t.Fatalf("task dispatch did not create a managed Session: %d", control.created())
+	}
+	if req := control.createdRequest(2); req.Workspace != snapshot.Assistant.WorkspaceRoot || req.IntentPrompt != "请扫描项目最近修改并跑测试" || req.Prompt == req.IntentPrompt || !strings.Contains(req.Prompt, "Assistant：Helper") {
+		t.Fatalf("dispatch managed context = %#v", req)
 	}
 
 	final, err := store.Get(a.ID)

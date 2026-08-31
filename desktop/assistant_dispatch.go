@@ -202,6 +202,48 @@ type assistantRoleModel struct {
 	app *App
 }
 
+type assistantRoleTarget struct {
+	context       assistant.RoleContext
+	workspaceRoot string
+	sessionDir    string
+}
+
+func roleTarget(ctx context.Context) (assistantRoleTarget, error) {
+	role, _ := assistant.RoleContextFrom(ctx)
+	target := assistantRoleTarget{context: role, sessionDir: config.SessionDir()}
+	if role.Scope != assistant.ScopeWorkspace {
+		return target, nil
+	}
+	target.workspaceRoot = normalizeProjectRoot(role.WorkspaceRoot)
+	if target.workspaceRoot == "" {
+		return assistantRoleTarget{}, errors.New("assistant role workspace is required")
+	}
+	target.sessionDir = desktopSessionDir(target.workspaceRoot)
+	if strings.TrimSpace(target.sessionDir) == "" {
+		return assistantRoleTarget{}, errors.New("assistant role session dir is unavailable")
+	}
+	return target, nil
+}
+
+func stampRoleSession(path string, target assistantRoleTarget) error {
+	meta, err := agent.EnsureBranchMeta(path)
+	if err != nil {
+		return err
+	}
+	meta.SessionKind = agent.SessionKindAssistant
+	meta.SessionSource = agent.SessionSourceAssist
+	meta.AssistantID = strings.TrimSpace(target.context.AssistantID)
+	meta.ToolApprovalMode = control.ToolApprovalAuto
+	if target.context.Scope == assistant.ScopeWorkspace {
+		meta.Scope = "project"
+		meta.WorkspaceRoot = target.workspaceRoot
+	} else {
+		meta.Scope = "global"
+		meta.WorkspaceRoot = ""
+	}
+	return agent.SaveBranchMetaPreserveUpdated(path, meta)
+}
+
 func (m assistantRoleModel) Complete(ctx context.Context, prompt string) (string, error) {
 	return m.app.runRoleCompletion(ctx, prompt)
 }
@@ -215,10 +257,14 @@ func (m assistantRoleModel) CompleteStream(ctx context.Context, prompt string, o
 // system prompt; the role instruction and dynamic context live entirely in the
 // prompt (the user turn). A frozen deny policy prevents any tool side effect.
 func (a *App) runRoleCompletion(ctx context.Context, prompt string) (string, error) {
+	target, err := roleTarget(ctx)
+	if err != nil {
+		return "", err
+	}
 	capture := &roleCapture{}
 	ctrl, err := boot.Build(ctx, boot.Options{
 		Model: "", RequireKey: true, Sink: event.FuncSink(capture.sink),
-		Stderr: os.Stderr, SessionDir: config.SessionDir(), SessionKind: agent.SessionKindAssistant,
+		Stderr: os.Stderr, WorkspaceRoot: target.workspaceRoot, SessionDir: target.sessionDir, SessionKind: agent.SessionKindAssistant,
 		ApprovalTimeout: 2 * time.Second, SessionRefs: a.sessionRefs, SessionRefsErr: a.sessionRefsErr,
 	})
 	if err != nil {
@@ -226,6 +272,9 @@ func (a *App) runRoleCompletion(ctx context.Context, prompt string) (string, err
 	}
 	defer ctrl.Close()
 	ctrl.SetSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
+	if err := stampRoleSession(ctrl.SessionPath(), target); err != nil {
+		return "", err
+	}
 	if err := ctrl.RunWithPolicy(ctx, prompt, assistant.RolePermissionPolicy(), control.ToolApprovalAuto); err != nil {
 		return "", err
 	}
@@ -241,10 +290,14 @@ func (a *App) runRoleCompletion(ctx context.Context, prompt string) (string, err
 // runRoleCompletionStream is runRoleCompletion with answer-text deltas forwarded
 // to onDelta for streaming previews. The final Message remains authoritative.
 func (a *App) runRoleCompletionStream(ctx context.Context, prompt string, onDelta func(string)) (string, error) {
+	target, err := roleTarget(ctx)
+	if err != nil {
+		return "", err
+	}
 	capture := &streamRoleCapture{onDelta: onDelta}
 	ctrl, err := boot.Build(ctx, boot.Options{
 		Model: "", RequireKey: true, Sink: event.FuncSink(capture.sink),
-		Stderr: os.Stderr, SessionDir: config.SessionDir(), SessionKind: agent.SessionKindAssistant,
+		Stderr: os.Stderr, WorkspaceRoot: target.workspaceRoot, SessionDir: target.sessionDir, SessionKind: agent.SessionKindAssistant,
 		ApprovalTimeout: 2 * time.Second, SessionRefs: a.sessionRefs, SessionRefsErr: a.sessionRefsErr,
 	})
 	if err != nil {
@@ -252,6 +305,9 @@ func (a *App) runRoleCompletionStream(ctx context.Context, prompt string, onDelt
 	}
 	defer ctrl.Close()
 	ctrl.SetSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
+	if err := stampRoleSession(ctrl.SessionPath(), target); err != nil {
+		return "", err
+	}
 	if err := ctrl.RunWithPolicy(ctx, prompt, assistant.RolePermissionPolicy(), control.ToolApprovalAuto); err != nil {
 		return "", err
 	}

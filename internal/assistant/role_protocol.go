@@ -23,6 +23,39 @@ type RoleModel interface {
 	Complete(ctx context.Context, prompt string) (string, error)
 }
 
+// RoleContext freezes the Assistant identity and workspace for one internal
+// Dispatcher/Reflector/Ideator model call. Hosts use it to persist the role
+// Session beside the Assistant's other workspace Sessions instead of leaking
+// internal calls into Global.
+type RoleContext struct {
+	AssistantID   string
+	Scope         Scope
+	WorkspaceRoot string
+}
+
+type roleContextKey struct{}
+
+// WithRoleContext binds one role call to the Assistant snapshot that produced
+// its prompt. The value is immutable for the duration of the call.
+func WithRoleContext(ctx context.Context, a Assistant) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, roleContextKey{}, RoleContext{
+		AssistantID: strings.TrimSpace(a.ID), Scope: a.Scope,
+		WorkspaceRoot: strings.TrimSpace(a.WorkspaceRoot),
+	})
+}
+
+// RoleContextFrom returns the frozen Assistant owner of a role model call.
+func RoleContextFrom(ctx context.Context) (RoleContext, bool) {
+	if ctx == nil {
+		return RoleContext{}, false
+	}
+	value, ok := ctx.Value(roleContextKey{}).(RoleContext)
+	return value, ok
+}
+
 // RoleModelFunc adapts a plain function into a RoleModel.
 type RoleModelFunc func(ctx context.Context, prompt string) (string, error)
 
@@ -246,9 +279,9 @@ func DispatcherPrompt(snapshot Snapshot, input string) string {
 	fmt.Fprintf(&b, "用户原文：\n%s\n\n", input)
 	writeRoleContext(&b, snapshot)
 	b.WriteString("分类只能是 task / question / feedback / improvement / correction / control 之一。\n")
-	b.WriteString("reply 是给用户看的一级中文回复。jobs 是 0..3 个唯一命名的 Runner Job。task 或 improvement 通常需要 Job；feedback/correction/control 通常零 Job。question 若零 Job，reply 必须直接回答问题；需要查询、验证或执行才能回答时必须创建 Job，禁止只承诺稍后回答。\n\n")
+	b.WriteString("reply 是给用户看的一级中文回复。task 包含明确动作，也包含任何必须查询工作区、Assistant Memory、历史 Session、外部信息或调用工具后才能可靠回答的问题；这类输入即使是问句也必须分类为 task，由受管 Session 执行。question 只用于当前提示内已有充分信息、无需任何工具即可直接回答的问句，reply 必须当场回答。feedback/correction/control 通常不执行任务。jobs 是兼容字段，当前统一执行链不读取它，必须返回空数组。\n\n")
 	b.WriteString("只返回一个 JSON 对象，不要调用任何工具，不要输出解释或多余文本：\n")
-	b.WriteString(`{"kind":"task","reply":"收到，我来处理。","jobs":[{"name":"execute","kind":"task","target":"","prompt":"…"}]}` + "\n")
+	b.WriteString(`{"kind":"task","reply":"收到，我来核对工作区和历史结果。","jobs":[]}` + "\n")
 	b.WriteString("禁止在 JSON 中携带 policy、workspace、scope、credential、publish、action 等任何权限/工作区/外部动作字段。")
 	return b.String()
 }

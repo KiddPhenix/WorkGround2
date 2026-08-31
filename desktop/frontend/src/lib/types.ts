@@ -303,6 +303,7 @@ export interface UnreadConversation {
   key: string;
   source: "room" | "im" | "session" | "work";
   sessionId?: string;
+  sessionKind?: "normal" | "work" | "collaboration" | "assistant";
   title?: string;
   latestSequence: number;
   readSequence: number;

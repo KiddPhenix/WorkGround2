@@ -25,6 +25,8 @@ eq(jobStateLabel("succeeded", "zh"), "已完成", "job succeeded zh");
 eq(jobStateLabel("failed", "en"), "Failed", "job failed en");
 eq(ideaStateLabel("pending", "zh"), "待确认", "idea pending zh");
 eq(dispatchStateLabel("classification_failed", "zh"), "分类失败", "dispatch classification_failed zh");
+eq(dispatchStateLabel("executed", "zh"), "已执行", "dispatch executed zh");
+eq(dispatchStateLabel("future_state", "en"), "Unknown state: future_state", "unknown dispatch state stays renderable");
 
 const day = new Date("2026-08-17T08:00:00.000Z");
 const copy = { learned: "记", next: "下次" } as AssistantCopy;

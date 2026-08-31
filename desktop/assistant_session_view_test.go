@@ -295,6 +295,33 @@ func TestAssistantSessionControlOutcomeVocabulary(t *testing.T) {
 	}
 }
 
+// TestSupervisorNextStepIgnoresHistoricalFailedRuns proves the cycle next-step
+// hint derives execution state from the Session subsystem, never from legacy
+// Runs/Jobs: two historical failed Runs must not produce expand:repeated_failure
+// when no managed Session actually failed.
+func TestSupervisorNextStepIgnoresHistoricalFailedRuns(t *testing.T) {
+	service, _ := newAssistantRuntimeWithHost(t, &fakeRecordingHost{})
+	now := time.Now()
+	snapshot := assistant.Snapshot{
+		Assistant: assistant.Assistant{ID: "assistant-a"},
+		Plan: assistant.Plan{Revision: 1, Responsibilities: []assistant.Responsibility{{
+			ID: "r1", AssistantID: "assistant-a", Objective: "do", Status: assistant.RespReady,
+			Revision: 1, CreatedAt: now, UpdatedAt: now,
+		}}},
+		Runs: []assistant.Run{
+			{ID: "run-1", AssistantID: "assistant-a", ResponsibilityID: "r1", State: assistant.RunFailed},
+			{ID: "run-2", AssistantID: "assistant-a", ResponsibilityID: "r1", State: assistant.RunFailed},
+		},
+	}
+	got := service.supervisorNextStep(snapshot, now)
+	if got == "expand:repeated_failure" {
+		t.Fatalf("next step fell back to historical failed Runs: %q", got)
+	}
+	if want := "advance 1 executable responsibilities (0 running, 0 failed sessions)"; got != want {
+		t.Fatalf("next step = %q, want %q", got, want)
+	}
+}
+
 func TestAssistantSessionActionReceiptReplaysWithoutRepeating(t *testing.T) {
 	dir := t.TempDir()
 	calls := 0

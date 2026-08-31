@@ -81,7 +81,7 @@ import {
 import "./assistant.css";
 import type { ProjectNode } from "../../../lib/types";
 
-type ManageTab = "overview" | "diagnostics" | "routines" | "memory" | "channels" | "proposals" | "history" | "attention" | "plan";
+type ManageTab = "overview" | "sessions" | "diagnostics" | "supervisor" | "routines" | "memory" | "channels" | "proposals" | "history" | "attention" | "plan";
 
 export interface AssistantSessionTarget {
   scope: "global" | "project";
@@ -442,7 +442,10 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
     }).catch(() => {});
     return () => { alive = false; };
   }, [data.selectedID]);
-  const visibleSessionIDs = useMemo(() => managedSessions.map((item) => item.id), [managedSessions]);
+  const visibleSessionIDs = useMemo(
+    () => manageTab === "sessions" ? managedSessions.map((item) => item.id) : [],
+    [manageTab, managedSessions],
+  );
   const visibleSessionKey = visibleSessionIDs.join(",");
   useEffect(() => {
     const current = data.snapshot?.assistant;
@@ -581,15 +584,6 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
         )}
       </div>
 
-      <AssistantManagedSessionsSection
-        assistant={assistant}
-        sessions={managedSessions}
-        onOpenSession={onOpenSession}
-        onChanged={() => setManagedReload((value) => value + 1)}
-        copy={copy}
-      />
-      <AssistantSupervisorDiagnosticPanel assistantID={assistant.id} copy={copy} />
-
       <div className="assistant-workspace__scroll">
         <div className="assistant-day">
           <h1><span>{copy.today}</span>，{formatAssistantDate(today, locale)}</h1>
@@ -684,6 +678,8 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
           onRun={run}
           onOpenSession={onOpenSession}
           diagnostics={data.diagnostics}
+          managedSessions={managedSessions}
+          onManagedChanged={() => setManagedReload((value) => value + 1)}
         />
       )}
       {creating && <CreateAssistantDialog onClose={() => setCreating(false)} onCreated={(id) => { setCreating(false); void data.loadList(id); }} />}
@@ -894,7 +890,7 @@ function AssistantSupervisorDiagnosticPanel({ assistantID, copy }: { assistantID
   );
 }
 
-function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted, onRun, onOpenSession, diagnostics }: {
+function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted, onRun, onOpenSession, diagnostics, managedSessions, onManagedChanged }: {
   snapshot: AssistantSnapshot;
   tab: ManageTab;
   onTab: (tab: ManageTab) => void;
@@ -904,6 +900,8 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted,
   onRun: (routineID?: string) => Promise<void>;
   onOpenSession?: AssistantWorkspaceProps["onOpenSession"];
   diagnostics: AssistantDiagnostic[];
+  managedSessions: AssistantManagedSession[];
+  onManagedChanged: () => void;
 }) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
@@ -911,7 +909,9 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted,
   const [busy, setBusy] = useState("");
   const tabs: Array<{ id: ManageTab; label: string; icon: typeof Bot }> = [
     { id: "overview", label: copy.overview, icon: Bot },
+    { id: "sessions", label: copy.managedSessions, icon: FolderOpen },
     { id: "diagnostics", label: copy.diagnostics, icon: Activity },
+    { id: "supervisor", label: copy.supervisorDiagnostic, icon: Activity },
     { id: "plan", label: copy.plan, icon: Check },
     { id: "routines", label: copy.routines, icon: CalendarClock },
     { id: "memory", label: copy.memory, icon: Brain },
@@ -957,7 +957,9 @@ function AssistantManager({ snapshot, tab, onTab, onClose, onRefresh, onDeleted,
         <nav aria-label={copy.manage}>{tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-current={tab === id ? "page" : undefined} className={tab === id ? "is-active" : ""} onClick={() => onTab(id)}><Icon size={15} />{label}{id === "diagnostics" && diagnostics.length > 0 && <span className="assistant-nav-count">{diagnostics.length}</span>}{id === "attention" && snapshot.attention.some((item) => attentionInboxAction(item, snapshot.runs.find((run) => run.id === item.run_id)) !== "none") && <span className="assistant-nav-dot" />}{id === "proposals" && snapshot.proposals?.some((item) => item.state === "pending") && <span className="assistant-nav-dot" />}</button>)}</nav>
         <div className="assistant-manager__content">
           {tab === "overview" && <OverviewEditor snapshot={snapshot} busy={busy} act={act} onDelete={deleteAssistant} />}
+          {tab === "sessions" && <AssistantManagedSessionsSection assistant={snapshot.assistant} sessions={managedSessions} onOpenSession={onOpenSession} onChanged={onManagedChanged} copy={copy} />}
           {tab === "diagnostics" && <DiagnosticsEditor diagnostics={diagnostics} />}
+          {tab === "supervisor" && <AssistantSupervisorDiagnosticPanel assistantID={snapshot.assistant.id} copy={copy} />}
           {tab === "plan" && <PlanView snapshot={snapshot} />}
           {tab === "routines" && <RoutineEditor snapshot={snapshot} busy={busy} act={act} onRun={onRun} />}
           {tab === "memory" && <MemoryEditor snapshot={snapshot} busy={busy} act={act} />}

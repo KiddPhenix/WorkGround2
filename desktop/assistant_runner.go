@@ -267,6 +267,7 @@ func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
+	migrateAssistantRoleSessions(app, store)
 	scheduler, err := assistant.NewScheduler(store)
 	if err != nil {
 		return nil, err
@@ -415,7 +416,7 @@ func (r *AssistantRuntime) sessionCreator() sessiontool.SessionControl {
 		return r.sessionControl
 	}
 	if r.app != nil {
-		return &appAssistantSessionControl{app: r.app}
+		return &appAssistantSessionControl{app: r.app, store: r.store}
 	}
 	return nil
 }
@@ -719,8 +720,8 @@ func (r *AssistantRuntime) advanceClassifiedDispatches(now time.Time) {
 				return
 			}
 			sessionID, err := adapter.Create(sessiontool.SessionCreateRequest{
-				Title: d.Input, Prompt: d.Input, OwnerID: a.ID, Purpose: agent.PurposeManaged,
-				RequestID: assistant.StableID("request", "dispatch-session/"+d.ID),
+				Title: d.Input, Prompt: assistant.ManagedSessionPrompt(snapshot, d.Input), IntentPrompt: d.Input, OwnerID: a.ID, Purpose: agent.PurposeManaged,
+				Workspace: snapshot.Assistant.WorkspaceRoot, RequestID: assistant.StableID("request", "dispatch-session/"+d.ID),
 			})
 			if err != nil {
 				r.recordDiagnostic("dispatch_session", err)
@@ -756,9 +757,14 @@ func (r *AssistantRuntime) fireRoutineSessions(fires []assistant.RoutineFire) {
 			title = strings.TrimSpace(fire.Prompt)
 		}
 		requestID := assistant.StableID("request", "routine-fire/"+fire.FireID)
+		snapshot, err := r.store.Get(fire.AssistantID)
+		if err != nil {
+			r.recordDiagnostic("routine_fire_context", err)
+			continue
+		}
 		sessionID, err := adapter.Create(sessiontool.SessionCreateRequest{
-			Title: title, Prompt: fire.Prompt, OwnerID: fire.AssistantID, Purpose: agent.PurposeManaged,
-			RequestID: requestID,
+			Title: title, Prompt: assistant.ManagedSessionPrompt(snapshot, fire.Prompt), IntentPrompt: fire.Prompt, OwnerID: fire.AssistantID, Purpose: agent.PurposeManaged,
+			Workspace: snapshot.Assistant.WorkspaceRoot, RequestID: requestID,
 		})
 		if err != nil {
 			r.recordDiagnostic("routine_fire_session", err)
@@ -935,7 +941,14 @@ func containsString(items []string, want string) bool {
 // view comes from the shared supervisor executor's host (multi-dir meta scan),
 // the same view the supervisor turns use.
 func (r *AssistantRuntime) supervisorNextStep(snapshot assistant.Snapshot, now time.Time) string {
-	if triggers := assistant.EvaluateExpansion(snapshot, now); len(triggers) > 0 {
+	running, failed := 0, 0
+	if r.executor != nil {
+		rs, fs := r.executor.SessionSummaries(snapshot.Assistant.ID)
+		running, failed = len(rs), len(fs)
+	}
+	if triggers := assistant.EvaluateExpansion(snapshot, now, assistant.ExpansionLive{
+		Running: running, Failed: failed, ObservedAt: snapshot.Expansion.EvidenceObservedAt,
+	}); len(triggers) > 0 {
 		return "expand:" + string(triggers[0])
 	}
 	executable := 0
@@ -943,11 +956,6 @@ func (r *AssistantRuntime) supervisorNextStep(snapshot assistant.Snapshot, now t
 		if resp.Status == assistant.RespReady || resp.Status == assistant.RespActive {
 			executable++
 		}
-	}
-	running, failed := 0, 0
-	if r.executor != nil {
-		rs, fs := r.executor.SessionSummaries(snapshot.Assistant.ID)
-		running, failed = len(rs), len(fs)
 	}
 	return fmt.Sprintf("advance %d executable responsibilities (%d running, %d failed sessions)", executable, running, failed)
 }
@@ -1082,7 +1090,7 @@ func (r *AssistantRuntime) Tools(assistantID, executionID string) []tool.Tool {
 		return nil
 	}
 	tools := assistantchannel.Tools(r.channels, assistantID, executionID)
-	tools = append(tools, r.sessionTools()...)
+	tools = append(tools, r.sessionTools(assistantID)...)
 	tools = append(tools, assistantStoreTools(r.store, assistantID)...)
 	return tools
 }

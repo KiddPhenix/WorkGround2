@@ -675,6 +675,12 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 		if opts.BranchMeta.SessionKind == SessionKindAssistant && opts.BranchMeta.AssistantID == "" {
 			opts.BranchMeta.AssistantID = parentMeta.AssistantID
 		}
+		// A recovery branch continues the same logical Assistant Session. Keep
+		// its purpose so supervisor discovery follows the recovered physical
+		// Session instead of reopening the original root on the next turn.
+		if opts.BranchMeta.Purpose == "" {
+			opts.BranchMeta.Purpose = parentMeta.Purpose
+		}
 		if parentMeta.Recovered {
 			parentDepth = parentMeta.RecoveryDepth
 			if parentDepth <= 0 {

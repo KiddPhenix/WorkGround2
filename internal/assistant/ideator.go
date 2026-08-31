@@ -59,7 +59,7 @@ func (id *Ideator) Ideate(ctx context.Context, in OpenIdeaInput) (IdeaProposal, 
 		return IdeaProposal{}, fmt.Errorf("assistant: invalid idea trigger %q", in.Trigger)
 	}
 	prompt := IdeatorPrompt(snapshot, in.Trigger)
-	text, modelErr := id.model.Complete(ctx, prompt)
+	text, modelErr := id.model.Complete(WithRoleContext(ctx, snapshot.Assistant), prompt)
 	if modelErr != nil {
 		id.failCadence(in, "ideation_model_unavailable", modelErr)
 		return IdeaProposal{}, modelErr

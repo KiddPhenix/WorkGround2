@@ -2,12 +2,46 @@ package assistantdaemon
 
 import (
 	"io"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"workground2/internal/assistant"
 	"workground2/internal/control"
+	"workground2/internal/tool/sessiontool"
 )
+
+func TestDaemonSessionWorkspaceUsesOwnerAsAuthority(t *testing.T) {
+	store, err := assistant.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	snapshot, err := store.Create(assistant.CreateInput{
+		RequestID: "create-daemon-workspace",
+		Assistant: assistant.Assistant{
+			ID: "helper-daemon-workspace", Name: "Helper", Mission: "Work here",
+			Scope: assistant.ScopeWorkspace, WorkspaceRoot: workspace,
+			Lifecycle: assistant.LifecycleActive, Policy: assistant.DefaultPolicy(),
+		},
+		Now: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := newDaemonSessionControl("model", io.Discard, store, nil)
+	got, err := control.createWorkspace(sessiontool.SessionCreateRequest{OwnerID: snapshot.Assistant.ID})
+	if err != nil || !sameDaemonWorkspace(got, workspace) {
+		t.Fatalf("createWorkspace = %q err=%v", got, err)
+	}
+	if _, err := control.createWorkspace(sessiontool.SessionCreateRequest{
+		OwnerID: snapshot.Assistant.ID, Workspace: t.TempDir(),
+	}); err == nil {
+		t.Fatal("Assistant Session accepted a conflicting workspace")
+	}
+}
 
 // TestDaemonSessionControlConcurrentRestoreBuildsOneController verifies that
 // many concurrent requireCtrl calls for the same unloaded Session build exactly
@@ -100,5 +134,44 @@ func TestDaemonSessionControlRestoreForcesAutoApproval(t *testing.T) {
 	}
 	if got := ctrl.ToolApprovalMode(); got != control.ToolApprovalAuto {
 		t.Fatalf("restored assistant approval mode = %q, want auto", got)
+	}
+}
+
+// TestDaemonSessionControlRequireCtrlForPathReusesRecoveredController proves a
+// snapshot recovery that moves a live Controller onto a new physical path never
+// builds a second Controller: the path lookup reuses the already-live instance
+// instead of keying by the recovery branch ID.
+func TestDaemonSessionControlRequireCtrlForPathReusesRecoveredController(t *testing.T) {
+	var builds atomic.Int64
+	c := newDaemonSessionControl("model", io.Discard, nil, nil)
+	c.build = func(sessionID string) (*control.Controller, error) {
+		builds.Add(1)
+		return control.New(control.Options{Label: sessionID}), nil
+	}
+	defer c.Close()
+
+	original, err := c.requireCtrl("supervisor-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recovery re-keys the physical path without re-keying the live map.
+	recoveryPath := filepath.Join(t.TempDir(), "supervisor-recovered.jsonl")
+	original.SetSessionPath(recoveryPath)
+
+	recovered, err := c.requireCtrlForPath(recoveryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != original {
+		t.Fatalf("requireCtrlForPath returned a different controller (%p vs %p)", recovered, original)
+	}
+	if got := builds.Load(); got != 1 {
+		t.Fatalf("build calls = %d, want 1 (recovery must reuse the live controller)", got)
+	}
+	c.mu.Lock()
+	n := len(c.live)
+	c.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("live controllers = %d, want 1", n)
 	}
 }

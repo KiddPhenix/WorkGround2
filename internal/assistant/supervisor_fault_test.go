@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +38,198 @@ func planWithScan(t *testing.T, store *Store, snapshot Snapshot, requestID strin
 		Now: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSupervisorExecutorResolvedAttentionDoesNotWake proves a resolved
+// (approved/rejected/cancelled) Attention is pure audit history: with no other
+// events or expansion triggers it never wakes a supervisor turn, it never
+// suppresses the idle heartbeat, and the supervisor context reports zero
+// pending attention.
+func TestSupervisorExecutorResolvedAttentionDoesNotWake(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	snapshot := mustCreate(t, store, "helper-a")
+	// A ready responsibility keeps EvaluateExpansion from firing a plan-empty
+	// trigger, so the only possible wake signal is the resolved Attention.
+	planWithScan(t, store, snapshot, "plan-att")
+	mustTrigger(t, store, "manual-att")
+	claimed, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", claimed, ok, err)
+	}
+	if _, err := store.RequireAttention(RequireAttentionInput{
+		RequestID: "att-1", RunID: claimed.ID, LeaseOwner: "worker-a", LeaseFence: claimed.LeaseFence,
+		Action: "rebind_workspace", Summary: "needs rebind", SessionPath: "sessions/a", ResumeToken: "tok", Now: testEpoch,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := store.Get("helper-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	att := snap.Attention[0]
+	if _, err := store.ResolveAttention(ResolveAttentionInput{
+		RequestID: "resolve-att", AssistantID: "helper-a", AttentionID: att.ID,
+		ExpectedRevision: att.Revision, State: AttentionApproved, Resolution: "done", Now: testEpoch.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	host := &fakeSupervisorHost{ref: SupervisorSessionRef{ID: "supervisor-helper-a", Path: "/tmp/s-helper-a.jsonl"}}
+	ex := newTestExecutor(t, store, host, &fakeSessionControl{})
+
+	// Resolved attention alone must not call the host.
+	ex.RunTurns(context.Background(), time.Now())
+	if got := host.submitCount(); got != 0 {
+		t.Fatalf("resolved attention submitted %d supervisor turns, want 0", got)
+	}
+
+	// Resolved attention must not suppress the idle heartbeat.
+	if n := ex.CollectSupervisorEvents(time.Now()); n != 1 {
+		t.Fatalf("collect with only resolved attention enqueued %d, want 1 heartbeat", n)
+	}
+	events, err := ex.events.Pending("helper-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Kind != EventHeartbeat {
+		t.Fatalf("pending = %+v, want exactly one heartbeat", events)
+	}
+
+	// The supervisor context counts only open attention: a real turn must not
+	// render the resolved item as pending.
+	host.setOutcome(SupervisorTurnOutcome{Text: `{"action":"wait"}`})
+	if err := ex.EnqueueUserInput("helper-a", "req-1", "proceed"); err != nil {
+		t.Fatal(err)
+	}
+	ex.RunTurns(context.Background(), time.Now())
+	if got := host.submitCount(); got != 1 {
+		t.Fatalf("user-input turn submitted %d times, want 1", got)
+	}
+	if len(host.prompts) != 1 {
+		t.Fatalf("prompts recorded = %d, want 1", len(host.prompts))
+	}
+	if strings.Contains(host.prompts[0], "待回答问题/审批：1") {
+		t.Fatalf("resolved attention was reported as pending: %.200s", host.prompts[0])
+	}
+}
+
+// TestSupervisorExecutorCheckpointRefFollowsRecovery proves a snapshot recovery
+// mid-turn is persisted onto the turn checkpoint: the settle follows the
+// recovered Session ref (never the discoverable old root) and the model turn is
+// still submitted exactly once.
+func TestSupervisorExecutorCheckpointRefFollowsRecovery(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "assistants")
+	store := testStore(t, root)
+	snapshot := mustCreate(t, store, "helper-a")
+	planWithScan(t, store, snapshot, "plan-recovery")
+
+	refA := SupervisorSessionRef{ID: "supervisor-old", Path: "/tmp/supervisor-old.jsonl"}
+	refB := SupervisorSessionRef{ID: "supervisor-recovered", Path: "/tmp/supervisor-recovered.jsonl"}
+
+	// First pass: the turn outlives the budget while a snapshot recovery moves
+	// the live Controller onto refB. The host reports the real ref back.
+	host := &fakeSupervisorHost{ref: refA, historyLen: 5}
+	host.setOutcome(SupervisorTurnOutcome{Running: true, HistoryLen: 5, Ref: refB})
+	control := &fakeSessionControl{}
+	q1, err := NewSupervisorEventQueue(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex1 := newTestExecutorQ(t, store, host, control, q1)
+	if err := ex1.EnqueueUserInput("helper-a", "req-1", "scan"); err != nil {
+		t.Fatal(err)
+	}
+	ex1.RunTurns(context.Background(), time.Now())
+
+	if got := host.submitCount(); got != 1 {
+		t.Fatalf("budgeted turn submitted %d times, want 1", got)
+	}
+	cp, ok, err := q1.LoadTurnCheckpoint("helper-a")
+	if err != nil || !ok {
+		t.Fatalf("no durable checkpoint after recovery: ok=%v err=%v", ok, err)
+	}
+	if cp.Ref.Path != refB.Path {
+		t.Fatalf("checkpoint ref = %+v, want the recovered session %+v", cp.Ref, refB)
+	}
+
+	// Restart: the discoverable root is still refA, but the settle must follow
+	// the checkpoint's recovered refB, never fall back to refA.
+	host2 := &fakeSupervisorHost{ref: refA}
+	host2.setOutcome(SupervisorTurnOutcome{Text: `{"action":"advance","target":"scan","rationale":"settled"}`, HistoryLen: 9})
+	q2, err := NewSupervisorEventQueue(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex2 := newTestExecutorQ(t, store, host2, control, q2)
+	ex2.RunTurns(context.Background(), time.Now().Add(time.Minute))
+
+	if got := host2.submitCount(); got != 0 {
+		t.Fatalf("restart submitted %d new turns, want 0 (settle only)", got)
+	}
+	if host2.lastRef.Path != refB.Path {
+		t.Fatalf("settle ran on %+v, want the recovered session %+v (not the discoverable root %+v)", host2.lastRef, refB, refA)
+	}
+	if control.createdCount() != 1 {
+		t.Fatalf("restart routed %d advances, want 1", control.createdCount())
+	}
+	if hasPending, err := q2.HasPending("helper-a"); err != nil || hasPending {
+		t.Fatalf("events not consumed after settle: pending=%v err=%v", hasPending, err)
+	}
+	if _, ok, err := q2.LoadTurnCheckpoint("helper-a"); err != nil || ok {
+		t.Fatalf("checkpoint not cleared after settle: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestSupervisorExecutorLegacyCheckpointSettlesViaDiscoverableRoot proves a
+// checkpoint written before the ref field existed (empty ref) still loads and
+// settles by falling back to the discoverable supervisor root.
+func TestSupervisorExecutorLegacyCheckpointSettlesViaDiscoverableRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "assistants")
+	store := testStore(t, root)
+	snapshot := mustCreate(t, store, "helper-a")
+	planWithScan(t, store, snapshot, "plan-legacy")
+
+	refA := SupervisorSessionRef{ID: "supervisor-old", Path: "/tmp/supervisor-old.jsonl"}
+	q, err := NewSupervisorEventQueue(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write a legacy-shaped checkpoint (no ref key): the trigger event ID is
+	// still recorded, exactly as the pre-ref checkpoints carried it.
+	evID := eventID(EventUserInput, "helper-a", "req-1")
+	if created, err := q.SaveTurnCheckpoint("helper-a", SupervisorTurnCheckpoint{
+		TurnID: "turn-legacy", SubmittedAt: time.Now(), EventIDs: []string{evID}, HistoryLen: 1,
+	}); err != nil || !created {
+		t.Fatalf("save legacy checkpoint: created=%v err=%v", created, err)
+	}
+	// A legacy checkpoint on disk must load with an empty ref.
+	loaded, ok, err := q.LoadTurnCheckpoint("helper-a")
+	if err != nil || !ok {
+		t.Fatalf("load legacy checkpoint: ok=%v err=%v", ok, err)
+	}
+	if loaded.Ref.Path != "" {
+		t.Fatalf("legacy checkpoint ref = %+v, want empty (backward compatible)", loaded.Ref)
+	}
+
+	host := &fakeSupervisorHost{ref: refA}
+	host.setOutcome(SupervisorTurnOutcome{Text: `{"action":"wait"}`, HistoryLen: 3})
+	control := &fakeSessionControl{}
+	ex := newTestExecutorQ(t, store, host, control, q)
+	// The same trigger event is pending, so the settle can consume it.
+	if err := ex.EnqueueUserInput("helper-a", "req-1", "scan"); err != nil {
+		t.Fatal(err)
+	}
+	ex.RunTurns(context.Background(), time.Now())
+
+	if host.lastRef.Path != refA.Path {
+		t.Fatalf("legacy settle ran on %+v, want the discoverable root %+v", host.lastRef, refA)
+	}
+	if hasPending, err := q.HasPending("helper-a"); err != nil || hasPending {
+		t.Fatalf("events not consumed by legacy settle: pending=%v err=%v", hasPending, err)
+	}
+	if _, ok, err := q.LoadTurnCheckpoint("helper-a"); err != nil || ok {
+		t.Fatalf("legacy checkpoint not cleared: ok=%v err=%v", ok, err)
 	}
 }
 

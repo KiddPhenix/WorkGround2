@@ -54,6 +54,7 @@ func (c supervisorSessionControl) Create(req assistant.SessionCreateRequest) (st
 	return c.inner.Create(sessiontool.SessionCreateRequest{
 		Title: req.Title, Prompt: req.Prompt, OwnerID: req.OwnerID, ParentID: req.ParentID,
 		Purpose: agent.SessionPurpose(req.Purpose), Workspace: req.Workspace, RequestID: req.RequestID,
+		IntentPrompt: req.IntentPrompt, ResponsibilityID: req.ResponsibilityID,
 	})
 }
 
@@ -211,15 +212,34 @@ func (h *desktopSupervisorHost) ManagedSessions(assistantID string) []assistant.
 // controller while a supervisor turn is in flight.
 const supervisorTurnPollInterval = 500 * time.Millisecond
 
+// liveRef returns the supervisor Session ref for the Controller's current
+// physical Session file, which may differ from the discoverable root after a
+// snapshot recovery moved the turn onto a new branch.
+func (h *desktopSupervisorHost) liveRef(ctrl control.SessionAPI) assistant.SupervisorSessionRef {
+	if ctrl == nil {
+		return assistant.SupervisorSessionRef{}
+	}
+	path := strings.TrimSpace(ctrl.SessionPath())
+	if path == "" {
+		return assistant.SupervisorSessionRef{}
+	}
+	return assistant.SupervisorSessionRef{ID: agent.BranchID(path), Path: path}
+}
+
 // RunSupervisorTurn runs one real Controller turn on the supervisor Session: it
 // restores the Session's tab (a restart resumes the same Session file), waits
 // for the controller, submits the bounded context prompt, and waits (bounded by
 // budget) for the turn to settle. The turn's model history, tool calls, pending
 // interaction and checkpoint all land in that Session file; the outcome reports
-// the final assistant message and any pending interaction.
+// the final assistant message and any pending interaction. The outcome's Ref is
+// the Controller's current SessionPath, so a mid-turn recovery is reported back
+// and persisted instead of being silently lost.
 func (h *desktopSupervisorHost) RunSupervisorTurn(ref assistant.SupervisorSessionRef, prompt string, budget time.Duration) assistant.SupervisorTurnOutcome {
 	if h.r == nil || h.r.app == nil {
 		return assistant.SupervisorTurnOutcome{Err: errors.New("assistant supervisor host is unavailable")}
+	}
+	if err := agent.EnsureSupervisorSessionMeta(ref.Path); err != nil {
+		return assistant.SupervisorTurnOutcome{Err: err}
 	}
 	tab, err := h.r.app.ensureTabForSessionPath(ref.Path)
 	if err != nil {
@@ -229,33 +249,38 @@ func (h *desktopSupervisorHost) RunSupervisorTurn(ref assistant.SupervisorSessio
 	if err != nil {
 		return assistant.SupervisorTurnOutcome{Err: err}
 	}
+	live := h.liveRef(ctrl)
 	if ctrl.Running() {
 		// A prior turn is still in flight (possibly submitted outside the
 		// loop): report the current transcript length as the checkpoint
 		// baseline so a settle can confirm durable growth.
-		return assistant.SupervisorTurnOutcome{Running: true, HistoryLen: sessionHistoryLen(ref.Path)}
+		return assistant.SupervisorTurnOutcome{Running: true, HistoryLen: sessionHistoryLen(live.Path), Ref: live}
 	}
 	if _, pending := ctrl.PendingInteraction(); pending {
-		return assistant.SupervisorTurnOutcome{Pending: true} // waiting on the user
+		return assistant.SupervisorTurnOutcome{Pending: true, Ref: live}
 	}
 	// The durable transcript length right before the submission is the
 	// checkpoint baseline: a settle that shows no growth proves the
 	// submission never durably landed.
-	beforeLen := sessionHistoryLen(ref.Path)
+	beforeLen := sessionHistoryLen(live.Path)
 	if err := h.r.app.SubmitToTab(tab.ID, prompt); err != nil {
 		return assistant.SupervisorTurnOutcome{Err: err}
 	}
-	return h.waitTurn(tab, ref, budget, beforeLen)
+	return h.waitTurn(tab, live, budget, beforeLen)
 }
 
 // SettleSupervisorTurn reads the current state of a previously submitted
 // supervisor turn WITHOUT submitting a new prompt: a still-running turn reports
 // Running, a pending interaction reports Pending, otherwise the finished
 // outcome is read from the durable Session transcript. It is the restart-safe
-// continuation of a checkpointed turn.
+// continuation of a checkpointed turn. The outcome's Ref is the Controller's
+// current SessionPath, so a recovery that happened mid-turn is reported back.
 func (h *desktopSupervisorHost) SettleSupervisorTurn(ref assistant.SupervisorSessionRef) assistant.SupervisorTurnOutcome {
 	if h.r == nil || h.r.app == nil {
 		return assistant.SupervisorTurnOutcome{Err: errors.New("assistant supervisor host is unavailable")}
+	}
+	if err := agent.EnsureSupervisorSessionMeta(ref.Path); err != nil {
+		return assistant.SupervisorTurnOutcome{Err: err}
 	}
 	tab, err := h.r.app.ensureTabForSessionPath(ref.Path)
 	if err != nil {
@@ -265,14 +290,15 @@ func (h *desktopSupervisorHost) SettleSupervisorTurn(ref assistant.SupervisorSes
 	if err != nil {
 		return assistant.SupervisorTurnOutcome{Err: err}
 	}
+	live := h.liveRef(ctrl)
 	if ctrl.Running() {
-		return assistant.SupervisorTurnOutcome{Running: true}
+		return assistant.SupervisorTurnOutcome{Running: true, Ref: live}
 	}
 	if _, pending := ctrl.PendingInteraction(); pending {
-		return assistant.SupervisorTurnOutcome{Pending: true}
+		return assistant.SupervisorTurnOutcome{Pending: true, Ref: live}
 	}
-	out := h.readOutcome(ref)
-	out.HistoryLen = sessionHistoryLen(ref.Path)
+	out := h.readOutcome(live)
+	out.HistoryLen = sessionHistoryLen(live.Path)
 	return out
 }
 
@@ -321,27 +347,30 @@ func (h *desktopSupervisorHost) waitController(tab *WorkspaceTab) (control.Sessi
 // the supervisor asked the user (pending), the turn finished, or the budget
 // elapsed (still running). The controller is re-fetched every poll so a model
 // rebuild mid-turn cannot leave us polling a stale instance; the final decision
-// is read from the durable Session file — exactly what was persisted. The
-// Running outcome carries the pre-submission transcript length as the
-// checkpoint baseline.
-func (h *desktopSupervisorHost) waitTurn(tab *WorkspaceTab, ref assistant.SupervisorSessionRef, budget time.Duration, beforeLen int) assistant.SupervisorTurnOutcome {
+// is read from the durable Session file at the Controller's current SessionPath
+// — exactly what was persisted, even if a snapshot recovery moved it mid-turn.
+// The Running outcome carries the pre-submission transcript length as the
+// checkpoint baseline and the last observed ref.
+func (h *desktopSupervisorHost) waitTurn(tab *WorkspaceTab, initial assistant.SupervisorSessionRef, budget time.Duration, beforeLen int) assistant.SupervisorTurnOutcome {
 	deadline := time.Now().Add(budget)
+	live := initial
 	for {
 		_, ctrl := h.r.app.tabAndCtrlByID(tab.ID)
 		if ctrl != nil {
+			live = h.liveRef(ctrl)
 			if _, pending := ctrl.PendingInteraction(); pending {
-				out := assistant.SupervisorTurnOutcome{Pending: true}
-				out.HistoryLen = sessionHistoryLen(ref.Path)
+				out := assistant.SupervisorTurnOutcome{Pending: true, Ref: live}
+				out.HistoryLen = sessionHistoryLen(live.Path)
 				return out
 			}
 			if !ctrl.Running() {
-				out := h.readOutcome(ref)
-				out.HistoryLen = sessionHistoryLen(ref.Path)
+				out := h.readOutcome(live)
+				out.HistoryLen = sessionHistoryLen(live.Path)
 				return out
 			}
 		}
 		if time.Now().After(deadline) {
-			return assistant.SupervisorTurnOutcome{Running: true, HistoryLen: beforeLen}
+			return assistant.SupervisorTurnOutcome{Running: true, HistoryLen: beforeLen, Ref: live}
 		}
 		time.Sleep(supervisorTurnPollInterval)
 	}
@@ -377,7 +406,7 @@ func (h *desktopSupervisorHost) readOutcome(ref assistant.SupervisorSessionRef) 
 			break
 		}
 	}
-	return assistant.SupervisorTurnOutcome{Text: text, ToolNames: toolNames}
+	return assistant.SupervisorTurnOutcome{Text: text, ToolNames: toolNames, Ref: ref}
 }
 
 // supervisorTab reports whether a tab's durable session is an assistant's

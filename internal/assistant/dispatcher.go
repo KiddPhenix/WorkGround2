@@ -8,11 +8,11 @@ import (
 	"time"
 )
 
-// Dispatcher classifies a raw direct input into zero or more frozen Runner Jobs
-// using a real model role call. The input is persisted first; classification is
-// applied at most once; and a model or parse failure leaves an explicit,
-// retryable state without losing the input. There is no heuristic fallback and
-// no fabricated reply.
+// Dispatcher classifies a raw direct input using a real model role call. Task
+// Dispatches are later executed by one managed Session; the legacy Jobs field
+// is parsed for protocol compatibility but is not persisted. The input is
+// persisted first, classification is applied at most once, and a model or parse
+// failure leaves an explicit retryable state without losing the input.
 type Dispatcher struct {
 	store    *Store
 	model    RoleModel
@@ -108,7 +108,7 @@ func (d *Dispatcher) classify(ctx context.Context, assistantID string, dispatch 
 		return Dispatch{}, err
 	}
 	prompt := DispatcherPrompt(snapshot, dispatch.Input)
-	text, modelErr := d.complete(ctx, assistantID, dispatch, prompt)
+	text, modelErr := d.complete(WithRoleContext(ctx, snapshot.Assistant), assistantID, dispatch, prompt)
 	if modelErr != nil {
 		return d.fail(assistantID, dispatch, "classification_model_unavailable", modelErr, now)
 	}

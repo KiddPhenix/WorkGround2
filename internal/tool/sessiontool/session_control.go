@@ -29,6 +29,34 @@ type SessionControl interface {
 	PendingInteractions(sessionID string) ([]SessionInteraction, error)
 }
 
+type ownerControl struct {
+	SessionControl
+	owner     string
+	workspace string
+}
+
+// BindOwner scopes session_create calls made by one managed Assistant Session.
+// The model may omit owner_id/workspace, but cannot impersonate another
+// Assistant; the host remains authoritative for validating an explicit path.
+func BindOwner(control SessionControl, owner, workspace string) SessionControl {
+	owner = strings.TrimSpace(owner)
+	if control == nil || owner == "" {
+		return control
+	}
+	return &ownerControl{SessionControl: control, owner: owner, workspace: strings.TrimSpace(workspace)}
+}
+
+func (c *ownerControl) Create(req SessionCreateRequest) (string, error) {
+	if owner := strings.TrimSpace(req.OwnerID); owner != "" && owner != c.owner {
+		return "", fmt.Errorf("session_create owner %q conflicts with bound Assistant %q", owner, c.owner)
+	}
+	req.OwnerID = c.owner
+	if strings.TrimSpace(req.Workspace) == "" {
+		req.Workspace = c.workspace
+	}
+	return c.SessionControl.Create(req)
+}
+
 // SessionCreateRequest is the intent for a new managed session. Title, prompt,
 // owner assistant and RequestID are required; the host resolves workspace and
 // policy. RequestID is the stable idempotency key: replaying the same RequestID
@@ -41,10 +69,25 @@ type SessionCreateRequest struct {
 	Purpose   agent.SessionPurpose
 	Workspace string
 	RequestID string
+	// IntentPrompt is the stable user intent used by the idempotency fingerprint
+	// and as the persisted display text for the first managed Session turn.
+	// Prompt still carries the creation-time context envelope seen by the model;
+	// ordinary callers leave IntentPrompt empty.
+	IntentPrompt string
 	// ResponsibilityID optionally binds the session to one plan responsibility;
 	// the host persists it in the Session meta so execution state derives from
 	// the Session without writing it back to the plan.
 	ResponsibilityID string
+}
+
+// FingerprintPrompt returns the stable intent included in the Session receipt.
+// Context-enveloped managed prompts use IntentPrompt; ordinary callers keep the
+// historical full-prompt behavior.
+func (r SessionCreateRequest) FingerprintPrompt() string {
+	if intent := strings.TrimSpace(r.IntentPrompt); intent != "" {
+		return intent
+	}
+	return strings.TrimSpace(r.Prompt)
 }
 
 // SessionInteraction is a bounded view of one pending ask/approval on a session.

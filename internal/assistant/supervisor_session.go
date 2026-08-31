@@ -14,8 +14,8 @@ import (
 // Session. The Path is the durable session file, so a host can restore the
 // live Controller from it after a restart.
 type SupervisorSessionRef struct {
-	ID   string
-	Path string
+	ID   string `json:"id"`
+	Path string `json:"path"`
 }
 
 // SupervisorTurnOutcome is what the host observed after submitting one real
@@ -40,6 +40,12 @@ type SupervisorTurnOutcome struct {
 	// The executor uses it to confirm a checkpointed turn durably produced
 	// output before re-submitting.
 	HistoryLen int
+	// Ref is the actual physical supervisor Session the host ran the turn on
+	// (the live Controller's current SessionPath). A snapshot recovery can
+	// move the turn onto a new Session file; reporting the real ref lets the
+	// executor persist it so the next settle follows the same Session instead
+	// of re-opening the discoverable root.
+	Ref SupervisorSessionRef
 	// Err is a turn-level failure (model error, host restore failure). A
 	// failure keeps trigger events pending so the turn is retried.
 	Err error
@@ -556,6 +562,20 @@ func (e *SupervisorExecutor) interactionStillOpen(assistantID, sessionID string)
 	return false
 }
 
+// openAttentionCount returns the number of open attention items — the only
+// attention that constitutes a wake signal. Historical approved/rejected/
+// cancelled items stay in the audit history but never wake the loop, so a
+// resolved Attention cannot keep re-triggering the supervisor LLM.
+func openAttentionCount(snapshot Snapshot) int {
+	n := 0
+	for _, item := range snapshot.Attention {
+		if item.State == AttentionOpen {
+			n++
+		}
+	}
+	return n
+}
+
 // heartbeatDue reports whether the assistant has been fully idle long enough
 // and has nothing else pending.
 func (e *SupervisorExecutor) heartbeatDue(assistantID string, now time.Time) bool {
@@ -574,7 +594,7 @@ func (e *SupervisorExecutor) heartbeatDue(assistantID string, now time.Time) boo
 	if err != nil {
 		return false
 	}
-	return len(snapshot.Attention) == 0
+	return openAttentionCount(snapshot) == 0
 }
 
 // pendingInteractions reads one session's pending asks through the host's
@@ -619,7 +639,7 @@ func (e *SupervisorExecutor) supervisorSessions(assistantID string) (running, fa
 // nextStep derives the durable next-step hint for the cycle checkpoint from the
 // plan plus the Session-derived execution state.
 func (e *SupervisorExecutor) nextStep(snapshot Snapshot, running, failed int, now time.Time) string {
-	if triggers := EvaluateExpansion(snapshot, now, ExpansionLive{Running: running, Failed: failed}); len(triggers) > 0 {
+	if triggers := EvaluateExpansion(snapshot, now, ExpansionLive{Running: running, Failed: failed, ObservedAt: snapshot.Expansion.EvidenceObservedAt}); len(triggers) > 0 {
 		return "expand:" + string(triggers[0])
 	}
 	executable := 0
@@ -677,7 +697,7 @@ func (e *SupervisorExecutor) runTurnFor(ctx context.Context, a Assistant, now ti
 		return
 	}
 	running, failed := e.supervisorSessions(a.ID)
-	triggers := EvaluateExpansion(snapshot, now, ExpansionLive{Running: len(running), Failed: len(failed)})
+	triggers := EvaluateExpansion(snapshot, now, ExpansionLive{Running: len(running), Failed: len(failed), ObservedAt: snapshot.Expansion.EvidenceObservedAt})
 	events, err := e.events.Pending(a.ID)
 	if err != nil {
 		e.recordDiagnostic("supervisor_events", err)
@@ -687,7 +707,7 @@ func (e *SupervisorExecutor) runTurnFor(ctx context.Context, a Assistant, now ti
 	// Bounded expansion backoff: if the only wake-up is an expansion trigger and
 	// a recent expansion pass set a backoff, skip the model turn (the loop would
 	// otherwise spin on every tick with nothing new to adopt).
-	if len(events) == 0 && len(snapshot.Attention) == 0 && len(triggers) > 0 {
+	if len(events) == 0 && openAttentionCount(snapshot) == 0 && len(triggers) > 0 {
 		due, _, dueErr := e.store.ExpansionDue(a.ID, now)
 		if dueErr != nil {
 			e.recordDiagnostic("supervisor_expansion_due", dueErr)
@@ -696,7 +716,7 @@ func (e *SupervisorExecutor) runTurnFor(ctx context.Context, a Assistant, now ti
 			return
 		}
 	}
-	if len(triggers) == 0 && len(events) == 0 && len(snapshot.Attention) == 0 {
+	if len(triggers) == 0 && len(events) == 0 && openAttentionCount(snapshot) == 0 {
 		e.turnMu.Unlock()
 		return
 	}
@@ -749,7 +769,9 @@ func (e *SupervisorExecutor) runTurnFor(ctx context.Context, a Assistant, now ti
 	if batchID != "" {
 		if rec, ok, err := e.events.LoadBatchReceipt(a.ID, batchID); err == nil && ok && rec.Outcome.ConsumesEvents() {
 			e.turnMu.Unlock()
-			e.consumeAndComplete(a, rec.EventIDs, now)
+			// Replay of an already-routed batch: the watermark was advanced by
+			// the original settle, so pass a zero boundary (no re-advance).
+			e.consumeAndComplete(a, rec.EventIDs, now, time.Time{})
 			return
 		}
 	}
@@ -779,6 +801,12 @@ func (e *SupervisorExecutor) runTurnFor(ctx context.Context, a Assistant, now ti
 		EventIDs:    eventIDs,
 		BatchID:     batchID,
 		HistoryLen:  baseline,
+		Ref:         ref,
+		// The exact evidence boundary this turn saw (max evidence CreatedAt),
+		// so a later settle advances the watermark to what was actually
+		// observed — never to wall-clock now, which would swallow a concurrent
+		// or late evidence record written after the snapshot.
+		EvidenceObservedThrough: evidenceObservedThrough(snapshot),
 	}
 	created, err := e.events.SaveTurnCheckpoint(a.ID, cp)
 	if err != nil {
@@ -825,7 +853,7 @@ func (e *SupervisorExecutor) runTurnFor(ctx context.Context, a Assistant, now ti
 		Plan:                       snapshot.Plan,
 		RunningSessions:            running,
 		FailedSessions:             failed,
-		PendingAttention:           len(snapshot.Attention),
+		PendingAttention:           openAttentionCount(snapshot),
 		Memory:                     snapshot.Memory,
 		WorkControl:                wc,
 		Routines:                   snapshot.Routines,
@@ -847,6 +875,12 @@ func (e *SupervisorExecutor) runTurnFor(ctx context.Context, a Assistant, now ti
 		}
 		return
 	}
+	// A snapshot recovery can move the turn onto a new physical Session file.
+	// Adopt the host-reported ref so the checkpoint (and the next settle)
+	// follow the actual Session, never the discoverable root.
+	if outcome.Ref.Path != "" && outcome.Ref.Path != cp.Ref.Path {
+		cp.Ref = outcome.Ref
+	}
 	if outcome.Running {
 		// Still in flight past the budget: the host reports the transcript
 		// length right before the submission. The checkpoint baseline was
@@ -867,15 +901,31 @@ func (e *SupervisorExecutor) runTurnFor(ctx context.Context, a Assistant, now ti
 // new prompt, routes the finished outcome (or waits), and only re-submits when
 // the checkpoint proves the submission never durably landed.
 func (e *SupervisorExecutor) settleCheckpointedTurn(a Assistant, cp SupervisorTurnCheckpoint, now time.Time) {
-	ref, ok := e.host.FindSupervisorSession(a.ID)
-	if !ok {
-		e.recordDiagnostic("supervisor_turn_settle", errors.New("assistant: supervisor session disappeared while a turn was in flight"))
-		return // keep the checkpoint: the turn must settle before anything new
+	ref := cp.Ref
+	if strings.TrimSpace(ref.Path) == "" {
+		// Legacy checkpoint written before the ref was persisted: fall back to
+		// the discoverable supervisor root. Once recovery has moved a turn the
+		// ref is always persisted, so this only runs for old files.
+		var ok bool
+		ref, ok = e.host.FindSupervisorSession(a.ID)
+		if !ok {
+			e.recordDiagnostic("supervisor_turn_settle", errors.New("assistant: supervisor session disappeared while a turn was in flight"))
+			return // keep the checkpoint: the turn must settle before anything new
+		}
 	}
 	outcome := e.host.SettleSupervisorTurn(ref)
 	if outcome.Err != nil {
 		e.recordDiagnostic("supervisor_turn", outcome.Err)
 		return // keep the checkpoint; the next tick retries the settle
+	}
+	// A snapshot recovery moved the in-flight turn onto a new Session file.
+	// Persist the new ref so the next settle keeps following the same physical
+	// Session instead of re-opening the discoverable root.
+	if outcome.Ref.Path != "" && outcome.Ref.Path != ref.Path {
+		cp.Ref = outcome.Ref
+		if err := e.events.UpdateTurnCheckpoint(a.ID, cp); err != nil {
+			e.recordDiagnostic("supervisor_turn_checkpoint", err)
+		}
 	}
 	if outcome.Running {
 		return // still in flight; events stay pending
@@ -883,7 +933,7 @@ func (e *SupervisorExecutor) settleCheckpointedTurn(a Assistant, cp SupervisorTu
 	if outcome.Pending {
 		// The supervisor asked the user: the turn consumed the trigger events.
 		// The user's answer arrives as a user_input event and wakes the loop.
-		e.consumeAndComplete(a, cp.EventIDs, now)
+		e.consumeAndComplete(a, cp.EventIDs, now, cp.EvidenceObservedThrough)
 		e.clearCheckpoint(a.ID)
 		return
 	}
@@ -895,7 +945,7 @@ func (e *SupervisorExecutor) settleCheckpointedTurn(a Assistant, cp SupervisorTu
 		e.clearCheckpoint(a.ID)
 		return
 	}
-	e.routeAndConsume(a, outcome, cp.EventIDs, cp.BatchID, now)
+	e.routeAndConsume(a, outcome, cp.EventIDs, cp.BatchID, now, cp.EvidenceObservedThrough)
 	e.clearCheckpoint(a.ID)
 }
 
@@ -905,11 +955,11 @@ func (e *SupervisorExecutor) settleCheckpointedTurn(a Assistant, cp SupervisorTu
 // are consumed only on a consuming outcome.
 func (e *SupervisorExecutor) finishTurn(a Assistant, cp SupervisorTurnCheckpoint, outcome SupervisorTurnOutcome, now time.Time) {
 	if outcome.Pending {
-		e.consumeAndComplete(a, cp.EventIDs, now)
+		e.consumeAndComplete(a, cp.EventIDs, now, cp.EvidenceObservedThrough)
 		e.clearCheckpoint(a.ID)
 		return
 	}
-	e.routeAndConsume(a, outcome, cp.EventIDs, cp.BatchID, now)
+	e.routeAndConsume(a, outcome, cp.EventIDs, cp.BatchID, now, cp.EvidenceObservedThrough)
 	e.clearCheckpoint(a.ID)
 }
 
@@ -922,19 +972,44 @@ func (e *SupervisorExecutor) clearCheckpoint(assistantID string) {
 // consumeAndComplete consumes the trigger events of a routed turn and completes
 // the current cycle under its fence. Even when the consume write fails, the
 // batch receipt already records the routed outcome, so a replay settles as
-// already_applied instead of re-running the action.
-func (e *SupervisorExecutor) consumeAndComplete(a Assistant, eventIDs []string, now time.Time) {
+// already_applied instead of re-running the action. observedThrough is the
+// snapshot-derived evidence boundary for this turn: the watermark advances to
+// exactly that value (never wall-clock now), and a zero value leaves it
+// untouched.
+func (e *SupervisorExecutor) consumeAndComplete(a Assistant, eventIDs []string, now time.Time, observedThrough time.Time) {
 	if err := e.events.MarkConsumed(a.ID, eventIDs...); err != nil {
 		e.recordDiagnostic("supervisor_events_consume", err)
 	}
+	// A durably-landed turn has now observed the evidence present in its
+	// snapshot, so advance the evidence watermark to that snapshot boundary:
+	// those records never re-trigger new_evidence, while anything written
+	// after the snapshot (or a future record) still wakes again.
+	e.advanceEvidenceObservation(a.ID, observedThrough)
 	e.completeCurrentCycle(a, now)
+}
+
+// advanceEvidenceObservation durably advances the evidence observation watermark
+// to the snapshot-derived boundary this turn saw. A failure is recorded but
+// never blocks the cycle: the watermark stays at its previous value, so the
+// evidence re-wakes on the next tick instead of being silently lost.
+func (e *SupervisorExecutor) advanceEvidenceObservation(assistantID string, observedThrough time.Time) {
+	if e == nil || e.store == nil || observedThrough.IsZero() {
+		return
+	}
+	if _, err := e.store.RecordEvidenceObservation(RecordEvidenceObservationInput{
+		RequestID:       StableID("request", fmt.Sprintf("evidence-observe/%s/%d", assistantID, observedThrough.UnixNano())),
+		AssistantID:     assistantID,
+		ObservedThrough: observedThrough,
+	}); err != nil {
+		e.recordDiagnostic("supervisor_evidence_observation", err)
+	}
 }
 
 // routeAndConsume parses the decision from the settled turn output, routes the
 // acting phase, and consumes the trigger events only for a consuming outcome.
 // A failed route keeps the events pending (the observable retry state) and
 // leaves the cycle open.
-func (e *SupervisorExecutor) routeAndConsume(a Assistant, outcome SupervisorTurnOutcome, eventIDs []string, batchID string, now time.Time) {
+func (e *SupervisorExecutor) routeAndConsume(a Assistant, outcome SupervisorTurnOutcome, eventIDs []string, batchID string, now time.Time, observedThrough time.Time) {
 	decision, err := ParseSupervisorDecision(outcome.Text)
 	if err != nil {
 		e.recordDiagnostic("supervisor_decision", err)
@@ -947,7 +1022,7 @@ func (e *SupervisorExecutor) routeAndConsume(a Assistant, outcome SupervisorTurn
 		// state. The specific diagnostic was recorded by the acting phase.
 		return
 	}
-	e.consumeAndComplete(a, eventIDs, now)
+	e.consumeAndComplete(a, eventIDs, now, observedThrough)
 }
 
 // completeCurrentCycle marks the assistant's current cycle completed under its
@@ -1231,14 +1306,17 @@ func (e *SupervisorExecutor) advanceResponsibility(a Assistant, alias string) De
 	if prompt == "" {
 		return DecisionRouteResult{Outcome: RouteNoOp}
 	}
+	managedPrompt := ManagedSessionPrompt(snapshot, prompt)
 	if _, err := control.Create(SessionCreateRequest{
-		Title:   resp.Objective,
-		Prompt:  prompt,
-		OwnerID: a.ID,
+		Title:        resp.Objective,
+		Prompt:       managedPrompt,
+		IntentPrompt: prompt,
+		OwnerID:      a.ID,
 		// Purpose stays an untyped constant so the assistant package never
 		// imports agent (agent imports assistant). The Session subsystem reads
 		// it back as PurposeManaged.
-		Purpose: "managed",
+		Purpose:   "managed",
+		Workspace: a.WorkspaceRoot,
 		// The session executes exactly this plan item: the binding is persisted
 		// in the Session meta so active/failed/completed derive from the Session
 		// and are never written back to the plan.

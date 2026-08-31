@@ -1,6 +1,9 @@
 package agent
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // SessionStatus is the lifecycle of one session as seen by the Assistant. It is
 // the vocabulary the Session subsystem uses as the single source of truth for
@@ -116,6 +119,8 @@ func ListSessionsByOwnerByMeta(dir, assistantID string) ([]SessionInfo, error) {
 			Path: s.Path, CreatedAt: s.CreatedAt, LastActivityAt: s.LastActivityAt,
 			Preview: s.Preview, Turns: s.Turns, CustomTitle: s.CustomTitle,
 			SessionSource: s.SessionSource, SessionKind: s.SessionKind,
+			Recovered: s.Recovered, RecoveryReason: s.RecoveryReason,
+			RecoveryDigest: s.RecoveryDigest, ParentID: s.ParentID,
 			AssistantID: s.AssistantID, Purpose: s.Purpose,
 		})
 	}
@@ -134,10 +139,65 @@ func FindSupervisorSessionByMeta(dir, assistantID string) (SessionInfo, bool) {
 	if err != nil {
 		return SessionInfo{}, false
 	}
+	// Recovery branches created before purpose inheritance may have an empty
+	// Purpose even though ParentID keeps their supervisor lineage intact. Build
+	// that lineage first, then return its most recently active member (owned is
+	// already ordered newest first). This also makes a recovered physical
+	// Session the durable head after restart.
+	lineage := make(map[string]bool, len(owned))
 	for _, s := range owned {
 		if s.Purpose == PurposeSupervisor {
+			lineage[string(BranchID(s.Path))] = true
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, s := range owned {
+			id := string(BranchID(s.Path))
+			if !s.Recovered || lineage[id] || !lineage[strings.TrimSpace(s.ParentID)] {
+				continue
+			}
+			lineage[id] = true
+			changed = true
+		}
+	}
+	for _, s := range owned {
+		if lineage[string(BranchID(s.Path))] {
 			return s, true
 		}
 	}
 	return SessionInfo{}, false
+}
+
+// EnsureSupervisorSessionMeta upgrades a legacy recovered supervisor Session
+// whose Purpose was not inherited. It only fills an empty Purpose on an
+// already assistant-owned Session, so repeated calls are safe and an unrelated
+// Session can never be silently reclassified as the supervisor.
+func EnsureSupervisorSessionMeta(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("empty supervisor session path")
+	}
+
+	unlock := LockSessionMetaPath(path)
+	defer unlock()
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("supervisor session metadata not found: %s", path)
+	}
+	if meta.SessionKind != SessionKindAssistant || strings.TrimSpace(meta.AssistantID) == "" {
+		return fmt.Errorf("session is not assistant-owned: %s", path)
+	}
+	switch meta.Purpose {
+	case PurposeSupervisor:
+		return nil
+	case "":
+		meta.Purpose = PurposeSupervisor
+		return SaveBranchMetaPreserveUpdated(path, meta)
+	default:
+		return fmt.Errorf("session purpose is %q, want %q: %s", meta.Purpose, PurposeSupervisor, path)
+	}
 }

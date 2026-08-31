@@ -52,6 +52,7 @@ func (c *daemonSupervisorSessionControl) Create(req assistant.SessionCreateReque
 	return c.inner.Create(sessiontool.SessionCreateRequest{
 		Title: req.Title, Prompt: req.Prompt, OwnerID: req.OwnerID, ParentID: req.ParentID,
 		Purpose: agent.SessionPurpose(req.Purpose), Workspace: req.Workspace, RequestID: req.RequestID,
+		IntentPrompt: req.IntentPrompt, ResponsibilityID: req.ResponsibilityID,
 	})
 }
 func (c *daemonSupervisorSessionControl) PendingInteractions(sessionID string) ([]assistant.SessionInteraction, error) {
@@ -235,47 +236,68 @@ func (h *daemonSupervisorHost) ManagedSessions(assistantID string) []assistant.M
 
 const daemonSupervisorTurnPollInterval = 500 * time.Millisecond
 
+// daemonLiveRef returns the supervisor Session ref for the Controller's current
+// physical Session file, which may differ from the discoverable root after a
+// snapshot recovery moved the turn onto a new branch.
+func daemonLiveRef(ctrl *control.Controller) assistant.SupervisorSessionRef {
+	if ctrl == nil {
+		return assistant.SupervisorSessionRef{}
+	}
+	path := strings.TrimSpace(ctrl.SessionPath())
+	if path == "" {
+		return assistant.SupervisorSessionRef{}
+	}
+	return assistant.SupervisorSessionRef{ID: agent.BranchID(path), Path: path}
+}
+
 // RunSupervisorTurn runs one real Controller turn on the supervisor Session: it
 // restores the headless Controller (a restart resumes the same Session file),
 // submits the bounded context prompt, and waits (bounded by budget) for the
 // turn to settle. The turn's model history, tool calls, pending interaction and
-// checkpoint all land in that Session file.
+// checkpoint all land in that Session file. The outcome's Ref is the
+// Controller's current SessionPath, so a mid-turn recovery is reported back.
 func (h *daemonSupervisorHost) RunSupervisorTurn(ref assistant.SupervisorSessionRef, prompt string, budget time.Duration) assistant.SupervisorTurnOutcome {
 	if h.r == nil || h.r.sessionControl == nil {
 		return assistant.SupervisorTurnOutcome{Err: errors.New("assistant daemon supervisor host is unavailable")}
 	}
-	ctrl, err := h.r.sessionControl.requireCtrl(ref.ID)
+	if err := agent.EnsureSupervisorSessionMeta(ref.Path); err != nil {
+		return assistant.SupervisorTurnOutcome{Err: err}
+	}
+	ctrl, err := h.r.sessionControl.requireCtrlForPath(ref.Path)
 	if err != nil {
 		return assistant.SupervisorTurnOutcome{Err: err}
 	}
+	live := daemonLiveRef(ctrl)
 	if ctrl.Running() {
 		// A prior turn is still in flight (possibly submitted outside the
 		// loop): report the current transcript length as the checkpoint
 		// baseline so a settle can confirm durable growth.
-		return assistant.SupervisorTurnOutcome{Running: true, HistoryLen: daemonSessionHistoryLen(ref.Path)}
+		return assistant.SupervisorTurnOutcome{Running: true, HistoryLen: daemonSessionHistoryLen(live.Path), Ref: live}
 	}
 	if _, pending := ctrl.PendingInteraction(); pending {
-		return assistant.SupervisorTurnOutcome{Pending: true}
+		return assistant.SupervisorTurnOutcome{Pending: true, Ref: live}
 	}
 	// The durable transcript length right before the submission is the
 	// checkpoint baseline: a settle that shows no growth proves the
 	// submission never durably landed.
-	beforeLen := daemonSessionHistoryLen(ref.Path)
+	beforeLen := daemonSessionHistoryLen(live.Path)
 	ctrl.SubmitDisplay(prompt, prompt)
 	deadline := time.Now().Add(budget)
 	for {
+		live = daemonLiveRef(ctrl)
 		if _, pending := ctrl.PendingInteraction(); pending {
-			out := assistant.SupervisorTurnOutcome{Pending: true}
-			out.HistoryLen = daemonSessionHistoryLen(ref.Path)
+			out := assistant.SupervisorTurnOutcome{Pending: true, Ref: live}
+			out.HistoryLen = daemonSessionHistoryLen(live.Path)
 			return out
 		}
 		if !ctrl.Running() {
-			out := daemonReadTurnOutcome(ref.Path)
-			out.HistoryLen = daemonSessionHistoryLen(ref.Path)
+			out := daemonReadTurnOutcome(live.Path)
+			out.HistoryLen = daemonSessionHistoryLen(live.Path)
+			out.Ref = live
 			return out
 		}
 		if time.Now().After(deadline) {
-			return assistant.SupervisorTurnOutcome{Running: true, HistoryLen: beforeLen}
+			return assistant.SupervisorTurnOutcome{Running: true, HistoryLen: beforeLen, Ref: live}
 		}
 		time.Sleep(daemonSupervisorTurnPollInterval)
 	}
@@ -285,23 +307,29 @@ func (h *daemonSupervisorHost) RunSupervisorTurn(ref assistant.SupervisorSession
 // supervisor turn WITHOUT submitting a new prompt: a still-running turn reports
 // Running, a pending interaction reports Pending, otherwise the finished
 // outcome is read from the durable Session transcript. It is the restart-safe
-// continuation of a checkpointed turn.
+// continuation of a checkpointed turn. The outcome's Ref is the Controller's
+// current SessionPath, so a recovery that happened mid-turn is reported back.
 func (h *daemonSupervisorHost) SettleSupervisorTurn(ref assistant.SupervisorSessionRef) assistant.SupervisorTurnOutcome {
 	if h.r == nil || h.r.sessionControl == nil {
 		return assistant.SupervisorTurnOutcome{Err: errors.New("assistant daemon supervisor host is unavailable")}
 	}
-	ctrl, err := h.r.sessionControl.requireCtrl(ref.ID)
+	if err := agent.EnsureSupervisorSessionMeta(ref.Path); err != nil {
+		return assistant.SupervisorTurnOutcome{Err: err}
+	}
+	ctrl, err := h.r.sessionControl.requireCtrlForPath(ref.Path)
 	if err != nil {
 		return assistant.SupervisorTurnOutcome{Err: err}
 	}
+	live := daemonLiveRef(ctrl)
 	if ctrl.Running() {
-		return assistant.SupervisorTurnOutcome{Running: true}
+		return assistant.SupervisorTurnOutcome{Running: true, Ref: live}
 	}
 	if _, pending := ctrl.PendingInteraction(); pending {
-		return assistant.SupervisorTurnOutcome{Pending: true}
+		return assistant.SupervisorTurnOutcome{Pending: true, Ref: live}
 	}
-	out := daemonReadTurnOutcome(ref.Path)
-	out.HistoryLen = daemonSessionHistoryLen(ref.Path)
+	out := daemonReadTurnOutcome(live.Path)
+	out.HistoryLen = daemonSessionHistoryLen(live.Path)
+	out.Ref = live
 	return out
 }
 

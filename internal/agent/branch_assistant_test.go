@@ -47,6 +47,7 @@ func TestRecoveryBranchKeepsAssistantIdentity(t *testing.T) {
 	}
 	meta.SessionKind = SessionKindAssistant
 	meta.AssistantID = "assistant-recovery"
+	meta.Purpose = PurposeSupervisor
 	if err := SaveBranchMetaPreserveUpdated(path, meta); err != nil {
 		t.Fatal(err)
 	}
@@ -57,8 +58,8 @@ func TestRecoveryBranchKeepsAssistantIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Meta.SessionKind != SessionKindAssistant || info.Meta.AssistantID != "assistant-recovery" {
-		t.Fatalf("recovery identity = kind %q assistant %q", info.Meta.SessionKind, info.Meta.AssistantID)
+	if info.Meta.SessionKind != SessionKindAssistant || info.Meta.AssistantID != "assistant-recovery" || info.Meta.Purpose != PurposeSupervisor {
+		t.Fatalf("recovery identity = kind %q assistant %q purpose %q", info.Meta.SessionKind, info.Meta.AssistantID, info.Meta.Purpose)
 	}
 }
 

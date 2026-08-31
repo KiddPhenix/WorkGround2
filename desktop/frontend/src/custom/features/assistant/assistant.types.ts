@@ -278,7 +278,7 @@ export interface AssistantPlan {
 }
 
 export type AssistantDispatchKind = "task" | "question" | "feedback" | "improvement" | "correction" | "control";
-export type AssistantDispatchState = "pending_classification" | "classified" | "classification_failed" | "reflected" | "reflection_failed";
+export type AssistantDispatchState = "pending_classification" | "classified" | "executed" | "classification_failed" | "reflected" | "reflection_failed";
 export type AssistantDispatchStreamPhase = "accepted" | "streaming" | "committed" | "failed";
 
 export interface AssistantDispatchStreamEvent {

@@ -134,6 +134,7 @@ type fakeControl struct {
 	retried   bool
 	forked    string
 	created   string
+	createReq SessionCreateRequest
 }
 
 func (f *fakeControl) Steer(id, text, requestID string) error {
@@ -153,7 +154,22 @@ func (f *fakeControl) Fork(id, requestID string) (string, error) {
 }
 func (f *fakeControl) Create(req SessionCreateRequest) (string, error) {
 	f.created = req.Title
+	f.createReq = req
 	return "new-session", nil
+}
+
+func TestBindOwnerDefaultsAndFencesSessionCreate(t *testing.T) {
+	fc := &fakeControl{}
+	bound := BindOwner(fc, "assistant-1", "C:/workspace")
+	if _, err := bound.Create(SessionCreateRequest{Title: "task", Prompt: "do it"}); err != nil {
+		t.Fatal(err)
+	}
+	if fc.createReq.OwnerID != "assistant-1" || fc.createReq.Workspace != "C:/workspace" {
+		t.Fatalf("bound create request = %+v", fc.createReq)
+	}
+	if _, err := bound.Create(SessionCreateRequest{Title: "task", Prompt: "do it", OwnerID: "assistant-2"}); err == nil {
+		t.Fatal("bound control accepted a different Assistant owner")
+	}
 }
 func (f *fakeControl) PendingInteractions(id string) ([]SessionInteraction, error) {
 	return []SessionInteraction{{Kind: "ask", ID: "q1"}}, nil
@@ -339,5 +355,16 @@ func TestSessionControlResultUnifiedOutcome(t *testing.T) {
 	}
 	if _, has := r["next_hint"]; !has {
 		t.Fatalf("result missing next_hint field: %v", r)
+	}
+}
+
+func TestSessionCreateFingerprintPromptUsesStableIntent(t *testing.T) {
+	first := SessionCreateRequest{Prompt: "context revision 1", IntentPrompt: "ship release"}
+	second := SessionCreateRequest{Prompt: "context revision 2", IntentPrompt: "ship release"}
+	if first.FingerprintPrompt() != second.FingerprintPrompt() {
+		t.Fatal("context refresh changed the stable receipt intent")
+	}
+	if got := (SessionCreateRequest{Prompt: " ordinary prompt "}).FingerprintPrompt(); got != "ordinary prompt" {
+		t.Fatalf("ordinary prompt = %q", got)
 	}
 }

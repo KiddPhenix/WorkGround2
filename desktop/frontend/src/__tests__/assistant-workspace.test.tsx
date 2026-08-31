@@ -592,6 +592,12 @@ await act(async () => {
   root.render(<LocaleProvider><ToastProvider><AssistantWorkspace key="managed-sessions" onOpenSession={(target) => { openedSession = target; }} /></ToastProvider></LocaleProvider>);
   await new Promise((resolve) => setTimeout(resolve, 40));
 });
+ok(host.querySelector(".assistant-managed") === null, "main Assistant workspace no longer embeds managed Sessions");
+const managedManageButton = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;
+await act(async () => { managedManageButton?.click(); });
+const managedSessionsTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("受管 Session")) as HTMLButtonElement | undefined;
+ok(managedSessionsTab !== undefined, "management nav includes the managed Session page");
+await act(async () => { managedSessionsTab?.click(); });
 ok(host.querySelector(".assistant-managed") !== null, "managed session section renders");
 ok(host.textContent?.includes("受管 Session") ?? false, "managed session section carries its label");
 const managedCard = (sessionID: string) => host.querySelector(`[data-session-id="${sessionID}"]`) as HTMLElement | null;
@@ -639,6 +645,12 @@ await act(async () => {
   root.render(<LocaleProvider><ToastProvider><AssistantWorkspace key="diagnostic" /></ToastProvider></LocaleProvider>);
   await new Promise((resolve) => setTimeout(resolve, 40));
 });
+ok(host.querySelector("details.assistant-supervisor") === null, "main Assistant workspace no longer embeds supervisor diagnostics");
+const diagnosticManageButton = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;
+await act(async () => { diagnosticManageButton?.click(); });
+const supervisorTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("监督诊断")) as HTMLButtonElement | undefined;
+ok(supervisorTab !== undefined, "management nav includes the supervisor diagnostics page");
+await act(async () => { supervisorTab?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
 const supervisorDetails = host.querySelector("details.assistant-supervisor") as HTMLDetailsElement | null;
 ok(supervisorDetails !== null, "supervisor diagnostic panel renders");
 ok(supervisorDetails?.querySelector("summary")?.textContent?.includes("监督诊断") ?? false, "diagnostic panel carries its label");
@@ -666,10 +678,19 @@ await act(async () => {
 });
 const viewportPublishes = getMockViewportPublishes();
 ok(viewportPublishes.length >= 1, "workspace publishes a viewport observation");
-const visiblePublish = viewportPublishes[viewportPublishes.length - 1];
-ok(visiblePublish?.windowId === "assistant-main" && visiblePublish?.workspaceId === "~/projects/WorkGround2", "viewport carries the workspace");
-ok((visiblePublish?.visibleSessionIds?.includes("scan-session") && visiblePublish?.visibleSessionIds?.includes("release-session")) ?? false, "viewport lists the visible managed sessions");
+const hiddenPublish = viewportPublishes[viewportPublishes.length - 1];
+ok(hiddenPublish?.windowId === "assistant-main" && hiddenPublish?.workspaceId === "~/projects/WorkGround2", "viewport carries the workspace");
+ok(hiddenPublish?.visibleSessionIds?.length === 0, "hidden management page does not publish managed Sessions as visible");
+const viewportManageButton = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;
+await act(async () => { viewportManageButton?.click(); });
+const viewportSessionsTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("受管 Session")) as HTMLButtonElement | undefined;
+await act(async () => { viewportSessionsTab?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+const visiblePublish = getMockViewportPublishes().at(-1);
+ok((visiblePublish?.visibleSessionIds?.includes("scan-session") && visiblePublish?.visibleSessionIds?.includes("release-session")) ?? false, "management Session page publishes the sessions it actually shows");
 ok(visiblePublish?.selectedSessionId === "", "compact list does not publish a hidden selected Session");
+const viewportCloseButton = host.querySelector(".assistant-manager > header button") as HTMLButtonElement | null;
+await act(async () => { viewportCloseButton?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
+ok(getMockViewportPublishes().at(-1)?.visibleSessionIds?.length === 0, "closing management clears visible Session IDs");
 
 // ── 同一次失败重试复用同一 request_id ─────────────────────────
 resetMockSessionControlCalls();
@@ -681,6 +702,10 @@ await act(async () => {
   root.render(<LocaleProvider><ToastProvider><AssistantWorkspace key="retry" /></ToastProvider></LocaleProvider>);
   await new Promise((resolve) => setTimeout(resolve, 40));
 });
+const retryManageButton = host.querySelector('button[aria-label="管理助手"]') as HTMLButtonElement | null;
+await act(async () => { retryManageButton?.click(); });
+const retrySessionsTab = [...host.querySelectorAll(".assistant-manager nav button")].find((button) => button.textContent?.includes("受管 Session")) as HTMLButtonElement | undefined;
+await act(async () => { retrySessionsTab?.click(); });
 await act(async () => { cardButton(managedCard("scan-session"), "停止")?.click(); await new Promise((resolve) => setTimeout(resolve, 10)); });
 let retryCalls = getMockSessionControlCalls();
 ok(retryCalls.length === 1, "first stop attempt reaches the backend");

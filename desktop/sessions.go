@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/assistant"
 	"workground2/internal/config"
 	"workground2/internal/control"
 	"workground2/internal/fileutil"
@@ -731,7 +732,11 @@ func sessionDisplayResolverFromMap(displays sessionDisplayMap, sessionPath strin
 				return display
 			}
 		}
-		return control.StripComposePrefixes(content)
+		content = control.StripComposePrefixes(content)
+		if intent, ok := assistant.ManagedSessionIntent(content); ok {
+			return intent
+		}
+		return content
 	}
 }
 

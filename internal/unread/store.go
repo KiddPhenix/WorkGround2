@@ -57,9 +57,12 @@ type Item struct {
 
 // Conversation is a read-only projection returned to callers.
 type Conversation struct {
-	Key               string    `json:"key"`
-	Source            Source    `json:"source"`
-	SessionID         string    `json:"sessionId,omitempty"`
+	Key       string `json:"key"`
+	Source    Source `json:"source"`
+	SessionID string `json:"sessionId,omitempty"`
+	// SessionKind is presentation metadata enriched at the desktop boundary.
+	// It is intentionally not persisted in the generic unread store.
+	SessionKind       string    `json:"sessionKind,omitempty"`
 	Title             string    `json:"title,omitempty"`
 	LatestSequence    uint64    `json:"latestSequence"`
 	ReadSequence      uint64    `json:"readSequence"`

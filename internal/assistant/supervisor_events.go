@@ -548,6 +548,20 @@ type SupervisorTurnCheckpoint struct {
 	EventIDs    []string  `json:"event_ids,omitempty"`
 	BatchID     string    `json:"batch_id,omitempty"`
 	HistoryLen  int       `json:"history_len,omitempty"`
+	// Ref is the actual supervisor Session this turn ran on. A snapshot
+	// recovery can move the turn onto a new physical Session file; persisting
+	// the ref lets the next settle follow the same Session instead of
+	// re-opening the discoverable root. Empty for legacy checkpoints written
+	// before this field existed.
+	Ref SupervisorSessionRef `json:"ref,omitempty"`
+	// EvidenceObservedThrough is the newest evidence CreatedAt this turn
+	// actually saw (snapshot-derived). The settle advances the evidence
+	// watermark to exactly this boundary — never wall-clock now — so a
+	// concurrent/late evidence record written after the snapshot but stamped
+	// earlier is not swallowed. Zero means the snapshot had no evidence, or the
+	// checkpoint is legacy (written before this field existed): the watermark is
+	// left untouched.
+	EvidenceObservedThrough time.Time `json:"evidence_observed_through,omitempty"`
 }
 
 // SupervisorBatchReceipt durably links one event batch to the decision/action

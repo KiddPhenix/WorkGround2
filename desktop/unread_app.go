@@ -40,11 +40,38 @@ func (a *App) UnreadState() UnreadState {
 	state := UnreadState{Available: store != nil}
 	if store != nil {
 		state.Summary = store.Summary()
+		for i := range state.Summary.Conversations {
+			state.Summary.Conversations[i].SessionKind = a.unreadConversationSessionKind(state.Summary.Conversations[i])
+		}
 	}
 	if err != nil {
 		state.Error = err.Error()
 	}
 	return state
+}
+
+func (a *App) unreadConversationSessionKind(conversation unread.Conversation) string {
+	if conversation.Source != unread.SourceSession || conversation.UnreadCount <= 0 {
+		return ""
+	}
+	sessionID := strings.TrimSpace(conversation.SessionID)
+	path := ""
+	if strings.HasPrefix(strings.ToLower(sessionID), "path:") {
+		path = strings.TrimSpace(sessionID[len("path:"):])
+	} else if sessionID != "" {
+		path = a.runtimeSessionPath(sessionID)
+	}
+	if path == "" {
+		return ""
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		return ""
+	}
+	if meta.SessionKind == agent.SessionKindAssistant || strings.TrimSpace(meta.AssistantID) != "" || strings.EqualFold(strings.TrimSpace(meta.SessionSource), agent.SessionSourceAssist) {
+		return string(agent.SessionKindAssistant)
+	}
+	return string(meta.SessionKind)
 }
 
 // MarkUnreadRead monotonically advances an actual visible watermark supplied

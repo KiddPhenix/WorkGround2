@@ -101,15 +101,18 @@ export function ideaStateLabel(state: AssistantIdeaState, locale: string): strin
   return labels[state][locale === "en" ? 0 : 1];
 }
 
-export function dispatchStateLabel(state: AssistantDispatch["state"], locale: string): string {
+export function dispatchStateLabel(state: string, locale: string): string {
   const labels: Record<AssistantDispatch["state"], [string, string]> = {
     pending_classification: ["Classifying", "分类中"],
     classified: ["Classified", "已分类"],
+    executed: ["Executed", "已执行"],
     classification_failed: ["Classification failed", "分类失败"],
     reflected: ["Reflected", "已反思"],
     reflection_failed: ["Reflection failed", "反思失败"],
   };
-  return labels[state][locale === "en" ? 0 : 1];
+  const label = labels[state as AssistantDispatch["state"]];
+  if (label) return label[locale === "en" ? 0 : 1];
+  return locale === "en" ? `Unknown state: ${state}` : `未知状态：${state}`;
 }
 
 const runTitleMaxChars = 40;

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,44 @@ type daemonSessionControl struct {
 
 var _ sessiontool.SessionControl = (*daemonSessionControl)(nil)
 
+func (c *daemonSessionControl) createWorkspace(req sessiontool.SessionCreateRequest) (string, error) {
+	explicit := strings.TrimSpace(req.Workspace)
+	owner := strings.TrimSpace(req.OwnerID)
+	if c.store == nil || owner == "" {
+		return explicit, nil
+	}
+	snapshot, err := c.store.Get(owner)
+	if err != nil {
+		return "", fmt.Errorf("resolve assistant workspace: %w", err)
+	}
+	expected := ""
+	if snapshot.Assistant.Scope == assistant.ScopeWorkspace {
+		expected = strings.TrimSpace(snapshot.Assistant.WorkspaceRoot)
+		if expected == "" {
+			return "", errors.New("assistant workspace is required")
+		}
+	}
+	if explicit != "" && !sameDaemonWorkspace(explicit, expected) {
+		return "", fmt.Errorf("session_create workspace %q conflicts with Assistant workspace %q", explicit, expected)
+	}
+	return expected, nil
+}
+
+func sameDaemonWorkspace(a, b string) bool {
+	clean := func(value string) string {
+		value = strings.TrimSpace(value)
+		if abs, err := filepath.Abs(value); err == nil {
+			value = abs
+		}
+		return filepath.Clean(value)
+	}
+	a, b = clean(a), clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 func newDaemonSessionControl(model string, stderr io.Writer, store *assistant.Store, tools func(assistantID, executionID string) []tool.Tool) *daemonSessionControl {
 	return &daemonSessionControl{
 		ctx: context.Background(), model: model, stderr: stderr, store: store,
@@ -67,11 +106,9 @@ func (c *daemonSessionControl) Create(req sessiontool.SessionCreateRequest) (str
 	if title == "" || prompt == "" {
 		return "", errors.New("session_create requires a title and prompt")
 	}
-	workspace := strings.TrimSpace(req.Workspace)
-	if workspace == "" && c.store != nil && strings.TrimSpace(req.OwnerID) != "" {
-		if snap, err := c.store.Get(req.OwnerID); err == nil && snap.Assistant.Scope == assistant.ScopeWorkspace {
-			workspace = snap.Assistant.WorkspaceRoot
-		}
+	workspace, err := c.createWorkspace(req)
+	if err != nil {
+		return "", err
 	}
 	sessionDir := config.SessionDir()
 	if workspace != "" {
@@ -79,11 +116,12 @@ func (c *daemonSessionControl) Create(req sessiontool.SessionCreateRequest) (str
 	}
 	hasRequest := req.RequestID != "" && strings.TrimSpace(req.OwnerID) != ""
 	// Full-input fingerprint: a request ID reused with any differing input
-	// (owner, workspace, purpose, parent, title, prompt) is a conflict, not a
+	// (owner, workspace, purpose, parent, plan item, title, intent) is a conflict, not a
 	// silent reuse of the wrong Session.
 	fingerprint := agent.SessionReceiptInput{
 		Owner: req.OwnerID, RequestID: req.RequestID, Workspace: workspace,
-		Purpose: string(req.Purpose), Parent: req.ParentID, Title: title, Prompt: prompt,
+		Purpose: string(req.Purpose), Parent: req.ParentID, PlanItem: req.ResponsibilityID,
+		Title: title, Prompt: req.FingerprintPrompt(),
 	}.Fingerprint()
 
 	// Reserve the (requestID -> SessionID) binding BEFORE any controller work, so
@@ -175,7 +213,14 @@ func (c *daemonSessionControl) Create(req sessiontool.SessionCreateRequest) (str
 	// Controller persists the user turn as part of the turn; the receipt advance
 	// to started records that the model turn began.
 	if !agent.SessionFileHasContent(ctrl.SessionPath()) && !reserved.State.AtLeast(agent.ReceiptStarted) {
-		ctrl.SubmitDisplay(prompt, prompt)
+		// The model sees the full managed-context envelope (Prompt); the
+		// transcript shows the raw delegation (IntentPrompt) so the first user
+		// message never leaks the internal execution contract.
+		display := strings.TrimSpace(req.IntentPrompt)
+		if display == "" {
+			display = prompt
+		}
+		ctrl.SubmitDisplay(display, prompt)
 	}
 	if hasRequest {
 		if _, err := agent.AdvanceSessionReceipt(sessionDir, req.RequestID, agent.ReceiptStarted); err != nil {
@@ -221,6 +266,29 @@ func (c *daemonSessionControl) liveCtrl(sessionID string) *control.Controller {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.live[sessionID]
+}
+
+// requireCtrlForPath returns the live Controller for a durable session path,
+// reusing an already-loaded Controller whose SessionPath matches before falling
+// back to restore-by-branch-ID. A snapshot recovery moves a live Controller
+// onto a new physical path without re-keying the live map, so the path lookup
+// is what keeps a recovered supervisor turn on the same Controller instead of
+// building a second one under the recovery branch ID.
+func (c *daemonSessionControl) requireCtrlForPath(path string) (*control.Controller, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, errors.New("session path is required")
+	}
+	canon := agent.CanonicalSessionPath(path)
+	c.mu.Lock()
+	for _, ctrl := range c.live {
+		if agent.CanonicalSessionPath(ctrl.SessionPath()) == canon {
+			c.mu.Unlock()
+			return ctrl, nil
+		}
+	}
+	c.mu.Unlock()
+	return c.requireCtrl(agent.BranchID(path))
 }
 
 // resumeCtrlLocked restores a live Controller from its persisted Session file

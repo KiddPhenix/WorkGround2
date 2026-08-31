@@ -87,6 +87,39 @@ func TestDesktopSessionAttentionRecordsOnlyBackgroundNonCLIEvents(t *testing.T) 
 	}
 }
 
+func TestUnreadStateEnrichesAssistantSessionKind(t *testing.T) {
+	dir := t.TempDir()
+	store, err := unread.Open(filepath.Join(dir, "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(dir, "assistant.jsonl")
+	if err := os.WriteFile(sessionPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := agent.EnsureBranchMeta(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.SessionKind = agent.SessionKindAssistant
+	meta.AssistantID = "assistant-1"
+	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcceptAttention(unread.AttentionInput{
+		Source: unread.SourceSession, ConversationKey: "session:assistant", EventID: "done-1",
+		SessionID: "path:" + sessionPath, Title: "Assistant", Kind: "completed",
+		Priority: unread.PriorityNormal, OccurredAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := (&App{unreadStore: store}).UnreadState()
+	if len(state.Summary.Conversations) != 1 || state.Summary.Conversations[0].SessionKind != string(agent.SessionKindAssistant) {
+		t.Fatalf("assistant unread identity = %+v", state.Summary.Conversations)
+	}
+}
+
 func TestDesktopWorkAttentionUsesStableRunAndInputIdentity(t *testing.T) {
 	store, err := unread.Open(filepath.Join(t.TempDir(), "unread.json"))
 	if err != nil {

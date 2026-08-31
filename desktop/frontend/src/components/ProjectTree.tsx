@@ -667,26 +667,33 @@ export function projectTreeIsExternalCall(node: ProjectNode): boolean {
   return Boolean(titleSource && titleSource !== "manual" && titleSource !== "auto");
 }
 
+export function projectTreeIsAssistantSession(node: ProjectNode): boolean {
+  return node.sessionKind === "assistant" || (node.sessionSource ?? "").trim().toLowerCase() === "assist";
+}
+
 export function splitWorkbenchRecentTree(
   nodes: ProjectNode[],
   sortMode: WorkbenchSortMode,
   settings: WorkbenchRecentSettings,
   unreadConversations: UnreadConversation[] = [],
 ): WorkbenchTreeSections {
-  const recentTopics: ProjectNode[] = [];
+  const recentCandidates: ProjectNode[] = [];
   const projects: ProjectNode[] = [];
 
   for (const node of nodes) {
     if (!node) continue;
     const isFolder = node.kind === "project" || node.kind === "global_folder" || node.kind === "crew_folder";
     if (!isFolder) {
-      if (isTopicNode(node)) recentTopics.push(node);
+      if (isTopicNode(node)) recentCandidates.push(node);
       projects.push(node);
       continue;
     }
-    recentTopics.push(...asArray(node.children).filter((child) => isTopicNode(child) || isRuntimeSessionNode(child) || isCrewSessionNode(child)));
+    recentCandidates.push(...asArray(node.children).filter((child) => isTopicNode(child) || isRuntimeSessionNode(child) || isCrewSessionNode(child)));
     projects.push(node);
   }
+
+  const assistantTopics = recentCandidates.filter(projectTreeIsAssistantSession);
+  const recentTopics = recentCandidates.filter((node) => !projectTreeIsAssistantSession(node));
 
   recentTopics.sort((a, b) => {
     if (Boolean(a.running) !== Boolean(b.running)) return a.running ? -1 : 1;
@@ -694,9 +701,13 @@ export function splitWorkbenchRecentTree(
   });
 
   // --- Unread-aware separation ---
-  const activeUnread = unreadConversations.filter((c) => c.unreadCount > 0);
+  const activeUnread = unreadConversations.filter((conversation) => conversation.unreadCount > 0 && conversation.sessionKind !== "assistant");
   const unreadRelatedKeys = new Set<string>();
-  const assignedConversationKeys = new Set<string>();
+  // Assistant sessions remain in the project tree and Assistant UI, but never
+  // leak back into Recent through an unread fallback row.
+  const assignedConversationKeys = new Set(
+    assistantTopics.flatMap((node) => projectTreeUnreadConversations(node, activeUnread).map((conversation) => conversation.key)),
+  );
   const unreadMapped: ProjectNode[] = [];
 
   for (const node of recentTopics) {

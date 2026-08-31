@@ -176,6 +176,39 @@ func DetectNewEvidence(snapshot Snapshot, observedAt time.Time) bool {
 	return false
 }
 
+// evidenceObservedThrough returns the newest CreatedAt across every evidence
+// collection in the snapshot (opportunity/artifact/experiment/decision/research)
+// — the exact boundary up to which this snapshot is observably complete. It is
+// the value a turn's watermark may advance to: a turn must never advance past
+// what it actually saw, or a concurrent/late record written after the snapshot
+// but stamped before wall-clock now would be swallowed. Zero means the snapshot
+// carried no evidence, so nothing is advanced.
+func evidenceObservedThrough(snapshot Snapshot) time.Time {
+	var through time.Time
+	advance := func(t time.Time) {
+		t = t.UTC()
+		if t.After(through) {
+			through = t
+		}
+	}
+	for _, o := range snapshot.Opportunities {
+		advance(o.CreatedAt)
+	}
+	for _, a := range snapshot.Artifacts {
+		advance(a.CreatedAt)
+	}
+	for _, e := range snapshot.Experiments {
+		advance(e.CreatedAt)
+	}
+	for _, d := range snapshot.Decisions {
+		advance(d.CreatedAt)
+	}
+	for _, r := range snapshot.Research {
+		advance(r.CreatedAt)
+	}
+	return through
+}
+
 // ExpansionState is the persisted, observable state of the expansion loop. A
 // pass that found nothing adoptable sets BackoffUntil so the loop retries with
 // bounded exponential backoff instead of spinning every tick.
@@ -185,6 +218,13 @@ type ExpansionState struct {
 	BackoffUntil  time.Time        `json:"backoff_until,omitempty" ts_type:"string"`
 	Attempt       int              `json:"attempt"`
 	Error         string           `json:"error,omitempty"`
+	// EvidenceObservedAt is the durable evidence observation watermark: the
+	// supervisor has already been woken for every opportunity/artifact/
+	// experiment/decision/research created at or before this time, so those
+	// records never re-trigger new_evidence. Zero means nothing observed yet —
+	// any existing evidence still counts once (legacy aggregates migrate to the
+	// same first-wake behavior).
+	EvidenceObservedAt time.Time `json:"evidence_observed_at,omitempty" ts_type:"string"`
 }
 
 // expansionBackoff returns the bounded exponential backoff for a failed or

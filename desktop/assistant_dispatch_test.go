@@ -3,13 +3,59 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/assistant"
+	"workground2/internal/config"
+	"workground2/internal/control"
 	"workground2/internal/event"
 )
+
+func TestAssistantRoleTargetUsesOwnedWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	role := assistant.Assistant{
+		ID: "helper-workspace", Scope: assistant.ScopeWorkspace, WorkspaceRoot: workspace,
+	}
+	target, err := roleTarget(assistant.WithRoleContext(context.Background(), role))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.workspaceRoot != normalizeProjectRoot(workspace) || target.sessionDir != config.ProjectSessionDir(workspace) {
+		t.Fatalf("role target = %+v, want workspace %q", target, workspace)
+	}
+
+	path := filepath.Join(t.TempDir(), "role.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := stampRoleSession(path, target); err != nil {
+		t.Fatal(err)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	if meta.Scope != "project" || meta.WorkspaceRoot != normalizeProjectRoot(workspace) || meta.AssistantID != role.ID || meta.SessionSource != agent.SessionSourceAssist || meta.ToolApprovalMode != control.ToolApprovalAuto {
+		t.Fatalf("role meta = %+v", meta)
+	}
+}
+
+func TestAssistantRoleTargetKeepsGlobalAssistantGlobal(t *testing.T) {
+	target, err := roleTarget(assistant.WithRoleContext(context.Background(), assistant.Assistant{
+		ID: "helper-global", Scope: assistant.ScopeGlobal,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.workspaceRoot != "" || target.sessionDir != config.SessionDir() {
+		t.Fatalf("global role target = %+v", target)
+	}
+}
 
 // TestProductionAssemblyRequiresRoleModel proves the production wiring has no
 // heuristic classifier or fixed generator: constructing any role without a real

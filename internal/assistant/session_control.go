@@ -26,13 +26,14 @@ type SessionControl interface {
 // SessionCreateRequest is the intent for a new managed Session, mirroring
 // sessiontool.SessionCreateRequest.
 type SessionCreateRequest struct {
-	Title     string
-	Prompt    string
-	OwnerID   string
-	ParentID  string
-	Purpose   string // "managed" | "supervisor" | ...
-	Workspace string
-	RequestID string
+	Title        string
+	Prompt       string
+	OwnerID      string
+	ParentID     string
+	Purpose      string // "managed" | "supervisor" | ...
+	Workspace    string
+	RequestID    string
+	IntentPrompt string // stable raw intent; Prompt may contain bounded context
 	// ResponsibilityID optionally binds the Session to one plan responsibility
 	// (persisted in the Session meta by the host).
 	ResponsibilityID string

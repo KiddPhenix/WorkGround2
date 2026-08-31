@@ -47,6 +47,15 @@ func TestAssistantSystemPromptPrefersAutonomousExecution(t *testing.T) {
 	}
 }
 
+func TestAssistantSystemPromptRequiresWorkspaceMemoryAndPriorOutcomeContext(t *testing.T) {
+	got := assistantSystemPrompt("")
+	for _, want := range []string{"project_status", "project_constraints_get", "memory_search", "session_list/session_status/session_read", "memory_remember", "artifact locations", "<assistant-progress>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("assistant prompt missing continuity contract %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestAssistantSkipsCodingOnlyAnchoredBootstrap(t *testing.T) {
 	if shouldUseAnchoredBootstrap(true, true, agent.SessionKindAssistant) {
 		t.Fatal("Assistant first turn must expose the full tool catalog")

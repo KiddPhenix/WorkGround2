@@ -605,6 +605,39 @@ eq(
   5,
   "recent filtering keeps the project tree as the single complete source",
 );
+
+const assistantRecentProject: ProjectNode = {
+  key: "project_assistant_recent",
+  kind: "project",
+  label: "Assistant Recent",
+  root: "/assistant-recent",
+  children: [
+    { key: "topic_normal_recent", kind: "topic", label: "Normal", topicId: "normal", sessionId: "sid:normal", lastActivityAt: 100 },
+    { key: "topic_assistant_source_only", kind: "topic", label: "Assistant Source Only", topicId: "assist-source", sessionSource: "assist", lastActivityAt: 400 },
+    { key: "topic_assistant_read", kind: "topic", label: "Assistant Read", topicId: "assist-read", sessionId: "sid:assist-read", sessionKind: "assistant", sessionSource: "assist", lastActivityAt: 300 },
+    { key: "topic_assistant_unread", kind: "topic", label: "Assistant Unread", topicId: "assist-unread", sessionId: "sid:assist-unread", sessionKind: "assistant", sessionSource: "assist", lastActivityAt: 200 },
+  ],
+};
+const assistantUnreadConversations: UnreadConversation[] = [
+  { key: "session:assist-unread", source: "session", sessionId: "sid:assist-unread", sessionKind: "assistant", unreadCount: 1, latestSequence: 2, readSequence: 1, highPriorityCount: 0, title: "Assistant Unread" },
+  { key: "session:assist-fallback", source: "session", sessionId: "path:/detached/assistant.jsonl", sessionKind: "assistant", unreadCount: 1, latestSequence: 1, readSequence: 0, highPriorityCount: 0, title: "Detached Assistant" },
+];
+const assistantRecentResult = splitWorkbenchRecentTree(
+  [assistantRecentProject],
+  "updated",
+  { showExternal: true, limit: 10 },
+  assistantUnreadConversations,
+);
+eq(
+  assistantRecentResult.recent.map((node) => node.key),
+  ["topic_normal_recent"],
+  "assistant sessions stay out of Recent, including the unread fallback path",
+);
+eq(
+  assistantRecentResult.projects[0].children?.map((node) => node.key),
+  ["topic_normal_recent", "topic_assistant_source_only", "topic_assistant_read", "topic_assistant_unread"],
+  "assistant sessions remain available in the project tree",
+);
 eq(
   splitWorkbenchRecentTree([crewFolder, recentProject], "updated", { showExternal: true, limit: 10 }).recent.some((node) => node.kind === "crew_session"),
   true,

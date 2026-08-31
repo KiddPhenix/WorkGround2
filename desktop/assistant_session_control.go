@@ -24,10 +24,34 @@ import (
 // (runtime registry ID first, then the durable session path/BranchID) and
 // submits intent only — it never invents or stores execution state.
 type appAssistantSessionControl struct {
-	app *App
+	app   *App
+	store *assistant.Store
 }
 
 var _ sessiontool.SessionControl = (*appAssistantSessionControl)(nil)
+
+func (c *appAssistantSessionControl) createWorkspace(req sessiontool.SessionCreateRequest) (string, error) {
+	explicit := strings.TrimSpace(req.Workspace)
+	owner := strings.TrimSpace(req.OwnerID)
+	if c.store == nil || owner == "" {
+		return explicit, nil
+	}
+	snapshot, err := c.store.Get(owner)
+	if err != nil {
+		return "", fmt.Errorf("resolve assistant workspace: %w", err)
+	}
+	expected := ""
+	if snapshot.Assistant.Scope == assistant.ScopeWorkspace {
+		expected = normalizeProjectRoot(snapshot.Assistant.WorkspaceRoot)
+		if expected == "" {
+			return "", errors.New("assistant workspace is required")
+		}
+	}
+	if explicit != "" && normalizeProjectRoot(explicit) != expected {
+		return "", fmt.Errorf("session_create workspace %q conflicts with Assistant workspace %q", explicit, expected)
+	}
+	return expected, nil
+}
 
 // sessionCtrlByID resolves an explicit session ID to its live runtime holder.
 // It accepts both the runtime registry ID and the durable session path/BranchID,
@@ -330,8 +354,12 @@ func (c *appAssistantSessionControl) Create(req sessiontool.SessionCreateRequest
 	}
 	scope := assistant.ScopeGlobal
 	workspaceRoot := ""
-	if strings.TrimSpace(req.Workspace) != "" {
-		scope, workspaceRoot = assistant.ScopeWorkspace, strings.TrimSpace(req.Workspace)
+	workspace, err := c.createWorkspace(req)
+	if err != nil {
+		return "", err
+	}
+	if workspace != "" {
+		scope, workspaceRoot = assistant.ScopeWorkspace, workspace
 	}
 	actualRoot := globalWorkspaceRoot()
 	if scope == assistant.ScopeWorkspace {
@@ -341,10 +369,13 @@ func (c *appAssistantSessionControl) Create(req sessiontool.SessionCreateRequest
 
 	hasRequest := req.RequestID != "" && req.OwnerID != ""
 	// Full-input fingerprint: a request ID reused with any differing input
-	// (owner, workspace, purpose, parent, title, prompt) is a conflict.
+	// (owner, workspace, purpose, parent, plan item, title, intent) is a conflict. Managed
+	// execution context may refresh before the first successful submit without
+	// changing the stable intent or creating a second Session.
 	fingerprint := agent.SessionReceiptInput{
 		Owner: req.OwnerID, RequestID: req.RequestID, Workspace: workspaceRoot,
-		Purpose: string(req.Purpose), Parent: req.ParentID, Title: title, Prompt: prompt,
+		Purpose: string(req.Purpose), Parent: req.ParentID, PlanItem: req.ResponsibilityID,
+		Title: title, Prompt: req.FingerprintPrompt(),
 	}.Fingerprint()
 
 	// Reserve the (requestID -> SessionID) binding BEFORE any Session is created,
@@ -436,7 +467,15 @@ func (c *appAssistantSessionControl) Create(req sessiontool.SessionCreateRequest
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		if err := c.app.SubmitToTab(tab.ID, prompt); err != nil {
+		// The model sees the full managed-context envelope (Prompt); the
+		// transcript shows the raw delegation (IntentPrompt) so opening a
+		// managed Session from the 委托 list never leaks the internal
+		// execution contract as the first user message.
+		display := strings.TrimSpace(req.IntentPrompt)
+		if display == "" {
+			display = prompt
+		}
+		if err := c.app.SubmitDisplayToTab(tab.ID, display, prompt); err != nil {
 			return "", err
 		}
 	}
@@ -480,13 +519,13 @@ func (c *appAssistantSessionControl) PendingInteractions(sessionID string) ([]se
 // sessionTools returns the Assistant's session query and control tools, bound to
 // the live desktop session registry so a supervisor turn can observe and steer
 // the sessions it manages.
-func (r *AssistantRuntime) sessionTools() []tool.Tool {
+func (r *AssistantRuntime) sessionTools(assistantID string) []tool.Tool {
 	if r == nil || r.app == nil {
 		return nil
 	}
 	dir := config.SessionDir()
 	queryDirs := (&desktopSupervisorHost{r: r}).supervisorSessionDirs()
-	adapter := &appAssistantSessionControl{app: r.app}
+	adapter := sessiontool.BindOwner(&appAssistantSessionControl{app: r.app, store: r.store}, assistantID, "")
 	return []tool.Tool{
 		sessiontool.NewSessionListToolDirs(queryDirs),
 		sessiontool.NewSessionStatusToolDirs(queryDirs),

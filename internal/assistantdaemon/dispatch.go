@@ -70,8 +70,8 @@ func (r *Runtime) advanceClassifiedDispatches(now time.Time) error {
 			}
 			requestID := assistant.StableID("request", "dispatch-session/"+d.ID)
 			sessionID, err := r.sessionControl.Create(sessiontool.SessionCreateRequest{
-				Title: d.Input, Prompt: d.Input, OwnerID: a.ID, Purpose: agent.PurposeManaged,
-				RequestID: requestID,
+				Title: d.Input, Prompt: assistant.ManagedSessionPrompt(snapshot, d.Input), IntentPrompt: d.Input, OwnerID: a.ID, Purpose: agent.PurposeManaged,
+				Workspace: snapshot.Assistant.WorkspaceRoot, RequestID: requestID,
 			})
 			if err != nil {
 				issues = append(issues, err)
@@ -130,10 +130,23 @@ func (r *Runtime) ideateIfDue(ctx context.Context, snapshot assistant.Snapshot) 
 // system prompt; the role instruction and dynamic context live entirely in the
 // prompt (the user turn). A frozen deny policy prevents any tool side effect.
 func runRoleCompletion(ctx context.Context, model string, stderr io.Writer, prompt string) (string, error) {
+	role, _ := assistant.RoleContextFrom(ctx)
+	workspace := ""
+	sessionDir := config.SessionDir()
+	if role.Scope == assistant.ScopeWorkspace {
+		workspace = strings.TrimSpace(role.WorkspaceRoot)
+		if workspace == "" {
+			return "", errors.New("assistant role workspace is required")
+		}
+		sessionDir = config.ProjectSessionDir(workspace)
+		if strings.TrimSpace(sessionDir) == "" {
+			return "", errors.New("assistant role session dir is unavailable")
+		}
+	}
 	capture := &roleCapture{}
 	ctrl, err := boot.Build(ctx, boot.Options{
 		Model: model, RequireKey: true, Sink: event.FuncSink(capture.sink),
-		Stderr: stderr, SessionDir: config.SessionDir(), SessionKind: agent.SessionKindAssistant,
+		Stderr: stderr, WorkspaceRoot: workspace, SessionDir: sessionDir, SessionKind: agent.SessionKindAssistant,
 		ApprovalTimeout: 2 * time.Second,
 	})
 	if err != nil {
@@ -141,6 +154,24 @@ func runRoleCompletion(ctx context.Context, model string, stderr io.Writer, prom
 	}
 	defer ctrl.Close()
 	ctrl.SetSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
+	meta, err := agent.EnsureBranchMeta(ctrl.SessionPath())
+	if err != nil {
+		return "", err
+	}
+	meta.SessionKind = agent.SessionKindAssistant
+	meta.SessionSource = agent.SessionSourceAssist
+	meta.AssistantID = strings.TrimSpace(role.AssistantID)
+	meta.ToolApprovalMode = control.ToolApprovalAuto
+	if role.Scope == assistant.ScopeWorkspace {
+		meta.Scope = "project"
+		meta.WorkspaceRoot = workspace
+	} else {
+		meta.Scope = "global"
+		meta.WorkspaceRoot = ""
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(ctrl.SessionPath(), meta); err != nil {
+		return "", err
+	}
 	if err := ctrl.RunWithPolicy(ctx, prompt, assistant.RolePermissionPolicy(), control.ToolApprovalAuto); err != nil {
 		return "", err
 	}
