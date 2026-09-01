@@ -83,10 +83,11 @@ const (
 	// event — or TurnDone — clears. Appended last to keep the Kind values before
 	// it wire-stable.
 	Retrying
-	// Steer fires when a mid-turn steer message is consumed from the queue and
-	// injected as a user message. Text carries the raw steer content (without the
-	// wrapper prefix), so a frontend can display it to the user as confirmation.
-	// Frontends use Steer to know a queued message has been delivered.
+	// Steer fires when a mid-turn steer message is received and enqueued — a
+	// visible confirmation that the guidance was accepted for the running turn.
+	// Text carries the raw steer content (without the wrapper prefix). It does
+	// not mean the message has been consumed by the model loop or injected as a
+	// user message yet; consumption and persistence happen on the next loop step.
 	Steer
 	// MemoryCompilerStatsEvent carries content-free Memory v5 participation metrics
 	// for the current turn. Appended last to keep earlier Kind values stable.

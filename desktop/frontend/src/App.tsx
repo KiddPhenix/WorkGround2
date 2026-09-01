@@ -2812,7 +2812,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     return transcriptItems.slice(0, rewindState.boundaryIdx).filter((it) => it.kind !== "compaction");
   }, [transcriptItems, rewindState]);
 
-  const latestGuidanceConsumed = useMemo(() => {
+  const latestGuidanceAccepted = useMemo(() => {
     for (let i = state.items.length - 1; i >= 0; i--) {
       const item = state.items[i];
       if (item.kind === "notice" && item.text.startsWith("↪ ")) {
@@ -3871,8 +3871,8 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     activityStageSeed: state.activityStageSeed,
     transientOverlayDismissSignal,
     composerSessionKey,
-    latestGuidanceKey: latestGuidanceConsumed?.key,
-    latestGuidanceText: latestGuidanceConsumed?.text,
+    latestGuidanceKey: latestGuidanceAccepted?.key,
+    latestGuidanceText: latestGuidanceAccepted?.text,
     guidanceQueueMockItems,
     submitDisabled: false,
     decisionPending: rewindCommitting || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending,
@@ -5211,8 +5211,8 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
               activityStageSeed={state.activityStageSeed}
               transientDismissSignal={transientOverlayDismissSignal}
               sessionKey={composerSessionKey}
-              guidanceConsumedKey={latestGuidanceConsumed?.key}
-              guidanceConsumedText={latestGuidanceConsumed?.text}
+              guidanceAcceptedKey={latestGuidanceAccepted?.key}
+              guidanceAcceptedText={latestGuidanceAccepted?.text}
               guidanceQueuePreviewItems={guidanceQueueMockItems}
             />
             <StatusBar

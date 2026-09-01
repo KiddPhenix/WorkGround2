@@ -810,12 +810,16 @@ func SteerText(content string) (string, bool) {
 	return after, true
 }
 
-// Steer queues a message for mid-turn injection.
+// Steer queues a message for mid-turn injection and immediately emits a Steer
+// event so every frontend gets a visible confirmation without waiting for the
+// next model loop to consume the queue. The message is still persisted to the
+// session when runSteps consumes the queue, so history replay is unchanged.
 func (a *Agent) Steer(text string) {
 	a.steerMu.Lock()
-	defer a.steerMu.Unlock()
 	a.steerQueue = append(a.steerQueue, text)
 	a.steerConsumed = false
+	a.steerMu.Unlock()
+	a.sink.Emit(event.Event{Kind: event.Steer, Text: text})
 }
 
 // SteerConsumed returns true when the steer queue became empty after the last consume.
@@ -1178,9 +1182,10 @@ func (a *Agent) runSteps(ctx context.Context, input string) error {
 		// survives tab switches and history replay. The model sees it as
 		// guidance (with a prefix), not a new task. One cache miss per
 		// steer is unavoidable — the model must see the new instruction.
+		// The visible confirmation was already emitted by Steer at enqueue
+		// time, so no second Steer event fires here.
 		if text, ok := a.consumeSteer(); ok {
 			a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(midTurnSteerMessage(text)), Origin: provider.MessageOriginHost})
-			a.sink.Emit(event.Event{Kind: event.Steer, Text: text})
 		}
 		schemas := a.effectiveSchemas()
 		prefixShape := a.capturePrefixShape(schemas)
