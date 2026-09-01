@@ -2043,14 +2043,13 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 }
 
 // SetProviderKey writes a secret to WorkGround2's global .env under the given
-// env-var name (the one a provider's api_key_env points at) and rebuilds so it
-// resolves immediately.
+// env-var name (the one a provider's api_key_env points at) and persists the
+// provider access entry, then rebuilds so it resolves. When a turn or background
+// job is running the rebuild is deferred (configRebuildNeeded) instead of
+// rejected, leaving the live controller untouched until runtime work settles.
 func (a *App) SetProviderKey(apiKeyEnv, value string) (string, error) {
 	if strings.TrimSpace(apiKeyEnv) == "" {
 		return "", fmt.Errorf("this provider has no api_key_env set")
-	}
-	if err := a.ensureActiveTabRebuildAllowed("provider key"); err != nil {
-		return "", err
 	}
 	warning, err := a.saveProviderCredential(apiKeyEnv, value)
 	if err != nil {
@@ -2059,7 +2058,7 @@ func (a *App) SetProviderKey(apiKeyEnv, value string) (string, error) {
 	if err := a.ensureProviderAccessForKey(apiKeyEnv); err != nil {
 		return "", err
 	}
-	if err := a.rebuild(); err != nil {
+	if err := a.tryRebuildAfterConfigChange(); err != nil {
 		return "", err
 	}
 	return warning, nil
@@ -2117,18 +2116,16 @@ func (a *App) ensureProviderAccessForKey(apiKeyEnv string) error {
 }
 
 // ClearProviderKey removes a provider secret from WorkGround2's global .env
-// and rebuilds so the provider immediately becomes unauthenticated.
+// and rebuilds so the provider becomes unauthenticated. As with SetProviderKey,
+// a running turn or background job defers the rebuild instead of rejecting it.
 func (a *App) ClearProviderKey(apiKeyEnv string) error {
 	if strings.TrimSpace(apiKeyEnv) == "" {
 		return fmt.Errorf("this provider has no api_key_env set")
 	}
-	if err := a.ensureActiveTabRebuildAllowed("provider key"); err != nil {
-		return err
-	}
 	if err := removeDotEnv(apiKeyEnv); err != nil {
 		return err
 	}
-	return a.rebuild()
+	return a.tryRebuildAfterConfigChange()
 }
 
 // SetPermissionMode sets the writer-fallback mode (ask|allow|deny).
