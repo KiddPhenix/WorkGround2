@@ -329,12 +329,12 @@ func (m *Manager) StartForSession(parentSession, kind, label string, run func(ct
 			j.noteArtifactErr("metadata: " + metaErr.Error())
 		}
 		j.mu.Unlock()
-		// Queue the drain note (and emit the closing Notice) BEFORE publishing the
-		// terminal status. Wait(nil)/resolve only block on Running jobs, so if the
-		// status flipped to terminal before the note was queued, a Wait could observe
-		// completion, skip j.done, and DrainCompletedNote would race ahead of the
-		// bookkeeping (the TestDrainMultiple -race flake). Recording first makes an
-		// observed terminal status imply the note is already queued.
+		// Queue the drain note BEFORE publishing the terminal status. Wait(nil)/
+		// resolve only block on Running jobs, so if the status flipped to terminal
+		// before the note was queued, a Wait could observe completion, skip j.done,
+		// and DrainCompletedNote would race ahead of the bookkeeping (the
+		// TestDrainMultiple -race flake). Recording first makes an observed terminal
+		// status imply the note is already queued.
 		m.recordCompletion(parentSession, id, kind, label, st, err)
 
 		j.mu.Lock()
@@ -347,6 +347,10 @@ func (m *Manager) StartForSession(parentSession, kind, label string, run func(ct
 		}
 		j.mu.Unlock()
 		close(j.done)
+		// Emit the closing Notice AFTER the terminal status and close(done) are
+		// published, so a synchronous observer (e.g. a deferred config rebuild)
+		// already sees the job as terminal instead of still Running.
+		m.emitCompletionNotice(parentSession, id, kind, label, st, err)
 	}()
 	return j
 }
@@ -490,13 +494,31 @@ func (m *Manager) monitorStalled(parentSession string, j *Job) {
 	}
 }
 
-// recordCompletion queues the finished-job summary for DrainCompletedNote and
-// emits a closing Notice (warn for a failure, info otherwise).
+// recordCompletion queues the finished-job summary for DrainCompletedNote. It
+// must run before the terminal status is published so an observed terminal
+// status implies the note is already queued (see Start).
 func (m *Manager) recordCompletion(parentSession, id, kind, label string, st Status, err error) {
 	tag := id
 	if label != "" {
 		tag = fmt.Sprintf("%s (%s)", id, label)
 	}
+	parentSession = strings.TrimSpace(parentSession)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if parentSession != "" && m.destroying[parentSession] {
+		return
+	}
+	m.completed = append(m.completed, completion{
+		sessionID: parentSession,
+		text:      fmt.Sprintf("%s — %s", tag, st),
+	})
+}
+
+// emitCompletionNotice emits the closing Notice for a job that reached a
+// terminal status (warn for a failure, info otherwise). It is called after the
+// terminal status and close(done) are published, so observers see the job as
+// terminal when the notice arrives.
+func (m *Manager) emitCompletionNotice(parentSession, id, kind, label string, st Status, err error) {
 	parentSession = strings.TrimSpace(parentSession)
 	shouldEmit := false
 	m.mu.Lock()
@@ -504,10 +526,6 @@ func (m *Manager) recordCompletion(parentSession, id, kind, label string, st Sta
 		m.mu.Unlock()
 		return
 	}
-	m.completed = append(m.completed, completion{
-		sessionID: parentSession,
-		text:      fmt.Sprintf("%s — %s", tag, st),
-	})
 	active := m.active
 	shouldEmit = active == "" || parentSession == "" || active == parentSession
 	m.mu.Unlock()
