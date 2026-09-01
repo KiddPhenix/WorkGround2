@@ -438,8 +438,8 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
             activityStageSeed={activityStageSeed}
             transientDismissSignal={transientOverlayDismissSignal}
             sessionKey={composerSessionKey}
-            guidanceConsumedKey={latestGuidanceKey}
-            guidanceConsumedText={latestGuidanceText}
+            guidanceAcceptedKey={latestGuidanceKey}
+            guidanceAcceptedText={latestGuidanceText}
             guidanceQueuePreviewItems={guidanceQueueMockItems}
           />
         </div>

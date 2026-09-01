@@ -454,8 +454,8 @@ export function Composer({
   activityStageSeed,
   transientDismissSignal,
   sessionKey,
-  guidanceConsumedKey,
-  guidanceConsumedText,
+  guidanceAcceptedKey,
+  guidanceAcceptedText,
   guidanceQueuePreviewItems,
   widgetEnabled = true,
   onEnterWidgetMode,
@@ -507,8 +507,8 @@ export function Composer({
   activityStageSeed?: number;
   transientDismissSignal?: number;
   sessionKey?: string;
-  guidanceConsumedKey?: string;
-  guidanceConsumedText?: string;
+  guidanceAcceptedKey?: string;
+  guidanceAcceptedText?: string;
   guidanceQueuePreviewItems?: readonly string[];
 }) {
   const { t, locale } = useI18n();
@@ -574,7 +574,7 @@ export function Composer({
   const lastSelectionRef = useRef({ start: 0, end: 0 });
   const consumedInsertIdRef = useRef(0);
   const lastTransientDismissSignal = useRef(transientDismissSignal);
-  const lastGuidanceConsumedKey = useRef(guidanceConsumedKey);
+  const lastGuidanceAcceptedKey = useRef(guidanceAcceptedKey);
   const selfDispatchedGuidanceRef = useRef<string[]>([]);
   const submittingRef = useRef(false);
   const runningRef = useRef(running);
@@ -967,19 +967,19 @@ export function Composer({
   }, []);
 
   useEffect(() => {
-    if (!guidanceConsumedKey || guidanceConsumedKey === lastGuidanceConsumedKey.current) return;
-    lastGuidanceConsumedKey.current = guidanceConsumedKey;
-    const consumed = (guidanceConsumedText ?? "").trim();
-    if (consumed && takeSelfDispatchedGuidance(consumed)) return;
+    if (!guidanceAcceptedKey || guidanceAcceptedKey === lastGuidanceAcceptedKey.current) return;
+    lastGuidanceAcceptedKey.current = guidanceAcceptedKey;
+    const accepted = (guidanceAcceptedText ?? "").trim();
+    if (accepted && takeSelfDispatchedGuidance(accepted)) return;
     setPendingGuidance((items) => {
       if (items.length === 0) return items;
-      const idx = consumed
-        ? items.findIndex((item) => guidanceTextMatches(item.submitText, consumed) || guidanceTextMatches(item.text, consumed))
+      const idx = accepted
+        ? items.findIndex((item) => guidanceTextMatches(item.submitText, accepted) || guidanceTextMatches(item.text, accepted))
         : -1;
       const removeAt = idx >= 0 ? idx : 0;
       return items.filter((_, index) => index !== removeAt);
     });
-  }, [guidanceConsumedKey, guidanceConsumedText, takeSelfDispatchedGuidance]);
+  }, [guidanceAcceptedKey, guidanceAcceptedText, takeSelfDispatchedGuidance]);
 
   // When the @ trigger disappears (user deleted the @), close the past:chats
   // sub-menu and reset related state. Without this, showPastChats can outlive

@@ -720,8 +720,8 @@ console.log("\ncomposer goal toggle");
   });
   ok(document.querySelector(".composer-guidance-item") !== null, "running guidance chip renders again after another queued item");
 
-  await rerender({ guidanceConsumedKey: "s1", guidanceConsumedText: "prefer the smaller diff" });
-  ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip clears when steer is consumed");
+  await rerender({ guidanceAcceptedKey: "s1", guidanceAcceptedText: "prefer the smaller diff" });
+  ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip clears when steer is accepted");
 
   await rerender({ insertRequest: { id: 7, text: "then stop showing the chip", mode: "replace" } });
   await act(async () => {
