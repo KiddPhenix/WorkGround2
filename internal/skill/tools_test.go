@@ -483,6 +483,41 @@ func TestProtectedSkillRedactionAndFingerprint(t *testing.T) {
 	}
 }
 
+func TestSkillInvocationDisplayRecoversSlashOnly(t *testing.T) {
+	sk := Skill{
+		Name:        "cps_insurance",
+		Description: "team insurance flow",
+		Scope:       ScopeGlobal,
+		Path:        filepath.Join("C:", "Users", "me", "skills", "cps_insurance", "SKILL.md"),
+		Body:        "# 流程\n\n填日期、投保人。",
+	}
+	rendered := Render(sk, "args here")
+	if !strings.HasPrefix(rendered, "# Skill: cps_insurance") || !strings.Contains(rendered, "SKILL.md") {
+		t.Fatalf("Render output shape changed:\n%s", rendered)
+	}
+
+	display, ok := SkillInvocationDisplay(rendered)
+	if !ok || display != "/cps_insurance args here" {
+		t.Fatalf("SkillInvocationDisplay = %q, ok = %v; want %q", display, ok, "/cps_insurance args here")
+	}
+	if strings.Contains(display, "SKILL.md") || strings.Contains(display, sk.Body) {
+		t.Fatalf("recovered display leaked body/path: %q", display)
+	}
+
+	// Ordinary user text containing a "# Skill:" heading must not collapse.
+	for _, ordinary := range []string{
+		"# Skill: 请总结\n\n这不是技能调用",
+		"# Skill: 我的学习计划",
+		"说明 # Skill: 只是标题",
+		"# Skill: plan\n\n正文提到\n(scope: global · C:\\skills\\plan\\SKILL.md)",
+		"# Skill: plan\n(scope: unknown · C:\\skills\\plan\\SKILL.md)\n\n正文",
+	} {
+		if display, ok := SkillInvocationDisplay(ordinary); ok || display != "" {
+			t.Fatalf("ordinary text parsed as skill invocation: %q", ordinary)
+		}
+	}
+}
+
 func TestReadSkillRejectsSubagent(t *testing.T) {
 	home := t.TempDir()
 	writeSkill(t, home, ".workground2/skills/dig.md", "---\ndescription: dig\nrunAs: subagent\n---\nbody")

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/agentstyle"
 	browserpkg "workground2/internal/browser"
 	"workground2/internal/browser/cdp"
 	"workground2/internal/command"
@@ -187,6 +188,23 @@ Core rules:
   pass against the acceptance criteria and verifies objective evidence such as
   successful capability calls and declared artifact outputs. Missing objective
   evidence returns the node to failed_retryable state.`
+
+// composeAgentPromptStyles appends the deterministic Agent 风格 block for the
+// selected IDs to base. It returns base unchanged for an empty selection and an
+// error for an unknown ID, so callers can surface it instead of dropping it.
+func composeAgentPromptStyles(base string, ids []string) (string, error) {
+	block, err := agentstyle.Compile(ids)
+	if err != nil {
+		return "", err
+	}
+	if block == "" {
+		return base, nil
+	}
+	if strings.TrimSpace(base) == "" {
+		return block, nil
+	}
+	return base + "\n\n" + block, nil
+}
 
 func workTaskSystemPrompt(hostPrompt string) string {
 	hostPrompt = strings.TrimSpace(hostPrompt)
@@ -535,6 +553,21 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if opts.SessionKind == agent.SessionKindAssistant {
 		sysPrompt = assistantSystemPrompt(sysPrompt)
 	}
+	// Agent 风格: fold the selected personality/disorder capability blocks into
+	// the cache-stable prefix after role preparation and before the mandatory
+	// policies. Invalid IDs are rejected at the write boundary; a hand-edited
+	// config warns explicitly while valid selections still recover and apply.
+	validStyles, unknownStyles := agentstyle.ResolveIDs(cfg.Agent.PromptStyles)
+	if len(unknownStyles) > 0 {
+		err := fmt.Errorf("unknown agent prompt style(s): %s", strings.Join(unknownStyles, ", "))
+		slog.Warn("agent prompt styles invalid", "err", err)
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "agent prompt styles invalid: " + err.Error()})
+	}
+	styledPrompt, err := composeAgentPromptStyles(sysPrompt, validStyles)
+	if err != nil {
+		return nil, fmt.Errorf("agent prompt styles: %w", err)
+	}
+	sysPrompt = styledPrompt
 	sysPrompt += "\n\n" + config.UserDecisionPolicy
 	sysPrompt += "\n\n" + config.LanguagePolicy
 	sysPrompt += "\n\n" + config.BrowserPolicy

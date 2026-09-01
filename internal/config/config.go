@@ -1209,6 +1209,11 @@ type AgentConfig struct {
 	// startup (a built-in like "explanatory"/"learning"/"concise", or a custom
 	// .workground2/output-styles/<name>.md). Empty = the unmodified prompt.
 	OutputStyle string `toml:"output_style"`
+	// PromptStyles selects one or more built-in Agent personality styles
+	// (internal/agentstyle). Each selected ID folds a deterministic capability
+	// block into the cache-stable system prompt. Empty = none. IDs are stable
+	// ASCII and are validated/canonicalized at the write boundary.
+	PromptStyles []string `toml:"prompt_styles"`
 	// AutoPlan controls whether interactive turns that look multi-step start in
 	// plan mode automatically: "off" keeps plan mode manual, "on" enables the
 	// approval gate. Legacy "ask" is treated as "on".

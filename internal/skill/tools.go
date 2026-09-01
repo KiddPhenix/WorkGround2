@@ -561,11 +561,8 @@ func Render(sk Skill, args string) string {
 		b.WriteString(policy)
 		b.WriteString("\n\n")
 	}
-	b.WriteString("# Skill: " + sk.Name)
-	if sk.Description != "" {
-		b.WriteString("\n> " + sk.Description)
-	}
-	b.WriteString("\n(scope: " + string(sk.Scope) + " · " + sk.Path + ")\n\n")
+	b.WriteString(skillHeaderLine(sk))
+	b.WriteString("\n\n")
 	b.WriteString(sk.Body)
 	if args != "" {
 		b.WriteString("\n\nArguments: " + args)
@@ -575,6 +572,86 @@ func Render(sk Skill, args string) string {
 		return protectedSkillBlock(sk.Name, out)
 	}
 	return out
+}
+
+// skillHeaderLine builds the "# Skill: <name>…" header Render writes ahead of a
+// skill body. SkillInvocationDisplay reverses it, so both share one format.
+func skillHeaderLine(sk Skill) string {
+	var b strings.Builder
+	b.WriteString("# Skill: " + sk.Name)
+	if sk.Description != "" {
+		b.WriteString("\n> " + sk.Description)
+	}
+	b.WriteString("\n(scope: " + string(sk.Scope) + " · " + sk.Path + ")")
+	return b.String()
+}
+
+// SkillInvocationDisplay recovers a compact, human-readable invocation from a
+// user turn produced by Render("/<name> …"). It accepts only Render's complete
+// header, so ordinary user text that merely contains a "# Skill:" heading is
+// left untouched. The recovered display keeps slash arguments, but never the
+// body or source path.
+func SkillInvocationDisplay(content string) (display string, ok bool) {
+	s := strings.TrimSpace(content)
+	name, body, ok := splitSkillInvocation(s)
+	if !ok {
+		return "", false
+	}
+	display = "/" + name
+	const marker = "\n\nArguments: "
+	if idx := strings.LastIndex(body, marker); idx >= 0 {
+		args := strings.TrimSpace(body[idx+len(marker):])
+		// Slash parsing normalizes arguments to one line before Render. Requiring
+		// the same shape avoids treating an arbitrary body section as arguments.
+		if args != "" && !strings.ContainsAny(args, "\r\n") {
+			display += " " + args
+		}
+	}
+	return display, true
+}
+
+func splitSkillInvocation(s string) (name, body string, ok bool) {
+	const prefix = "# Skill: "
+	if !strings.HasPrefix(s, prefix) {
+		return "", "", false
+	}
+	headerEnd := strings.Index(s, "\n\n")
+	if headerEnd < 0 {
+		return "", "", false
+	}
+	lines := strings.Split(s[:headerEnd], "\n")
+	if len(lines) != 2 && len(lines) != 3 {
+		return "", "", false
+	}
+	name = strings.TrimSpace(strings.TrimPrefix(lines[0], prefix))
+	if !IsValidName(name) {
+		return "", "", false
+	}
+	if len(lines) == 3 && (!strings.HasPrefix(lines[1], "> ") || strings.TrimSpace(lines[1][2:]) == "") {
+		return "", "", false
+	}
+	scopeLine := lines[len(lines)-1]
+	if !strings.HasPrefix(scopeLine, "(scope: ") || !strings.HasSuffix(scopeLine, ")") {
+		return "", "", false
+	}
+	scopeText, source, found := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(scopeLine, "(scope: "), ")"), " · ")
+	if !found || !validInvocationSource(Scope(scopeText), strings.TrimSpace(source)) {
+		return "", "", false
+	}
+	return name, s[headerEnd+2:], true
+}
+
+func validInvocationSource(scope Scope, source string) bool {
+	switch scope {
+	case ScopeBuiltin:
+		return source == "(builtin)"
+	case ScopeProject, ScopeCustom, ScopeRemote, ScopeGlobal:
+		lower := strings.ToLower(source)
+		return strings.HasSuffix(lower, ".md") &&
+			(strings.Contains(source, "/") || strings.Contains(source, `\`) || strings.Contains(source, ":"))
+	default:
+		return false
+	}
 }
 
 // renderInline wraps Render's output in a skill-pin sentinel so context

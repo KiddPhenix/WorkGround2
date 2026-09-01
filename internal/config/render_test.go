@@ -161,6 +161,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Agent.SubagentModel = "mimo-pro"
 	orig.Agent.SubagentModels = map[string]string{"review": "deepseek-pro"}
 	orig.Agent.MaxSubagentDepth = 3
+	orig.Agent.PromptStyles = []string{"paranoid", "obsessive_compulsive"}
 	orig.Agent.Keep = []string{"errors", "user_marked"}
 	orig.Agent.RecentKeep = 4
 	orig.Tools.BashTimeoutSeconds = intPtr(900)
@@ -349,6 +350,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if got.Agent.AutoPlanClassifier != "deepseek-flash" {
 		t.Errorf("auto_plan_classifier = %q, want deepseek-flash", got.Agent.AutoPlanClassifier)
+	}
+	if want := []string{"paranoid", "obsessive_compulsive"}; !reflect.DeepEqual(got.Agent.PromptStyles, want) {
+		t.Errorf("prompt_styles = %v, want %v", got.Agent.PromptStyles, want)
 	}
 	if got.Agent.SemanticIntentModel != "openai/gpt-4o-mini" {
 		t.Errorf("semantic_intent_model = %q, want openai/gpt-4o-mini", got.Agent.SemanticIntentModel)

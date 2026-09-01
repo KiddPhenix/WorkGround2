@@ -774,6 +774,7 @@ func (c *Controller) tryRunGuardedWithSetup(body func(ctx context.Context) error
 			}
 		}
 		c.mu.Lock()
+		cancelled := c.canceling
 		c.running = false
 		c.cancel = nil
 		c.canceling = false
@@ -781,7 +782,12 @@ func (c *Controller) tryRunGuardedWithSetup(body func(ctx context.Context) error
 		nextStep := c.nextTaskStep()
 		nextSource := c.nextTaskStepSource()
 		if err != nil {
-			c.updateTaskMemory(taskMemoryPatch{current: stringPtr("执行失败"), currentSource: stringPtr("turn_error"), nextStep: &nextStep, nextStepSource: &nextSource})
+			// Keep explicit cancellation distinct from retryable turn failures.
+			if cancelled && errors.Is(err, context.Canceled) {
+				c.updateTaskMemory(taskMemoryPatch{current: stringPtr("已停止"), currentSource: stringPtr("turn_cancelled"), nextStep: &nextStep, nextStepSource: &nextSource})
+			} else {
+				c.updateTaskMemory(taskMemoryPatch{current: stringPtr("执行失败"), currentSource: stringPtr("turn_error"), nextStep: &nextStep, nextStepSource: &nextSource})
+			}
 		} else {
 			c.updateTaskMemory(taskMemoryPatch{current: stringPtr(""), currentSource: stringPtr(""), nextStep: &nextStep, nextStepSource: &nextSource})
 		}
@@ -1727,10 +1733,16 @@ func (c *Controller) historyEndsAtUserTurn() bool {
 // owned by this Controller. Each Action still has its own request context, so
 // caller cancellation of one Action does not affect another.
 func (c *Controller) Cancel() {
+	goalPath, goalData, goalChanged := "", []byte(nil), false
 	c.mu.Lock()
 	cancel := c.cancel
 	if cancel != nil {
 		c.canceling = true
+		// Capture the stopped goal before this turn can finish and a new turn
+		// can claim the controller. Persistence stays outside the lock.
+		if c.goals.active() {
+			goalPath, goalData, goalChanged = c.goals.stop(GoalStatusStopped, c.goalTodos())
+		}
 	}
 	c.mu.Unlock()
 	actionCount := c.cancelBlockActions()
@@ -1743,6 +1755,7 @@ func (c *Controller) Cancel() {
 	}
 	if cancel != nil {
 		cancel()
+		c.persistGoalState(goalPath, goalData, goalChanged)
 		return
 	}
 	if actionCount > 0 {

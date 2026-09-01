@@ -330,6 +330,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# output_style = \"explanatory\"   # explanatory | learning | concise | custom; empty = default\n")
 	}
+	if len(c.Agent.PromptStyles) > 0 {
+		fmt.Fprintf(&b, "prompt_styles = %s   # agent personality styles: paranoid, schizoid, schizotypal, antisocial, borderline, histrionic, narcissistic, avoidant, dependent, obsessive_compulsive\n", renderStringArray(c.Agent.PromptStyles))
+	} else {
+		b.WriteString("# prompt_styles = [\"paranoid\"]   # agent personality styles (multi-select); empty = none\n")
+	}
 	assistMode := c.Agent.AssistMode
 	if strings.EqualFold(strings.TrimSpace(assistMode), "off") {
 		fmt.Fprintf(&b, "assist_mode = %q   # off disables request_help; auto (default) enables it\n", strings.TrimSpace(assistMode))
@@ -879,6 +884,10 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 	if c.Agent.OutputStyle != "" && c.Agent.OutputStyle != d.Agent.OutputStyle {
 		fmt.Fprintf(&agentBuf, "output_style = %q\n", c.Agent.OutputStyle)
+		anyAgent = true
+	}
+	if c.Agent.PromptStyles != nil && !reflect.DeepEqual(c.Agent.PromptStyles, d.Agent.PromptStyles) {
+		fmt.Fprintf(&agentBuf, "prompt_styles = %s\n", renderStringArray(c.Agent.PromptStyles))
 		anyAgent = true
 	}
 	if c.Agent.AssistMode != "" && c.Agent.AssistMode != d.Agent.AssistMode {

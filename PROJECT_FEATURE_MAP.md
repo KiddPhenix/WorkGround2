@@ -11,6 +11,13 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 
 ## Entries
 
+### Agent 多选人格提示词
+- Location: `internal/agentstyle`, `internal/boot/boot.go`, `desktop/settings_app.go`, `desktop/frontend/src/components/SettingsPanel.tsx`
+- Summary: 设置页按病名展示并多选 Agent 风格，稳定 ID 立即持久化到 `agent.prompt_styles`；运行中的 Controller 保持不变，安全后延迟重建。能力描述只保留原分号前的风格句，system prompt 仅含单一 `风格: ` 前缀，不含兜底句、病名或风格名。
+- Keywords: Agent 风格, prompt_styles, SetAgentPromptStyles, system prompt
+- Source: verified-by-search
+- Updated: 2026-09-01
+
 ### 浏览器原生优先策略（Browser Native-First Policy）
 - Status: `done`
 - Location: `internal/config/config.go`（BrowserPolicy 常量）, `internal/boot/boot.go`（system prompt 追加）, `internal/tool/browser/tools.go`（browser_open/state/attach 描述与 schema）, `internal/tool/builtin/bash.go`（bash 描述与 schema）, `docs/BROWSER_CONTROL_DESIGN.zh-CN.md`, `docs/TOOL_CONTRACT.md`

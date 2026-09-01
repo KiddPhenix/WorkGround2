@@ -234,10 +234,17 @@ func (o *turnOrchestrator) runEditedGoalLoopWithRawDisplay(ctx context.Context, 
 func (o *turnOrchestrator) continueGoal(ctx context.Context) error {
 	c := o.c
 	for {
+		// Do not advance the goal after a cancelled turn.
+		if err := ctx.Err(); err != nil {
+			c.stopGoal(GoalStatusStopped)
+			return err
+		}
 		cont := o.advanceGoalAfterTurn()
 		if !cont {
 			return nil
 		}
+		// Advancing may persist state and emit events; cancellation can arrive
+		// while that work is in progress too.
 		if err := ctx.Err(); err != nil {
 			c.stopGoal(GoalStatusStopped)
 			return err

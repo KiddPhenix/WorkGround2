@@ -218,6 +218,10 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 	var attempted []string
 	var failures []string
 	for attempt, ref := range candidates {
+		// A stopped parent must not launch another capability candidate.
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		attempted = append(attempted, ref)
 
 		emitProgress("attempting", ref, attempt+1, nil)
@@ -280,6 +284,15 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 			runCtx = provider.WithArtifactCollector(ctx, artifactCollector)
 		}
 		answer, runErr := RunSubAgentWithSession(runCtx, prov, subReg, run.Session, assistPrompt(requestID, cap, prompt), opts, sink)
+		if err := ctx.Err(); err != nil {
+			// Preserve cancellation even for the last candidate or a capability
+			// that cannot retry. Do not recover an interrupted run as success.
+			saveErr := t.transcripts.SaveFailed(run)
+			run.Release()
+			joined := errors.Join(err, saveErr)
+			emitProgress("candidate_failed", ref, attempt+1, joined)
+			return "", joined
+		}
 
 		if runErr != nil {
 			// image_generation: the CLI provider may have produced valid
@@ -363,6 +376,9 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 		return formatAssistResult(requestID, cap, t.currentModelRef, ref, attempt+1, len(candidates), failures, artifact, result), nil
 	}
 
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if len(failures) > 0 {
 		return "", fmt.Errorf("request_help: all %d candidate(s) failed for capability %q (request_id=%s; tried: %s): %s",
 			len(attempted), cap, requestID, strings.Join(attempted, ", "), strings.Join(failures, "; "))
