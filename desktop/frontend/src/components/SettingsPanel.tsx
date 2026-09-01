@@ -3472,6 +3472,11 @@ function ModelsSection({ s, busy, apply, applyResult, backgroundApply }: ModelsS
               setCheckResult({ kind: "ok", text: t("settings.addProvider.cliConnectSuccess", { name: id }) });
             }
           }}
+          onSaveKeyError={(message) => {
+            void apply(async () => {
+              throw new Error(message);
+            });
+          }}
         />
       )}
 
@@ -4068,6 +4073,11 @@ function ProvidersSection({ s, busy, apply, showAddAction = true }: SectionProps
             onAddOfficial={(kind, key, name) => apply(() => app.AddOfficialProviderAccess(kind, key, name)).then(() => setAdding(null))}
             onAddCustom={(pv) => apply(() => app.SaveProvider(pv)).then(() => setAdding(null))}
             onAddCli={(id) => apply(() => app.ConnectLocalCLIProvider(id)).then(() => setAdding(null))}
+            onSaveKeyError={(message) => {
+              void apply(async () => {
+                throw new Error(message);
+              });
+            }}
           />
         )}
         {duplicating && (
@@ -4191,6 +4201,7 @@ function AddProviderPanel({
   onAddOfficial,
   onAddCustom,
   onAddCli,
+  onSaveKeyError,
 }: {
   mode: AddProviderMode;
   kinds: string[];
@@ -4200,6 +4211,7 @@ function AddProviderPanel({
   onAddOfficial: (kind: OfficialProviderKind, key: string, name: string) => Promise<void>;
   onAddCustom: (p: ProviderView) => void | Promise<void>;
   onAddCli: (id: string) => Promise<void>;
+  onSaveKeyError?: (message: string) => void;
 }) {
   const t = useT();
   const [officialKind, setOfficialKind] = useState<OfficialProviderKind>("deepseek");
@@ -4345,6 +4357,7 @@ function AddProviderPanel({
           busy={busy}
           onCancel={onCancel}
           onSave={onAddCustom}
+          onSaveKeyError={onSaveKeyError}
         />
       </div>
     );
@@ -5014,6 +5027,7 @@ function ProviderEditor({
   onSave,
   onSaveKey,
   onClearKey,
+  onSaveKeyError,
 }: {
   initial?: ProviderView;
   kinds: string[];
@@ -5022,6 +5036,7 @@ function ProviderEditor({
   onSave: (p: ProviderView) => void;
   onSaveKey?: (apiKeyEnv: string, value: string) => Promise<void>;
   onClearKey?: (apiKeyEnv: string) => Promise<void>;
+  onSaveKeyError?: (message: string) => void;
 }) {
   const t = useT();
   const [name, setName] = useState(initial?.name ?? "");
@@ -5181,7 +5196,14 @@ function ProviderEditor({
     const ms = parseProviderListInput(models);
     const vms = parseProviderListInput(visionModels).filter((model) => ms.includes(model));
     const effectiveApiKeyEnv = isCliProvider ? "" : providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
-    if (!isCliProvider && keyDraft.trim()) await app.SetProviderKey(effectiveApiKeyEnv, keyDraft.trim());
+    if (!isCliProvider && keyDraft.trim()) {
+      try {
+        await app.SetProviderKey(effectiveApiKeyEnv, keyDraft.trim());
+      } catch (e) {
+        onSaveKeyError?.(String((e as Error)?.message ?? e));
+        return;
+      }
+    }
     onSave({
       name: name.trim(),
       builtIn: initial?.builtIn ?? false,
