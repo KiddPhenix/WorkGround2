@@ -3102,23 +3102,35 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 	if item == nil {
 		return DesktopIconActionResult{Status: "stale", Error: "图标已经变化", Snapshot: snapshot}
 	}
-	if input.Revision != item.Revision {
+	// Removing a retained task icon targets the durable kept identity: ItemID
+	// is the Kept map key derived from the session path, and the action never
+	// consumes the completion notice. A same-ID retained icon whose revision
+	// changed — e.g. the async completion summary just landed and rewrote the
+	// completion card body — is still exactly the icon being removed, so only
+	// an identity change (icon gone or replaced) may reject the remove. Every
+	// other action (and person/external removes, whose target watermark is
+	// revision-bearing) keeps the full stale guard.
+	retainedRemove := input.Action == "remove" && item.Kind == "task" && item.Retained &&
+		item.SessionRef != nil && item.ID == desktopIconKeptID(item.SessionRef.SessionPath)
+	if input.Revision != item.Revision && !retainedRemove {
 		return DesktopIconActionResult{Status: "stale", Error: "图标状态已经变化", Snapshot: snapshot}
 	}
 
 	var notice *DesktopIconNotice
-	if input.NoticeID != "" {
-		for i := range item.Notifications {
-			if item.Notifications[i].ID == input.NoticeID {
-				notice = &item.Notifications[i]
-				break
+	if !retainedRemove {
+		if input.NoticeID != "" {
+			for i := range item.Notifications {
+				if item.Notifications[i].ID == input.NoticeID {
+					notice = &item.Notifications[i]
+					break
+				}
 			}
+			if notice == nil {
+				return DesktopIconActionResult{Status: "stale", Error: "通知已经变化", Snapshot: snapshot}
+			}
+		} else if len(item.Notifications) > 0 {
+			notice = &item.Notifications[0]
 		}
-		if notice == nil {
-			return DesktopIconActionResult{Status: "stale", Error: "通知已经变化", Snapshot: snapshot}
-		}
-	} else if len(item.Notifications) > 0 {
-		notice = &item.Notifications[0]
 	}
 
 	if input.Action == "ok" {
@@ -3369,6 +3381,7 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
 	}
 
+	before := cloneDesktopIconState(a.iconWidgetState)
 	err := a.applyDesktopIconActionLocked(*item, notice, input)
 	if err != nil {
 		return a.desktopIconActionErrorLocked("retryable_error", err)
@@ -3378,6 +3391,7 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 		a.iconWidgetState.Applied = a.iconWidgetState.Applied[len(a.iconWidgetState.Applied)-desktopIconActionLimit:]
 	}
 	if err := a.saveDesktopIconStateLocked(); err != nil {
+		a.iconWidgetState = before
 		return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("save icon action receipt: %w", err))
 	}
 	return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}

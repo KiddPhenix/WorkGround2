@@ -13,6 +13,7 @@ import (
 	"workground2/internal/control"
 	"workground2/internal/event"
 	"workground2/internal/provider"
+	"workground2/internal/skill"
 	"workground2/internal/store"
 	"workground2/internal/tool"
 )
@@ -65,6 +66,39 @@ func TestHistoryMessagesIncludeAssistantReasoning(t *testing.T) {
 	}
 	if got[3].Reasoning != "tool-call-only thinking" {
 		t.Fatalf("empty-content assistant reasoning = %q, want tool-call-only thinking", got[3].Reasoning)
+	}
+}
+
+func TestHistoryMessagesCollapseSkillWithoutReplayLeak(t *testing.T) {
+	sk := skill.Skill{
+		Name:        "cps_insurance",
+		Description: "team insurance flow",
+		Scope:       skill.ScopeGlobal,
+		Path:        filepath.Join("C:", "Users", "me", "skills", "cps_insurance", "SKILL.md"),
+		Body:        "# 流程\n\n填日期、投保人。",
+	}
+	expanded := skill.Render(sk, "明天")
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: expanded}}
+	got := historyMessages(msgs, func(content string) string {
+		if display, ok := skill.SkillInvocationDisplay(content); ok {
+			return display
+		}
+		return content
+	})
+	if len(got) != 1 || got[0].Content != "/cps_insurance 明天" {
+		t.Fatalf("skill history = %+v", got)
+	}
+	if got[0].SubmitText != "" {
+		t.Fatalf("skill replay submit text leaked model input: %q", got[0].SubmitText)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"# Skill:", sk.Path, sk.Body} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("history JSON leaked %q: %s", secret, encoded)
+		}
 	}
 }
 

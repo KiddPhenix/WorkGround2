@@ -17,6 +17,7 @@ import (
 	"workground2/internal/control"
 	"workground2/internal/fileutil"
 	sess "workground2/internal/session"
+	"workground2/internal/skill"
 )
 
 // sessions.go holds the desktop-only session-management state that the shared
@@ -735,6 +736,9 @@ func sessionDisplayResolverFromMap(displays sessionDisplayMap, sessionPath strin
 		content = control.StripComposePrefixes(content)
 		if intent, ok := assistant.ManagedSessionIntent(content); ok {
 			return intent
+		}
+		if display, ok := skill.SkillInvocationDisplay(content); ok {
+			return display
 		}
 		return content
 	}

@@ -198,12 +198,9 @@ type App struct {
 	ownerIdleProbe       func() (time.Duration, error) // nil uses the platform probe
 	ownerNow             func() time.Time              // nil uses time.Now
 
-	unreadMu           sync.RWMutex
-	unreadStore        *unread.Store
-	unreadErr          error
-	unreadBadgeMu      sync.Mutex
-	unreadBadgeTarget  int
-	unreadBadgeRunning bool
+	unreadMu    sync.RWMutex
+	unreadStore *unread.Store
+	unreadErr   error
 	// unreadRestoreMu serializes trash restores triggered by unread fallback
 	// navigation so concurrent clicks cannot interleave RestoreSession with a
 	// sibling's meta load (Windows file-lock races) or double-restore.
@@ -1003,12 +1000,6 @@ func (a *App) domReady(_ context.Context) {
 	}
 
 	runtime.WindowShow(a.ctx)
-	// Explorer registers the taskbar button only after the native window is
-	// visible. Apply the persisted total after that registration point.
-	a.goSafe("initialUnreadBadge", func() {
-		time.Sleep(500 * time.Millisecond)
-		a.scheduleUnreadBadge(a.UnreadState().Summary.TotalUnread)
-	})
 }
 
 // --- bound command surface (frontend → controller) ---
@@ -5132,7 +5123,11 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 			hm.MemoryCitations = append([]provider.MemoryCitation(nil), m.MemoryCitations...)
 		}
 		if m.Role == provider.RoleUser && content != m.Content && !agent.ContainsMemoryCompilerExecution(m.Content) {
-			hm.SubmitText = skill.RedactProtectedContent(m.Content)
+			raw := control.StripComposePrefixes(m.Content)
+			_, skillInvocation := skill.SkillInvocationDisplay(raw)
+			if !skillInvocation && !skill.ContainsProtectedContent(raw) {
+				hm.SubmitText = skill.RedactProtectedContent(m.Content)
+			}
 		}
 		if m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 {
 			hm.ToolCalls = make([]HistoryToolCall, len(m.ToolCalls))

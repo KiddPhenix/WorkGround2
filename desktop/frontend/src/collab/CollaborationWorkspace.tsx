@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { Bot, Check, ChevronRight, ChevronsUpDown, Circle, CircleAlert, Copy, ImagePlus, LogOut, Pencil, RadioTower, RefreshCw, Settings2, Share2, Trash2, Users, X } from "lucide-react";
 import { useI18n } from "../lib/i18n";
 import { ModelSwitcher } from "../components/ModelSwitcher";
@@ -93,6 +93,14 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
   const [agentCollaborationOpen, setAgentCollaborationOpen] = useState(false);
   const [activityAnchor, setActivityAnchor] = useState<AgentActivityAnchor>();
   const { scrollRef: timelineRef, stick: timelineStick, onScroll: onTimelineScroll, snapToBottom: snapTimelineToBottom, scrollToBottomAfterLayout: scrollTimelineToBottomAfterLayout } = useScrollManager();
+  // The .collab-scroll element is the virtualization scroll owner. It is lifted
+  // into state so the virtualized timeline re-renders once the element exists;
+  // the same node still feeds useScrollManager via timelineRef.
+  const [timelineScrollElement, setTimelineScrollElement] = useState<HTMLDivElement | null>(null);
+  const bindTimelineScroll = useCallback((node: HTMLDivElement | null) => {
+    timelineRef.current = node;
+    setTimelineScrollElement((current) => (current === node ? current : node));
+  }, []);
   const ownsRoom = Boolean(sessionID) && state.selfSessionId === sessionID;
   const usable = ownsRoom && Boolean(state.room);
   const onlineMembers = state.members.filter((member) => member.online);
@@ -331,8 +339,9 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
           {!state.actionError && state.retryable && <button type="button" onClick={() => void controller.refresh(true)}>{c("retry")}</button>}
         </div>}
 
-        <div ref={timelineRef} className="collab-scroll" aria-label={c("timeline")} onScroll={onTimelineScroll}>
+        <div ref={bindTimelineScroll} className="collab-scroll" aria-label={c("timeline")} onScroll={onTimelineScroll}>
           <CollaborationTimeline
+            key={JSON.stringify([sessionID, state.room?.host, state.room?.port, state.room?.room])}
             items={state.timeline}
             members={state.members}
             selfMemberId={state.selfMemberId}
@@ -360,6 +369,8 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             onOpenFile={(id) => handleAction(controller.openFile(id))}
             onRevealFile={(id) => handleAction(controller.revealFile(id))}
             previewFile={controller.previewFile}
+            scrollContainer={timelineScrollElement}
+            stickRef={timelineStick}
           />
         </div>
 

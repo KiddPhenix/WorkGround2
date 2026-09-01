@@ -757,6 +757,99 @@ func TestSetReasoningLanguagePersistsToUserConfig(t *testing.T) {
 	}
 }
 
+func TestSetAgentPromptStylesCanonicalizesAndPersists(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	// Duplicate and out-of-order IDs are deduped and returned in catalog order.
+	if err := app.SetAgentPromptStyles([]string{"obsessive_compulsive", "paranoid", "PARANOID"}); err != nil {
+		t.Fatalf("SetAgentPromptStyles: %v", err)
+	}
+
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if want := []string{"paranoid", "obsessive_compulsive"}; !reflect.DeepEqual(cfg.Agent.PromptStyles, want) {
+		t.Fatalf("saved prompt_styles = %v, want %v", cfg.Agent.PromptStyles, want)
+	}
+
+	view := app.Settings()
+	if len(view.AgentPromptStyles) != 10 {
+		t.Fatalf("AgentPromptStyles catalog length = %d, want 10", len(view.AgentPromptStyles))
+	}
+	selected := map[string]bool{}
+	for _, st := range view.AgentPromptStyles {
+		if st.Selected {
+			selected[st.ID] = true
+		}
+	}
+	if len(selected) != 2 || !selected["paranoid"] || !selected["obsessive_compulsive"] {
+		t.Fatalf("selected styles = %v, want {paranoid, obsessive_compulsive}", selected)
+	}
+	// Labels stay the exact Chinese product data, never a translated fallback.
+	paranoid := view.AgentPromptStyles[0]
+	if paranoid.Disorder != "偏执型" || paranoid.StyleName != "风险审查者" {
+		t.Fatalf("catalog[0] label = %q｜%q, want 偏执型｜风险审查者", paranoid.Disorder, paranoid.StyleName)
+	}
+	if !strings.Contains(paranoid.Capability, "保持高度警觉") {
+		t.Fatalf("catalog[0] capability lost the exact text: %q", paranoid.Capability)
+	}
+}
+
+func TestSetAgentPromptStylesRejectsUnknownIDsWithoutPersisting(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	if err := app.SetAgentPromptStyles([]string{"paranoid"}); err != nil {
+		t.Fatalf("seed SetAgentPromptStyles: %v", err)
+	}
+	if err := app.SetAgentPromptStyles([]string{"paranoid", "bogus-style"}); err == nil {
+		t.Fatal("expected error for unknown style ID")
+	} else if !strings.Contains(err.Error(), "bogus-style") {
+		t.Fatalf("error %q does not name the unknown ID", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if want := []string{"paranoid"}; !reflect.DeepEqual(cfg.Agent.PromptStyles, want) {
+		t.Fatalf("config mutated on invalid set: %v, want %v", cfg.Agent.PromptStyles, want)
+	}
+}
+
+func TestSetAgentPromptStylesClearPersistsEmpty(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	if err := app.SetAgentPromptStyles([]string{"paranoid"}); err != nil {
+		t.Fatalf("seed SetAgentPromptStyles: %v", err)
+	}
+	if err := app.SetAgentPromptStyles(nil); err != nil {
+		t.Fatalf("clear SetAgentPromptStyles: %v", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if len(cfg.Agent.PromptStyles) != 0 {
+		t.Fatalf("prompt_styles not cleared: %v", cfg.Agent.PromptStyles)
+	}
+}
+
+func TestSetAgentPromptStylesPersistsWhileControllerBusy(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	ctrl := newBackgroundJobController(t, "agent-prompt-style-job")
+	app.setTestCtrl(ctrl, "")
+
+	if err := app.SetAgentPromptStyles([]string{"paranoid"}); err != nil {
+		t.Fatalf("SetAgentPromptStyles while busy: %v", err)
+	}
+	if app.activeCtrl() != ctrl {
+		t.Fatal("active controller changed while background work was running")
+	}
+	if !app.configRebuildNeeded.Load() {
+		t.Fatal("busy save did not schedule a deferred controller rebuild")
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if want := []string{"paranoid"}; !reflect.DeepEqual(cfg.Agent.PromptStyles, want) {
+		t.Fatalf("saved prompt_styles = %v, want %v", cfg.Agent.PromptStyles, want)
+	}
+}
+
 func TestSetDesktopLanguagePersistsResponseLanguageAndUpdatesLiveTabs(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	projectRoot := t.TempDir()

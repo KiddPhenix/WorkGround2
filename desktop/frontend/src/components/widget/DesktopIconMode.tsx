@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { AtSign, Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, Pencil, Pin, PinOff, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
 import { app, onCollaborationEvent, onCollaborationState, onEvent, onProjectTreeChanged, onReady, onSessionActivated, onSessionBackgroundChanged, onUnreadState, type DailyRoutine, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconDelegation, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type DesktopIconSurfaceResult, type ExternalRunSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import type { QuestionAnswer } from "../../lib/types";
@@ -34,6 +34,7 @@ import { WorkspaceMatteIcon } from "./WorkspaceMatteIcon";
 import { useT, t, type DictKey } from "../../lib/i18n";
 import { DESKTOP_ICON_OVERLAY_BOUNDS, desktopIconLayoutBounds, useDesktopIconSurface } from "../../lib/desktopIconSurface";
 import { createDesktopIconSnapshotRefresh, desktopIconEventWakesSnapshot, SNAPSHOT_EVENT_DEBOUNCE_MS, SNAPSHOT_RECOVERY_MS, subscribeDesktopIconSnapshotRefresh } from "./desktopIconSnapshotRefresh";
+import { IconRemovals } from "./iconRemovals";
 import "./desktop-icon-mode.css";
 
 const QUICK_WORKSPACE_KEY = "wg2.icon-widget-workspace";
@@ -1344,6 +1345,14 @@ function pinnedIcon(row: { pinned: boolean }) {
 export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenMain, onOpenAssistant, onOpenSession }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void>; onOpenAssistant: () => Promise<void>; onOpenSession: () => void }) {
 	const t = useT();
   const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], delegations: [], assistantTasks: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
+	const [removals] = useState(() => new IconRemovals(() => requestID("icon-remove")));
+	const removalVersion = useSyncExternalStore(removals.subscribe, removals.version);
+	const removalError = removals.error();
+	const acceptSnapshot = useCallback((ticket: number, next: DesktopIconSnapshot) => {
+		if (!removals.acceptSnapshot(ticket, next)) return false;
+		setSnapshot(current => current.revision === next.revision && (current.error || "") === (next.error || "") ? current : next);
+		return true;
+	}, [removals]);
   const [desktopZoom, setDesktopZoom] = useState(1);
 	const [viewport, setViewport] = useState(() => widgetViewportSize(window.innerWidth, window.innerHeight, 1));
   const [activeID, setActiveID] = useState("");
@@ -1445,7 +1454,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		() => new Map(Object.values(quickJobs.jobs).map((job) => [job.intent.prompt.trim(), job.requestId])),
 		[quickJobs.jobs],
 	);
-	const mergedItems = useMemo(() => mergeQuickStartItems(snapshot.items, optimisticItems), [optimisticItems, snapshot.items]);
+	const mergedItems = useMemo(() => mergeQuickStartItems(removals.project(snapshot.items), optimisticItems), [optimisticItems, snapshot.items, removals, removalVersion]);
 	const visibleItems = useMemo(() => visibleDesktopIcons(mergedItems, roomIconCount), [mergedItems, roomIconCount]);
 	const displayItems = useMemo(
 		() => dragPreview ? previewDesktopIconMove(visibleItems, dragPreview.itemId, dragPreview.order) : visibleItems,
@@ -1524,12 +1533,13 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	const refreshPending = useRef<Promise<void> | null>(null);
 	const refreshRequested = useRef(false);
 	const refreshOnce = useCallback(async () => {
+		const ticket = removals.beginSnapshot();
 		try {
 			const next = await app.GetDesktopIconSnapshot();
-			const nextItems = visibleDesktopIcons(mergeQuickStartItems(next.items, optimisticItems), roomIconCount);
+			const nextItems = visibleDesktopIcons(mergeQuickStartItems(removals.project(next.items), optimisticItems), roomIconCount);
 			const prepared = await surface.prepare(desktopIconLayoutBounds(nextItems, collapsed, clusterZoom * desktopZoom));
 			if (!prepared) return;
-			setSnapshot((current) => current.revision === next.revision && (current.error || "") === (next.error || "") ? current : next);
+			if (!acceptSnapshot(ticket, next)) return;
 			setSnapshotLoaded(true);
 			setError(next.error || "");
 			// Accepted jobs hand off to their real task:task:<tabId> icon the
@@ -1541,7 +1551,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
 		}
-	}, [collapsed, clusterZoom, desktopZoom, optimisticItems, quickJobs.reconcile, roomIconCount, surface]);
+	}, [acceptSnapshot, collapsed, clusterZoom, desktopZoom, optimisticItems, quickJobs.reconcile, removals, roomIconCount, surface]);
 	const refreshOnceLatest = useRef(refreshOnce);
 	refreshOnceLatest.current = refreshOnce;
   const refresh = useCallback(() => {
@@ -1777,7 +1787,13 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	}, [layoutBounds, overlayKey, surface]);
 
   const run = useCallback(async (item: DesktopIconItem, action: string, values: string[] = [], notice = item.notifications[0], position?: DesktopIconPosition, answers?: QuestionAnswer[]) => {
+		if (action === "remove" && item.kind === "task" && item.retained) {
+			closeTransient();
+			setError("");
+			return removals.remove(item, { send: input => app.ApplyDesktopIconAction(input), snapshot: acceptSnapshot, refresh });
+		}
     setBusy(true); setError(""); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false);
+		const ticket = removals.beginSnapshot();
 		const opensRunningTask = action === "open_delegation" || action === "open_assistant_task";
 		const intent = JSON.stringify([item.id, notice?.id || "", opensRunningTask ? "" : item.revision, action, values, position || null, answers || null]);
 		const stableID = actionRequests.current.get(intent) || requestID(`icon-${action}`);
@@ -1785,13 +1801,13 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		const input: DesktopIconActionInput = { itemId: item.id, noticeId: notice?.id, revision: item.revision, requestId: stableID, action, values, answers, position, conversation: notice?.conversation, readSequence: notice?.readSequence };
     try {
       const result = await app.ApplyDesktopIconAction(input);
-      setSnapshot(result.snapshot);
+      acceptSnapshot(ticket, result.snapshot);
 		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue", "remove"].includes(action) || opensRunningTask) { setActiveID(""); setActiveNoticeID(""); } if (action === "open" || opensRunningTask) onOpenSession(); }
 		else { if (result.status === "stale" || result.status === "invalid") actionRequests.current.delete(intent); setError(result.error || t("desktopIcon.errorFallback")); }
 		return result.status;
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return "retryable_error"; }
     finally { setBusy(false); }
-  }, [onOpenSession]);
+  }, [acceptSnapshot, closeTransient, onOpenSession, refresh, removals]);
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
@@ -2267,6 +2283,6 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {active && active.kind !== "external" && active.kind !== "workspace" && !isQuickStartJobItem(active) && !activeNotice && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && active.sourceId !== "assistant" && active.sourceId !== "delegate" && active.sourceId !== "dsh" && <><strong>{iconTitle(active)}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>{t("desktopIcon.open")}</button></div></>}
 
     </section>}
-    {(error || quickError || quickJobs.storageError || routineNotice) && <div className="desktop-icon-toast" role={error || quickError || quickJobs.storageError ? "alert" : "status"}>{error}{error && (quickError || quickJobs.storageError || routineNotice) ? <span aria-hidden="true">；</span> : null}{quickError}{quickError && (quickJobs.storageError || routineNotice) ? <span aria-hidden="true">；</span> : null}{quickJobs.storageError}{quickJobs.storageError && routineNotice ? <span aria-hidden="true">；</span> : null}{routineNotice}<button aria-label={t("common.close")} onClick={() => { setError(""); setQuickError(""); setRoutineNotice(""); quickJobs.clearStorageError(); }}><X /></button></div>}
+    {(error || removalError || quickError || quickJobs.storageError || routineNotice) && <div className="desktop-icon-toast" role={error || removalError || quickError || quickJobs.storageError ? "alert" : "status"}>{[error, removalError, quickError, quickJobs.storageError, routineNotice].filter(Boolean).join("；")}<button aria-label={t("common.close")} onClick={() => { setError(""); removals.clearErrors(); setQuickError(""); setRoutineNotice(""); quickJobs.clearStorageError(); }}><X /></button></div>}
   </main>;
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useT } from "../lib/i18n";
 import { collabReducer, detectSelfAgentIntentRule, initialCollabState, ownMember, replayableSelfAgentItems, selectedTimelineItems } from "./state";
 import { defaultCollaborationTransport } from "./transport";
+import { useIntentTimers } from "./intentTimers";
 import type {
   CollaborationActionResult,
   CollaborationAgentConfig,
@@ -395,17 +396,26 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
     await perform(transport.respondAgentRun(item.id, response));
   }, [perform, t, transport]);
 
+  const pendingStarts = useRef(new Set<string>());
   const startPending = useCallback(async (intent: PendingIntent) => {
     if (intent.status !== "pending" && intent.status !== "failed") return;
     const epoch = sessionEpoch.current;
+    const key = `${epoch}:${intent.messageId}:${intent.revision}:${intent.deadline}`;
+    if (pendingStarts.current.has(key)) return;
+    pendingStarts.current.add(key);
     dispatch({ type: "PENDING_STATUS", id: intent.messageId, status: "starting" });
     try {
       await startAgent(intent.instruction, [intent.messageId]);
       if (epoch === sessionEpoch.current) dispatch({ type: "PENDING_STATUS", id: intent.messageId, status: "dismissed" });
     } catch (error) {
       if (epoch === sessionEpoch.current) dispatch({ type: "PENDING_STATUS", id: intent.messageId, status: "failed", error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      pendingStarts.current.delete(key);
     }
   }, [startAgent]);
+
+  useIntentTimers(state.pendingIntents, state.status === "connected" && state.selfSessionId === sessionID,
+    JSON.stringify([sessionID, state.room?.host, state.room?.port, state.room?.room]), startPending);
 
   const stopPending = useCallback((messageId: string) => dispatch({ type: "PENDING_STATUS", id: messageId, status: "dismissed" }), []);
   const editPending = useCallback((messageId: string, instruction: string) => dispatch({ type: "UPDATE_PENDING", id: messageId, instruction, deadline: Date.now() + 5_000 }), []);

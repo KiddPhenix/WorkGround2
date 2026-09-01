@@ -39,9 +39,79 @@ export const initialCollabState: CollabViewState = {
   agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "interval", contextRefs: [] },
 };
 
+function sameStringList(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index++) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+}
+
+function sameHandoffs(a: CollaborationTimelineItem["handoffs"], b: CollaborationTimelineItem["handoffs"]): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index++) {
+    const left = a[index];
+    const right = b[index];
+    if (left.targetAgentId !== right.targetAgentId || left.instruction !== right.instruction ||
+      left.reason !== right.reason || left.expectedOutcome !== right.expectedOutcome ||
+      left.requiresResponse !== right.requiresResponse || !sameStringList(left.referenceIds, right.referenceIds)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameReactions(a: CollaborationTimelineItem["reactions"], b: CollaborationTimelineItem["reactions"]): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) {
+    if (!sameStringList(a[key], b[key])) return false;
+  }
+  return true;
+}
+
+// Field-for-field equality. The backend broadcasts the FULL timeline on every
+// state-changing event; when the incoming item is exactly equal to the one
+// already in state, mergeTimeline keeps the existing object instead of
+// allocating a fresh copy per item per STATE event.
+function sameTimelineItem(a: CollaborationTimelineItem, b: CollaborationTimelineItem): boolean {
+  return a.id === b.id && a.sequence === b.sequence && a.revision === b.revision && a.kind === b.kind &&
+    a.contributionKind === b.contributionKind && a.actorId === b.actorId && a.actorName === b.actorName &&
+    a.actorAgent === b.actorAgent && a.targetMemberId === b.targetMemberId && a.text === b.text &&
+    a.createdAt === b.createdAt && a.syncStatus === b.syncStatus && a.localPending === b.localPending &&
+    a.requestID === b.requestID && a.requestStatus === b.requestStatus && a.agentRunStatus === b.agentRunStatus &&
+    a.agentRunSummary === b.agentRunSummary && a.agentRunOutput === b.agentRunOutput &&
+    a.agentRunError === b.agentRunError && a.agentCommandId === b.agentCommandId && a.agentRunId === b.agentRunId &&
+    a.systemKind === b.systemKind && a.fileName === b.fileName && a.fileSize === b.fileSize &&
+    a.fileMime === b.fileMime && a.fileSHA256 === b.fileSHA256 && a.fileRevoked === b.fileRevoked &&
+    sameStringList(a.referenceIds, b.referenceIds) && sameStringList(a.mentionMemberIds, b.mentionMemberIds) &&
+    sameStringList(a.mentionAgentIds, b.mentionAgentIds) && sameHandoffs(a.handoffs, b.handoffs) &&
+    sameReactions(a.reactions, b.reactions);
+}
+
 function mergeTimeline(current: CollaborationTimelineItem[], incoming: CollaborationTimelineItem[]): CollaborationTimelineItem[] {
+  // Repeated full snapshots must not rebuild the array and every item object:
+  // when the merged content is identical, keep the existing array (and item
+  // references) so the renderer stops allocating N objects per STATE event.
+  if (current.length === incoming.length) {
+    let identical = true;
+    for (let index = 0; index < incoming.length; index++) {
+      if (!sameTimelineItem(current[index], incoming[index])) {
+        identical = false;
+        break;
+      }
+    }
+    if (identical) return current;
+  }
   const byId = new Map(current.map((item) => [item.id, item]));
-  for (const item of incoming) byId.set(item.id, { ...byId.get(item.id), ...item });
+  for (const item of incoming) {
+    const existing = byId.get(item.id);
+    byId.set(item.id, existing && sameTimelineItem(existing, item) ? existing : { ...existing, ...item });
+  }
   return [...byId.values()].sort((a, b) => a.sequence - b.sequence || a.createdAt.localeCompare(b.createdAt));
 }
 
@@ -73,13 +143,15 @@ export function collabReducer(state: CollabViewState, action: CollabAction): Col
       return { ...state, status: action.reconnecting ? "reconnecting" : "syncing", operation: "sync", lastError: undefined, pendingIntents: cancelPending(state.pendingIntents) };
     case "STATE": {
       const keepRoomState = action.state.status !== "connecting" && sameRoom(action.state.room, state.room);
+      // Avoid the per-STATE filter allocation when nothing is pending so the
+      // merge can keep the live array reference on identical repeated snapshots.
+      const hasLocalPending = state.timeline.some((entry) => entry.localPending);
+      const base = hasLocalPending ? state.timeline.filter((entry) => !entry.localPending) : state.timeline;
       return {
         ...state,
         ...action.state,
         status: action.state.status || "connected",
-        timeline: keepRoomState
-          ? mergeTimeline(state.timeline.filter((item) => !item.localPending), action.state.timeline || [])
-          : (action.state.timeline || []),
+        timeline: keepRoomState ? mergeTimeline(base, action.state.timeline || []) : (action.state.timeline || []),
         members: action.state.members || [],
         agentConfig: action.state.agentConfig || state.agentConfig,
         selectedIds: keepRoomState ? state.selectedIds : [],

@@ -6876,6 +6876,31 @@ func TestCollectPromptHistoryEntriesUsesDisplayResolver(t *testing.T) {
 	}
 }
 
+// TestSessionDisplayResolverCollapsesLegacySkillInvocation verifies a persisted
+// explicit slash-skill expansion (no display sidecar) collapses to the compact
+// slash form — no body and no local absolute path — while ordinary "# Skill:"
+// user text is left untouched.
+func TestSessionDisplayResolverCollapsesLegacySkillInvocation(t *testing.T) {
+	sk := skill.Skill{
+		Name:        "cps_insurance",
+		Description: "team insurance flow",
+		Scope:       skill.ScopeGlobal,
+		Path:        filepath.Join("C:", "Users", "me", "skills", "cps_insurance", "SKILL.md"),
+		Body:        "# 流程\n\n填日期、投保人。",
+	}
+	expanded := skill.Render(sk, "额外参数")
+	ordinary := "# Skill: 我的学习计划\n\n请帮我总结。"
+
+	resolve := sessionDisplayResolverFromMap(sessionDisplayMap{}, "legacy-skill.jsonl")
+
+	if got := resolve(expanded); got != "/cps_insurance 额外参数" {
+		t.Fatalf("legacy skill expansion = %q, want %q", got, "/cps_insurance 额外参数")
+	}
+	if got := resolve(ordinary); got != ordinary {
+		t.Fatalf("ordinary # Skill: text = %q, want unchanged", got)
+	}
+}
+
 func TestCollectPromptHistoryEntriesSkipsSyntheticMessages(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")

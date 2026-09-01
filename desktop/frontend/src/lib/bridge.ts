@@ -876,6 +876,7 @@ export interface AppBindings extends WailsWorkBindings {
   SetDesktopHoverStatusDelayMs(delay: number): Promise<void>;
   SetMemoryCompilerEnabled(enabled: boolean): Promise<void>;
   SetExpandThinking(on: boolean): Promise<void>;
+  SetAgentPromptStyles(ids: string[]): Promise<void>;
   MigrateDesktopPreferences(language: string, theme: string, style: string): Promise<void>;
   SetAgentParams(temperature: number, maxSteps: number, plannerMaxSteps: number, systemPrompt: string): Promise<void>;
   SetColdResumePrune(enabled: boolean): Promise<void>;
@@ -2057,6 +2058,18 @@ function makeMockApp(): AppBindings {
     },
     collaboration: { preferLAN: true, connectTimeoutSeconds: 10, routeStableSeconds: 60, relays: [] },
     agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "You are WorkGround2, a coding agent.", coldResumePrune: true, reasoningLanguage: "auto" },
+    agentPromptStyles: [
+      { id: "paranoid", disorder: "偏执型", styleName: "风险审查者", capability: "保持高度警觉，寻找隐藏假设、利益冲突、欺诈风险和安全漏洞", selected: false },
+      { id: "schizoid", disorder: "分裂样型", styleName: "独立深思者", capability: "独立分析，不迎合群体意见，减少社交噪声，专注长期逻辑与问题本质", selected: false },
+      { id: "schizotypal", disorder: "分裂型", styleName: "非传统创意者", capability: "建立跨领域联想，提出反常规假设和原创方案", selected: false },
+      { id: "antisocial", disorder: "反社会型", styleName: "冷静决策者", capability: "在压力下保持冷静、果断和风险承受力，敢于挑战无效规则", selected: false },
+      { id: "borderline", disorder: "边缘型", styleName: "情绪洞察者", capability: "敏锐识别情绪、关系变化和被忽视的需求，保持投入与创造力", selected: false },
+      { id: "histrionic", disorder: "表演型", styleName: "表达传播者", capability: "将内容表达得鲜明、有感染力、易记，善用故事和受众视角", selected: false },
+      { id: "narcissistic", disorder: "自恋型", styleName: "自信进取者", capability: "提出有野心的目标，展示领导力、自信和高标准", selected: false },
+      { id: "avoidant", disorder: "回避型", styleName: "审慎预演者", capability: "提前发现失败、拒绝和负面反馈风险，充分准备", selected: false },
+      { id: "dependent", disorder: "依赖型", styleName: "协作支持者", capability: "重视合作、忠诚、共识、求助和团队稳定", selected: false },
+      { id: "obsessive_compulsive", disorder: "强迫型人格", styleName: "严谨执行者", capability: "强调秩序、细节、质量、检查清单和可重复流程", selected: false },
+    ],
     bot: {
       enabled: !freshMock,
       model: "",
@@ -4994,6 +5007,13 @@ function makeMockApp(): AppBindings {
         },
         async SetBotSettings(b: BotSettingsView) {
           settings.bot = JSON.parse(JSON.stringify(b)) as BotSettingsView;
+        },
+        async SetAgentPromptStyles(ids: string[]) {
+          const selected = new Set(ids.map((id) => id.trim()).filter(Boolean));
+          settings.agentPromptStyles = settings.agentPromptStyles.map((style) => ({
+            ...style,
+            selected: selected.has(style.id),
+          }));
         },
         async SetBotConnectionToolApprovalMode(connID, mode) {
           const conn = settings.bot.connections.find((c) => c.id === connID);

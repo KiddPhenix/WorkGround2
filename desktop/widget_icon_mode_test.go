@@ -2140,6 +2140,248 @@ func TestDesktopIconRemoveDeletesRetainedIcon(t *testing.T) {
 	}
 }
 
+func TestDesktopIconRemoveRollsBackFailedWriteAndRetries(t *testing.T) {
+	tab, sp := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+	app.rememberDesktopIconTask(tab.ID)
+	id := desktopIconKeptID(sp)
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, id)
+	if item == nil {
+		t.Fatal("retained icon missing before remove")
+	}
+	input := DesktopIconActionInput{ItemID: id, Revision: item.Revision, RequestID: "req-remove-retry", Action: "remove"}
+	t.Setenv("WorkGround2_STATE_HOME", unwritableDesktopIconStateHome(t))
+	failed := app.ApplyDesktopIconAction(input)
+	if failed.Status != "retryable_error" {
+		t.Fatalf("failed remove = %+v", failed)
+	}
+	if _, kept := app.iconWidgetState.Kept[id]; !kept || len(app.iconWidgetState.Applied) != 0 {
+		t.Fatalf("failed remove did not roll back: %+v", app.iconWidgetState)
+	}
+	t.Setenv("WorkGround2_STATE_HOME", t.TempDir())
+	retried := app.ApplyDesktopIconAction(input)
+	if retried.Status != "accepted" || findDesktopIconItem(retried.Snapshot.Items, id) != nil {
+		t.Fatalf("remove retry = %+v", retried)
+	}
+}
+
+// TestDesktopIconRetainedRemoveSurvivesAsyncSummaryRevision reproduces the
+// reported context-menu remove bug: a completed task's retained icon shows the
+// mechanical fallback while the async completion summary is pending, then the
+// generation lands and rewrites the completion notice body (and therefore the
+// item revision) without any frontend event. Clicking 移除 with the snapshot
+// the user actually saw must still remove that exact retained icon — the
+// target is the durable kept identity, not the notice display. Same-request
+// retry stays idempotent ("already_applied").
+func TestDesktopIconRetainedRemoveSurvivesAsyncSummaryRevision(t *testing.T) {
+	tab, sp := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+
+	long := strings.Repeat("长结果", completionSummaryMaxRunes)
+	key := desktopIconCompletionKey("task-1", "completed", 1000)
+	app.iconWidgetState.Kept[desktopIconKeptID(sp)] = desktopIconKept{
+		ItemID: desktopIconKeptID(sp), SourceID: "task-1", Title: "标题",
+		Summary: long, CompletionKey: key, CompletedAt: 1000,
+		SessionPath: sp,
+	}
+
+	// Frontend snapshot while the summary is still pending: fallback body.
+	seen := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(seen.Items, desktopIconKeptID(sp))
+	if item == nil || len(item.Notifications) != 1 {
+		t.Fatalf("retained icon before summary = %+v", seen.Items)
+	}
+
+	// The async generation completes: notice body (and item revision) change.
+	app.iconWidgetState.CompletionSummaries[key] = desktopIconCompletionSummary{
+		Status: completionSummaryReady, Kind: "completed", Text: "生成的新闻体摘要。",
+	}
+	fresh := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, desktopIconKeptID(sp))
+	if fresh == nil || fresh.Revision == item.Revision || fresh.Notifications[0].Body == item.Notifications[0].Body {
+		t.Fatalf("summary landing did not change the retained notice: %+v vs %+v", item, fresh)
+	}
+
+	// The user's click carries the revision and notice id they actually saw.
+	input := DesktopIconActionInput{
+		ItemID: item.ID, NoticeID: item.Notifications[0].ID, Revision: item.Revision,
+		RequestID: "req-remove", Action: "remove",
+	}
+	result := app.ApplyDesktopIconAction(input)
+	if result.Status != "accepted" {
+		t.Fatalf("remove status = %q error %q", result.Status, result.Error)
+	}
+	if _, kept := app.iconWidgetState.Kept[item.ID]; kept {
+		t.Fatal("remove kept the retained icon")
+	}
+	if findDesktopIconItem(result.Snapshot.Items, item.ID) != nil {
+		t.Fatal("removed icon still in snapshot")
+	}
+	// Same-request retry (lost response) settles as already_applied.
+	if duplicate := app.ApplyDesktopIconAction(input); duplicate.Status != "already_applied" {
+		t.Fatalf("duplicate remove = status %q error %q", duplicate.Status, duplicate.Error)
+	}
+}
+
+// TestDesktopIconRetainedRemoveRejectsGoneItem verifies the relaxed remove
+// path keeps the identity guard: a fresh requestId for an icon that is already
+// gone still returns stale instead of silently succeeding.
+func TestDesktopIconRetainedRemoveRejectsGoneItem(t *testing.T) {
+	tab, sp := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+	app.rememberDesktopIconTask(tab.ID)
+	id := desktopIconKeptID(sp)
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, id)
+	if item == nil {
+		t.Fatal("retained icon missing before remove")
+	}
+	if result := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: item.ID, Revision: item.Revision, RequestID: "req-remove", Action: "remove"}); result.Status != "accepted" {
+		t.Fatalf("remove status = %q error %q", result.Status, result.Error)
+	}
+	gone := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: item.ID, Revision: item.Revision, RequestID: "req-remove-2", Action: "remove"})
+	if gone.Status != "stale" || gone.Error != "图标已经变化" {
+		t.Fatalf("remove of gone icon = status %q error %q, want stale 图标已经变化", gone.Status, gone.Error)
+	}
+}
+
+// TestDesktopIconStaleRevisionStillGuardsNonRemoveAction pins that the guard
+// relaxation is scoped to remove: any other action against a retained icon
+// whose revision moved still returns 图标状态已经变化.
+func TestDesktopIconStaleRevisionStillGuardsNonRemoveAction(t *testing.T) {
+	tab, sp := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+
+	long := strings.Repeat("长结果", completionSummaryMaxRunes)
+	key := desktopIconCompletionKey("task-1", "completed", 1000)
+	app.iconWidgetState.Kept[desktopIconKeptID(sp)] = desktopIconKept{
+		ItemID: desktopIconKeptID(sp), SourceID: "task-1", Title: "标题",
+		Summary: long, CompletionKey: key, CompletedAt: 1000,
+		SessionPath: sp,
+	}
+	id := desktopIconKeptID(sp)
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, id)
+	if item == nil {
+		t.Fatal("retained icon missing")
+	}
+	// Advance the retained notice (simulates the async summary landing) so the
+	// item revision moves, then act with the stale revision the user saw.
+	app.iconWidgetState.CompletionSummaries[key] = desktopIconCompletionSummary{Status: completionSummaryReady, Kind: "completed", Text: "新摘要"}
+	for _, action := range []string{"open", "randomize_icon"} {
+		result := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: item.ID, Revision: item.Revision, RequestID: "req-" + action, Action: action})
+		if result.Status != "stale" || result.Error != "图标状态已经变化" {
+			t.Fatalf("action %q with stale revision = status %q error %q, want stale 图标状态已经变化", action, result.Status, result.Error)
+		}
+	}
+	// The current revision still passes the guard (randomize_icon needs no
+	// live window ops and proceeds past the revision check).
+	current := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, id)
+	if current == nil || current.Revision == item.Revision {
+		t.Fatalf("current retained item = %+v", current)
+	}
+	randomize := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: current.ID, Revision: current.Revision, RequestID: "req-randomize-fresh", Action: "randomize_icon"})
+	if randomize.Status == "stale" {
+		t.Fatalf("fresh-revision randomize_icon rejected: %q", randomize.Error)
+	}
+}
+
+// TestDesktopIconRetainedRemovePersistsAfterReload verifies a removed retained
+// icon stays gone after a refresh and after a full reload from the same
+// persisted state.
+func TestDesktopIconRetainedRemovePersistsAfterReload(t *testing.T) {
+	tab, sp := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+	app.rememberDesktopIconTask(tab.ID)
+	id := desktopIconKeptID(sp)
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, id)
+	if item == nil {
+		t.Fatal("retained icon missing before remove")
+	}
+	if result := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: item.ID, Revision: item.Revision, RequestID: "req-remove", Action: "remove"}); result.Status != "accepted" {
+		t.Fatalf("remove status = %q error %q", result.Status, result.Error)
+	}
+	if findDesktopIconItem(app.GetDesktopIconSnapshot().Items, id) != nil {
+		t.Fatal("removed icon reappeared after refresh")
+	}
+	restarted := &App{
+		tabs:                      app.tabs,
+		activeTabID:               app.activeTabID,
+		completionSummaryInFlight: map[string]*completionSummaryCall{},
+	}
+	if findDesktopIconItem(restarted.GetDesktopIconSnapshot().Items, id) != nil {
+		t.Fatal("removed icon reappeared after reload")
+	}
+	if !restarted.iconWidgetStateLoaded || len(restarted.iconWidgetState.Applied) == 0 {
+		t.Fatal("reload did not read the removal receipt from disk")
+	}
+	if result := restarted.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: item.ID, Revision: item.Revision, RequestID: "req-remove", Action: "remove"}); result.Status != "already_applied" {
+		t.Fatalf("remove retry after reload = %q error %q", result.Status, result.Error)
+	}
+}
+
+func TestDesktopIconLegacyRetainedRemoveKeepsRevisionGuard(t *testing.T) {
+	tab, sp := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	const id = "task:legacy"
+	app.iconWidgetState.Kept[id] = desktopIconKept{ItemID: id, SessionPath: sp, Title: "旧图标"}
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, id)
+	if item == nil {
+		t.Fatal("legacy retained icon missing")
+	}
+	kept := app.iconWidgetState.Kept[id]
+	kept.SessionPath = filepath.Join(t.TempDir(), "different-session.jsonl")
+	app.iconWidgetState.Kept[id] = kept
+	result := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: id, Revision: item.Revision, RequestID: "legacy-remove", Action: "remove"})
+	if result.Status != "stale" {
+		t.Fatalf("legacy remove with changed identity = %q error %q", result.Status, result.Error)
+	}
+	if _, exists := app.iconWidgetState.Kept[id]; !exists {
+		t.Fatal("stale remove deleted a different session's icon")
+	}
+}
+
+// TestDesktopIconPersonRemoveKeepsStaleRevisionGuard verifies the remove guard
+// relaxation does not leak to person icons: their removal advances a
+// revision-bearing conversation watermark, so a stale remove must stay
+// rejected until the frontend shows the current state.
+func TestDesktopIconPersonRemoveKeepsStaleRevisionGuard(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	store, err := unread.Open(filepath.Join(t.TempDir(), "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcceptIM(unread.IMInput{ConversationKey: "user-1", MessageID: "message-1", SessionID: "path:D:\\sessions\\im-user.jsonl", Title: "user@example.com", ReceivedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	app := newSummaryTestApp(t, nil, fakeCompletionSummaryGenerator{})
+	app.unreadStore = store
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, "conversation:im:user-1")
+	if item == nil {
+		t.Fatalf("person icon missing: %+v", app.GetDesktopIconSnapshot().Items)
+	}
+	// A newer message lands after the user's snapshot: the item revision moves.
+	if _, err := store.AcceptIM(unread.IMInput{ConversationKey: "user-1", MessageID: "message-2", SessionID: "path:D:\\sessions\\im-user.jsonl", ReceivedAt: time.Now().Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	app.GetDesktopIconSnapshot()
+	stale := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: item.ID, NoticeID: item.Notifications[0].ID, Revision: item.Revision, RequestID: "req-remove-stale", Action: "remove"})
+	if stale.Status != "stale" || stale.Error != "图标状态已经变化" {
+		t.Fatalf("stale person remove = status %q error %q, want stale 图标状态已经变化", stale.Status, stale.Error)
+	}
+	// With the current revision the remove succeeds.
+	current := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, item.ID)
+	if current == nil {
+		t.Fatalf("person icon missing after refresh: %+v", app.GetDesktopIconSnapshot().Items)
+	}
+	fresh := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: current.ID, NoticeID: current.Notifications[0].ID, Revision: current.Revision, RequestID: "req-remove-fresh", Action: "remove"})
+	if fresh.Status != "accepted" {
+		t.Fatalf("fresh person remove = status %q error %q", fresh.Status, fresh.Error)
+	}
+}
+
 // TestDesktopIconOpenActivatesRespectiveTab reproduces the icon→session
 // binding contract: opening two different task icons must activate their own
 // tabs, and the second open must never fall back to the first icon's session.

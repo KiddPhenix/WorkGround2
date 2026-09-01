@@ -46,7 +46,7 @@ import {
   shortcutDefinitions,
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
-import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, DecisionChannelView, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundMode, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
+import type { AgentPromptStyleView, BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, DecisionChannelView, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundMode, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
 import { DYNAMIC_WALLPAPER_SCENES, DynamicWallpaper, isSceneName } from "./DynamicWallpaper";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
@@ -67,7 +67,7 @@ type SettingsNavEntry =
 // groups (expanded inline) and six direct entries.
 const SETTINGS_NAV: SettingsNavEntry[] = [
   { kind: "leaf", tab: "general" },
-  { kind: "group", id: "aiConfig", tabs: ["models", "memory", "global"] },
+  { kind: "group", id: "aiConfig", tabs: ["models", "styles", "memory", "global"] },
   { kind: "group", id: "aiTools", tabs: ["ai", "skills", "plugins", "mcp"] },
   { kind: "leaf", tab: "bots" },
   { kind: "leaf", tab: "widget" },
@@ -238,7 +238,7 @@ export function SettingsPanel({
   // sandbox, appearance, updates) need SettingsView loaded. MCP, Skills, Plugins,
   // and Memory
   // load their own data and render regardless.
-  const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "widget" || tab === "updates";
+  const needsSettings = tab === "general" || tab === "models" || tab === "styles" || tab === "bots" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "widget" || tab === "updates";
   const lazySettingsPageFallback = <div className="empty">{t("settings.loading")}</div>;
 
   return (
@@ -308,6 +308,7 @@ export function SettingsPanel({
               <>
                 {tab === "general" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GeneralSection s={s} busy={busy} apply={apply} agentRunning={agentRunning} /></SettingsPageShell>}
                 {tab === "models" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><ModelsSection s={s} busy={busy} apply={apply} applyResult={applyResult} backgroundApply={backgroundApply} /></SettingsPageShell>}
+                {tab === "styles" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><AgentStylesSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
                 {tab === "bots" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><BotsSection s={s} busy={busy} apply={apply} initialFocus={initialFocus} /></SettingsPageShell>}
                 {tab === "ai" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><AICollaborationSection /></SettingsPageShell>}
                 {tab === "mcp" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MCPServersSettingsPage /></Suspense></SettingsPageShell>}
@@ -584,6 +585,73 @@ type ModelsSectionProps = SectionProps & {
   backgroundApply: (fn: () => Promise<void>) => Promise<void>;
 };
 
+// AgentStylesSection is the multi-select Agent 风格 picker. It keeps a local
+// draft so ticking a checkbox never rebuilds the controller; a single Apply (or
+// Clear) persists the whole selection through SetAgentPromptStyles.
+function AgentStylesSection({ s, busy, apply }: SectionProps) {
+  const t = useT();
+  const selectedIds = useMemo(
+    () => new Set(s.agentPromptStyles.filter((style) => style.selected).map((style) => style.id)),
+    [s.agentPromptStyles],
+  );
+  const [draft, setDraft] = useState<Set<string>>(selectedIds);
+  const dirty = useMemo(() => {
+    if (draft.size !== selectedIds.size) return true;
+    for (const id of draft) if (!selectedIds.has(id)) return true;
+    return false;
+  }, [draft, selectedIds]);
+
+  const toggle = (id: string) =>
+    setDraft((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const applySelection = () => apply(() => app.SetAgentPromptStyles([...draft]));
+  const clearSelection = () => {
+    setDraft(new Set());
+    void apply(() => app.SetAgentPromptStyles([]));
+  };
+
+  return (
+    <SettingsSection
+      title={t("settings.styles.title")}
+      description={t("settings.styles.desc", { n: draft.size })}
+      actions={
+        <>
+          <button className="btn btn--small" type="button" onClick={clearSelection} disabled={busy || draft.size === 0}>
+            {t("settings.styles.clear")}
+          </button>
+          <button className="btn btn--primary btn--small" type="button" onClick={applySelection} disabled={busy || !dirty}>
+            {t("settings.styles.apply")}
+          </button>
+        </>
+      }
+    >
+      <div className="settings-style-grid" role="group" aria-label={t("settings.styles.title")}>
+        {s.agentPromptStyles.map((style) => {
+          const checked = draft.has(style.id);
+          return (
+            <label key={style.id} className={`settings-style-card${checked ? " settings-style-card--selected" : ""}`}>
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() => toggle(style.id)}
+                aria-label={`${style.disorder}｜${style.styleName}`}
+              />
+              <div className="settings-style-card__title">{style.disorder}</div>
+              <div className="settings-style-card__name">{style.styleName}</div>
+              <div className="settings-style-card__capability">{style.capability}</div>
+            </label>
+          );
+        })}
+      </div>
+    </SettingsSection>
+  );
+}
+
 function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
   switch (id) {
     case "general":
@@ -624,6 +692,8 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.about");
     case "global":
       return t("settings.tab.global");
+    case "styles":
+      return t("settings.tab.styles");
     default:
       return id;
   }
@@ -1037,6 +1107,16 @@ function normalizeBotMappingScope(scope: unknown, workspaceRoot: unknown): "glob
   return String(workspaceRoot ?? "").trim() ? "project" : "global";
 }
 
+function normalizeAgentPromptStyle(raw: AgentPromptStyleView | null | undefined): AgentPromptStyleView {
+  return {
+    id: String(raw?.id ?? "").trim(),
+    disorder: String(raw?.disorder ?? "").trim(),
+    styleName: String(raw?.styleName ?? "").trim(),
+    capability: String(raw?.capability ?? "").trim(),
+    selected: Boolean(raw?.selected),
+  };
+}
+
 function normalizeStringMap(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: Record<string, string> = {};
@@ -1130,6 +1210,7 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
       })),
     },
     agent,
+    agentPromptStyles: asArray(view.agentPromptStyles).map(normalizeAgentPromptStyle),
     bot: normalizeBotSettings(view.bot),
     autoPlan: normalizeAutoPlan(view.autoPlan),
     defaultToolApprovalMode: normalizeToolApprovalMode(view.defaultToolApprovalMode),

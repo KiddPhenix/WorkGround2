@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { Ban, Bot, Check, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, File, FolderOpen, Image, MoreHorizontal, Pause, Play, RefreshCw, Reply, ThumbsUp, UserRound } from "lucide-react";
 import { useI18n } from "../../lib/i18n";
 import { ApprovalModal } from "../../components/ApprovalModal";
@@ -186,6 +187,12 @@ interface CollaborationTimelineProps {
   onOpenFile(id: string): void;
   onRevealFile(id: string): void;
   previewFile?(fileId: string): Promise<CollaborationFilePreview | null>;
+  // Optional scroll owner + sticky state from the hosting Workspace. When a
+  // scroll container is provided and history exceeds the threshold the
+  // timeline virtualizes. Explicit null waits for the host without mounting
+  // the full history; omission preserves standalone small-list usage.
+  scrollContainer?: HTMLElement | null;
+  stickRef?: RefObject<boolean | null>;
 }
 
 const kindCopy = {
@@ -198,6 +205,15 @@ const kindCopy = {
   reaction: "kindReaction",
   system: "kindSystem",
 } as const;
+
+// Virtualize the timeline once history grows past this many visible rows so
+// the mounted DOM stays bounded no matter how large a Room's history becomes.
+// Presence notices count as rows. Below the threshold the timeline renders
+// fully — identical to the pre-virtualization behavior (jsdom / SSR / dialog
+// mode all fall back to this path).
+const virtualTimelineThreshold = 200;
+const virtualTimelineEstimateSize = 64;
+const virtualTimelineOverscan = 12;
 
 function fileSize(value = 0): string {
   if (value < 1024) return `${value} B`;
@@ -383,6 +399,10 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
   const [requestAgentPlacement, setRequestAgentPlacement] = useState<{ side: "above" | "below"; maxHeight: number }>({ side: "above", maxHeight: 260 });
   const requestAgentRef = useRef<HTMLDivElement>(null);
   const requestAgentTriggerRef = useRef<HTMLButtonElement>(null);
+  const jumpFrame = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (jumpFrame.current !== null) cancelAnimationFrame(jumpFrame.current);
+  }, []);
   useEffect(() => {
     if (!requestAgentOpen) return;
     const close = (event: MouseEvent) => {
@@ -397,6 +417,39 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
     if (restoreFocus) requestAgentTriggerRef.current?.focus();
     setRequestAgentOpen(null);
   };
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!highlightedId) return;
+    const timer = window.setTimeout(() => setHighlightedId(null), 1800);
+    return () => window.clearTimeout(timer);
+  }, [highlightedId]);
+  const visibleItems = useMemo(() => visibleCollaborationTimeline(props.items), [props.items]);
+  const rawItems = useMemo(() => new Map(props.items.map((item) => [item.id, item])), [props.items]);
+  const runByResult = useMemo(() => new Map(props.items.filter((item) => item.kind === "agent_result" && item.agentRunId).map((item) => [item.id, item.agentRunId as string])), [props.items]);
+  const isVirtual = props.scrollContainer !== undefined && visibleItems.length > virtualTimelineThreshold;
+  const getItemKey = useCallback((index: number) => visibleItems[index]?.id ?? index, [visibleItems]);
+  const pinnedRows = useMemo(() => visibleItems.flatMap((item, index) =>
+    item.id === requestAgentOpen || item.id === props.agentPrompt?.runId ? [index] : []), [visibleItems, requestAgentOpen, props.agentPrompt?.runId]);
+  const rangeExtractor = useCallback((range: Parameters<typeof defaultRangeExtractor>[0]) =>
+    [...new Set([...defaultRangeExtractor(range), ...pinnedRows])].sort((a, b) => a - b), [pinnedRows]);
+  const virtualizer = useVirtualizer({
+    count: isVirtual ? visibleItems.length : 0,
+    getScrollElement: () => props.scrollContainer ?? null,
+    estimateSize: () => virtualTimelineEstimateSize,
+    overscan: virtualTimelineOverscan,
+    getItemKey,
+    rangeExtractor,
+  });
+  const virtualTimelineSize = virtualizer.getTotalSize();
+  // After the virtualizer re-measures (new rows, taller images, expanded
+  // references, long Agent output) re-pin the scroll owner when the reader was
+  // following the bottom — the Workspace's own snap runs before measurements
+  // settle, so this closes the gap without touching manual scrolling.
+  useLayoutEffect(() => {
+    if (!isVirtual || !props.scrollContainer || !props.stickRef?.current) return;
+    const element = props.scrollContainer;
+    element.scrollTop = element.scrollHeight;
+  }, [isVirtual, props.scrollContainer, props.stickRef, virtualTimelineSize]);
   const toggleRequestAgent = (event: ReactMouseEvent<HTMLButtonElement>, itemId: string) => {
     if (requestAgentOpen === itemId) {
       closeRequestAgent();
@@ -412,86 +465,157 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
     setRequestAgentOpen(itemId);
   };
   if (props.items.length === 0) return <div className="collab-empty">{c("empty")}</div>;
-  const rawItems = new Map(props.items.map((item) => [item.id, item]));
-  const visibleItems = visibleCollaborationTimeline(props.items);
-  const runByResult = new Map(props.items.filter((item) => item.kind === "agent_result" && item.agentRunId).map((item) => [item.id, item.agentRunId as string]));
   const jumpTo = (id: string) => {
-    const target = document.getElementById(timelineDOMID(runByResult.get(id) || id));
+    // An agent_result reference maps to its owning agent_command; the target
+    // row may not be mounted yet when the timeline is virtualized, so jump by
+    // index into the visible rows instead of by DOM id.
+    const targetId = runByResult.get(id) || id;
+    const index = visibleItems.findIndex((entry) => entry.id === targetId);
+    if (index < 0) return;
+    if (jumpFrame.current !== null) cancelAnimationFrame(jumpFrame.current);
+    if (props.stickRef) props.stickRef.current = false;
+    setHighlightedId(targetId);
+    if (isVirtual && props.scrollContainer) {
+      // Best path: the target row is already measured (it was mounted before),
+      // so scrollToIndex can align precisely.
+      const measuredTarget = () => Boolean(virtualizer.measurementsCache[index]);
+      if (measuredTarget()) {
+        virtualizer.scrollToIndex(index, { align: "center", behavior: "auto" });
+        return;
+      }
+      // The target row was never mounted, so scrollToIndex has no measurement
+      // to align against. Scroll toward its estimated offset — the measured
+      // prefix plus the estimate for the rest — and re-check every frame: each
+      // scroll mounts a new window that the virtualizer measures, refining the
+      // estimate until the target mounts and the precise re-align runs. A
+      // second click after a failed deep-history jump continues from the now
+      // measured region.
+      let attempts = 0;
+      let probe = -1;
+      const converge = () => {
+        attempts++;
+        if (attempts > 30) return;
+        if (measuredTarget()) {
+          virtualizer.scrollToIndex(index, { align: "center", behavior: "auto" });
+          return;
+        }
+        const cache = virtualizer.measurementsCache;
+        let anchorIndex = -1;
+        let anchorEnd = 0;
+        for (let entryIndex = cache.length - 1; entryIndex >= 0; entryIndex--) {
+          const entry = cache[entryIndex];
+          if (entry) {
+            anchorIndex = entryIndex;
+            anchorEnd = entry.end;
+            break;
+          }
+        }
+        const estimated = anchorIndex < 0
+          ? index * virtualTimelineEstimateSize
+          : index <= anchorIndex
+            ? cache[index]?.start ?? Math.max(0, anchorEnd - (anchorIndex - index) * virtualTimelineEstimateSize)
+            : anchorEnd + (index - anchorIndex) * virtualTimelineEstimateSize;
+        probe = Math.max(probe, estimated);
+        const viewport = props.scrollContainer?.clientHeight || virtualTimelineEstimateSize;
+        const maxOffset = Math.max(0, virtualizer.getTotalSize() - viewport);
+        virtualizer.scrollToOffset(Math.min(probe, maxOffset), { align: "start" });
+        probe += viewport;
+        jumpFrame.current = window.requestAnimationFrame(converge);
+      };
+      converge();
+      return;
+    }
+    const target = document.getElementById(timelineDOMID(targetId));
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
-    target.classList.add("collab-message--referenced");
-    window.setTimeout(() => target.classList.remove("collab-message--referenced"), 1800);
   };
 
   const requestAgentEligible = (props.members || []).filter(
     (member) => member.online && member.id !== props.selfMemberId && !member.isSelf && Boolean(member.agent.id.trim()),
   );
 
-  return <div className="collab-timeline-list">
-    {visibleItems.map((item) => {
-      const presence = presenceLabel(item, c);
-      if (presence) return <div key={item.id} className="collab-presence-notice" role="status"><span aria-hidden="true" />{presence}<time dateTime={item.createdAt}>{timeLabel(item.createdAt, locale)}</time></div>;
+  const renderEntry = (item: CollaborationTimelineItem): ReactNode => {
+    const presence = presenceLabel(item, c);
+    if (presence) return <div key={item.id} className="collab-presence-notice" role="status"><span aria-hidden="true" />{presence}<time dateTime={item.createdAt}>{timeLabel(item.createdAt, locale)}</time></div>;
 
-      const own = item.actorId === props.selfMemberId;
-      const selected = props.selectedIds.includes(item.id);
-      const pending = props.pendingIntents[item.id];
-      const transfer = props.transfers.find((value) => value.fileId === item.id && value.direction === (own ? "share" : "receive"));
-      const incomingRequest = item.kind === "agent_request" && item.targetMemberId === props.selfMemberId && item.requestStatus !== "accepted" && item.requestStatus !== "rejected";
-      const waitingAgentRun = own && item.kind === "agent_command" && item.agentRunStatus === "waiting_approval";
-      const actor = (props.members || []).find((member) => member.id === item.actorId || member.agent.id === item.actorId);
-      return (
-        <article id={timelineDOMID(item.id)} key={item.id} className={`collab-message collab-message--${item.kind}${selected ? " collab-message--selected" : ""}${item.localPending ? " collab-message--pending" : ""}`}>
-          <CollaborationAvatar name={item.actorName} src={item.actorAgent ? actor?.agent.avatar : actor?.avatar} agent={item.actorAgent} />
-          <div className="collab-message-body">
-            <header>
-              <strong>{item.actorName}{own && !item.actorAgent ? ` (${c("you")})` : ""}</strong>
-              <span className={`collab-kind collab-kind--${item.kind}`}>{item.kind === "contribution" ? contributionLabel(c, item.contributionKind) : c(kindCopy[item.kind])}</span>
-              <time dateTime={item.createdAt}>{timeLabel(item.createdAt, locale)}</time>
-              {item.syncStatus === "pending" && <span className="collab-sync collab-sync--pending"><RefreshCw size={11} />{c("pending")}</span>}
-              {item.syncStatus === "failed" && <span className="collab-sync collab-sync--failed"><CircleAlert size={11} />{c("failedItem")}</span>}
-            </header>
-            {item.kind === "agent_command" ? <><AgentRunCard item={item} c={c} canRespond={waitingAgentRun} prompt={props.agentPrompt} onRespond={(response) => props.onRespondAgentRun(item, response)} />{item.agentRunOutput && <p className="collab-agent-output">{item.agentRunOutput}</p>}</> : item.kind === "file" ? <FileCard item={item} own={own} transfer={transfer} c={c} onReceive={() => props.onReceiveFile(item.id)} onPause={() => props.onPauseFile(item.id)} onResume={() => props.onResumeFile(item.id)} onRevoke={() => props.onRevokeFile(item.id)} onOpen={() => props.onOpenFile(item.id)} onReveal={() => props.onRevealFile(item.id)} previewFile={props.previewFile} /> : <p>{item.text}</p>}
-            <ReferenceCards item={item} items={rawItems} c={c} expanded={expandedReferences} onToggle={(id) => setExpandedReferences((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onJump={jumpTo} />
-            {(item.handoffs || []).length > 0 && <div className="collab-handoffs">{item.handoffs?.map((handoff, index) => {
-              const target = props.members?.find((member) => member.agent.id === handoff.targetAgentId);
-              return <div key={`${handoff.targetAgentId}:${index}`}><Bot size={12} /><span><strong>{c("handoffTo", { name: target?.agent.name || handoff.targetAgentId })}</strong>{handoff.instruction}</span></div>;
-            })}</div>}
-            {item.kind === "agent_request" && !incomingRequest && <div className="collab-request-state">{c("waitingOwner")}</div>}
-            {!item.localPending && !waitingAgentRun && <div className="collab-message-actions">
-              <label className="collab-message-select">
-                <input type="checkbox" checked={selected} onChange={() => props.onToggle(item.id)} aria-label={`${c("agentRespond")}: ${item.actorName}`} />
-                <span><Check size={14} /></span>
-              </label>
-              <button type="button" aria-label={c("reply")} title={c("reply")} onClick={() => props.onReply(item)}><Reply size={14} /><span>{c("reply")}</span></button>
-              <button type="button" aria-label={c("agree")} title={c("agree")} onClick={() => props.onAgree(item)}><ThumbsUp size={14} /><span>{c("agree")}</span></button>
-              <button type="button" aria-label={c("agentRespond")} title={props.agentBusy ? c("agentQueueHint") : c("agentRespond")} onClick={() => props.onAgent(item)}><Bot size={14} /><span>{c("agentRespond")}</span></button>
-              <div className="collab-request-agent" ref={requestAgentOpen === item.id ? requestAgentRef : undefined} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeRequestAgent(true); } }}>
-                <button type="button" aria-label={c("requestOther")} title={c("requestOther")} aria-expanded={requestAgentOpen === item.id} aria-controls={`${timelineDOMID(item.id)}-request-agents`} onClick={(event) => toggleRequestAgent(event, item.id)}>
-                  <span className="collab-double-bot" aria-hidden="true"><Bot size={10} /><Bot size={10} /></span>
-                </button>
-                {requestAgentOpen === item.id && <div id={`${timelineDOMID(item.id)}-request-agents`} className={`collab-request-agent__popup collab-request-agent__popup--${requestAgentPlacement.side}`} role="group" aria-label={c("requestOther")} style={{ maxHeight: requestAgentPlacement.maxHeight }}>
-                  {requestAgentEligible.length === 0
-                    ? <p className="collab-request-agent__empty">{c("requestAgentEmpty")}</p>
-                    : requestAgentEligible.map((member) => (
-                      <button key={member.id} type="button" title={`${member.name} · ${member.agent.name} · ${member.agent.role || c("agentResponsibilityFallback")}`} onClick={() => { closeRequestAgent(true); props.onRequestAgent(item, member.id); }}>
-                        <span>{member.name} · {member.agent.name} · {member.agent.role || c("agentResponsibilityFallback")}</span>
-                      </button>
-                    ))}
-                </div>}
-              </div>
-            </div>}
-            {incomingRequest && <div className="collab-request-actions">
-              <button type="button" className="collab-action-accent" title={props.agentBusy ? c("agentQueueHint") : undefined} onClick={() => props.onAccept(item)}><UserRound size={13} />{c("acceptRun")}</button>
-              <button type="button" title={props.agentBusy ? c("agentQueueHint") : undefined} onClick={() => {
-                const next = window.prompt(c("modifyAccept"), item.text);
-                if (next?.trim()) props.onAccept({ ...item, text: next.trim() });
-              }}>{c("modifyAccept")}</button>
-              <button type="button" onClick={() => props.onReject(item)}>{c("reject")}</button>
-            </div>}
-            {pending && <IntentCountdown intent={pending} connected={props.connected} onStart={props.onStartPending} onStop={() => props.onStopPending(item.id)} onEdit={(instruction) => props.onEditPending(item.id, instruction)} />}
+    const own = item.actorId === props.selfMemberId;
+    const selected = props.selectedIds.includes(item.id);
+    const pending = props.pendingIntents[item.id];
+    const transfer = props.transfers.find((value) => value.fileId === item.id && value.direction === (own ? "share" : "receive"));
+    const incomingRequest = item.kind === "agent_request" && item.targetMemberId === props.selfMemberId && item.requestStatus !== "accepted" && item.requestStatus !== "rejected";
+    const waitingAgentRun = own && item.kind === "agent_command" && item.agentRunStatus === "waiting_approval";
+    const actor = (props.members || []).find((member) => member.id === item.actorId || member.agent.id === item.actorId);
+    return (
+      <article id={timelineDOMID(item.id)} key={item.id} className={`collab-message collab-message--${item.kind}${selected ? " collab-message--selected" : ""}${item.localPending ? " collab-message--pending" : ""}${item.id === highlightedId ? " collab-message--referenced" : ""}`}>
+        <CollaborationAvatar name={item.actorName} src={item.actorAgent ? actor?.agent.avatar : actor?.avatar} agent={item.actorAgent} />
+        <div className="collab-message-body">
+          <header>
+            <strong>{item.actorName}{own && !item.actorAgent ? ` (${c("you")})` : ""}</strong>
+            <span className={`collab-kind collab-kind--${item.kind}`}>{item.kind === "contribution" ? contributionLabel(c, item.contributionKind) : c(kindCopy[item.kind])}</span>
+            <time dateTime={item.createdAt}>{timeLabel(item.createdAt, locale)}</time>
+            {item.syncStatus === "pending" && <span className="collab-sync collab-sync--pending"><RefreshCw size={11} />{c("pending")}</span>}
+            {item.syncStatus === "failed" && <span className="collab-sync collab-sync--failed"><CircleAlert size={11} />{c("failedItem")}</span>}
+          </header>
+          {item.kind === "agent_command" ? <><AgentRunCard item={item} c={c} canRespond={waitingAgentRun} prompt={props.agentPrompt} onRespond={(response) => props.onRespondAgentRun(item, response)} />{item.agentRunOutput && <p className="collab-agent-output">{item.agentRunOutput}</p>}</> : item.kind === "file" ? <FileCard item={item} own={own} transfer={transfer} c={c} onReceive={() => props.onReceiveFile(item.id)} onPause={() => props.onPauseFile(item.id)} onResume={() => props.onResumeFile(item.id)} onRevoke={() => props.onRevokeFile(item.id)} onOpen={() => props.onOpenFile(item.id)} onReveal={() => props.onRevealFile(item.id)} previewFile={props.previewFile} /> : <p>{item.text}</p>}
+          <ReferenceCards item={item} items={rawItems} c={c} expanded={expandedReferences} onToggle={(id) => setExpandedReferences((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onJump={jumpTo} />
+          {(item.handoffs || []).length > 0 && <div className="collab-handoffs">{item.handoffs?.map((handoff, index) => {
+            const target = props.members?.find((member) => member.agent.id === handoff.targetAgentId);
+            return <div key={`${handoff.targetAgentId}:${index}`}><Bot size={12} /><span><strong>{c("handoffTo", { name: target?.agent.name || handoff.targetAgentId })}</strong>{handoff.instruction}</span></div>;
+          })}</div>}
+          {item.kind === "agent_request" && !incomingRequest && <div className="collab-request-state">{c("waitingOwner")}</div>}
+          {!item.localPending && !waitingAgentRun && <div className="collab-message-actions">
+            <label className="collab-message-select">
+              <input type="checkbox" checked={selected} onChange={() => props.onToggle(item.id)} aria-label={`${c("agentRespond")}: ${item.actorName}`} />
+              <span><Check size={14} /></span>
+            </label>
+            <button type="button" aria-label={c("reply")} title={c("reply")} onClick={() => props.onReply(item)}><Reply size={14} /><span>{c("reply")}</span></button>
+            <button type="button" aria-label={c("agree")} title={c("agree")} onClick={() => props.onAgree(item)}><ThumbsUp size={14} /><span>{c("agree")}</span></button>
+            <button type="button" aria-label={c("agentRespond")} title={props.agentBusy ? c("agentQueueHint") : c("agentRespond")} onClick={() => props.onAgent(item)}><Bot size={14} /><span>{c("agentRespond")}</span></button>
+            <div className="collab-request-agent" ref={requestAgentOpen === item.id ? requestAgentRef : undefined} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeRequestAgent(true); } }}>
+              <button type="button" aria-label={c("requestOther")} title={c("requestOther")} aria-expanded={requestAgentOpen === item.id} aria-controls={`${timelineDOMID(item.id)}-request-agents`} onClick={(event) => toggleRequestAgent(event, item.id)}>
+                <span className="collab-double-bot" aria-hidden="true"><Bot size={10} /><Bot size={10} /></span>
+              </button>
+              {requestAgentOpen === item.id && <div id={`${timelineDOMID(item.id)}-request-agents`} className={`collab-request-agent__popup collab-request-agent__popup--${requestAgentPlacement.side}`} role="group" aria-label={c("requestOther")} style={{ maxHeight: requestAgentPlacement.maxHeight }}>
+                {requestAgentEligible.length === 0
+                  ? <p className="collab-request-agent__empty">{c("requestAgentEmpty")}</p>
+                  : requestAgentEligible.map((member) => (
+                    <button key={member.id} type="button" title={`${member.name} · ${member.agent.name} · ${member.agent.role || c("agentResponsibilityFallback")}`} onClick={() => { closeRequestAgent(true); props.onRequestAgent(item, member.id); }}>
+                      <span>{member.name} · {member.agent.name} · {member.agent.role || c("agentResponsibilityFallback")}</span>
+                    </button>
+                  ))}
+              </div>}
+            </div>
+          </div>}
+          {incomingRequest && <div className="collab-request-actions">
+            <button type="button" className="collab-action-accent" title={props.agentBusy ? c("agentQueueHint") : undefined} onClick={() => props.onAccept(item)}><UserRound size={13} />{c("acceptRun")}</button>
+            <button type="button" title={props.agentBusy ? c("agentQueueHint") : undefined} onClick={() => {
+              const next = window.prompt(c("modifyAccept"), item.text);
+              if (next?.trim()) props.onAccept({ ...item, text: next.trim() });
+            }}>{c("modifyAccept")}</button>
+            <button type="button" onClick={() => props.onReject(item)}>{c("reject")}</button>
+          </div>}
+          {pending && <IntentCountdown intent={pending} connected={props.connected} onStart={props.onStartPending} onStop={() => props.onStopPending(item.id)} onEdit={(instruction) => props.onEditPending(item.id, instruction)} />}
+        </div>
+      </article>
+    );
+  };
+
+  if (!isVirtual) {
+    return <div className="collab-timeline-list">{visibleItems.map(renderEntry)}</div>;
+  }
+  return (
+    <div className="collab-timeline-list">
+    <div className="collab-timeline-sizer" style={{ height: virtualTimelineSize }}>
+      {virtualizer.getVirtualItems().map((row) => {
+        const item = visibleItems[row.index];
+        if (!item) return null;
+        return (
+          <div key={row.key} data-index={row.index} ref={virtualizer.measureElement} className={`collab-timeline-row${item.id === requestAgentOpen ? " collab-timeline-row--menu" : ""}`} style={{ transform: `translateY(${row.start}px)` }}>
+            {renderEntry(item)}
           </div>
-        </article>
-      );
-    })}
-  </div>;
+        );
+      })}
+    </div>
+    </div>
+  );
 }

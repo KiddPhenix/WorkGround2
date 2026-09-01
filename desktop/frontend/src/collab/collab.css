@@ -171,6 +171,10 @@
 .collab-status-banner--action { color: #ffc178; background: rgba(170, 103, 26, .14); }
 .collab-scroll { grid-row: 3; min-height: 0; overflow: auto; scrollbar-color: #343d4d transparent; }
 .collab-timeline-list { width: min(900px, 100%); margin: 0 auto; padding: 13px 22px 28px; }
+/* Keep the same list padding for short and virtualized histories. */
+.collab-timeline-sizer { position: relative; }
+.collab-timeline-row { position: absolute; top: 0; left: 0; right: 0; }
+.collab-timeline-row--menu { z-index: 1; }
 .collab-empty { display: grid; place-items: center; min-height: 300px; color: var(--collab-muted); }
 .collab-message { position: relative; display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 10px; padding: 13px 10px; border: 1px solid transparent; border-radius: 10px; }
 .collab-message:hover, .collab-message--selected { border-color: color-mix(in srgb, var(--collab-accent) 20%, var(--collab-border)); background: color-mix(in srgb, var(--collab-accent) 7%, transparent); }

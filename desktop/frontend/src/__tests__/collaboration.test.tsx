@@ -6,6 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { IntentCountdown } from "../collab/components/IntentCountdown";
+import { useIntentTimers } from "../collab/intentTimers";
 import { ConnectionPanel } from "../collab/components/ConnectionPanel";
 import { CollaborationComposer } from "../collab/components/CollaborationComposer";
 import { CollaborationTimeline } from "../collab/components/CollaborationTimeline";
@@ -41,10 +42,17 @@ async function testCountdown() {
   const root = createRoot(document.getElementById("root")!);
   let starts = 0;
   const first: PendingIntent = { messageId: "one", revision: 1, instruction: "run", deadline: Date.now() + 20, status: "pending" };
-  const countdown = (intent: PendingIntent, connected: boolean) => <LocaleProvider><IntentCountdown intent={intent} connected={connected} onStart={() => starts++} onStop={() => {}} onEdit={() => {}} /></LocaleProvider>;
-  await act(async () => root.render(countdown(first, true)));
+  function CountdownView({ intent, connected, visible = true, scope = "room-a" }: { intent: PendingIntent; connected: boolean; visible?: boolean; scope?: string }) {
+    useIntentTimers({ [intent.messageId]: intent }, connected, scope, () => { starts++; });
+    return visible ? <LocaleProvider><IntentCountdown intent={intent} connected={connected} onStart={() => starts++} onStop={() => {}} onEdit={() => {}} /></LocaleProvider> : null;
+  }
+  const countdown = (intent: PendingIntent, connected: boolean) => <CountdownView intent={intent} connected={connected} />;
+  await act(async () => root.render(<CountdownView intent={first} connected visible={false} />));
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 650)); });
-  equal(starts, 1, "countdown has an atomic one-shot start latch");
+  equal(starts, 1, "offscreen intent starts once without a mounted countdown row");
+  await act(async () => root.render(countdown({ ...first }, true)));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  equal(starts, 1, "remounting an expired countdown does not repeat its automatic start");
 
   const offline: PendingIntent = { messageId: "offline", revision: 1, instruction: "must not run", deadline: Date.now() + 20, status: "pending" };
   await act(async () => root.render(countdown(offline, false)));
@@ -58,7 +66,15 @@ async function testCountdown() {
   await act(async () => root.render(countdown(failed, true)));
   await act(async () => { (document.querySelector(".collab-intent-actions button") as HTMLButtonElement).click(); });
   equal(starts, 2, "failed countdown allows Start now to retry the Agent request");
+  const delayed = { ...first, messageId: "delayed", deadline: Date.now() + 80 };
+  await act(async () => root.render(countdown(delayed, true)));
+  await act(async () => root.render(<CountdownView intent={delayed} connected={false} scope="room-b" />));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 120)); });
+  equal(starts, 2, "Room change cancels the old deadline before it can execute");
+  await act(async () => root.render(countdown({ ...delayed, deadline: Date.now() + 80 }, true)));
   await act(async () => root.unmount());
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  equal(starts, 2, "unmounting the controller cancels its remaining deadlines");
 }
 
 async function testWaitingAgentRunDecisions() {
@@ -1592,6 +1608,35 @@ async function main() {
   await testFilePreviewQueuedCancellation();
   await testFilePreviewCacheBounds();
 
+  await testTimelineVirtualizationBounds();
+
+  // Regression: the backend broadcasts the FULL timeline on every event; an
+  // identical repeated snapshot must not re-allocate the array or every item
+  // object. This limits allocation churn without claiming to reproduce OOM.
+  let snapState = collabReducer(initialCollabState, { type: "STATE", state: { status: "connected", room: { room: "room-a", host: "127.0.0.1", port: 39170, latestSequence: 3 }, selfMemberId: "self", members: [], timeline: [item("snap-1", 1, "one"), item("snap-2", 2, "two")] } });
+  const firstTimeline = snapState.timeline;
+  const firstItem = firstTimeline[0];
+  snapState = collabReducer(snapState, { type: "STATE", state: { status: "connected", room: { room: "room-a", host: "127.0.0.1", port: 39170, latestSequence: 3 }, selfMemberId: "self", members: [], timeline: [item("snap-1", 1, "one"), item("snap-2", 2, "two")] } });
+  ok(snapState.timeline === firstTimeline, "identical repeated snapshot keeps the same timeline array reference");
+  ok(snapState.timeline[0] === firstItem, "identical repeated snapshot keeps the same item references");
+  const changed = collabReducer(snapState, { type: "STATE", state: { status: "connected", room: { room: "room-a", host: "127.0.0.1", port: 39170, latestSequence: 3 }, selfMemberId: "self", members: [], timeline: [item("snap-1", 1, "one updated"), item("snap-2", 2, "two")] } });
+  equal(changed.timeline.map((entry) => entry.text), ["one updated", "two"], "a changed snapshot item still updates in place");
+  ok(changed.timeline[1] === firstTimeline[1], "unchanged siblings keep their references when one item changes");
+  const nestedUpdates: Partial<CollaborationTimelineItem>[] = [
+    { mentionMemberIds: ["other-member"] },
+    { reactions: { agree: ["other-member"] } },
+    { handoffs: [{ targetAgentId: "other-agent", instruction: "Review", referenceIds: ["snap-2"], requiresResponse: true }] },
+    { agentRunStatus: "failed", agentRunError: "retryable failure" },
+    { fileRevoked: true },
+  ];
+  for (const update of nestedUpdates) {
+    const nextItem = { ...firstItem, ...update };
+    const next = collabReducer(snapState, { type: "STATE", state: { ...snapState, timeline: [nextItem, firstTimeline[1]] } });
+    equal(next.timeline[0], nextItem, `snapshot reuse preserves changed ${Object.keys(update).join(", ")}`);
+    const repeated = collabReducer(next, { type: "STATE", state: { ...next, timeline: JSON.parse(JSON.stringify(next.timeline)) } });
+    ok(repeated.timeline === next.timeline, "equivalent nested snapshot reuses the timeline");
+  }
+
   // Regression: switching rooms isolates timeline
   let roomAState = collabReducer(initialCollabState, { type: "STATE", state: { status: "connected", room: { room: "room-a", host: "127.0.0.1", port: 39170, latestSequence: 3 }, selfMemberId: "self", members: [], timeline: [item("synced-a", 1, "room A synced")] } });
   roomAState = collabReducer(roomAState, { type: "STATE", state: { ...roomAState, timeline: [...roomAState.timeline, { ...item("outbox:pending-a", 2, "room A pending"), localPending: true, syncStatus: "pending" }] } });
@@ -2012,6 +2057,170 @@ async function testFilePreviewCacheBounds() {
   equal(byteCalls, 3, "preview cache evicts the oldest DataURL above its 16 MiB total and can reload it");
   await act(async () => byteRemount.unmount());
   if (originalObserver) globalThis.IntersectionObserver = originalObserver;
+}
+
+async function testTimelineVirtualizationBounds() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, {
+    IS_REACT_ACT_ENVIRONMENT: true,
+    window: dom.window,
+    document: dom.window.document,
+    HTMLElement: dom.window.HTMLElement,
+    requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
+    cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
+  });
+  // jsdom has no layout: give the scroll owner a 600px viewport and every
+  // other element a fixed 64px row height (matching the estimate) so the
+  // virtualizer can measure and row offsets stay predictable. virtual-core
+  // reads the scroll owner's size via offsetWidth/offsetHeight; row heights
+  // come from getBoundingClientRect.
+  const originalRect = dom.window.HTMLElement.prototype.getBoundingClientRect;
+  dom.window.HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+    const height = this.classList?.contains("collab-scroll") ? 600 : 64;
+    return { x: 0, y: 0, top: 0, left: 0, right: 800, bottom: height, width: 800, height, toJSON: () => ({}) } as DOMRect;
+  };
+  const originalOffsetHeight = Object.getOwnPropertyDescriptor(dom.window.HTMLElement.prototype, "offsetHeight");
+  const originalOffsetWidth = Object.getOwnPropertyDescriptor(dom.window.HTMLElement.prototype, "offsetWidth");
+  Object.defineProperty(dom.window.HTMLElement.prototype, "offsetHeight", { configurable: true, get() { return this.classList?.contains("collab-scroll") ? 600 : 64; } });
+  Object.defineProperty(dom.window.HTMLElement.prototype, "offsetWidth", { configurable: true, get() { return 800; } });
+  const rootElement = document.getElementById("root");
+  if (!rootElement) throw new Error("missing root");
+  const root = createRoot(rootElement);
+  const container = document.createElement("div");
+  container.className = "collab-scroll";
+  Object.defineProperty(container, "clientHeight", { configurable: true, value: 600 });
+  Object.defineProperty(container, "scrollHeight", {
+    configurable: true,
+    get() {
+      const list = container.querySelector<HTMLElement>(".collab-timeline-sizer");
+      const height = Number((list?.style.height || "").replace("px", ""));
+      return Number.isFinite(height) ? height : 0;
+    },
+  });
+  container.appendChild(rootElement);
+  document.body.appendChild(container);
+  const stick = { current: false };
+  // Browsers fire a scroll event whenever scrollTop changes; jsdom does not.
+  // Route scrollTop writes through a setter that dispatches the event so the
+  // virtualizer (and the jump convergence loop) observes every scroll.
+  let scrollTopValue = 0;
+  Object.defineProperty(container, "scrollTop", {
+    configurable: true,
+    get: () => scrollTopValue,
+    set: (value) => {
+      const next = Number(value) || 0;
+      if (next === scrollTopValue) return;
+      scrollTopValue = next;
+      container.dispatchEvent(new dom.window.Event("scroll"));
+    },
+  });
+  // virtual-core's elementScroll only ever calls scrollElement.scrollTo(...)
+  // (no scrollTop fallback), which jsdom does not implement. Route it through
+  // the same setter so every programmatic scroll reaches the virtualizer.
+  Object.defineProperty(container, "scrollTo", {
+    configurable: true,
+    value: (options?: ScrollToOptions) => {
+      const top = typeof options === "object" && options !== null ? Number(options.top ?? 0) || 0 : Number(options) || 0;
+      container.scrollTop = top;
+    },
+  });
+
+  const makeItems = (count: number): CollaborationTimelineItem[] => Array.from({ length: count }, (_, index) => (
+    index % 10 === 0
+      ? { ...item(`presence-${index}`, index), kind: "system" as const, systemKind: "member.joined", actorName: `member-${index}` }
+      : { ...item(`item-${index}`, index, `history ${index}`) }
+  ));
+  let replied: string | undefined;
+  const timeline = (items: CollaborationTimelineItem[], owner: HTMLElement | null = container, prompt?: Parameters<typeof CollaborationTimeline>[0]["agentPrompt"]) => <LocaleProvider><CollaborationTimeline
+    items={items} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy transfers={[]}
+    onToggle={() => {}} onReply={(entry) => { replied = entry.id; }} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+    scrollContainer={owner} stickRef={stick} agentPrompt={prompt}
+  /></LocaleProvider>;
+  const mountedCount = () => document.querySelectorAll(".collab-message, .collab-presence-notice").length;
+
+  await act(async () => { root.render(timeline(makeItems(1200), null)); });
+  equal(mountedCount(), 0, "waiting for the scroll owner never mounts the full history during initial recovery");
+  await act(async () => { root.render(timeline(makeItems(1200))); await Promise.resolve(); });
+  ok(mountedCount() < 100, `a 1200-row history mounts a bounded DOM (${mountedCount()} rows, presence notices included)`);
+  ok((document.body.textContent || "").includes("history 1"), "oldest history row is mounted at the top");
+
+  // Scrolling into the middle of history mounts only the rows near the viewport.
+  container.scrollTop = 64 * 600;
+  container.dispatchEvent(new dom.window.Event("scroll"));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+  ok((document.body.textContent || "").includes("history 601"), "scrolling up into history mounts the target rows");
+  ok(mountedCount() < 100, `mounted rows stay bounded while scrolled into history (${mountedCount()})`);
+  ok(!(document.body.textContent || "").includes("history 1199"), "rows far outside the viewport remain unmounted");
+
+  // Appending messages must not accumulate off-screen DOM.
+  await act(async () => { root.render(timeline(makeItems(1220))); await Promise.resolve(); });
+  ok(mountedCount() < 100, `appended messages keep the mounted DOM bounded (${mountedCount()})`);
+
+  // Reference jump: an agent_result reference maps to its agent_command row,
+  // which is not mounted until the jump scrolls to it.
+  const jumpItems = makeItems(1200);
+  jumpItems[0] = { ...item("cmd-0", 0, "target command"), kind: "agent_command", actorAgent: true, agentCommandId: "cmd-0", agentRunStatus: "completed", agentRunSummary: "done" };
+  jumpItems[1] = { ...item("result-1", 1, "result summary"), kind: "agent_result", actorAgent: true, agentRunId: "cmd-0" };
+  jumpItems[600] = { ...item("ref-600", 600, "referencing history"), referenceIds: ["result-1"] };
+  await act(async () => { root.render(timeline(jumpItems)); await Promise.resolve(); });
+  container.scrollTop = 64 * 600;
+  container.dispatchEvent(new dom.window.Event("scroll"));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+  ok(!(document.body.textContent || "").includes("target command"), "referenced agent_command is not mounted before the jump");
+  const jumpButton = document.querySelector<HTMLButtonElement>(".collab-reference-card__jump");
+  ok(Boolean(jumpButton), "reference card exposes the jump action");
+  await act(async () => { jumpButton!.click(); await Promise.resolve(); });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+  ok((document.body.textContent || "").includes("target command"), "jump scrolls to and mounts the referenced agent_command via agent_result mapping");
+  equal(document.querySelectorAll(".collab-message--agent_result").length, 0, "agent_result row is folded into its agent_command instead of mounting separately");
+
+  // In-row interactions keep working on mounted rows.
+  replied = undefined;
+  const replyButton = [...document.querySelectorAll<HTMLButtonElement>(".collab-message-actions button")][0];
+  await act(async () => { replyButton?.click(); await Promise.resolve(); });
+  ok(replied !== undefined, "reply action on a mounted virtual row still reaches the host");
+
+  // Pinned reader is re-pinned after the virtualizer re-measures; a reader
+  // scrolled up keeps their position while new rows arrive.
+  stick.current = true;
+  await act(async () => { root.render(timeline(makeItems(1240))); await Promise.resolve(); });
+  equal(container.scrollTop, container.scrollHeight, "pinned reader follows the bottom after rows are appended and measured");
+  stick.current = false;
+  container.scrollTop = 64 * 300;
+  container.dispatchEvent(new dom.window.Event("scroll"));
+  await act(async () => { root.render(timeline(makeItems(1260))); await Promise.resolve(); });
+  equal(container.scrollTop, 64 * 300, "manual upward reading position is preserved while new rows arrive");
+
+  const promptItems = makeItems(1200);
+  promptItems[1] = { ...item("active-ask", 1), kind: "agent_command", actorAgent: true, agentRunStatus: "waiting_approval" };
+  const prompt: Parameters<typeof CollaborationTimeline>[0]["agentPrompt"] = {
+    runId: "active-ask", id: "ask-draft", kind: "ask",
+    questions: [{ id: "choice", header: "Choice", prompt: "Which environment?", options: [{ label: "Test" }, { label: "Production" }] }],
+  };
+  container.scrollTop = 0;
+  await act(async () => root.render(timeline(promptItems, container, prompt)));
+  const customButton = [...document.querySelectorAll<HTMLButtonElement>("#collab-item-active-ask button")].find((button) => button.textContent === t("ask.customAnswer"));
+  // ReactDOM was loaded before jsdom and selects its legacy focus polyfill.
+  // This assertion concerns retained nodes; real-browser QA covers typing.
+  const originalFocus = dom.window.HTMLElement.prototype.focus;
+  dom.window.HTMLElement.prototype.focus = () => {};
+  await act(async () => customButton!.click());
+  dom.window.HTMLElement.prototype.focus = originalFocus;
+  const draftInput = document.querySelector(".ask-shelf__custom");
+  ok(Boolean(draftInput), "active Ask exposes its draft input before scrolling");
+  container.scrollTop = 64 * 900;
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+  ok(draftInput === document.querySelector(".ask-shelf__custom"), "active Ask keeps the same input and draft state while outside the viewport");
+  ok(mountedCount() < 100, "retaining one active Ask does not retain the whole history");
+
+  await act(async () => root.unmount());
+  equal(container.querySelectorAll(".collab-message, .collab-presence-notice, .collab-timeline-row").length, 0, "unmounting the virtualized timeline clears its mounted rows");
+  dom.window.HTMLElement.prototype.getBoundingClientRect = originalRect;
+  if (originalOffsetHeight) Object.defineProperty(dom.window.HTMLElement.prototype, "offsetHeight", originalOffsetHeight);
+  if (originalOffsetWidth) Object.defineProperty(dom.window.HTMLElement.prototype, "offsetWidth", originalOffsetWidth);
+  dom.window.close();
 }
 
 void main();

@@ -15,6 +15,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"workground2/internal/agent"
+	"workground2/internal/agentstyle"
 	"workground2/internal/boot"
 	"workground2/internal/botruntime"
 	"workground2/internal/config"
@@ -146,6 +147,18 @@ type AgentView struct {
 	ReasoningLanguage string  `json:"reasoningLanguage"`
 }
 
+// AgentPromptStyleView is one selectable Agent personality style in the Settings
+// catalog. Disorder and StyleName are the original Chinese product labels (病名
+// and 风格名); Capability is the exact capability text folded into the system
+// prompt. Selected reflects the current config so the picker can seed its draft.
+type AgentPromptStyleView struct {
+	ID         string `json:"id"`
+	Disorder   string `json:"disorder"`
+	StyleName  string `json:"styleName"`
+	Capability string `json:"capability"`
+	Selected   bool   `json:"selected"`
+}
+
 type BotAllowlistView struct {
 	Enabled      bool     `json:"enabled"`
 	AllowAll     bool     `json:"allowAll"`
@@ -213,6 +226,7 @@ type SettingsView struct {
 	Network                 NetworkView               `json:"network"`
 	Collaboration           CollaborationSettingsView `json:"collaboration"`
 	Agent                   AgentView                 `json:"agent"`
+	AgentPromptStyles       []AgentPromptStyleView    `json:"agentPromptStyles"`
 	Bot                     BotSettingsView           `json:"bot"`
 	DesktopLanguage         string                    `json:"desktopLanguage"`
 	DesktopLayoutStyle      string                    `json:"desktopLayoutStyle"`
@@ -613,6 +627,7 @@ func (a *App) Settings() SettingsView {
 			Sandbox:                 SandboxView{Bash: "enforce", AllowWrite: []string{}, Shell: "auto"},
 			Collaboration:           CollaborationSettingsView{PreferLAN: true, ConnectTimeoutSeconds: 10, RouteStableSeconds: 60, Relays: []RelayView{}},
 			Agent:                   AgentView{PlannerMaxSteps: 0, MaxSubagentDepth: agent.DefaultMaxSubagentDepth, ColdResumePrune: true, ReasoningLanguage: "auto"},
+			AgentPromptStyles:       agentPromptStyleViews(nil),
 			Bot:                     botSettingsView(config.BotConfig{}),
 			AutoPlan:                "off",
 			DesktopLayoutStyle:      "workbench",
@@ -687,6 +702,7 @@ func (a *App) Settings() SettingsView {
 		},
 		Collaboration:           collaborationSettingsView(cfg.Collaboration),
 		Agent:                   AgentView{Temperature: cfg.Agent.Temperature, MaxSteps: cfg.Agent.MaxSteps, PlannerMaxSteps: cfg.Agent.PlannerMaxSteps, MaxSubagentDepth: desktopMaxSubagentDepth(cfg.Agent.MaxSubagentDepth), SystemPrompt: cfg.Agent.SystemPrompt, ColdResumePrune: cfg.ColdResumePruneEnabled(), ReasoningLanguage: cfg.ReasoningLanguage()},
+		AgentPromptStyles:       agentPromptStyleViews(cfg.Agent.PromptStyles),
 		Bot:                     botSettingsView(cfg.Bot),
 		DesktopLanguage:         cfg.DesktopLanguage(),
 		DesktopLayoutStyle:      cfg.DesktopLayoutStyle(),
@@ -726,6 +742,28 @@ func (a *App) Settings() SettingsView {
 		v.Providers = append(v.Providers, providerViewFromEntryForRootWithResolver(*p, isOfficialBuiltInProvider(*p), added[p.Name], root, resolver))
 	}
 	return v
+}
+
+// agentPromptStyleViews renders the full catalog in deterministic order with the
+// current selection marked, so the frontend seeds its multi-select draft from the
+// authoritative config rather than a separate client-side list.
+func agentPromptStyleViews(selected []string) []AgentPromptStyleView {
+	sel := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		sel[agentstyle.NormalizeID(id)] = true
+	}
+	catalog := agentstyle.Catalog()
+	out := make([]AgentPromptStyleView, 0, len(catalog))
+	for _, st := range catalog {
+		out = append(out, AgentPromptStyleView{
+			ID:         st.ID,
+			Disorder:   st.Disorder,
+			StyleName:  st.StyleName,
+			Capability: st.Capability,
+			Selected:   sel[st.ID],
+		})
+	}
+	return out
 }
 
 func collaborationSettingsView(c config.CollaborationConfig) CollaborationSettingsView {
@@ -2590,6 +2628,22 @@ func (a *App) SetAgentParams(temperature float64, maxSteps int, plannerMaxSteps 
 
 func (a *App) SetColdResumePrune(enabled bool) error {
 	return a.applyConfigChange(func(c *config.Config) error { return c.SetColdResumePrune(enabled) })
+}
+
+// SetAgentPromptStyles validates/canonicalizes the selected Agent personality
+// style IDs and persists them immediately. Active runtime work keeps its current
+// controller and system prompt; the deferred rebuild applies the saved styles to
+// later turns once rebuilding is safe. Unknown IDs are surfaced as an error and
+// never persisted.
+func (a *App) SetAgentPromptStyles(ids []string) error {
+	canonical, err := agentstyle.Canonicalize(ids)
+	if err != nil {
+		return err
+	}
+	return a.applyConfigDeferred(func(c *config.Config) error {
+		c.Agent.PromptStyles = canonical
+		return nil
+	})
 }
 
 func (a *App) SetReasoningLanguage(lang string) error {

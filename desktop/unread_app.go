@@ -31,7 +31,7 @@ type MarkUnreadReadInput struct {
 }
 
 // UnreadState returns the durable data-layer projection consumed by the recent
-// list and the native taskbar badge.
+// list and other in-app unread surfaces.
 func (a *App) UnreadState() UnreadState {
 	store, _ := a.currentUnreadStore()
 	a.unreadMu.RLock()
@@ -495,7 +495,6 @@ func (a *App) emitUnreadState(state UnreadState) {
 	if a == nil {
 		return
 	}
-	a.scheduleUnreadBadge(state.Summary.TotalUnread)
 	if a.ctx == nil {
 		return
 	}

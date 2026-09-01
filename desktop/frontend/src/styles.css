@@ -14397,6 +14397,59 @@ body > .mermaid-diagram--fullscreen {
   flex-direction: column;
 }
 
+/* ── Agent 风格 multi-select ───────────────────────────────── */
+
+.settings-style-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.settings-style-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.settings-style-card:hover {
+  border-color: var(--accent);
+}
+
+.settings-style-card--selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-soft));
+}
+
+.settings-style-card input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.settings-style-card__title {
+  font-weight: 600;
+  color: var(--fg);
+  line-height: 1.35;
+}
+
+.settings-style-card__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.settings-style-card__capability {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-dim);
+}
 /* ── About ─────────────────────────────────────────────────── */
 
 .about-content {

@@ -1154,7 +1154,7 @@ export interface MemoryView {
 }
 
 // SettingsTab is the top-level navigation item in the Settings Centre modal.
-export type SettingsTab = "general" | "models" | "providers" | "bots" | "ai" | "mcp" | "skills" | "plugins" | "memory" | "hooks" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "widget" | "updates" | "about" | "global";
+export type SettingsTab = "general" | "models" | "providers" | "bots" | "ai" | "mcp" | "skills" | "plugins" | "memory" | "hooks" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "widget" | "updates" | "about" | "global" | "styles";
 
 export interface AICollaborationInjectResult {
   ok: boolean;
@@ -1312,6 +1312,16 @@ export interface AgentView {
   systemPrompt: string;
   coldResumePrune: boolean;
   reasoningLanguage: string; // "auto" | "zh" | "en"
+}
+
+// AgentPromptStyleView is one selectable Agent personality style. Labels stay
+// the exact Chinese product data (病名｜风格名) in every locale.
+export interface AgentPromptStyleView {
+  id: string;
+  disorder: string;
+  styleName: string;
+  capability: string;
+  selected: boolean;
 }
 
 export interface BotAllowlistView {
@@ -1496,6 +1506,7 @@ export interface SettingsView {
   network: NetworkView;
   collaboration: CollaborationSettingsView;
   agent: AgentView;
+  agentPromptStyles: AgentPromptStyleView[];
   bot: BotSettingsView;
   desktopLanguage: string; // "" | "en" | "zh"; empty = auto
   desktopLayoutStyle: string; // "classic" | "workbench" | "creation"

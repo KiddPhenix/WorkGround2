@@ -104,7 +104,7 @@ console.log("\nsettings navigation groups");
 
 // --- source contract: the grouped nav maps every leaf into its composite group ---
 const settingsSource = readFileSync(resolve(import.meta.dirname, "../components/SettingsPanel.tsx"), "utf8");
-assert.match(settingsSource, /id: "aiConfig", tabs: \["models", "memory", "global"\]/, "aiConfig group holds models, memory, global");
+assert.match(settingsSource, /id: "aiConfig", tabs: \["models", "styles", "memory", "global"\]/, "aiConfig group holds models, styles, memory, global");
 assert.match(settingsSource, /id: "aiTools", tabs: \["ai", "skills", "plugins", "mcp"\]/, "aiTools group holds ai, skills, plugins, mcp");
 assert.match(settingsSource, /id: "advanced", tabs: \["permissions", "sandbox", "network", "hooks"\]/, "advanced group holds permissions, sandbox, network, hooks");
 ok(true, "SETTINGS_NAV composite groups carry the specified leaf pages");

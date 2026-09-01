@@ -25,15 +25,11 @@ export function IntentCountdown({ intent, connected, onStart, onStop, onEdit }: 
     const tick = () => {
       const next = Math.max(0, Math.ceil((intent.deadline - Date.now()) / 1000));
       setRemaining(next);
-      if (next === 0 && !startedRef.current) {
-        startedRef.current = true;
-        onStart(intent);
-      }
     };
     tick();
     const timer = window.setInterval(tick, 250);
     return () => window.clearInterval(timer);
-  }, [connected, intent, onStart]);
+  }, [connected, intent]);
 
   if (intent.status === "dismissed") return null;
   return (
