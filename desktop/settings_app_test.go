@@ -850,6 +850,63 @@ func TestSetAgentPromptStylesPersistsWhileControllerBusy(t *testing.T) {
 	}
 }
 
+func TestSetProviderKeyPersistsWhileControllerBusy(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("TEST_BUSY_PROVIDER_KEY", "")
+	os.Unsetenv("TEST_BUSY_PROVIDER_KEY")
+
+	app := NewApp()
+	ctrl := newBackgroundJobController(t, "provider-key-job")
+	app.setTestCtrl(ctrl, "")
+
+	warning, err := app.SetProviderKey("TEST_BUSY_PROVIDER_KEY", "sk-busy")
+	if err != nil {
+		t.Fatalf("SetProviderKey while busy: %v", err)
+	}
+	if warning != "" {
+		t.Fatalf("unexpected warning %q", warning)
+	}
+	if app.activeCtrl() != ctrl {
+		t.Fatal("active controller changed while background work was running")
+	}
+	if !app.configRebuildNeeded.Load() {
+		t.Fatal("busy key save did not schedule a deferred controller rebuild")
+	}
+	if !config.CredentialStored("TEST_BUSY_PROVIDER_KEY") {
+		t.Fatal("provider credential not persisted while busy")
+	}
+}
+
+func TestClearProviderKeyPersistsWhileControllerBusy(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("TEST_BUSY_CLEAR_KEY", "")
+	os.Unsetenv("TEST_BUSY_CLEAR_KEY")
+
+	app := NewApp()
+	if _, err := app.SetProviderKey("TEST_BUSY_CLEAR_KEY", "sk-busy"); err != nil {
+		t.Fatalf("seed SetProviderKey: %v", err)
+	}
+	if !config.CredentialStored("TEST_BUSY_CLEAR_KEY") {
+		t.Fatal("seed provider credential missing")
+	}
+
+	ctrl := newBackgroundJobController(t, "provider-clear-job")
+	app.setTestCtrl(ctrl, "")
+
+	if err := app.ClearProviderKey("TEST_BUSY_CLEAR_KEY"); err != nil {
+		t.Fatalf("ClearProviderKey while busy: %v", err)
+	}
+	if app.activeCtrl() != ctrl {
+		t.Fatal("active controller changed while background work was running")
+	}
+	if !app.configRebuildNeeded.Load() {
+		t.Fatal("busy key clear did not schedule a deferred controller rebuild")
+	}
+	if config.CredentialStored("TEST_BUSY_CLEAR_KEY") {
+		t.Fatal("provider credential still present after clear while busy")
+	}
+}
+
 func TestSetDesktopLanguagePersistsResponseLanguageAndUpdatesLiveTabs(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	projectRoot := t.TempDir()
