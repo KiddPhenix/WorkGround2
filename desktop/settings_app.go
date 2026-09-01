@@ -910,17 +910,22 @@ func (a *App) tryRebuildAfterConfigChange() error {
 }
 
 // TryDeferredConfigRebuild replays a controller rebuild that was postponed
-// because a turn was running.  Call it after a turn completes.
+// because a turn or background job was running. It is safe to call repeatedly
+// and from multiple goroutines (TurnDone, terminal job notices): the pending
+// flag is claimed atomically so only one rebuild runs, and any rebuild error or
+// still-active runtime work restores the flag for a later retry.
 func (a *App) TryDeferredConfigRebuild() {
-	if !a.configRebuildNeeded.Load() {
+	if !a.configRebuildNeeded.CompareAndSwap(true, false) {
 		return
 	}
-	a.configRebuildNeeded.Store(false)
 	if tab := a.activeTab(); tab != nil && tab.Ctrl != nil && controllerHasActiveRuntimeWork(tab.Ctrl) {
 		a.configRebuildNeeded.Store(true)
 		return
 	}
-	_ = a.rebuild()
+	if err := a.rebuild(); err != nil {
+		a.configRebuildNeeded.Store(true)
+		slog.Warn("desktop: deferred config rebuild failed; will retry on a later event", "err", err)
+	}
 }
 
 func (a *App) ensureActiveTabRebuildAllowed(setting string) error {

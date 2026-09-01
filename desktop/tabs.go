@@ -970,6 +970,14 @@ func (s *tabEventSink) Emit(e event.Event) {
 		s.app.scheduleTabSnapshot(s.tabID)
 		s.app.TryDeferredConfigRebuild()
 	}
+	// A terminal background-job notice is emitted from the job's own goroutine,
+	// after its terminal status is published. Rebuild asynchronously so that
+	// goroutine never closes its own controller (Close waits on the job's wg);
+	// by the time the goroutine starts, RuntimeStatus already sees the job as
+	// terminal.
+	if isBackgroundJobTerminalNotice(e) && s.app != nil {
+		go s.app.TryDeferredConfigRebuild()
+	}
 	// Forward event to bot channels when a bot forwarder is attached.
 	// Read the sink under the read lock so SetBotSink can safely swap it
 	// from another goroutine.
@@ -1138,6 +1146,21 @@ func isBackgroundJobLifecycleNotice(e event.Event) bool {
 	return strings.HasPrefix(text, "background ") &&
 		(strings.Contains(text, " started: ") ||
 			strings.Contains(text, " finished: ") ||
+			strings.Contains(text, " failed: ") ||
+			strings.Contains(text, " killed: "))
+}
+
+// isBackgroundJobTerminalNotice reports whether a Notice is the closing notice
+// for a background job that reached a terminal status (finished/failed/killed).
+// Started and stalled notices are deliberately excluded: only a terminal job can
+// release a deferred config rebuild.
+func isBackgroundJobTerminalNotice(e event.Event) bool {
+	if e.Kind != event.Notice {
+		return false
+	}
+	text := strings.TrimSpace(e.Text)
+	return strings.HasPrefix(text, "background ") &&
+		(strings.Contains(text, " finished: ") ||
 			strings.Contains(text, " failed: ") ||
 			strings.Contains(text, " killed: "))
 }
