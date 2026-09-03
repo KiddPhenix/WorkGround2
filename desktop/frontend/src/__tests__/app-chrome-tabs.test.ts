@@ -13,6 +13,8 @@ const topicShortcutsSource = readFileSync(resolve(testDir, "../lib/topicShortcut
 const transcriptSource = readFileSync(resolve(testDir, "../components/Transcript.tsx"), "utf8");
 const controllerSource = readFileSync(resolve(testDir, "../lib/useController.ts"), "utf8");
 const layoutStoreSource = readFileSync(resolve(testDir, "../store/layout.ts"), "utf8");
+const primaryRailSource = readFileSync(resolve(testDir, "../sidebar/PrimaryRail.tsx"), "utf8");
+const projectPanelSource = readFileSync(resolve(testDir, "../sidebar/ProjectPanel.tsx"), "utf8");
 const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
 let passed = 0;
@@ -104,7 +106,11 @@ ok(
     appSource.includes("function runKeyboardClick(event: ReactMouseEvent<HTMLElement>, action: () => void)") &&
     appSource.includes("if (event.detail === 0) action();") &&
     /aria-label="Maximize or restore window"[\s\S]*?onPointerDown=\{stopFramelessPointerDown\}[\s\S]*?onPointerUp=\{\(event\) => runFramelessPointerAction\(event, toggleMaximise\)\}[\s\S]*?onMouseDown=\{stopFramelessMouseDown\}[\s\S]*?onClick=\{\(event\) => runKeyboardClick\(event, toggleMaximise\)\}/.test(appSource) &&
-    /className="workspace-sidebar__settings"[\s\S]*?onPointerDown=\{stopFramelessPointerDown\}[\s\S]*?onPointerUp=\{\(event\) => runFramelessPointerAction\(event, openGeneralSettings\)\}[\s\S]*?onMouseDown=\{stopFramelessMouseDown\}[\s\S]*?onClick=\{\(event\) => runKeyboardClick\(event, openGeneralSettings\)\}/.test(appSource),
+    primaryRailSource.includes("function runFramelessPointerAction(event: ReactPointerEvent<HTMLElement>, action: () => void)") &&
+    primaryRailSource.includes("function stopFramelessPointerDown(event: ReactPointerEvent<HTMLElement>)") &&
+    primaryRailSource.includes("function stopFramelessMouseDown(event: ReactMouseEvent<HTMLElement>)") &&
+    primaryRailSource.includes("function runKeyboardClick(event: ReactMouseEvent<HTMLElement>, action: () => void)") &&
+    /className="session-sidebar__rail-button session-sidebar__rail-settings"[\s\S]*?onPointerDown=\{stopFramelessPointerDown\}[\s\S]*?onPointerUp=\{\(event\) => runFramelessPointerAction\(event, onOpenSettings\)\}[\s\S]*?onMouseDown=\{stopFramelessMouseDown\}[\s\S]*?onClick=\{\(event\) => runKeyboardClick\(event, onOpenSettings\)\}/.test(primaryRailSource),
   "Windows caption controls and bottom settings isolate pointer down and act on pointer up while retaining keyboard clicks",
 );
 
@@ -215,21 +221,21 @@ ok(
 );
 
 ok(
-  /workspace-sidebar__collapse-btn/.test(appSource) &&
-    /<PanelLeft size=\{15\} aria-hidden="true" \/>/.test(appSource) &&
-    /aria-pressed=\{!sidebarCollapsed\}/.test(appSource) &&
+  /className="session-sidebar__brand-toggle"/.test(primaryRailSource) &&
+    /<img src=\{logoSymbol\} alt="W2"/.test(primaryRailSource) &&
+    /panelOpen \? <ChevronLeft[\s\S]*: <ChevronRight/.test(primaryRailSource) &&
+    /aria-expanded=\{panelOpen\}/.test(primaryRailSource) &&
     /const sidebarCollapsed = useLayoutStore\(\(s\) => s\.sidebarCollapsed\);/.test(appSource),
-  "real workbench puts PanelLeft collapse in sidebar brand and PanelRight expand in session header when collapsed",
+  "real workbench keeps W2 and the collapse chevron in one persistent rail control",
 );
 
 ok(
-  /workspace-sidebar__brand-actions/.test(appSource) &&
-    /workspace-sidebar__decision-btn/.test(appSource) &&
-    /aria-label="打开主人决策"/.test(appSource) &&
-    /<MessageCircleQuestion size=\{15\} aria-hidden="true" \/>/.test(appSource) &&
+  /mode === "assistants" && ownerDecisionEnabled && onOpenOwnerDecision/.test(projectPanelSource) &&
+    /aria-label="打开主人决策"/.test(projectPanelSource) &&
+    /<MessageCircleQuestion size=\{18\} aria-hidden="true" \/>/.test(projectPanelSource) &&
     !/decision-launcher/.test(appSource) &&
     !/\.decision-launcher/.test(stylesSource),
-  "owner decision uses a small sidebar-header icon and no longer renders a floating launcher",
+  "owner decision uses a gated Assistant panel header icon and no floating launcher",
 );
 
 ok(

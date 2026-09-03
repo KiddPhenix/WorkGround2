@@ -22,11 +22,9 @@ import {
   FileImage,
   FileText,
   FileJson,
-  Folder,
   GitBranch,
   History,
   MessageSquare,
-	MessageCircleQuestion,
   Settings as SettingsIcon,
   Pencil,
   Trash2,
@@ -43,7 +41,7 @@ import { asArray } from "./lib/array";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, useI18n, useT, type Translator } from "./lib/i18n";
 import { useController, type Item, type LiveStream } from "./lib/useController";
 import { isWorkChatDisabled, routeWorkChat } from "./lib/workChatRoute";
-import { app, onEvent, onProjectTreeChanged } from "./lib/bridge";
+import { app, onEvent, onSidebarChanged } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { playSuccessChime } from "./lib/sound";
 import { Transcript } from "./components/Transcript";
@@ -64,12 +62,13 @@ import { OnboardingOverlay } from "./components/OnboardingOverlay";
 import { AppChrome } from "./components/AppChrome";
 import { ShortcutsCheatsheet } from "./components/ShortcutsCheatsheet";
 import { ProjectTree } from "./components/ProjectTree";
+import { SidebarShell } from "./sidebar/SidebarShell";
 import { SessionBackground } from "./components/SessionBackground";
 import { AddOnLauncherButton, AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
 import { SessionStatusIndicators } from "./components/SessionStatusIndicators";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
-import { AssistantSidebarEntry, AssistantWorkspace, type AssistantSessionTarget } from "./custom/features/assistant/AssistantWorkspace";
+import { AssistantWorkspace, type AssistantSessionTarget } from "./custom/features/assistant/AssistantWorkspace";
 import { WorkCard } from "./components/work/WorkCard";
 import { LinkedSessionCard } from "./components/work/LinkedSessionCard";
 import { WorkAvailabilitySurface } from "./components/work/WorkAvailabilitySurface";
@@ -2332,7 +2331,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   }, [refreshTabMetas]);
 
   useEffect(() => {
-    return onProjectTreeChanged(() => {
+    return onSidebarChanged(() => {
       setProjectRevision((value) => value + 1);
       void refreshTabMetas();
     });
@@ -4102,19 +4101,6 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   const showCollaborationSurface = activeTab?.sessionKind === "collaboration";
   const showWorkSurface = activeTab?.sessionKind === "work";
   const showAssistantSurface = assistantOpen;
-  const workbenchSidebarRestoreControl = sidebarCollapsed ? (
-    <button
-      className={`workbench-surface-sidebar-restore${sidebarTogglePressed ? " workbench-surface-sidebar-restore--pressed" : ""}`}
-      type="button"
-      onClick={sidebarExpandBlocked ? undefined : toggleSidebar}
-      aria-label={sidebarToggleTitle}
-      aria-pressed={!sidebarCollapsed}
-      aria-disabled={sidebarExpandBlocked}
-      title={sidebarToggleTitle}
-    >
-      <PanelRight size={15} aria-hidden="true" />
-    </button>
-  ) : undefined;
   const storedLinkedWorkReturn = linkedWorkReturn
     && comparableSessionPath(activeTab?.sessionPath) === comparableSessionPath(linkedWorkReturn.targetSessionPath)
     ? linkedWorkReturn
@@ -4270,125 +4256,53 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
           <>
             {/* Iris layout — preserves controller state, overlays still render below */}
             <SessionBackground tabId={activeTabId} />
-            <aside className={`workspace-sidebar${sidebarCollapsed ? " workspace-sidebar--collapsed" : ""}`} aria-label="Workspace sidebar">
-              <div className="workspace-sidebar__brand">
-                <img
-                  src={logoWordmark}
-                  alt="WorkGround2"
-                  className="workspace-sidebar__brand-logo"
-                  draggable={false}
-                />
-                <div className="workspace-sidebar__brand-actions">
-                  {ownerDecisionEnabled && (
-                    <Tooltip label="主人决策" side="bottom">
-                      <button
-                        className="workspace-sidebar__decision-btn"
-                        type="button"
-                        onClick={() => setDecisionCenterOpen(true)}
-                        aria-label="打开主人决策"
-                      >
-                        <MessageCircleQuestion size={15} aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                  )}
-                  <Tooltip label={sidebarToggleTitle} side="right">
-                    <button
-                      className={`workspace-sidebar__collapse-btn${sidebarTogglePressed ? " workspace-sidebar__collapse-btn--pressed" : ""}`}
-                      type="button"
-                      onClick={toggleSidebar}
-                      aria-label={sidebarToggleTitle}
-                      aria-pressed={!sidebarCollapsed}
-                    >
-                      <PanelLeft size={15} aria-hidden="true" />
-                    </button>
-                  </Tooltip>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className="workspace-sidebar__new-session"
-                aria-label={t("topbar.newSession")}
-                onClick={() => { void handleNewTab(); }}
-              >
-                <SquarePen size={18} aria-hidden="true" />
-                <span>{t("topbar.newSession")}</span>
-              </button>
-
-              <button
-                type="button"
-                className="workspace-sidebar__new-session"
-                aria-label={collaborationLabel}
-                onClick={() => { void openCollaborationDialog(); }}
-              >
-                <Users size={18} aria-hidden="true" />
-                <span>{collaborationLabel}</span>
-              </button>
-
-              <AssistantSidebarEntry active={showAssistantSurface} onClick={() => {
+            <SidebarShell
+              panelOpen={!sidebarCollapsed}
+              refreshSignal={projectRevision}
+              activeTopicId={activeTab?.topicId}
+              activeSessionPath={activeTab?.sessionPath}
+              activeWorkspaceRoot={activeTab?.scope === "project" ? activeTab.workspaceRoot : undefined}
+              onTogglePanel={toggleSidebar}
+              onNewSession={() => { void handleNewTab(); }}
+              onOpenSettings={openGeneralSettings}
+              onAddProject={() => { void switchFolder(); }}
+              onOpenRoom={() => { void openCollaborationDialog(); }}
+              onOpenAssistants={() => {
                 closeTransientOverlays();
                 setAssistantFocusID("");
                 setAssistantOpen(true);
-              }} />
-
-              <div className="workspace-sidebar__tree" ref={workspaceTreeRef}>
-                {irisFixtureActive ? (
-                  <nav className="iris-fixture-tree" aria-label="工作区与会话">
-                    <div className="iris-fixture-tree__workspace iris-fixture-tree__workspace--open">
-                      <Folder size={17} aria-hidden="true" />
-                      <span>WorkGround2</span>
-                    </div>
-                    <button type="button" className="iris-fixture-tree__session iris-fixture-tree__session--active">桌面信息架构重构</button>
-                    <button type="button" className="iris-fixture-tree__session">任务执行进度组件</button>
-                    <button type="button" className="iris-fixture-tree__session">会话缓存策略</button>
-                    <div className="iris-fixture-tree__workspace">
-                      <Folder size={17} aria-hidden="true" />
-                      <span>joyquant-db</span>
-                    </div>
-                  </nav>
-                ) : (
-                  <ProjectTree
-                  activeScope={activeTab?.scope}
-                  activeWorkspaceRoot={activeTab?.workspaceRoot}
-                  activeTopicId={activeTab?.topicId}
-                  activeSessionPath={activeTab?.sessionPath}
-                  activeContentVisible={!widgetActive}
-                  imTopicSources={imTopicSources}
-                  onOpenTopic={handleOpenTopic}
-                  onOpenCrewSession={handleOpenCrewSession}
-                  onOpenProjectHistory={openProjectHistory}
-                  onCreateTopic={createProjectSession}
-                  onTopicsChanged={refreshProjectsAndTabs}
-                  onRenameTopic={renameTopic}
-                  onRenameSession={renameSidebarSession}
-                  refreshSignal={projectRevision}
-                  onAddProject={async () => { await switchFolder(); }}
-                  timeFilter={topicTimeFilter}
-                  onTimeFilterChange={setTopicTimeFilter}
-                  variant="workbench"
-                  searchExpanded={false}
-                  showShortcutBadges={showTopicBadges}
-                  shortcutPlatform={desktopPlatform}
-                  onVisibleTopicsChange={handleVisibleTopicsChange}
-                  />
-                )}
-              </div>
-
-              <button
-                type="button"
-                className="workspace-sidebar__settings"
-                aria-label={t("topbar.settings")}
-                onPointerDown={stopFramelessPointerDown}
-                onPointerUp={(event) => runFramelessPointerAction(event, openGeneralSettings)}
-                onMouseDown={stopFramelessMouseDown}
-                onClick={(event) => runKeyboardClick(event, openGeneralSettings)}
-              >
-                <SettingsIcon size={18} aria-hidden="true" />
-                <span>{t("topbar.settings")}</span>
-              </button>
-            </aside>
-
-            {workbenchSidebarRestoreControl}
+              }}
+              ownerDecisionEnabled={ownerDecisionEnabled}
+              onOpenOwnerDecision={() => setDecisionCenterOpen(true)}
+              onCreateProjectSession={createProjectSession}
+              onOpenProjectHistory={(scope, root) => { void openProjectHistory(scope, root); }}
+              onOpenSession={(target, session) => {
+                if (target.topicId) {
+                  void handleOpenTopic(target.scope, target.workspaceRoot, target.topicId, target.sessionPath, target.runtimeHint);
+                  return;
+                }
+                if (!target.sessionPath) return;
+                void onResumeSession({
+                  path: target.sessionPath,
+                  preview: session.title,
+                  title: session.title,
+                  turns: session.turns || 0,
+                  createdAt: session.createdAt || 0,
+                  lastActivityAt: session.lastActivityAt || session.createdAt || 0,
+                  modTime: session.lastActivityAt || session.createdAt || 0,
+                  current: false,
+                  open: Boolean(session.open),
+                  scope: session.scope,
+                  workspaceRoot: session.workspaceRoot || "",
+                  sessionSource: session.sessionSource,
+                  kind: session.sessionKind,
+                  channel: session.channel,
+                  channelLabel: session.channelLabel,
+                });
+              }}
+              onOpenCrewSession={(sessionPath) => { void handleOpenCrewSession(sessionPath); }}
+              onChanged={() => { void refreshProjectsAndTabs(); }}
+            />
 
             {showAssistantSurface ? (
               <AssistantWorkspace focusAssistantID={assistantFocusID} composerSubmitKey={composerSubmitKey} onOpenSession={handleNavigateToAssistantSession} />

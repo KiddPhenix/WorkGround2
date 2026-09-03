@@ -28,6 +28,7 @@ const appSource = readFileSync(resolve(here, "../App.tsx"), "utf8");
 const bridgeSource = readFileSync(resolve(here, "../lib/bridge.ts"), "utf8");
 const typesSource = readFileSync(resolve(here, "../lib/types.ts"), "utf8");
 const settingsPanelSource = readFileSync(resolve(here, "../components/SettingsPanel.tsx"), "utf8");
+const projectPanelSource = readFileSync(resolve(here, "../sidebar/ProjectPanel.tsx"), "utf8");
 const backendSettingsSource = readFileSync(resolve(here, "../../../settings_app.go"), "utf8");
 const backendFeatureSource = readFileSync(resolve(here, "../../../decision_feature.go"), "utf8");
 
@@ -62,9 +63,11 @@ ok(
 );
 
 ok(
-  /ownerDecisionEnabled && \(\s*<Tooltip label="主人决策" side="bottom">/.test(appSource) &&
-    /aria-label="打开主人决策"/.test(appSource),
-  "sidebar owner-decision entry is gated but kept intact for restoration",
+  /ownerDecisionEnabled=\{ownerDecisionEnabled\}/.test(appSource) &&
+    /onOpenOwnerDecision=\{\(\) => setDecisionCenterOpen\(true\)\}/.test(appSource) &&
+    /mode === "assistants" && ownerDecisionEnabled && onOpenOwnerDecision/.test(projectPanelSource) &&
+    /aria-label="打开主人决策"/.test(projectPanelSource),
+  "Assistant panel keeps the gated owner-decision entry without changing primary rail order",
 );
 ok(
   /ownerDecisionEnabled && <DecisionCenter open=\{decisionCenterOpen\}/.test(appSource),

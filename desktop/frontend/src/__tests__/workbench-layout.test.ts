@@ -18,6 +18,8 @@ const projectIconsSource = readFileSync(resolve(testDir, "../lib/projectIcons.ts
 const runtimeConfigSource = readFileSync(resolve(testDir, "../components/desktop-ui/RuntimeConfigBar.tsx"), "utf8");
 const workWorkspaceSource = readFileSync(resolve(testDir, "../components/work/WorkWorkspace.tsx"), "utf8");
 const collaborationSource = readFileSync(resolve(testDir, "../collab/CollaborationWorkspace.tsx"), "utf8");
+const sidebarShellSource = readFileSync(resolve(testDir, "../sidebar/SidebarShell.tsx"), "utf8");
+const primaryRailSource = readFileSync(resolve(testDir, "../sidebar/PrimaryRail.tsx"), "utf8");
 
 let passed = 0;
 let failed = 0;
@@ -611,25 +613,20 @@ ok(
 // ── Bottom settings entry: stable native click target ───────────────────
 
 ok(
-  includes(appSource, 'className="workspace-sidebar__settings"') &&
-    includes(appSource, "runKeyboardClick(event, openGeneralSettings)") &&
-    includes(appSource, 'setSettingsTarget("general")'),
-  "App.tsx: Session List bottom settings entry uses the shared general-settings opener",
+  includes(appSource, "onOpenSettings={openGeneralSettings}") &&
+    includes(primaryRailSource, 'className="session-sidebar__rail-button session-sidebar__rail-settings"') &&
+    includes(primaryRailSource, "onPointerUp={(event) => runFramelessPointerAction(event, onOpenSettings)}") &&
+    includes(primaryRailSource, "onClick={(event) => runKeyboardClick(event, onOpenSettings)}"),
+  "Session Sidebar: bottom rail settings entry uses the shared general-settings opener",
 );
 ok(
-  finalDeclaration(stylesSource, ".workspace-sidebar__settings", "--wails-draggable") === "no-drag" &&
-    finalDeclaration(stylesSource, ".workspace-sidebar__settings", "pointer-events") === "auto" &&
-    finalDeclaration(stylesSource, ".workspace-sidebar__settings", "touch-action") === "manipulation",
-  "CSS: Session List bottom settings entry remains clickable inside the native window",
+  includes(stylesSource, ".session-sidebar__brand-toggle,\n.session-sidebar__rail-button {") &&
+    includes(stylesSource, "--wails-draggable: no-drag;"),
+  "CSS: Session Sidebar rail controls opt out of native window dragging",
 );
 ok(
-  finalDeclaration(stylesSource, ".workspace-sidebar__settings", "flex") === "0 0 36px" &&
-    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar__settings", "flex-basis") === "38px",
-  "CSS: Session List bottom settings entry cannot collapse behind the scrolling tree",
-);
-ok(
-  finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .workspace-sidebar__settings", "margin-bottom") === "20px",
-  "CSS: Windows Session List settings stays above the native bottom resize hit zone",
+  finalDeclaration(stylesSource, ".session-sidebar__rail-settings", "margin-top") === "auto",
+  "CSS: Session Sidebar settings entry remains pinned to the rail bottom",
 );
 
 // ── Scrollbar auto-hide contract ──────────────────────────────────────────
@@ -676,45 +673,42 @@ ok(
 
 // ── Sidebar collapse ──────────────────────────────────────────────────────
 
-// CSS: collapsed sidebar is hidden
+// CSS: collapsing keeps the 56px primary rail visible.
 ok(
-  finalDeclaration(stylesSource, ".layout--workbench.layout--sidebar-collapsed .workspace-sidebar", "display") === "none",
-  "CSS: collapsed workbench sidebar is hidden",
+  finalDeclaration(stylesSource, ".session-sidebar--collapsed", "width") === "56px" &&
+    finalDeclaration(stylesSource, ".session-sidebar--collapsed", "grid-template-columns") === "56px",
+  "CSS: collapsed workbench retains the 56px primary rail",
 );
 
-// CSS: collapsed workbench becomes a real single-column board
+// CSS: collapsed workbench retains a dedicated rail column.
 const collapsedGridTpl = finalDeclaration(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed", "grid-template-columns");
 const collapsedGap = finalDeclaration(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed", "gap");
 ok(
-  collapsedGridTpl === "minmax(0, 1fr)" && collapsedGap === "0",
-  `CSS: collapsed workbench is one column with no orphan gap (grid=${collapsedGridTpl}, gap=${collapsedGap})`,
-);
-
-// CSS: collapsed session-workspace occupies that single column
-const collapsedGridCol = finalDeclaration(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed .session-workspace", "grid-column");
-ok(collapsedGridCol === "1", `CSS: collapsed session-workspace occupies column 1 (got: ${collapsedGridCol})`);
-
-// App.tsx: collapse button exists in workspace-sidebar brand
-ok(
-  includes(appSource, 'className={`workspace-sidebar__collapse-btn${sidebarTogglePressed ? " workspace-sidebar__collapse-btn--pressed" : ""}`}') &&
-    includes(appSource, 'aria-label={sidebarToggleTitle}') &&
-    includes(appSource, 'aria-pressed={!sidebarCollapsed}'),
-  "App.tsx: workspace-sidebar brand has PanelLeft collapse button with correct aria",
+  collapsedGridTpl === "56px minmax(0, 1fr) !important" && collapsedGap === "8px",
+  `CSS: collapsed workbench reserves the rail column (grid=${collapsedGridTpl}, gap=${collapsedGap})`,
 );
 
 ok(
-  includes(appSource, "const workbenchSidebarRestoreControl = sidebarCollapsed ? (") &&
-    includes(appSource, "{workbenchSidebarRestoreControl}") &&
-    includes(appSource, "workbench-surface-sidebar-restore") &&
-    includes(appSource, 'aria-label={sidebarToggleTitle}') &&
-    includes(appSource, '<PanelRight size={15} aria-hidden="true" />') &&
-    finalDeclaration(stylesSource, ".app--workbench .layout--workbench > .workbench-surface-sidebar-restore", "position") === "absolute" &&
-    finalDeclaration(stylesSource, ".app--workbench .layout--workbench > .workbench-surface-sidebar-restore", "--wails-draggable") === "no-drag" &&
-    finalDeclaration(stylesSource, ".app--workbench .layout--workbench > .workbench-surface-sidebar-restore", "left") === "24px" &&
-    includes(stylesSource, ".app--workbench .layout--sidebar-collapsed .wg2-work-outer-header,") &&
-    includes(stylesSource, ".app--workbench .layout--sidebar-collapsed .collab-topicbar,") &&
-    finalDeclaration(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed .session-header", "padding-left") === "64px",
-  "App.tsx: every collapsed Session, Work, and Room state exposes one App-owned sidebar restore control",
+  includes(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed .session-workspace,\n") &&
+    includes(stylesSource, "  grid-column: 2;\n}"),
+  "CSS: collapsed workbench content occupies column 2 beside the primary rail",
+);
+
+// The W2 mark and chevron are one persistent toggle.
+ok(
+  includes(primaryRailSource, 'className="session-sidebar__brand-toggle"') &&
+    includes(primaryRailSource, "logoSymbol") &&
+    includes(primaryRailSource, "<ChevronLeft") &&
+    includes(primaryRailSource, "<ChevronRight") &&
+    includes(primaryRailSource, "aria-expanded={panelOpen}"),
+  "PrimaryRail: W2 and collapse chevron share one accessible persistent button",
+);
+
+ok(
+  !includes(appSource, "workbenchSidebarRestoreControl") &&
+    includes(appSource, "<SidebarShell") &&
+    includes(sidebarShellSource, "<PrimaryRail panelOpen={panelOpen}"),
+  "App.tsx: persistent PrimaryRail replaces the detached restore control",
 );
 
 // App.tsx: regular session topicbar exposes the expand button when collapsed.
