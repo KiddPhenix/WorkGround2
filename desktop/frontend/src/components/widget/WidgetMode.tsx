@@ -16,6 +16,7 @@ import { pickWidgetSuffix, widgetSuffixes } from "./widgetCopy";
 import { startWidgetConversationWithRetry } from "./startWidgetConversation";
 import { resolveWidgetSkin, widgetSkinTiles, type WidgetSkinId } from "./widgetSkins";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
+import { DESKTOP_ZOOM_EVENT } from "../../lib/dpiScale";
 import { WidgetInfoCarousel } from "./WidgetInfoCarousel";
 import "./widget-mode.css";
 import "./widget-skins.css";
@@ -498,15 +499,16 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
 
   useEffect(() => {
     let alive = true;
+    const acceptZoom = (zoom: unknown) => {
+      if (alive) setDesktopZoom(resolveWidgetZoomFrame(zoom).zoom);
+    };
+    const unsubscribe = window.runtime?.EventsOn?.(DESKTOP_ZOOM_EVENT, (zoom: unknown) => acceptZoom(zoom));
     void app.GetDesktopZoomFactor()
-      .then((zoom) => {
-        if (alive) setDesktopZoom(resolveWidgetZoomFrame(zoom).zoom);
-      })
-      .catch(() => {
-        if (alive) setDesktopZoom(1);
-      });
+      .then(acceptZoom)
+      .catch(() => acceptZoom(1));
     return () => {
       alive = false;
+      unsubscribe?.();
     };
   }, []);
 

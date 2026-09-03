@@ -21,6 +21,7 @@ import { desktopIconDragOrder, previewDesktopIconMove } from "./desktopIconDrag"
 import { IdleHoverTracer } from "./idleHoverTrace";
 import { QUICK_DRAFT_KEY, cleanupConsumedDraft, clearConsumedDraftMarker, createQuickStartOpenTaskGate, decideConsumedDraft, isQuickStartJobItem, mergeQuickStartItems, quickStartJobItem, quickStartJobPromptLabel, quickStartJobRequestId, quickStartJobRequestIDFromItem, quickStartJobStateLabel, quickStartJobWorkspaceLabel, recordConsumedDraftMarker, useWidgetQuickStartJobs, type QuickStartConsumedDraftDecision, type QuickStartJob, type QuickStartJobIntent, type WidgetQuickStartJobsApi } from "./widgetQuickStartJobs";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
+import { DESKTOP_ZOOM_EVENT } from "../../lib/dpiScale";
 import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTitle, WORKSPACE_PIN_LIMIT, workspacePinsFull, type WorkspaceRow } from "./workspaceManager";
 import { applyRoomIcons, applyRoomPins, normalizeRoomIcons, normalizeRoomPins, pinnedRoomRows, ROOM_PIN_LIMIT, roomPinsFull, roomRows, type RoomRow } from "./roomsManager";
 import { readRoomIconCount, visibleDesktopIcons, writeRoomIconCount } from "./roomIconCount";
@@ -1636,10 +1637,10 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	}, [activeID, anchorMenuOpen, blockPopupState, busy, cancelTransientTimers, displayItems, draggingID, exiting, menuID, previewID, quickOpen, renamingID, roomNotificationMode, roomPopupState]);
 	useEffect(() => {
 		let alive = true;
-		void app.GetDesktopZoomFactor()
-			.then((zoom) => { if (alive) setDesktopZoom(resolveWidgetZoomFrame(zoom).zoom); })
-			.catch(() => { if (alive) setDesktopZoom(1); });
-		return () => { alive = false; };
+		const acceptZoom = (zoom: unknown) => { if (alive) setDesktopZoom(resolveWidgetZoomFrame(zoom).zoom); };
+		const unsubscribe = window.runtime?.EventsOn?.(DESKTOP_ZOOM_EVENT, (zoom: unknown) => acceptZoom(zoom));
+		void app.GetDesktopZoomFactor().then(acceptZoom).catch(() => acceptZoom(1));
+		return () => { alive = false; unsubscribe?.(); };
 	}, []);
 	// Keep one logical viewport state for popup placement. Resize updates width
 	// and height together; a zoom change immediately recomputes both in the same

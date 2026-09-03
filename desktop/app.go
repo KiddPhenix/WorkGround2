@@ -183,6 +183,14 @@ type App struct {
 	// nil wraps runtime.WindowSetAlwaysOnTop).
 	windowSetAlwaysOnTop func(on bool) error
 
+	// desktopZoomMu serializes live WebView zoom changes and persistence so
+	// rapid slider updates cannot leave the running controller and saved value
+	// describing different requests. desktopZoomApply is a test seam; nil uses
+	// the platform WebView implementation.
+	desktopZoomMu    sync.Mutex
+	desktopZoomApply func(float64) error
+	desktopZoomSave  func(float64) error
+
 	mediaTokens     *mediaTokenStore
 	background      *sessionBackgroundService
 	botInstalls     map[string]*botInstallSession

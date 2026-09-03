@@ -18,7 +18,7 @@ import {
   type ThemeStyle,
 } from "../lib/theme";
 import { TEXT_SIZES, applyTextSize, getTextSize, type TextSize } from "../lib/textSize";
-import { snapZoom, zoomToPercent, saveRestartZoom, getRestartZoom, type ZoomLevel } from "../lib/dpiScale";
+import { DEFAULT_ZOOM, snapZoom, zoomToPercent, type ZoomLevel } from "../lib/dpiScale";
 import {
   applyFontFamily,
   applyMonoFontFamily,
@@ -124,7 +124,9 @@ export function SettingsPanel({
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(() => getThemeStyle(getTheme()));
   const [textSize, setTextSizeState] = useState<TextSize>(getTextSize());
-  const [zoomPct, setZoomPct] = useState<number>(zoomToPercent(getRestartZoom()));
+  const [zoomPct, setZoomPct] = useState<number>(zoomToPercent(DEFAULT_ZOOM));
+  const zoomRequestRef = useRef(0);
+  const confirmedZoomRef = useRef<ZoomLevel>(DEFAULT_ZOOM);
   const [fontFamily, setFontFamilyState] = useState<FontFamily>(getFontFamily());
   const [monoFontFamily, setMonoFontFamilyState] = useState<MonoFontFamily>(getMonoFontFamily());
   const [customFontName, setCustomFontNameState] = useState<string>(getCustomFontName());
@@ -170,6 +172,23 @@ export function SettingsPanel({
     void reload();
     if (initialTab) selectTab(initialTab);
   }, [initialTab, reload, selectTab]);
+  useEffect(() => {
+    if (desktopPlatform !== "windows") return;
+    const request = ++zoomRequestRef.current;
+    void app.GetDesktopZoomFactor()
+      .then((zoom) => {
+        if (request !== zoomRequestRef.current) return;
+        const normalized = snapZoom(zoom);
+        confirmedZoomRef.current = normalized;
+        setZoomPct(zoomToPercent(normalized));
+      })
+      .catch((cause) => {
+        if (request === zoomRequestRef.current) setErr(String((cause as Error)?.message ?? cause));
+      });
+    return () => {
+      if (request === zoomRequestRef.current) zoomRequestRef.current += 1;
+    };
+  }, [desktopPlatform]);
   useEffect(() => {
     if (!s) return;
     const nextTheme = normalizeThemePreference(s.desktopTheme);
@@ -340,15 +359,26 @@ export function SettingsPanel({
                         applyTextSize(size);
                         setTextSizeState(size);
                       }}
-                      onRestartZoom={async (zoom) => {
+                      onZoom={async (zoom) => {
                         const snapped = snapZoom(zoom);
+                        const request = ++zoomRequestRef.current;
                         setErr(null);
                         setWarning(null);
+                        setZoomPct(zoomToPercent(snapped));
                         try {
                           await app.SetDesktopZoomFactor(snapped);
-                          saveRestartZoom(snapped);
-                          setZoomPct(zoomToPercent(snapped));
+                          confirmedZoomRef.current = snapped;
                         } catch (e) {
+                          if (request !== zoomRequestRef.current) return;
+                          let confirmed = confirmedZoomRef.current;
+                          try {
+                            confirmed = snapZoom(await app.GetDesktopZoomFactor());
+                          } catch {
+                            // Keep the last confirmed value when reconciliation also fails.
+                          }
+                          if (request !== zoomRequestRef.current) return;
+                          confirmedZoomRef.current = confirmed;
+                          setZoomPct(zoomToPercent(confirmed));
                           setErr(String((e as Error)?.message ?? e));
                         }
                       }}
@@ -6195,7 +6225,7 @@ function AppearanceSection({
   customMonoFontName,
   onTheme,
   onTextSize,
-  onRestartZoom,
+  onZoom,
   onFontFamily,
   onMonoFontFamily,
   onCustomFontNameChange,
@@ -6211,7 +6241,7 @@ function AppearanceSection({
   customMonoFontName: string;
   onTheme: (t: Theme) => void;
   onTextSize: (size: TextSize) => void;
-  onRestartZoom: (zoom: ZoomLevel) => Promise<void>;
+  onZoom: (zoom: ZoomLevel) => Promise<void>;
   onFontFamily: (font: FontFamily) => void;
   onMonoFontFamily: (font: MonoFontFamily) => void;
   onCustomFontNameChange: (name: string) => void;
@@ -6273,7 +6303,7 @@ function AppearanceSection({
                   max={200}
                   step={5}
                   value={zoomPct}
-                  onChange={(e) => { void onRestartZoom(Number(e.target.value) / 100); }}
+                  onInput={(e) => { void onZoom(Number(e.currentTarget.value) / 100); }}
                 />
               </div>
               <span className="zoom-slider__label">200%</span>

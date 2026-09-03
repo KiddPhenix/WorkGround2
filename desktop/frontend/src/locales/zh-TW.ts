@@ -1188,7 +1188,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.textSizeLarge": "大",
   "settings.textSizeXLarge": "特大",
   "settings.textSizeXXLarge": "超大",
-  "settings.displayZoom": "顯示縮放（需重啟生效）",
+  "settings.displayZoom": "顯示縮放",
   "settings.fontFamily": "介面字型",
   "settings.fontFamilySystem": "系統預設",
   "settings.fontFamilyYaHei": "微軟正黑體",

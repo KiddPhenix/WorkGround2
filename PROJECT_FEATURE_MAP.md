@@ -293,6 +293,13 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 - Source: verified-by-search
 - Updated: 2026-08-26
 
+### 桌面显示缩放
+- Location: `desktop/zoom_factor.go`, `desktop/zoom_runtime_windows.go`, `desktop/main.go`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/lib/dpiScale.ts`, `desktop/frontend/src/components/widget`
+- Summary: Windows 显示缩放经 WebView2 Controller 即时应用并原子持久化，失败回滚；设置页以后端有效值为可信源，Widget/Icon 模式按缩放事件补偿逻辑坐标。
+- Keywords: 显示缩放, DesktopZoomFactor, WebView2, ZoomFactor, dpiScale
+- Source: verified-by-search
+- Updated: 2026-09-03
+
 ### 桌面设置
 - Location: `desktop/settings_app.go`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales`, `internal/config/edit.go`, `internal/config/render.go`
 - Summary: Desktop 设置的 Go 绑定、React 面板、多语言文案和配置读写入口位于这些位置。
