@@ -912,7 +912,15 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	defer func() {
+		if err := desktopSidebarBolt.close(a); err != nil {
+			slog.Warn("desktop: close sidebar index failed", "err", err)
+		}
+	}()
 	restoreNativeWindowControls()
+	if a.sessionWatcher != nil {
+		a.sessionWatcher.stop()
+	}
 	a.stopDecisionRuntime()
 	if a.runHub != nil {
 		a.runHub.close()
