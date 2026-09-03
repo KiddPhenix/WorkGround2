@@ -56,6 +56,11 @@ func (a *App) startSessionWatcher() {
 // addDir adds a directory and its .trash subdirectory to the watcher.
 func (sw *sessionWatcher) addDir(dir string) {
 	dir = filepath.Clean(dir)
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if sw.stopped {
+		return
+	}
 	if sw.dirs[dir] {
 		return
 	}
@@ -91,6 +96,7 @@ func (sw *sessionWatcher) loop() {
 				return
 			}
 			if sw.isRelevant(ev) {
+				desktopSidebarBolt.markDirty(sw.app, ev.Name)
 				sw.scheduleNotify()
 			}
 		case err, ok := <-sw.w.Errors:
@@ -154,12 +160,26 @@ func (sw *sessionWatcher) scheduleNotify() {
 // list. This runs on the timer goroutine; EventsEmit is safe to call from any
 // goroutine.
 func (sw *sessionWatcher) notifyFrontend() {
+	sw.mu.Lock()
+	if sw.stopped {
+		sw.mu.Unlock()
+		return
+	}
+	sw.timer = nil
+	sw.mu.Unlock()
+
+	// addDir serializes Watcher.Add with stop/Watcher.Close.
+	sw.refreshDirs()
+
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if sw.stopped {
+		return
+	}
 	ctx := sw.app.ctx
 	if ctx == nil {
 		return
 	}
-	// Refresh watched directories in case new projects were opened.
-	sw.refreshDirs()
 	runtime.EventsEmit(ctx, "session:changed")
 }
 

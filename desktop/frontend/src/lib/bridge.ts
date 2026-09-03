@@ -10,6 +10,15 @@
 import type * as GeneratedApp from "../../wailsjs/go/main/App";
 import type { WailsWorkBindings } from "../work/wailsAdapter";
 import type {
+  SidebarGroup,
+  SidebarPage,
+  SidebarSearchItem,
+  SidebarSearchRequest,
+  SidebarSession,
+  SidebarSessionQuery,
+  SidebarQueryMode,
+} from "../sidebar/types";
+import type {
   AssistantAttentionItem,
   AssistantCancelInput,
   AssistantChannel,
@@ -922,6 +931,9 @@ export interface AppBindings extends WailsWorkBindings {
   ReorderTabs(tabIDs: string[]): Promise<void>;
   CloseTab(tabID: string): Promise<void>;
   ListProjectTree(): Promise<ProjectNode[]>;
+  ListSidebarGroups(mode: SidebarQueryMode): Promise<SidebarGroup[]>;
+  ListSidebarSessions(query: SidebarSessionQuery): Promise<SidebarPage<SidebarSession>>;
+  SearchSidebar(request: SidebarSearchRequest): Promise<SidebarPage<SidebarSearchItem>>;
   RenameProject(workspaceRoot: string, title: string): Promise<void>;
   SetProjectColor(workspaceRoot: string, color: string): Promise<void>;
   SetProjectIcon(workspaceRoot: string, icon: string): Promise<void>;
@@ -1250,6 +1262,29 @@ export function onProjectTreeChanged(cb: () => void): () => void {
     return window.runtime.EventsOn("project-tree:changed", () => cb());
   }
   return () => {};
+}
+
+const SIDEBAR_CHANGE_DEBOUNCE_MS = 80;
+
+export function onSidebarChanged(cb: () => void): () => void {
+  if (!realApp() || typeof window === "undefined" || !window.runtime) return () => {};
+  let disposed = false;
+  let timer = 0;
+  const schedule = () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      timer = 0;
+      if (!disposed) cb();
+    }, SIDEBAR_CHANGE_DEBOUNCE_MS);
+  };
+  const unsubscribeTree = window.runtime.EventsOn("project-tree:changed", schedule);
+  const unsubscribeSession = window.runtime.EventsOn("session:changed", schedule);
+  return () => {
+    disposed = true;
+    window.clearTimeout(timer);
+    unsubscribeTree();
+    unsubscribeSession();
+  };
 }
 
 const emptyUnreadState = (): UnreadState => ({
@@ -2330,6 +2365,14 @@ function makeMockApp(): AppBindings {
         { key: "global_topic_ai", kind: "global_topic", label: t("mock.topicAi"), topicId: "topic_ai", turns: 8, lastActivityAt: mockNow - 10 * 24 * 60 * 60_000 },
         { key: "global_topic_lab", kind: "global_topic", label: t("mock.topicLab"), topicId: "topic_lab", turns: 2, lastActivityAt: mockNow - 12 * 24 * 60 * 60_000 },
         { key: "global_topic_room", kind: "global_topic", label: "联调 Room", topicId: "topic_room", sessionKind: "collaboration", sessionPath: "~/wg2-sessions/topic_room.jsonl", turns: 12, lastActivityAt: mockNow - 30 * 60_000 },
+      ],
+    },
+    {
+      key: "crew_folder",
+      kind: "crew_folder",
+      label: "Crew",
+      children: [
+        { key: "crew_session_mock", kind: "crew_session", label: "Crew 协作会话", sessionId: "crew_mock", sessionPath: "~/wg2-sessions/crew_mock.jsonl", sessionKind: "assistant", sessionSource: "assist", turns: 6, lastActivityAt: mockNow - 45 * 60_000 },
       ],
     },
   ];
@@ -5947,6 +5990,89 @@ function makeMockApp(): AppBindings {
     async ListProjectTree() {
       if (mockListProjectTreeFn) return mockListProjectTreeFn();
       return cloneProjectTree();
+    },
+    async ListSidebarGroups(mode: SidebarQueryMode) {
+      const nodes = mockProjectTreeForDisplay();
+      const groups: SidebarGroup[] = [];
+      for (const node of nodes) {
+        if (node.kind !== "project" && node.kind !== "global_folder" && node.kind !== "crew_folder") continue;
+        const sessions = projectChildren(node).filter((child) => {
+          if (mode === "projects") return true;
+          if (mode === "rooms") return child.sessionKind === "collaboration";
+          return child.sessionKind === "assistant" || child.sessionSource === "assist";
+        });
+        if (mode !== "projects" && sessions.length === 0) continue;
+        groups.push({
+          id: node.key,
+          kind: node.kind.replace(/_folder$/, ""),
+          label: node.label,
+          root: node.root,
+          color: node.projectColor,
+          icon: node.projectIcon,
+          pinned: node.pinned,
+          sessionCount: sessions.length,
+          lastActivityAt: Math.max(0, ...sessions.map((item) => item.lastActivityAt || item.createdAt || 0)),
+        });
+      }
+      return groups;
+    },
+    async ListSidebarSessions(query: SidebarSessionQuery) {
+      const groups = await this.ListSidebarGroups(query.mode);
+      const group = groups.find((item) => item.id === query.groupId);
+      const node = mockProjectTreeForDisplay().find((item) => item.key === group?.id);
+      const sessions = (node ? projectChildren(node) : [])
+        .filter((child) => query.mode === "projects" ? true : query.mode === "rooms" ? child.sessionKind === "collaboration" : child.sessionKind === "assistant" || child.sessionSource === "assist")
+        .map((child): SidebarSession => ({
+          id: child.sessionId || child.sessionPath || child.topicId || child.key,
+          sessionId: child.sessionId,
+          groupId: group?.id || "global",
+          scope: group?.kind === "project" ? "project" : "global",
+          workspaceRoot: group?.kind === "project" ? group.root : undefined,
+          title: child.label,
+          sessionPath: child.sessionPath,
+          topicId: child.topicId,
+          sessionKind: child.sessionKind,
+          sessionSource: child.sessionSource,
+          channel: child.channel,
+          channelLabel: child.channelLabel,
+          titleSource: child.titleSource,
+          status: child.status,
+          turns: child.turns,
+          open: child.open,
+          running: child.running,
+          pinned: child.pinned,
+          createdAt: child.createdAt,
+          lastActivityAt: child.lastActivityAt,
+          turnStartedAt: child.turnStartedAt,
+          revision: 1,
+        }))
+        .sort((a, b) => (b.lastActivityAt || b.createdAt || 0) - (a.lastActivityAt || a.createdAt || 0));
+      const offset = Math.max(0, Number(query.cursor || 0) || 0);
+      const limit = Math.min(50, Math.max(10, query.limit || 20));
+      return { items: sessions.slice(offset, offset + limit), nextCursor: offset + limit < sessions.length ? String(offset + limit) : undefined, total: sessions.length, snapshot: "browser-mock" };
+    },
+    async SearchSidebar(request: SidebarSearchRequest) {
+      const needle = request.query.trim().toLocaleLowerCase();
+      const groups = await this.ListSidebarGroups("projects");
+      const all: SidebarSearchItem[] = [];
+      for (const group of groups) {
+        const groupMatches = !needle || group.label.toLocaleLowerCase().includes(needle) || (group.root || "").toLocaleLowerCase().includes(needle);
+        if (request.filter !== "sessions" && needle && groupMatches) all.push({ kind: "project", id: group.id, group, lastActivityAt: group.lastActivityAt });
+        if (request.filter === "projects") continue;
+        let groupCursor: string | undefined;
+        do {
+          const page = await this.ListSidebarSessions({ mode: "projects", groupId: group.id, cursor: groupCursor, limit: 50 });
+          for (const session of page.items) {
+            if (needle && !groupMatches && !session.title.toLocaleLowerCase().includes(needle) && !(session.sessionPath || "").toLocaleLowerCase().includes(needle)) continue;
+            all.push({ kind: "session", id: session.id, group, session, lastActivityAt: session.lastActivityAt || session.createdAt });
+          }
+          groupCursor = page.nextCursor;
+        } while (groupCursor);
+      }
+      all.sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0) || b.id.localeCompare(a.id));
+      const offset = Math.max(0, Number(request.cursor || 0) || 0);
+      const limit = Math.min(50, Math.max(10, request.limit || 20));
+      return { items: all.slice(offset, offset + limit), nextCursor: offset + limit < all.length ? String(offset + limit) : undefined, total: all.length, snapshot: "browser-mock" };
     },
     async RenameProject(workspaceRoot: string, title: string) {
       const node = workspaceRoot
