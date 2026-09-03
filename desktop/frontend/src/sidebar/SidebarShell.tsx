@@ -25,7 +25,7 @@ interface SidebarShellProps {
   onOpenSettings: () => void;
   onAddProject: () => void;
   onOpenRoom: () => void;
-  onOpenAssistants: () => void;
+  onCreateAssistant: () => void;
   ownerDecisionEnabled: boolean;
   onOpenOwnerDecision: () => void;
   onCreateProjectSession: (scope: "global" | "project", workspaceRoot: string) => Promise<void> | void;
@@ -47,7 +47,7 @@ function menuPoint(element: HTMLElement): ContextMenuPoint {
 function normalizedPath(path?: string): string { return (path || "").replace(/\\/g, "/").toLowerCase(); }
 
 export function SidebarShell(props: SidebarShellProps) {
-  const { panelOpen, refreshSignal, activeTopicId, activeSessionPath, activeWorkspaceRoot, onTogglePanel, onNewSession, onOpenSettings, onAddProject, onOpenRoom, onOpenAssistants, ownerDecisionEnabled, onOpenOwnerDecision, onCreateProjectSession, onOpenProjectHistory, onOpenSession, onOpenCrewSession, onChanged } = props;
+  const { panelOpen, refreshSignal, activeTopicId, activeSessionPath, activeWorkspaceRoot, onTogglePanel, onNewSession, onOpenSettings, onAddProject, onOpenRoom, onCreateAssistant, ownerDecisionEnabled, onOpenOwnerDecision, onCreateProjectSession, onOpenProjectHistory, onOpenSession, onOpenCrewSession, onChanged } = props;
   const activeMode = useSidebarStore((state) => state.activeMode);
   const setMode = useSidebarStore((state) => state.setMode);
   const [menu, setMenu] = useState<OpenMenu | null>(null);
@@ -220,7 +220,7 @@ export function SidebarShell(props: SidebarShellProps) {
           {activeMode === "search" ? (
             <SearchPanel now={now} refreshSignal={refreshSignal} activeTopicId={activeTopicId} activeSessionPath={activeSessionPath} unreadBySession={unreadBySession} onOpenSession={openSession} onOpenSessionMenu={openSessionMenu} />
           ) : (
-            <ProjectPanel mode={activeMode} now={now} refreshSignal={refreshSignal} activeTopicId={activeTopicId} activeSessionPath={activeSessionPath} unreadBySession={unreadBySession} onOpenSession={openSession} onOpenGroupMenu={openGroupMenu} onOpenSessionMenu={openSessionMenu} onAddProject={onAddProject} onModeAction={activeMode === "rooms" ? onOpenRoom : activeMode === "assistants" ? onOpenAssistants : undefined} ownerDecisionEnabled={ownerDecisionEnabled} onOpenOwnerDecision={onOpenOwnerDecision} />
+            <ProjectPanel mode={activeMode} now={now} refreshSignal={refreshSignal} activeTopicId={activeTopicId} activeSessionPath={activeSessionPath} unreadBySession={unreadBySession} onOpenSession={openSession} onOpenGroupMenu={openGroupMenu} onOpenSessionMenu={openSessionMenu} onAddProject={onAddProject} onModeAction={activeMode === "rooms" ? onOpenRoom : activeMode === "assistants" ? onCreateAssistant : undefined} ownerDecisionEnabled={ownerDecisionEnabled} onOpenOwnerDecision={onOpenOwnerDecision} />
           )}
         </div>
       )}

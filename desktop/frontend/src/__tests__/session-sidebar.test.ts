@@ -209,6 +209,7 @@ const searchPanel = readFileSync(resolve(import.meta.dirname, "../sidebar/Search
 const bridge = readFileSync(resolve(import.meta.dirname, "../lib/bridge.ts"), "utf8");
 const contextMenu = readFileSync(resolve(import.meta.dirname, "../components/ContextMenu.tsx"), "utf8");
 const appSource = readFileSync(resolve(import.meta.dirname, "../App.tsx"), "utf8");
+const styles = readFileSync(resolve(import.meta.dirname, "../styles.css"), "utf8");
 const orderedTokens = ['mode: "search"', 'mode: "projects"', 'mode: "rooms"', 'mode: "assistants"'];
 let last = -1;
 for (const token of orderedTokens) {
@@ -243,5 +244,13 @@ assert.equal(rowMenuTabStops.length, 2, "group and session rows both expose a me
 assert.equal(rowMenuTabStops.every((match) => match[1] === "-1"), true, "each virtual row has one roving Tab stop; its menu is reached through the row shortcut or pointer");
 assert.match(contextMenu, /onKeyDown=\{\(event\) => \{[\s\S]*nextContextMenuFocus[\s\S]*buttons\[next\]\?\.focus\(\)/, "the role=menu surface wires standard navigation keys to enabled item focus");
 assert.match(appSource, /onSidebarChanged\(\(\) => \{[\s\S]*setProjectRevision[\s\S]*refreshTabMetas/, "the unified watcher feeds the existing debounced sidebar refreshSignal chain");
+assert.match(styles, /\.app--workbench \.layout\.layout--workbench,[\s\S]*grid-template-columns: 360px minmax\(0, 1fr\) !important/, "wide layout reserves the complete 360px Session Sidebar track despite themed legacy rules");
+assert.match(styles, /> \.session-workspace,[\s\S]*> \.assistant-workspace \{\s*grid-column: 2;\s*grid-row: 1;/, "every main workbench surface starts in the second grid column");
+assert.match(styles, /@media \(max-width: 919\.98px\)[\s\S]*:root\[data-theme-style\][\s\S]*> \.session-workspace,[\s\S]*grid-column: 2 !important/, "fractional 919px layouts keep the main canvas beside the permanent rail while only the panel overlays");
+assert.doesNotMatch(styles, /@media \(max-width: 919px\)/, "the responsive boundary is not vulnerable to fractional device-pixel widths");
+assert.match(projectPanel, /<PanelPrimaryAction mode=\{mode\}[\s\S]*<SessionList rows=\{rows\}/, "the fixed primary CTA renders above loading and error rows");
+assert.match(shell, /onCreateAssistant: \(\) => void[\s\S]*activeMode === "assistants" \? onCreateAssistant/, "Assistant sidebar CTA exposes an accurately named creation intent");
+assert.match(appSource, /onCreateAssistant=\{\(\) => \{[\s\S]*setAssistantCreateSignal\(assistantCreateSeq\.current\)[\s\S]*setAssistantOpen\(true\)/, "Assistant CTA opens the surface and emits a fresh creation signal");
+assert.match(appSource, /<AssistantWorkspace[\s\S]*createSignal=\{assistantCreateSignal\}[\s\S]*onCreateSignalHandled=/, "App passes the one-shot creation intent to AssistantWorkspace with an acknowledgement path");
 
 console.log("session-sidebar tests passed");

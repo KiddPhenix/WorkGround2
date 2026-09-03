@@ -95,6 +95,8 @@ interface AssistantWorkspaceProps {
   onOpenSession?: (target: AssistantSessionTarget) => void;
   focusAssistantID?: string;
   composerSubmitKey?: ComposerSubmitKey;
+  createSignal?: number;
+  onCreateSignalHandled?: (signal: number) => void;
 }
 
 function assistantRunSessionTarget(run: AssistantRun, owner: AssistantRecord): AssistantSessionTarget | null {
@@ -272,7 +274,7 @@ function useAssistantData(focusAssistantID?: string) {
   return { assistants, diagnostics, selectedID, snapshot, loading, error, loadList, refresh, select };
 }
 
-export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSubmitKey }: AssistantWorkspaceProps) {
+export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSubmitKey, createSignal, onCreateSignalHandled }: AssistantWorkspaceProps) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
   const submitKey = normalizeComposerSubmitKey(composerSubmitKey);
@@ -280,12 +282,20 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
   const data = useAssistantData(focusAssistantID);
   const [manageTab, setManageTab] = useState<ManageTab | null>(null);
   const [creating, setCreating] = useState(false);
+  const appliedCreateSignal = useRef(0);
   const [busy, setBusy] = useState("");
   const [handoff, setHandoff] = useState("");
   const [handoffNotice, setHandoffNotice] = useState(false);
   const [liveReply, setLiveReply] = useState<AssistantLiveReply | null>(null);
   const liveReplyViewportRef = useRef<HTMLDivElement>(null);
   const today = useMemo(() => new Date(), [data.snapshot?.revision]);
+
+  useEffect(() => {
+    if (!createSignal || appliedCreateSignal.current === createSignal) return;
+    appliedCreateSignal.current = createSignal;
+    setCreating(true);
+    onCreateSignalHandled?.(createSignal);
+  }, [createSignal, onCreateSignalHandled]);
   const timeline = useMemo(() => data.snapshot ? timelineEntries(data.snapshot, today, locale, copy) : [], [copy, data.snapshot, locale, today]);
   const openAttention = data.snapshot?.attention.filter((item) => attentionInboxAction(item, data.snapshot?.runs.find((run) => run.id === item.run_id)) !== "none").length ?? 0;
 	const openProposals = data.snapshot?.proposals?.filter((item) => item.state === "pending").length ?? 0;
@@ -467,37 +477,58 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
     }
   }, [submitKey, submitHandoff]);
 
+  const createDialog = creating ? (
+    <CreateAssistantDialog
+      onClose={() => setCreating(false)}
+      onCreated={(id) => {
+        setCreating(false);
+        void data.loadList(id);
+      }}
+    />
+  ) : null;
+
   if (data.loading && !data.snapshot) {
-    return <section className="assistant-workspace assistant-workspace--center" aria-live="polite"><RefreshCw className="assistant-spin" size={22} /><p>{copy.loading}</p></section>;
+    return (
+      <>
+        <section className="assistant-workspace assistant-workspace--center" aria-live="polite"><RefreshCw className="assistant-spin" size={22} /><p>{copy.loading}</p></section>
+        {createDialog}
+      </>
+    );
   }
 
   if (data.error && !data.snapshot) {
     return (
-      <section className="assistant-workspace assistant-workspace--center" role="alert">
-        <AlertCircle size={24} />
-        <h1>{copy.loadFailed}</h1>
-        <p>{data.error}</p>
-        <button className="assistant-button" type="button" onClick={() => void data.loadList()}>{copy.retry}</button>
-      </section>
+      <>
+        <section className="assistant-workspace assistant-workspace--center" role="alert">
+          <AlertCircle size={24} />
+          <h1>{copy.loadFailed}</h1>
+          <p>{data.error}</p>
+          <button className="assistant-button" type="button" onClick={() => void data.loadList()}>{copy.retry}</button>
+        </section>
+        {createDialog}
+      </>
     );
   }
 
   if (!data.snapshot) {
     return (
-      <section className="assistant-workspace assistant-workspace--empty">
-        <Bot size={30} aria-hidden="true" />
-        <h1>{copy.emptyTitle}</h1>
-        <p>{copy.emptyBody}</p>
-        <button className="assistant-button assistant-button--accent" type="button" onClick={() => setCreating(true)}><Plus size={16} />{copy.newAssistant}</button>
-        {creating && <CreateAssistantDialog onClose={() => setCreating(false)} onCreated={(id) => { setCreating(false); void data.loadList(id); }} />}
-      </section>
+      <>
+        <section className="assistant-workspace assistant-workspace--empty">
+          <Bot size={30} aria-hidden="true" />
+          <h1>{copy.emptyTitle}</h1>
+          <p>{copy.emptyBody}</p>
+          <button className="assistant-button assistant-button--accent" type="button" onClick={() => setCreating(true)}><Plus size={16} />{copy.newAssistant}</button>
+        </section>
+        {createDialog}
+      </>
     );
   }
 
   const snapshot = data.snapshot;
   const assistant = snapshot.assistant;
   return (
-    <section className="assistant-workspace" aria-label={copy.entry}>
+    <>
+      <section className="assistant-workspace" aria-label={copy.entry}>
       <header className="assistant-workspace__topbar">
         <div className="assistant-picker-wrap">
           <select className="assistant-picker" value={data.selectedID} onChange={(event) => void data.select(event.target.value)} aria-label={copy.entry}>
@@ -682,8 +713,9 @@ export function AssistantWorkspace({ onOpenSession, focusAssistantID, composerSu
           onManagedChanged={() => setManagedReload((value) => value + 1)}
         />
       )}
-      {creating && <CreateAssistantDialog onClose={() => setCreating(false)} onCreated={(id) => { setCreating(false); void data.loadList(id); }} />}
-    </section>
+      </section>
+      {createDialog}
+    </>
   );
 }
 

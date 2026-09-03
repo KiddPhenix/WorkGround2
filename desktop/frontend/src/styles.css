@@ -45201,26 +45201,36 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* Session sidebar v2: permanent primary rail + pageable secondary panel. */
-.app--workbench .layout--workbench {
-  grid-template-columns: 360px minmax(0, 1fr);
+.app--workbench .layout.layout--workbench,
+:root[data-theme-style] .app.app--workbench .layout.layout--workbench {
+  grid-template-columns: 360px minmax(0, 1fr) !important;
 }
 
-.app--workbench .layout--workbench.layout--sidebar-collapsed {
-  grid-template-columns: 56px minmax(0, 1fr);
+.app--workbench .layout.layout--workbench.layout--sidebar-collapsed,
+:root[data-theme-style] .app.app--workbench .layout.layout--workbench.layout--sidebar-collapsed {
+  grid-template-columns: 56px minmax(0, 1fr) !important;
   gap: 12px;
 }
 
-.app--workbench .layout--workbench.layout--sidebar-collapsed .session-workspace,
-.app--workbench .layout--workbench.layout--sidebar-collapsed .work-session-host,
-.app--workbench .layout--workbench.layout--sidebar-collapsed .collab-surface,
-.app--workbench .layout--workbench.layout--sidebar-collapsed .assistant-workspace {
+.app--workbench .layout.layout--workbench > .session-sidebar {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.app--workbench .layout.layout--workbench > .session-workspace,
+.app--workbench .layout.layout--workbench > .work-session-host,
+.app--workbench .layout.layout--workbench > .work-page,
+.app--workbench .layout.layout--workbench > .collab-surface,
+.app--workbench .layout.layout--workbench > .assistant-workspace {
   grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
 }
 
 .session-sidebar {
   display: grid;
   grid-template-columns: 56px minmax(0, 304px);
-  width: 360px;
+  width: 100%;
   height: 100%;
   min-width: 0;
   overflow: hidden;
@@ -45373,6 +45383,33 @@ body > .mermaid-diagram--fullscreen {
 .session-sidebar__panel-actions { display: flex; align-items: center; gap: 4px; }
 
 .session-sidebar__panel-header button:hover { color: var(--fg); background: var(--sidebar-hover); }
+
+.session-sidebar__primary-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  flex: 0 0 40px;
+  width: 100%;
+  height: 40px;
+  margin: 0 0 12px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-strong);
+  font: inherit;
+  font-weight: 620;
+  cursor: pointer;
+}
+
+.session-sidebar__primary-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 64%, var(--border));
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--fg);
+}
+
+.session-sidebar__primary-action:disabled { opacity: 0.5; cursor: default; }
 
 .session-sidebar__search-box {
   display: flex;
@@ -45529,16 +45566,27 @@ body > .mermaid-diagram--fullscreen {
   box-shadow: 0 12px 34px rgba(39, 43, 54, 0.14);
 }
 
-@media (max-width: 919px) {
-  .app--workbench .layout--workbench,
-  .app--workbench .layout--workbench.layout--sidebar-collapsed {
+@media (max-width: 919.98px) {
+  .app--workbench .layout.layout--workbench,
+  .app--workbench .layout.layout--workbench.layout--sidebar-collapsed,
+  :root[data-theme-style] .app.app--workbench .layout.layout--workbench,
+  :root[data-theme-style] .app.app--workbench .layout.layout--workbench.layout--sidebar-collapsed {
     grid-template-columns: 56px minmax(0, 1fr) !important;
     gap: 8px;
   }
-  .app--workbench .layout--workbench .session-workspace,
-  .app--workbench .layout--workbench .work-session-host,
-  .app--workbench .layout--workbench .collab-surface,
-  .app--workbench .layout--workbench .assistant-workspace { grid-column: 2; }
+  .app--workbench .layout.layout--workbench > .session-workspace,
+  .app--workbench .layout.layout--workbench > .work-session-host,
+  .app--workbench .layout.layout--workbench > .work-page,
+  .app--workbench .layout.layout--workbench > .collab-surface,
+  .app--workbench .layout.layout--workbench > .assistant-workspace,
+  :root[data-theme-style] .app.app--workbench .layout.layout--workbench > .session-workspace,
+  :root[data-theme-style] .app.app--workbench .layout.layout--workbench > .work-session-host,
+  :root[data-theme-style] .app.app--workbench .layout.layout--workbench > .work-page,
+  :root[data-theme-style] .app.app--workbench .layout.layout--workbench > .collab-surface,
+  :root[data-theme-style] .app.app--workbench .layout.layout--workbench > .assistant-workspace {
+    grid-column: 2 !important;
+    grid-row: 1;
+  }
   .session-sidebar { position: relative; z-index: var(--z-workspace-float); grid-template-columns: 56px; width: 56px; overflow: visible; }
   .session-sidebar__panel { position: absolute; top: -1px; bottom: -1px; left: 55px; width: min(304px, calc(100vw - 84px)); overflow: hidden; border: 1px solid var(--border); border-left-color: var(--border-soft); border-radius: 0 8px 8px 0; background: color-mix(in srgb, var(--sidebar-bg) 96%, transparent); box-shadow: 16px 0 38px rgba(0, 0, 0, 0.28); backdrop-filter: blur(14px); }
 }
