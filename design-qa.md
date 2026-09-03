@@ -1293,3 +1293,72 @@ The work window itself was compared as a focused region because the full app inc
 - P3: when the backend later exposes typed changed-file and validation artifacts, the result face can add those sections without parsing log text.
 
 final result: passed
+
+---
+
+# Session 双栏侧边栏入口修复（2026-09-03）
+
+## Source visual truth
+
+- `D:\Temp\codex-clipboard-b32cb51c-53f1-4a3c-b1cf-08a6405c1ccd.png`（1749 × 1062）：项目二级栏与 Session 画布叠压的实机截图。
+- `D:\Temp\codex-clipboard-24e5d49a-4e5f-442d-89a4-013fc9a39384.png`（834 × 647）：ROOM 面板缺少可用顶部入口的实机截图。
+
+## Implementation evidence
+
+- `docs/assets/workground2-session-sidebar-fix-project.png`（1748 × 1060）：项目模式、顶部“创建项目”与无叠压布局。
+- `docs/assets/workground2-session-sidebar-fix-room.png`（1748 × 1060）：ROOM 模式与顶部“创建 / 加入 ROOM”。
+- `docs/assets/workground2-session-sidebar-fix-assistant.png`（1748 × 1060）：助手模式、顶部“创建助手”及直接打开的既有创建表单。
+- 浏览器：Codex 内置浏览器，深色 Iris 主题；桌面态约 1749 × 1060 CSS px，窄屏态 919 × 820 CSS px。
+
+## State and interactions tested
+
+- 项目、ROOM、助手三个左轨入口均可切换对应二级栏。
+- 三个二级栏均在标题下、列表前展示 40px 高的完整宽度主按钮。
+- “创建项目”复用既有项目创建动作；“创建 / 加入 ROOM”打开既有多人协作弹窗。
+- “创建助手”进入助手工作区并直接打开既有创建表单；相同信号只消费一次，普通打开助手不会误触发创建。
+- Assistant 列表加载中或失败时仍可创建；pending→resolved 与 error→success 后保持同一 Dialog DOM、模板选择和输入草稿。
+- 1749px 桌面态二级栏右缘约 x=370，工作区左缘约 x=382，保留 12px 间距且无覆盖。
+- 919px 窄屏态命中 `max-width: 919.98px`，左轨保留 56px，仅二级栏按设计覆盖工作区。
+
+## Findings
+
+- 无剩余 P0/P1/P2 视觉或核心交互问题。
+- 字体与层级：沿用 WorkGround2 现有标题、正文和按钮字重，三个模式保持一致。
+- 间距与布局：Workbench 宽屏网格统一为 360px + 内容区，折叠态统一为 56px + 内容区；主按钮与面板内边距对齐。
+- 颜色与资产：沿用现有 Iris token、边框与紫色强调色；图标来自现有 Lucide 图标库。
+- 文案：严格使用“创建项目”“创建 / 加入 ROOM”“创建助手”。
+
+## Focused comparison
+
+同一轮视觉输入中并排检查了两张用户实机截图与项目、ROOM、助手三张实现截图。宽屏比较确认二级栏不再侵入 Session 内容；聚焦比较确认三个面板标题、主按钮位置、尺寸、颜色和可操作状态一致。
+
+## Comparison history
+
+### Pass 1
+
+- 发现：侧栏实际宽度为 56 + 304 = 360px，Workbench 旧网格只预留 300px，造成固定 48px 左右的内容叠压。
+- 发现：项目、ROOM、助手缺少统一且可见的顶部主动作；助手动作只进入页面，没有直接进入创建流程。
+
+### Pass 2
+
+- 修复：网格宽屏列统一为 360px，并显式约束 Session、Work、协作与助手表面位于第二列；折叠态为 56px。
+- 修复：三个模式增加完整宽度顶部主按钮；助手通过一次性信号直接打开既有创建表单并保证重复消费幂等。
+- 修复：响应式阈值调整为 919.98px，覆盖分数像素视口边界。
+- 发现：助手创建弹窗最初依赖列表成功加载，且状态切换会重建 Dialog、丢失草稿。
+
+### Pass 3
+
+- 修复：loading/error/empty/ready 四状态使用稳定的 `[surface, createDialog]` sibling 槽位，创建流程与列表状态解耦。
+- 结果：桌面与窄屏布局、三个入口、ROOM 弹窗、助手创建弹窗、加载/失败恢复、草稿保持及浏览器控制台均通过验证；独立复审无 P0/P1/P2。
+
+## Validation
+
+- Sidebar 行为：10/10。
+- AssistantWorkspace：198/198。
+- AssistantCreate：55/55。
+- Workbench layout：127/127。
+- App Chrome：82/82。
+- Owner Decision gate：13/13。
+- TypeScript、CSS syntax、z-index token、production build、`git diff --check`：通过。
+
+final result: passed
