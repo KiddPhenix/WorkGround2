@@ -45555,6 +45555,10 @@ body > .mermaid-diagram--fullscreen {
 .session-sidebar__inline-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px; color: var(--err); font-size: 11px; }
 .session-sidebar__inline-error span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-sidebar__inline-error button { flex: 0 0 auto; border: 0; background: transparent; color: var(--accent-strong); cursor: pointer; }
+.session-sidebar__issues { display: flex; align-items: center; gap: 8px; margin: 4px 8px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--err) 32%, var(--border)); border-radius: 7px; color: var(--fg-dim); font-size: 11px; background: color-mix(in srgb, var(--err) 8%, transparent); }
+.session-sidebar__issues svg { flex: 0 0 auto; color: var(--err); }
+.session-sidebar__issues span { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-sidebar__issues button { flex: 0 0 auto; border: 0; background: transparent; color: var(--accent-strong); cursor: pointer; }
 .session-sidebar__empty { display: flex; align-items: center; justify-content: center; color: var(--fg-faint); font-size: 12px; }
 .session-sidebar__project-result { display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 0; color: var(--fg-dim); background: transparent; cursor: pointer; }
 .session-sidebar__project-result:hover { color: var(--fg); background: var(--sidebar-hover); }

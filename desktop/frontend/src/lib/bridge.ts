@@ -11,6 +11,7 @@ import type * as GeneratedApp from "../../wailsjs/go/main/App";
 import type { WailsWorkBindings } from "../work/wailsAdapter";
 import type {
   SidebarGroup,
+  SidebarIssue,
   SidebarPage,
   SidebarSearchItem,
   SidebarSearchRequest,
@@ -932,6 +933,8 @@ export interface AppBindings extends WailsWorkBindings {
   CloseTab(tabID: string): Promise<void>;
   ListProjectTree(): Promise<ProjectNode[]>;
   ListSidebarGroups(mode: SidebarQueryMode): Promise<SidebarGroup[]>;
+  ListSidebarIssues(mode: SidebarQueryMode): Promise<SidebarIssue[]>;
+  RefreshSidebarIssues(mode: SidebarQueryMode): Promise<SidebarIssue[]>;
   ListSidebarSessions(query: SidebarSessionQuery): Promise<SidebarPage<SidebarSession>>;
   SearchSidebar(request: SidebarSearchRequest): Promise<SidebarPage<SidebarSearchItem>>;
   RenameProject(workspaceRoot: string, title: string): Promise<void>;
@@ -6015,6 +6018,12 @@ function makeMockApp(): AppBindings {
         });
       }
       return groups;
+    },
+    async ListSidebarIssues(_mode: SidebarQueryMode) {
+      return [];
+    },
+    async RefreshSidebarIssues(_mode: SidebarQueryMode) {
+      return [];
     },
     async ListSidebarSessions(query: SidebarSessionQuery) {
       const groups = await this.ListSidebarGroups(query.mode);

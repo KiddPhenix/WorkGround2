@@ -1,5 +1,7 @@
 # Feature Map
 
+> 2026-09-03 ROOM 分支元数据容错：状态 `done`；分支 `developping/room-branch-meta-recovery+2026-09-03`；负责人 `Codex + subagents`。单个损坏的 Session meta 仅在 Sidebar 派生索引边界隔离，健康的项目、ROOM 与助手继续加载；普通 I/O/权限错误仍显式失败。issue 与 manifest/row/order 同事务写入，按 mode 脱敏展示并支持定向重扫、修复/删除后自愈；异步 scope、失败重试和深分页保持均有回归覆盖。Branch meta 保存改用 fsync + 原子替换防复发，原损坏文件未被修改。专项 Go、前端 26 项、TypeScript、CSS、两端 vet/build 与生产构建通过；全量仅命中可单独复跑通过的既有 Windows 插件/Work 临时文件问题及两个既有窗口图标断言基线。
+
 > 2026-09-03 Session 双栏侧边栏与大列表分页：状态 `done`；修正分支 `developping/session-sidebar-entry-fix+2026-09-03`；负责人 `Codex + subagents`。依据实机反馈修复二级栏与 Session 画布叠压，并恢复项目、ROOM、助手模式的可进入状态和顶部主创建入口：`创建项目`、`创建 / 加入 ROOM`、`创建助手`。助手入口直接打开既有创建表单；窄屏仍只让二级栏覆盖内容。保留既有分页、搜索、相对时间和恢复机制。专项测试、TypeScript、CSS/z-index、production build、视觉与交互验收通过。详细设计：`docs/SESSION_SIDEBAR_DESIGN.zh-CN.md`；视觉验收：`design-qa.md`。
 
 > 2026-09-03 显示缩放即时生效：状态 `done`；分支 `developping/display-zoom-live+2026-09-03`；负责人 `Codex`。Windows WebView2 缩放通过受版本守卫的原生 Controller 桥接即时应用，变更串行化并原子持久化，落盘失败回滚运行时值；设置页以后端有效值为单一可信源，连续拖动隔离迟到结果，失败显式恢复；Widget/Icon 模式订阅有效缩放更新。专项 Go 测试、`go vet ./...`、`go build ./...`、设置行为 22 项、Widget 布局契约、TypeScript 与前端 production build 通过；Desktop 全量约 3 分钟无输出后中止，完整 DesktopIcon 套件仍命中已记录的第 227 行透明背景基线。主要文件：`desktop/zoom_factor.go`、`desktop/zoom_runtime_windows.go`、`desktop/frontend/src/components/SettingsPanel.tsx`、`desktop/frontend/src/lib/dpiScale.ts`、Widget 组件及相关测试。
@@ -22,6 +24,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| ROOM 分支元数据容错 | `done` | `developping/room-branch-meta-recovery+2026-09-03` | `Codex + subagents` | `internal/agent/branch.go`、`desktop/sidebar{,_bolt,_test}.go`、`desktop/frontend/src/sidebar` | 调整功能：损坏 meta 按条目隔离并以脱敏 issue 显式提示；健康列表继续加载，普通 I/O 仍失败。issue/索引同事务、按 mode 过滤，折叠项目可定向重扫，修复/删除后自愈；写入端使用 fsync 原子替换。 |
 | Session 双栏侧边栏与大列表分页 | `done` | `developping/session-sidebar-entry-fix+2026-09-03` | `Codex + subagents` | `desktop/frontend/src/sidebar`、`desktop/frontend/src/{App.tsx,styles.css}`、Session 侧栏与助手测试 | 调整功能：Workbench 网格与 56+304px 双栏统一，消除二级栏叠压；项目、ROOM、助手可正常切换，并在各自面板顶部显示完整宽度创建入口。助手入口直接打开既有创建表单，重复信号幂等；窄屏仅二级栏覆盖内容。分页、搜索、相对时间与恢复机制保持不变。专项测试、类型检查、CSS/z-index、production build 与视觉交互验收通过。 |
 | Session 运行中指导意见可见 | `done` | `developping/session-steer-visibility+2026-09-01` | `Codex + WorkGround2` | `internal/agent/agent.go`、`internal/event/event.go`、`desktop/frontend/src/{App.tsx,components/Composer.tsx,components/SessionSurface.tsx}`、Steer 相关测试 | 调整功能：运行中提交的指导意见在后端成功入队后立即以 `↪ 原文` 进入时间线，不再等待模型下一轮消费；模型仍按循环每次消费一条并在消费时持久化，实时确认只发一次，不影响 turn 计数、rewind/fork 与历史投影。前端队列确认命名同步为 accepted。Agent 全包、Steer 专项、EventWire、相关 vet、Composer 112 项、transcript grouping 36 项、TypeScript 与 diff check 均通过。 |
 | Provider Key 运行时延迟生效 | `done` | `developping/provider-key-deferred-rebuild-finish+2026-09-01` | `Codex + WorkGround2` | `desktop/settings_app.go`、`desktop/tabs.go`、`internal/jobs/jobs.go`、`desktop/deferred_rebuild_test.go`、Provider Key 前端测试 | 调整功能：运行中允许保存或清除 Provider Key；当前 Controller 保持创建时凭据，活动运行结束后构建下一 Controller 并读取新凭据。TurnDone 后仍存活的后台 job 会在最后一个完成/失败/被杀时异步触发幂等重建；并发认领使用原子 CAS，重建失败恢复 pending 状态。真实持久化错误仍在设置页显式展示并保留输入。Internal Jobs 与 Desktop 定向测试、两包 vet、前端 5+29 项回归及 TypeScript 检查通过；Desktop 全量仅命中两个可隔离复现的既有 window_controls 失败。 |

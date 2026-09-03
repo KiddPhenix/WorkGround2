@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { nextContextMenuFocus } from "../components/ContextMenu";
 import { onSidebarChanged } from "../lib/bridge";
 import { formatSidebarAbsoluteTime, formatSidebarRelativeTime } from "../sidebar/sidebarTime";
-import { isSidebarCursorError, loadSidebarPage, loadSidebarSearch } from "../sidebar/sidebarData";
+import { isSidebarCursorError, loadSidebarGroups, loadSidebarPage, loadSidebarSearch, refreshSidebarIssues, refreshSidebarSearch } from "../sidebar/sidebarData";
 import { isSidebarMenuShortcut } from "../sidebar/sidebarKeyboard";
 import { emptySidebarPage, mergeSearchItems, mergeSidebarSessions, pruneSidebarPages, useSidebarStore } from "../sidebar/sidebarStore";
 import type { SidebarPage, SidebarSearchItem, SidebarSession } from "../sidebar/types";
@@ -63,6 +63,19 @@ assert.equal(useSidebarStore.getState().searchPage.items.length, 0, "query chang
 useSidebarStore.getState().receiveSearch(12, { items: [searchA], snapshot: "late" }, true);
 assert.equal(useSidebarStore.getState().searchPage.items.length, 0, "an invalidated late search response cannot reappear");
 
+const sampleIssue = { code: "meta_decode", retryable: true, observedAt: 1 };
+useSidebarStore.setState({ issues: [sampleIssue], issuesStatus: "ready", issuesRequestSeq: 0, issuesScope: "rooms", issuesDataScope: "rooms" });
+const issueSeq = useSidebarStore.getState().beginIssues("rooms");
+useSidebarStore.getState().failIssues(issueSeq);
+assert.deepEqual(useSidebarStore.getState().issues, [sampleIssue], "a failed same-scope issues fetch keeps previously loaded issues");
+assert.equal(useSidebarStore.getState().issuesStatus, "error", "a failed issues fetch exposes a retryable error state");
+const staleIssueSeq = useSidebarStore.getState().beginIssues("assistants");
+assert.deepEqual(useSidebarStore.getState().issues, [], "switching scope clears the previous scope's issues");
+useSidebarStore.getState().receiveIssues(issueSeq, "rooms", [{ code: "meta_decode", observedAt: 2 }]);
+assert.deepEqual(useSidebarStore.getState().issues, [], "a stale issues response from another scope cannot reappear");
+useSidebarStore.getState().receiveIssues(staleIssueSeq, "assistants", []);
+assert.deepEqual(useSidebarStore.getState().issues, [], "the newest issues response clears the warning");
+
 const cachedPage = (id: string): ReturnType<typeof emptySidebarPage<SidebarSession>> => ({
   ...emptySidebarPage<SidebarSession>(),
   items: [session(id, 1)],
@@ -96,6 +109,7 @@ Object.defineProperty(globalThis, "window", {
   configurable: true,
   value: {
     go: { main: { App: {
+      async ListSidebarIssues() { return []; },
       async ListSidebarSessions(query: { cursor?: string }) {
         if (query.cursor === "expired") throw new Error("expired sidebar cursor");
         recoveryCounts.push(useSidebarStore.getState().pages["projects:recover"]?.items.length ?? 0);
@@ -133,6 +147,59 @@ try {
   assert.deepEqual(useSidebarStore.getState().searchPage.items.map((item) => item.id), failedRows.map((item) => item.id), "failed search cursor recovery preserves the old results");
   assert.equal(useSidebarStore.getState().searchPage.status, "error", "failed search cursor recovery exposes a retryable error");
 } finally {
+  if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+  else Reflect.deleteProperty(globalThis, "window");
+}
+
+// A search warning retry must refresh at the currently loaded depth (not reset
+// to 20). refreshSidebarSearch requests a limit derived from loadedCount.
+{
+  const deepSearch = Array.from({ length: 60 }, (_, index): SidebarSearchItem => ({ kind: "session", id: `deep-${index}`, session: session(`deep-${index}`, 2) }));
+  const requestedLimits: number[] = [];
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { go: { main: { App: {
+      SearchSidebar: async (request: { cursor?: string; limit: number }) => {
+        requestedLimits.push(request.limit);
+        const offset = Number(request.cursor || 0);
+        return { items: deepSearch.slice(offset, offset + request.limit), nextCursor: offset + request.limit < deepSearch.length ? String(offset + request.limit) : undefined, total: deepSearch.length, snapshot: "deep" };
+      },
+      ListSidebarIssues: async () => [],
+    } } } },
+  });
+  useSidebarStore.setState({ searchQuery: "deep", searchFilter: "all", searchPage: { items: deepSearch.slice(0, 45), nextCursor: "45", total: 60, snapshot: "deep", status: "ready", requestSeq: 0 } });
+  await refreshSidebarSearch("deep", "all", 45);
+  assert.equal(useSidebarStore.getState().searchPage.items.length, 45, "search warning retry keeps the previously loaded 45-deep result instead of resetting to 20");
+  assert.ok(requestedLimits[0] > 20, `search refresh first limit=${requestedLimits[0]} should derive from the loaded depth, not reset to 20`);
+  if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+  else Reflect.deleteProperty(globalThis, "window");
+}
+
+// A late ROOM groups response must not steal the issues scope after the user has
+// already switched to Assistants and its issues load succeeded.
+{
+  let resolveRoomsGroups!: (value: unknown) => void;
+  const roomsGroupsPromise = new Promise((resolve) => { resolveRoomsGroups = resolve; });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { go: { main: { App: {
+      ListSidebarGroups: async (mode: string) => {
+        if (mode === "rooms") return roomsGroupsPromise;
+        return [];
+      },
+      ListSidebarIssues: async (mode: string) => (mode === "assistants"
+        ? [{ code: "meta_decode", retryable: true, observedAt: 2 }]
+        : [{ code: "meta_decode", retryable: true, observedAt: 1 }]),
+    } } } },
+  });
+  useSidebarStore.setState({ activeMode: "rooms", groupsByMode: {}, issues: [], issuesStatus: "idle", issuesRequestSeq: 0, issuesScope: "", issuesDataScope: "" });
+  const roomsPending = loadSidebarGroups("rooms");
+  useSidebarStore.setState({ activeMode: "assistants" });
+  await loadSidebarGroups("assistants");
+  resolveRoomsGroups([]);
+  await roomsPending;
+  assert.equal(useSidebarStore.getState().issuesScope, "assistants", "a late rooms response does not steal the issues scope");
+  assert.deepEqual(useSidebarStore.getState().issues.map((issue) => issue.observedAt), [2], "issues content stays assistants after the late rooms response");
   if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
   else Reflect.deleteProperty(globalThis, "window");
 }

@@ -107,6 +107,16 @@ type SidebarSearchPage struct {
 	Snapshot   string              `json:"snapshot"`
 }
 
+// SidebarIssue describes one session sidecar that the sidebar index could not
+// read. It is advisory and deliberately minimal: healthy groups and sessions
+// keep rendering, and the issue clears once the sidecar is repaired or deleted.
+// No absolute paths or parse details are exposed here.
+type SidebarIssue struct {
+	Code       string `json:"code"`
+	Retryable  bool   `json:"retryable"`
+	ObservedAt int64  `json:"observedAt"`
+}
+
 var (
 	errInvalidSidebarMode   = errors.New("invalid sidebar mode")
 	errInvalidSidebarFilter = errors.New("invalid sidebar filter")
@@ -136,6 +146,27 @@ func (a *App) ListSidebarSessions(query SidebarSessionQuery) (SidebarSessionPage
 // from the same immutable sidebar snapshot used for pagination.
 func (a *App) SearchSidebar(request SidebarSearchRequest) (SidebarSearchPage, error) {
 	return desktopSidebarBolt.search(a, request)
+}
+
+// ListSidebarIssues returns the currently isolated session sidecars that could
+// not be read, filtered to the given mode. It is a pure read of the derived
+// index; scanning is done by the group/session/search entry points, whose
+// frontend retries keep the current pagination depth.
+func (a *App) ListSidebarIssues(mode SidebarMode) ([]SidebarIssue, error) {
+	if !validSidebarMode(mode) {
+		return nil, fmt.Errorf("%w: %q", errInvalidSidebarMode, mode)
+	}
+	return desktopSidebarBolt.listIssues(a, mode)
+}
+
+// RefreshSidebarIssues re-scans only the plans that currently own an issue in
+// the given mode, then returns that mode's issues. It is the targeted retry
+// counterpart of ListSidebarIssues, used by the collapsed-project warning retry.
+func (a *App) RefreshSidebarIssues(mode SidebarMode) ([]SidebarIssue, error) {
+	if !validSidebarMode(mode) {
+		return nil, fmt.Errorf("%w: %q", errInvalidSidebarMode, mode)
+	}
+	return desktopSidebarBolt.refreshIssues(a, mode)
 }
 
 func validSidebarMode(mode SidebarMode) bool {

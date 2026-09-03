@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -190,6 +191,23 @@ func BranchMetaPath(sessionPath string) string {
 	return store.SessionMeta(sessionPath)
 }
 
+// BranchMetaDecodeError reports that a branch-meta sidecar is present but is not
+// valid JSON. The underlying decoding error is preserved via Unwrap for callers
+// that need the concrete cause; the message deliberately omits the sidecar path
+// so it is safe to surface in APIs and UI without leaking absolute paths.
+type BranchMetaDecodeError struct {
+	Err      error
+	MetaPath string // optional, for logs only; never rendered by Error()
+}
+
+func (e *BranchMetaDecodeError) Error() string {
+	return "decode branch meta: " + e.Err.Error()
+}
+
+func (e *BranchMetaDecodeError) Unwrap() error {
+	return e.Err
+}
+
 func LoadBranchMeta(sessionPath string) (BranchMeta, bool, error) {
 	metaPath := BranchMetaPath(sessionPath)
 	if metaPath == "" {
@@ -204,7 +222,7 @@ func LoadBranchMeta(sessionPath string) (BranchMeta, bool, error) {
 	}
 	var m BranchMeta
 	if err := json.Unmarshal(b, &m); err != nil {
-		return BranchMeta{}, false, fmt.Errorf("decode branch meta %s: %w", metaPath, err)
+		return BranchMeta{}, false, &BranchMetaDecodeError{Err: err, MetaPath: metaPath}
 	}
 	if m.ID == "" {
 		m.ID = BranchID(sessionPath)
@@ -252,36 +270,27 @@ func saveBranchMeta(sessionPath string, m BranchMeta, touchUpdated bool) error {
 	if touchUpdated || m.UpdatedAt.IsZero() {
 		m.UpdatedAt = now
 	}
-	if existing, ok, err := LoadBranchMeta(sessionPath); err == nil && ok {
+	existing, ok, err := LoadBranchMeta(sessionPath)
+	if err != nil {
+		// A damaged (unparseable) sidecar may be overwritten so it can be
+		// repaired; an ordinary I/O or permission error must not destroy the
+		// persistence fields, so it is returned unchanged.
+		var decodeErr *BranchMetaDecodeError
+		if !errors.As(err, &decodeErr) {
+			return err
+		}
+	} else if ok {
 		preserveBranchMetaPersistence(&m, existing)
-	}
-	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
-		return err
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(metaPath), ".branch.*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := fileutil.ReplaceFile(tmpPath, metaPath); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	// AtomicWriteFile writes + fsyncs a sibling temp file, then atomically
+	// replaces the sidecar, so a crash never leaves a truncated or all-zero
+	// meta file.
+	return fileutil.AtomicWriteFile(metaPath, b, 0o600)
 }
 
 func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta) {
