@@ -136,11 +136,17 @@ const modeSource = readFileSync(
   resolve(import.meta.dirname, "../components/widget/WidgetMode.tsx"),
   "utf-8",
 );
+const iconModeSource = readFileSync(
+  resolve(import.meta.dirname, "../components/widget/DesktopIconMode.tsx"),
+  "utf-8",
+);
 
 const modeRoot = extractCssRule(modeCss, ".widget-mode");
 assert.match(modeRoot ?? "", /min-width:\s*0/, "widget root must not force a 520px CSS viewport at desktop zoom");
 assert.match(modeRoot ?? "", /min-height:\s*0/, "widget root must not force a 160px CSS viewport at desktop zoom");
 assert.match(modeSource, /app\.GetDesktopZoomFactor\(\)/, "widget must read the active WebView zoom factor");
+assert.match(modeSource, /EventsOn\?\.\(DESKTOP_ZOOM_EVENT/, "widget must react to live WebView zoom changes");
+assert.match(iconModeSource, /EventsOn\?\.\(DESKTOP_ZOOM_EVENT/, "desktop icon mode must react to live WebView zoom changes");
 assert.match(modeSource, /resolveWidgetZoomFrame\(desktopZoom\)/, "widget must apply the inverse desktop zoom frame");
 const enterAnimation = modeCss.match(/@keyframes\s+widget-enter\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
 assert.doesNotMatch(enterAnimation, /transform:/, "widget entry animation must not override the zoom compensation transform");

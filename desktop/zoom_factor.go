@@ -2,16 +2,23 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"workground2/internal/config"
 )
 
-// DesktopZoomFactor persists the user's WebView2 zoom factor preference across
-// restarts. The frontend writes it; main.go reads it before wails.Run() to set
-// the Windows ZoomFactor option.
+const desktopZoomChangedEvent = "desktop:zoom-factor"
+
+// DesktopZoomFactor persists the user's WebView2 zoom factor preference. The
+// running controller applies changes immediately; main.go restores the same
+// value before wails.Run() on the next launch.
 type DesktopZoomFactor struct {
 	ZoomFactor float64 `json:"zoomFactor"`
 }
@@ -39,8 +46,9 @@ func loadZoomFactor() (float64, bool) {
 	return zf.ZoomFactor, true
 }
 
-// GetDesktopZoomFactor returns the currently persisted restart zoom factor,
-// or 1.0 if none is saved.
+// GetDesktopZoomFactor returns the current effective zoom factor. Successful
+// live changes and persistence are committed together, so the saved value is
+// also the active value; missing or corrupt state safely falls back to 1.0.
 func (a *App) GetDesktopZoomFactor() float64 {
 	zf, ok := loadZoomFactor()
 	if !ok {
@@ -49,15 +57,20 @@ func (a *App) GetDesktopZoomFactor() float64 {
 	return zf
 }
 
-// SetDesktopZoomFactor persists a zoom factor for the next launch. The value
-// is clamped to [0.5, 2.0] (50% – 200%) for safety.
-func (a *App) SetDesktopZoomFactor(factor float64) error {
+func normalizeDesktopZoomFactor(factor float64) (float64, error) {
+	if math.IsNaN(factor) || math.IsInf(factor, 0) {
+		return 0, fmt.Errorf("desktop zoom factor must be finite")
+	}
 	if factor < 0.5 {
 		factor = 0.5
 	}
 	if factor > 2.0 {
 		factor = 2.0
 	}
+	return factor, nil
+}
+
+func saveZoomFactor(factor float64) error {
 	path := zoomFactorPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -66,11 +79,57 @@ func (a *App) SetDesktopZoomFactor(factor float64) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return writeAtomic(path, data, 0o644)
 }
 
-// RestartApplication saves the zoom and restarts the whole process so the new
-// ZoomFactor takes effect in the WebView2 window options.
+func (a *App) applyDesktopZoom(factor float64) error {
+	if a.desktopZoomApply != nil {
+		return a.desktopZoomApply(factor)
+	}
+	if a.ctx == nil {
+		return nil
+	}
+	return applyDesktopWebViewZoom(a.ctx, factor)
+}
+
+func (a *App) persistDesktopZoom(factor float64) error {
+	if a.desktopZoomSave != nil {
+		return a.desktopZoomSave(factor)
+	}
+	return saveZoomFactor(factor)
+}
+
+// SetDesktopZoomFactor applies a zoom factor to the running WebView and then
+// persists it for the next launch. Persistence failure rolls the live WebView
+// back to its previous effective value, keeping one recoverable source of truth.
+func (a *App) SetDesktopZoomFactor(factor float64) error {
+	normalized, err := normalizeDesktopZoomFactor(factor)
+	if err != nil {
+		return err
+	}
+
+	a.desktopZoomMu.Lock()
+	defer a.desktopZoomMu.Unlock()
+
+	previous := a.GetDesktopZoomFactor()
+	if err := a.applyDesktopZoom(normalized); err != nil {
+		return fmt.Errorf("apply desktop zoom: %w", err)
+	}
+	if err := a.persistDesktopZoom(normalized); err != nil {
+		persistErr := fmt.Errorf("persist desktop zoom: %w", err)
+		if rollbackErr := a.applyDesktopZoom(previous); rollbackErr != nil {
+			return errors.Join(persistErr, fmt.Errorf("rollback desktop zoom to %.2f: %w", previous, rollbackErr))
+		}
+		return persistErr
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, desktopZoomChangedEvent, normalized)
+	}
+	return nil
+}
+
+// RestartApplication is retained for compatibility with older generated
+// bindings. Display zoom changes no longer require it.
 func (a *App) RestartApplication() error {
 	exe, err := os.Executable()
 	if err != nil {

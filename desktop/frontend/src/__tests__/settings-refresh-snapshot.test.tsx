@@ -237,6 +237,71 @@ ok(document.body.textContent?.includes("Settings could not be loaded.") === fals
 await act(async () => {
   retryRoot.unmount();
 });
+
+const zoomRootEl = document.createElement("div");
+document.body.appendChild(zoomRootEl);
+const zoomRoot = createRoot(zoomRootEl);
+const appliedZooms: number[] = [];
+let rejectZoom = false;
+let activeZoom = 0.8;
+localStorage.setItem("WorkGround2-zoom-restart", "2");
+window.go = {
+  main: {
+    App: {
+      Settings: async () => baseSettings("standard"),
+      GetDesktopZoomFactor: async () => activeZoom,
+      SetDesktopZoomFactor: async (factor: number) => {
+        appliedZooms.push(factor);
+        if (rejectZoom) throw new Error("live WebView zoom failed");
+        activeZoom = factor;
+      },
+    } as Partial<AppBindings> as AppBindings,
+  },
+};
+
+await act(async () => {
+  zoomRoot.render(
+    <LocaleProvider>
+      <SettingsPanel
+        initialTab="appearance"
+        desktopPlatform="windows"
+        onClose={() => {}}
+        onChanged={() => {}}
+      />
+    </LocaleProvider>,
+  );
+  await flushPromises();
+});
+await waitFor("effective desktop zoom", () => document.querySelector(".zoom-slider__value")?.textContent?.trim() === "80%");
+ok(document.body.textContent?.includes("restart required") === false, "display zoom no longer claims that a restart is required");
+
+const zoomInput = document.querySelector<HTMLInputElement>('input[type="range"][min="50"][max="200"]');
+if (!zoomInput) throw new Error("display zoom slider did not render");
+const inputValueSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set;
+if (!inputValueSetter) throw new Error("input value setter is unavailable");
+
+await act(async () => {
+  inputValueSetter.call(zoomInput, "125");
+  zoomInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  zoomInput.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await flushPromises();
+});
+eq(appliedZooms.at(-1), 1.25, "display zoom change calls the live backend binding");
+eq(document.querySelector(".zoom-slider__value")?.textContent?.trim(), "125%", "successful live zoom remains visible");
+
+rejectZoom = true;
+await act(async () => {
+  inputValueSetter.call(zoomInput, "150");
+  zoomInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  zoomInput.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await flushPromises();
+});
+eq(document.querySelector(".zoom-slider__value")?.textContent?.trim(), "125%", "failed live zoom restores the last confirmed value");
+ok(document.body.textContent?.includes("live WebView zoom failed") === true, "failed live zoom remains visible and retryable");
+
+await act(async () => {
+  zoomRoot.unmount();
+});
 dom.window.close();
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
