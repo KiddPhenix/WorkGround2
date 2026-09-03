@@ -51,12 +51,28 @@ await act(async () => {
 });
 ok(host.querySelector(".assistant-workspace") !== null, "workspace mounts as a full surface");
 ok(host.textContent?.includes("代码项目助手") ?? false, "workspace renders the selected assistant");
+ok(host.querySelector(".assistant-create") === null, "ordinary AssistantWorkspace open does not start assistant creation");
 ok(host.querySelector(".assistant-continue") === null && !(host.textContent?.includes("让它继续工作") ?? false), "main execution view no longer operates legacy Runs (continue button removed)");
 ok(host.querySelector(".assistant-proposal-chip")?.textContent?.trim() === "1", "top bar exposes the pending improvement proposal count");
 ok(host.querySelector("#assistant-handoff-input") !== null, "quick handoff input is keyboard accessible");
 ok(host.querySelector("#assistant-handoff-input")?.getAttribute("placeholder") === "对助手说…", "handoff input prompts a message to the assistant");
 ok(host.textContent?.includes("输入会被记录") ?? false, "handoff dock states that the input will be recorded");
 ok(host.querySelectorAll(".assistant-event").length >= 2, "timeline renders run and memory events");
+const handledCreateSignals: number[] = [];
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><AssistantWorkspace createSignal={1} onCreateSignalHandled={(signal) => handledCreateSignals.push(signal)} /></ToastProvider></LocaleProvider>);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+ok(host.querySelector(".assistant-create[role='dialog']") !== null, "a new createSignal opens the existing CreateAssistantDialog directly");
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><AssistantWorkspace createSignal={1} onCreateSignalHandled={(signal) => handledCreateSignals.push(signal)} /></ToastProvider></LocaleProvider>);
+});
+ok(host.querySelectorAll(".assistant-create[role='dialog']").length === 1 && handledCreateSignals.join(",") === "1", "replaying the same createSignal is idempotent");
+await act(async () => { (host.querySelector(".assistant-create .assistant-icon-button") as HTMLButtonElement | null)?.click(); });
+await act(async () => {
+  root.render(<LocaleProvider><ToastProvider><AssistantWorkspace /></ToastProvider></LocaleProvider>);
+});
+ok(host.querySelector(".assistant-create") === null, "cleared create intent stays closed on an ordinary AssistantWorkspace render");
 const zhCopy = assistantCopy("zh-CN");
 ok(
   assistantDiagnosticWarning([{ at: "", category: "runtime", operation: "progress_apply", message: "invalid transition" }], zhCopy) === "上次运行已完成，但计划进度未能更新。",
@@ -728,5 +744,92 @@ setMockAssistantSessionStatus(null);
 setMockAssistantSupervisorDiagnostic(null);
 
 await act(async () => { root.unmount(); });
+
+// ── 创建意图独立于 Assistant 列表状态 ───────────────────────
+const originalGo = window.go;
+let resolvePendingList!: (value: { items: []; diagnostics: [] }) => void;
+const pendingList = new Promise<{ items: []; diagnostics: [] }>((resolve) => { resolvePendingList = resolve; });
+window.go = { main: { App: {
+  AssistantList: () => pendingList,
+  AssistantViewport: async () => [{ ui_revision: 0 }, false],
+} as never } };
+const pendingHost = document.createElement("div");
+document.body.appendChild(pendingHost);
+const pendingRoot = createRoot(pendingHost);
+const pendingSignals: number[] = [];
+await act(async () => {
+  pendingRoot.render(
+    <LocaleProvider><ToastProvider><AssistantWorkspace createSignal={41} onCreateSignalHandled={(signal) => pendingSignals.push(signal)} /></ToastProvider></LocaleProvider>,
+  );
+  await Promise.resolve();
+});
+ok(pendingHost.querySelector(".assistant-spin") !== null, "pending Assistant list keeps the loading surface visible");
+ok(pendingHost.querySelector(".assistant-create[role='dialog']") !== null, "createSignal opens the create dialog while AssistantList is pending");
+ok(pendingSignals.join(",") === "41", "pending-list create intent is acknowledged exactly once");
+const pendingDialog = pendingHost.querySelector(".assistant-create[role='dialog']");
+await act(async () => { (pendingHost.querySelector(".assistant-template:not([disabled])") as HTMLButtonElement | null)?.click(); });
+const pendingName = pendingHost.querySelector(".assistant-create input[required]") as HTMLInputElement | null;
+act(() => {
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set;
+  setter?.call(pendingName, "保留 pending 草稿");
+  reactProps<{ onChange: (event: { target: HTMLInputElement }) => void }>(pendingName!).onChange({ target: pendingName! });
+});
+await act(async () => {
+  resolvePendingList({ items: [], diagnostics: [] });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+ok(pendingHost.querySelector(".assistant-workspace--empty") !== null, "pending Assistant list can resolve without closing creation");
+ok(pendingHost.querySelector(".assistant-create[role='dialog']") === pendingDialog, "pending-to-resolved transition preserves the same dialog DOM");
+ok((pendingHost.querySelector(".assistant-create input[required]") as HTMLInputElement | null)?.value === "保留 pending 草稿", "pending-to-resolved transition preserves the create draft");
+await act(async () => { pendingRoot.unmount(); });
+pendingHost.remove();
+
+let failedListAttempts = 0;
+window.go = { main: { App: {
+  AssistantList: async () => {
+    failedListAttempts += 1;
+    if (failedListAttempts === 1) throw new Error("assistant list unavailable");
+    return { items: [], diagnostics: [] };
+  },
+  AssistantViewport: async () => [{ ui_revision: 0 }, false],
+} as never } };
+const errorHost = document.createElement("div");
+document.body.appendChild(errorHost);
+const errorRoot = createRoot(errorHost);
+await act(async () => {
+  errorRoot.render(<LocaleProvider><ToastProvider><AssistantWorkspace /></ToastProvider></LocaleProvider>);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+ok(errorHost.querySelector(".assistant-workspace[role='alert']") !== null, "failed Assistant list exposes its retryable error surface");
+ok(errorHost.querySelector(".assistant-create") === null, "ordinary open does not start creation when AssistantList fails");
+const errorSignals: number[] = [];
+await act(async () => {
+  errorRoot.render(
+    <LocaleProvider><ToastProvider><AssistantWorkspace createSignal={42} onCreateSignalHandled={(signal) => errorSignals.push(signal)} /></ToastProvider></LocaleProvider>,
+  );
+  await Promise.resolve();
+});
+ok(errorHost.querySelector(".assistant-workspace[role='alert']") !== null, "create dialog does not replace the failed-list recovery surface");
+ok(errorHost.querySelector(".assistant-create[role='dialog']") !== null, "createSignal opens the create dialog after AssistantList fails");
+ok(errorSignals.join(",") === "42", "failed-list create intent is acknowledged exactly once");
+const errorDialog = errorHost.querySelector(".assistant-create[role='dialog']");
+await act(async () => { (errorHost.querySelector(".assistant-template:not([disabled])") as HTMLButtonElement | null)?.click(); });
+const errorName = errorHost.querySelector(".assistant-create input[required]") as HTMLInputElement | null;
+act(() => {
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set;
+  setter?.call(errorName, "保留 retry 草稿");
+  reactProps<{ onChange: (event: { target: HTMLInputElement }) => void }>(errorName!).onChange({ target: errorName! });
+});
+await act(async () => {
+  (errorHost.querySelector(".assistant-workspace[role='alert'] button") as HTMLButtonElement | null)?.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+ok(errorHost.querySelector(".assistant-workspace--empty") !== null, "failed Assistant list can recover while creation stays open");
+ok(errorHost.querySelector(".assistant-create[role='dialog']") === errorDialog, "error-to-success retry preserves the same dialog DOM");
+ok((errorHost.querySelector(".assistant-create input[required]") as HTMLInputElement | null)?.value === "保留 retry 草稿", "error-to-success retry preserves the create draft");
+await act(async () => { errorRoot.unmount(); });
+errorHost.remove();
+window.go = originalGo;
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed) process.exit(1);

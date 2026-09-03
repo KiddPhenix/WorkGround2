@@ -1,4 +1,4 @@
-import { ArrowUpRight, FolderPlus, MessageCircleQuestion, Plus } from "lucide-react";
+import { Bot, FolderPlus, MessageCircleQuestion, Users } from "lucide-react";
 import { useEffect, useMemo } from "react";
 import type { ProjectTopicStatus } from "../lib/types";
 import { loadSidebarGroups, loadSidebarPage, refreshSidebarPage } from "./sidebarData";
@@ -25,6 +25,18 @@ interface ProjectPanelProps {
 function pathKey(path?: string): string { return (path || "").replace(/\\/g, "/").toLowerCase(); }
 
 const MODE_TITLES: Record<SidebarQueryMode, string> = { projects: "项目", rooms: "ROOM", assistants: "助手" };
+const MODE_ACTIONS: Record<SidebarQueryMode, string> = { projects: "创建项目", rooms: "创建 / 加入 ROOM", assistants: "创建助手" };
+
+export function PanelPrimaryAction({ mode, onAddProject, onModeAction }: Pick<ProjectPanelProps, "mode" | "onAddProject" | "onModeAction">) {
+  const action = mode === "projects" ? onAddProject : onModeAction;
+  const Icon = mode === "projects" ? FolderPlus : mode === "rooms" ? Users : Bot;
+  return (
+    <button type="button" className="session-sidebar__primary-action" disabled={!action} onClick={action}>
+      <Icon size={18} aria-hidden="true" />
+      <span>{MODE_ACTIONS[mode]}</span>
+    </button>
+  );
+}
 
 export function ProjectPanel(props: ProjectPanelProps) {
   const { mode, now, refreshSignal, activeTopicId, activeSessionPath, unreadBySession, onOpenSession, onOpenGroupMenu, onOpenSessionMenu, onAddProject, onModeAction, ownerDecisionEnabled, onOpenOwnerDecision } = props;
@@ -118,15 +130,9 @@ export function ProjectPanel(props: ProjectPanelProps) {
           {mode === "assistants" && ownerDecisionEnabled && onOpenOwnerDecision && (
             <button type="button" aria-label="打开主人决策" title="主人决策" onClick={onOpenOwnerDecision}><MessageCircleQuestion size={18} aria-hidden="true" /></button>
           )}
-          {mode === "projects" ? (
-            <button type="button" aria-label="添加项目" title="添加项目" onClick={onAddProject}><FolderPlus size={18} aria-hidden="true" /></button>
-          ) : onModeAction ? (
-            <button type="button" aria-label={mode === "rooms" ? "新建或加入 ROOM" : "打开助手管理"} title={mode === "rooms" ? "新建或加入 ROOM" : "打开助手管理"} onClick={onModeAction}>
-              {mode === "rooms" ? <Plus size={18} aria-hidden="true" /> : <ArrowUpRight size={18} aria-hidden="true" />}
-            </button>
-          ) : null}
         </div>
       </header>
+      <PanelPrimaryAction mode={mode} onAddProject={onAddProject} onModeAction={onModeAction} />
       <SessionList rows={rows} now={now} />
     </section>
   );

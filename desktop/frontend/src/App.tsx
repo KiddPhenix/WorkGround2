@@ -1236,6 +1236,8 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   const setHeartbeatOpen = useOverlayStore((s) => s.setHeartbeatOpen);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantFocusID, setAssistantFocusID] = useState("");
+  const [assistantCreateSignal, setAssistantCreateSignal] = useState<number>();
+  const assistantCreateSeq = useRef(0);
   const [collaborationDialog, setCollaborationDialog] = useState<{
     sessionID?: string;
     workspaces: CollaborationWorkspaceOption[];
@@ -4267,9 +4269,11 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
               onOpenSettings={openGeneralSettings}
               onAddProject={() => { void switchFolder(); }}
               onOpenRoom={() => { void openCollaborationDialog(); }}
-              onOpenAssistants={() => {
+              onCreateAssistant={() => {
                 closeTransientOverlays();
                 setAssistantFocusID("");
+                assistantCreateSeq.current += 1;
+                setAssistantCreateSignal(assistantCreateSeq.current);
                 setAssistantOpen(true);
               }}
               ownerDecisionEnabled={ownerDecisionEnabled}
@@ -4305,7 +4309,13 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
             />
 
             {showAssistantSurface ? (
-              <AssistantWorkspace focusAssistantID={assistantFocusID} composerSubmitKey={composerSubmitKey} onOpenSession={handleNavigateToAssistantSession} />
+              <AssistantWorkspace
+                focusAssistantID={assistantFocusID}
+                composerSubmitKey={composerSubmitKey}
+                createSignal={assistantCreateSignal}
+                onCreateSignalHandled={(signal) => setAssistantCreateSignal((current) => current === signal ? undefined : current)}
+                onOpenSession={handleNavigateToAssistantSession}
+              />
             ) : showCollaborationSurface && activeTab?.sessionId ? (
               <CollaborationWorkspace
                 sessionID={activeTab.sessionId}

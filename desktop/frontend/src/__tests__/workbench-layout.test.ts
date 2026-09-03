@@ -12,7 +12,6 @@ import { fileURLToPath } from "node:url";
 const testDir = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
 const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8");
-const layoutStoreSource = readFileSync(resolve(testDir, "../store/layout.ts"), "utf8");
 const projectTreeSource = readFileSync(resolve(testDir, "../components/ProjectTree.tsx"), "utf8");
 const projectIconsSource = readFileSync(resolve(testDir, "../lib/projectIcons.ts"), "utf8");
 const runtimeConfigSource = readFileSync(resolve(testDir, "../components/desktop-ui/RuntimeConfigBar.tsx"), "utf8");
@@ -80,24 +79,25 @@ ok(
 );
 ok(includes(stylesSource, "@keyframes session-list-running-spin"), "CSS: running Session ring has a dedicated animation");
 
-// CSS: layout--workbench has correct grid
+// CSS: the active Session Sidebar owns the full first grid track.
 const workbenchGrid = includes(
   stylesSource,
-  ".app--workbench .layout--workbench {\n  position: relative;\n  isolation: isolate;\n  grid-template-columns: 300px minmax(0, 1fr);",
+  ".app--workbench .layout.layout--workbench,\n:root[data-theme-style] .app.app--workbench .layout.layout--workbench {\n  grid-template-columns: 360px minmax(0, 1fr) !important;",
 );
-ok(workbenchGrid, "CSS: .layout--workbench grid is 300px | 1fr");
+ok(workbenchGrid, "CSS: wide workbench grid reserves 360px for the complete Session Sidebar");
 
-// CSS: workspace-sidebar exists with proper width
-const sidebarWidth = finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar", "width");
-ok(sidebarWidth === "300px", `CSS: workbench workspace-sidebar width is 300px (got: ${sidebarWidth})`);
+ok(
+  includes(stylesSource, ".session-sidebar {\n  display: grid;") && includes(stylesSource, "  width: 100%;\n  height: 100%;"),
+  "CSS: Session Sidebar fills its reserved grid track on wide screens",
+);
 ok(
   finalDeclaration(stylesSource, ".workspace-sidebar", "box-sizing") === "border-box",
   "CSS: sidebar includes its horizontal padding",
 );
 ok(
-  includes(layoutStoreSource, "export const WORKBENCH_SIDEBAR_WIDTH = 300;") &&
-    includes(appSource, 'const sidebarRenderWidth = desktopLayoutStyle === "workbench" ? WORKBENCH_SIDEBAR_WIDTH : (liveSidebarWidth ?? sidebarWidth);'),
-  "App.tsx: workbench grid track uses the same fixed 300px width as workspace-sidebar",
+  includes(appSource, "<SidebarShell") &&
+    includes(stylesSource, ".app--workbench .layout.layout--workbench > .session-sidebar {\n  grid-column: 1;\n  grid-row: 1;"),
+  "App.tsx: Session Sidebar is explicitly anchored to the first desktop grid column",
 );
 
 // CSS: workspace-sidebar project-tree folder-main uses 9px gap (matching fixture)
@@ -681,17 +681,15 @@ ok(
 );
 
 // CSS: collapsed workbench retains a dedicated rail column.
-const collapsedGridTpl = finalDeclaration(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed", "grid-template-columns");
-const collapsedGap = finalDeclaration(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed", "gap");
 ok(
-  collapsedGridTpl === "56px minmax(0, 1fr) !important" && collapsedGap === "8px",
-  `CSS: collapsed workbench reserves the rail column (grid=${collapsedGridTpl}, gap=${collapsedGap})`,
+  includes(stylesSource, ".app--workbench .layout.layout--workbench.layout--sidebar-collapsed,\n:root[data-theme-style] .app.app--workbench .layout.layout--workbench.layout--sidebar-collapsed {\n  grid-template-columns: 56px minmax(0, 1fr) !important;"),
+  "CSS: collapsed workbench reserves the 56px rail column",
 );
 
 ok(
-  includes(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed .session-workspace,\n") &&
-    includes(stylesSource, "  grid-column: 2;\n}"),
-  "CSS: collapsed workbench content occupies column 2 beside the primary rail",
+  includes(stylesSource, ".app--workbench .layout.layout--workbench > .session-workspace,\n") &&
+    includes(stylesSource, ".app--workbench .layout.layout--workbench > .assistant-workspace {\n  grid-column: 2;\n  grid-row: 1;\n  min-width: 0;"),
+  "CSS: Session, Work, Room, and Assistant surfaces explicitly occupy column 2",
 );
 
 // The W2 mark and chevron are one persistent toggle.
@@ -738,27 +736,26 @@ ok(
   "CSS: workbench collapse button sits 8px farther right",
 );
 
-// ── 820px responsive workspace-sidebar ──────────────────────────────────────
+// ── <920px responsive Session Sidebar ───────────────────────────────────────
 
-// At narrow widths, expanded workspace-sidebar floats as overlay
-const respFloatDisp = finalDeclaration(stylesSource, ".app .layout.layout--workbench:not(.layout--sidebar-collapsed) .workspace-sidebar", "display");
-ok(respFloatDisp === "flex", `CSS (820px): expanded workspace-sidebar display is flex (got: ${respFloatDisp})`);
-const respFloatPos = finalDeclaration(stylesSource, ".app .layout.layout--workbench:not(.layout--sidebar-collapsed) .workspace-sidebar", "position");
-ok(respFloatPos === "absolute", `CSS (820px): expanded workspace-sidebar floats as overlay (got: ${respFloatPos})`);
-const respFloatZ = finalDeclaration(stylesSource, ".app .layout.layout--workbench:not(.layout--sidebar-collapsed) .workspace-sidebar", "z-index");
-ok(respFloatZ === "var(--z-workspace-float)", `CSS (820px): floating workspace-sidebar uses --z-workspace-float (got: ${respFloatZ})`);
-
-// At narrow widths, collapsed workspace-sidebar is hidden
-const respCollDisp = finalDeclaration(stylesSource, ".app .layout.layout--workbench.layout--sidebar-collapsed .workspace-sidebar", "display");
-ok(respCollDisp === "none", `CSS (820px): collapsed workspace-sidebar is hidden (got: ${respCollDisp})`);
-
-// At narrow widths, session-workspace always fills the grid
-const respSessGrid = finalDeclaration(stylesSource, ".app .layout.layout--workbench .session-workspace", "grid-column");
-ok(respSessGrid === "1 / -1", `CSS (820px): session-workspace always fills grid (got: ${respSessGrid})`);
-
-// Themed variant also covered for floating workspace-sidebar
-const themedFloatDisp = finalDeclaration(stylesSource, ":root[data-theme-style] .app .layout.layout--workbench:not(.layout--sidebar-collapsed) .workspace-sidebar", "display");
-ok(themedFloatDisp === "flex", `CSS (820px themed): expanded workspace-sidebar display is flex (got: ${themedFloatDisp})`);
+const responsiveSidebar = stylesSource.slice(stylesSource.lastIndexOf("@media (max-width: 919.98px)"));
+ok(
+  includes(responsiveSidebar, "grid-template-columns: 56px minmax(0, 1fr) !important;"),
+  "CSS (<920px): the primary rail retains a normal 56px grid column",
+);
+ok(
+  includes(responsiveSidebar, ".session-sidebar { position: relative; z-index: var(--z-workspace-float); grid-template-columns: 56px; width: 56px; overflow: visible; }"),
+  "CSS (<920px): expanded Session Sidebar reduces to the rail width",
+);
+ok(
+  includes(responsiveSidebar, ".session-sidebar__panel { position: absolute;") && includes(responsiveSidebar, "left: 55px;") && includes(responsiveSidebar, "width: min(304px, calc(100vw - 84px));"),
+  "CSS (<920px): only the secondary panel becomes an overlay",
+);
+ok(
+  responsiveSidebar.includes(":root[data-theme-style] .app.app--workbench .layout.layout--workbench > .session-workspace,") &&
+    responsiveSidebar.includes("grid-column: 2 !important;"),
+  "CSS (<920px): themed high-specificity rules keep every main surface beside the rail",
+);
 
 // ── Done ─────────────────────────────────────────────────────────────────────
 
