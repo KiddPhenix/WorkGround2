@@ -34,6 +34,40 @@ final result: passed
 
 ---
 
+# Session 双栏侧边栏与大列表分页 Design QA（2026-09-03）
+
+- Source visual truth: `D:\Work\WorkGround2\docs\assets\workground2-session-sidebar-search-design.png`（840 × 1871 px，第 2 版搜索方向稿）。
+- Implementation full screenshot: `D:\Work\WorkGround2\docs\assets\workground2-session-sidebar-implementation.png`（1536 × 1024 px）。
+- Implementation focused screenshot: `D:\Work\WorkGround2\docs\assets\workground2-session-sidebar-implementation-sidebar.png`（360 × 1024 px）。
+- Viewport: 1536 × 1024 CSS px；device pixel ratio 1.375；深色工作台、搜索模式、全部范围、二级栏展开。
+- Measured layout: 一级栏 56px；二级栏约 303px（设计值 304px）；主工作区无横向裁切。
+
+## Full-view and focused comparison
+
+- 全视图对照确认双栏侧边栏与 Session 工作区共存，窗口控制、消息区和输入区未被遮挡或裁切。
+- 聚焦对照确认一级栏从上到下为 `W2 + < / 搜索 / 新建会话 / 项目 / ROOM / 助手`，设置固定在底部；W2 与折叠箭头属于同一按钮。
+- 搜索态完整展示搜索框、全部/项目/会话筛选、项目分组、Session 行、来源/状态、相对时间和 `已显示 n / total`。
+- 方向稿是高密度长画布概念图；实现密度以详细设计中的 56px + 304px 尺寸和现有 WorkGround2 设计系统为准，因此不把实时数据条数与纵向密度作为像素级目标。
+
+## Findings and interaction evidence
+
+- P0 / P1 / P2: none。
+- Typography and spacing: 沿用现有字体、字号、颜色 token 与圆角；标题单行省略，时间拥有固定右侧槽位。
+- Assets: W2 使用现有品牌资产，导航和状态图标来自现有 Lucide 图标库。
+- Interaction: 折叠后一级栏常驻；模式按钮可重新展开；搜索 250ms 防抖；每组按 20 条持续加载更多；相对时间按分钟统一刷新并以 tooltip 提供绝对时间。
+- Keyboard: 行级 roving tabindex、方向键、Home/End、Shift+F10/Menu 键、Esc 关闭菜单并恢复焦点均已验证；禁用菜单项会跳过。
+- Recovery: 刷新和加载失败保留旧列表并显式允许重试；游标失效会按原已加载深度重建；事件更新经过合并防抖，迟到响应由请求序号隔离。
+
+## Comparison history
+
+- Pass 1: 在项目模式验证展开、分页与相对时间；在搜索模式验证跨项目结果和总数。
+- Pass 2: 打开 Session 菜单并验证键盘关闭/焦点恢复；重载 production build 后以相同搜索态重新截图。
+- Engineering audit: 前后端由独立 subagent 实现，主代理与独立 reviewer 共完成六轮审计；Crew 路由增删迁移、索引代次一致性、损坏恢复、容量重置与 DB 生命周期锁均已补齐，最终无遗留 P0/P1/P2。
+
+final result: passed
+
+---
+
 # 助理模式阶段 2 Design QA（2026-08-17）
 
 - Source visual truth: `D:\Codex\.codex\attachments\5d0419fd-8f95-4a89-94f3-fca4a8e55422\image-1.png`（1487 × 1058）。
