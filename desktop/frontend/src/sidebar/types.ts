@@ -72,6 +72,12 @@ export interface SidebarSearchItem {
   lastActivityAt?: number;
 }
 
+export interface SidebarIssue {
+  code: string;
+  retryable?: boolean;
+  observedAt?: number;
+}
+
 export interface SidebarOpenTarget {
   scope: "global" | "project";
   workspaceRoot: string;

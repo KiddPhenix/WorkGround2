@@ -1,6 +1,6 @@
-import { Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
-import { loadSidebarSearch, refreshSidebarSearch } from "./sidebarData";
+import { AlertCircle, Search, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { loadSidebarSearch, refreshSidebarIssues, refreshSidebarSearch } from "./sidebarData";
 import { SessionList, type SidebarListRow } from "./SessionList";
 import { useSidebarStore } from "./sidebarStore";
 import type { SidebarGroup, SidebarOpenTarget, SidebarSearchFilter, SidebarSession } from "./types";
@@ -24,6 +24,9 @@ export function SearchPanel({ now, activeTopicId, activeSessionPath, unreadBySes
   const query = useSidebarStore((state) => state.searchQuery);
   const filter = useSidebarStore((state) => state.searchFilter);
   const page = useSidebarStore((state) => state.searchPage);
+  const issues = useSidebarStore((state) => state.issues);
+  const issuesStatus = useSidebarStore((state) => state.issuesStatus);
+  const issuesScope = useSidebarStore((state) => state.issuesScope);
   const setQuery = useSidebarStore((state) => state.setSearchQuery);
   const setFilter = useSidebarStore((state) => state.setSearchFilter);
 
@@ -38,6 +41,22 @@ export function SearchPanel({ now, activeTopicId, activeSessionPath, unreadBySes
     const state = useSidebarStore.getState();
     void refreshSidebarSearch(state.searchQuery.trim(), state.searchFilter, state.searchPage.items.length);
   }, [refreshSignal]);
+
+  // handleSearchIssuesRetry re-reads the live store after the targeted refresh so
+  // a click that started under query A cannot feed back stale A results after the
+  // user already changed to B (or left search).
+  const handleSearchIssuesRetry = useCallback(() => {
+    void refreshSidebarIssues("projects").then((ok) => {
+      if (!ok) return;
+      const state = useSidebarStore.getState();
+      if (state.activeMode !== "search") return;
+      const currentQuery = state.searchQuery.trim();
+      const currentFilter = state.searchFilter;
+      const depth = state.searchPage.items.length;
+      if (depth > 0) void refreshSidebarSearch(currentQuery, currentFilter, depth);
+      else void loadSidebarSearch(currentQuery, currentFilter, true);
+    });
+  }, []);
 
   const rows = useMemo<SidebarListRow[]>(() => {
     const grouped = new Map<string, { group: SidebarGroup; sessions: SidebarSession[]; project: boolean }>();
@@ -106,6 +125,21 @@ export function SearchPanel({ now, activeTopicId, activeSessionPath, unreadBySes
       <div className="session-sidebar__filters" role="group" aria-label="搜索范围">
         {filters.map((item) => <button key={item.id} type="button" className={filter === item.id ? "is-active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}>{item.label}</button>)}
       </div>
+      {issuesScope === "projects" ? (
+        issuesStatus === "error" ? (
+          <div className="session-sidebar__issues" role="status">
+            <AlertCircle size={14} aria-hidden="true" />
+            <span>无法加载会话索引状态</span>
+            <button type="button" onClick={handleSearchIssuesRetry}>重试</button>
+          </div>
+        ) : issues.length > 0 ? (
+          <div className="session-sidebar__issues" role="status">
+            <AlertCircle size={14} aria-hidden="true" />
+            <span>部分会话记录暂时无法读取</span>
+            <button type="button" onClick={handleSearchIssuesRetry}>重试</button>
+          </div>
+        ) : null
+      ) : null}
       <SessionList id="session-sidebar-search-results" rows={rows} now={now} className="session-sidebar__search-results" />
       {page.items.length > 0 && <div className="session-sidebar__count">已显示 {page.items.length}{typeof page.total === "number" ? ` / ${page.total}` : ""}</div>}
     </section>

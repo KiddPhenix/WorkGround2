@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -714,12 +715,13 @@ func TestSidebarBoltClassifiesLegacySourcesAndCrew(t *testing.T) {
 func TestSidebarSidecarReadDoesNotWriteTruthSource(t *testing.T) {
 	dir := t.TempDir()
 	plan := sidebarGroupPlan{group: SidebarGroup{ID: "global_folder", Kind: "global", Label: "Global"}, scope: "global", titles: map[string]string{}, titleSource: map[string]string{}, createdAt: map[string]int64{}, pinned: map[string]bool{}}
+	index := newSidebarBoltIndex(func(*App) string { return filepath.Join(t.TempDir(), "sidebar.db") })
 
 	missing := filepath.Join(dir, "missing-meta.jsonl")
 	if err := os.WriteFile(missing, []byte("\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := sidebarRowFromSidecar(plan, missing, false); err != nil {
+	if _, _, err := index.sidebarRowFromSidecar(plan, missing, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(agent.BranchMetaPath(missing)); !os.IsNotExist(err) {
@@ -738,7 +740,7 @@ func TestSidebarSidecarReadDoesNotWriteTruthSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := sidebarRowFromSidecar(plan, legacy, false); err != nil {
+	if _, _, err := index.sidebarRowFromSidecar(plan, legacy, false); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.ReadFile(metaPath)
@@ -1186,4 +1188,581 @@ func (s *sidebarTestSource) stamp(_ *App, plan sidebarGroupPlan) string {
 		return s.stampFunc(plan)
 	}
 	return s.stamps[plan.group.ID]
+}
+
+func testSidebarProjectPlan(id, label, root string, dirs []string) sidebarGroupPlan {
+	return sidebarGroupPlan{
+		group: SidebarGroup{ID: id, Kind: "project", Label: label, Root: root},
+		scope: "project", root: normalizeProjectRoot(root), dirs: dirs,
+		titles: map[string]string{}, titleSource: map[string]string{}, createdAt: map[string]int64{}, pinned: map[string]bool{},
+	}
+}
+
+func testSidebarWriteBrokenMeta(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agent.BranchMetaPath(path), []byte("{ this is not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func corruptSidebarMeta(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(agent.BranchMetaPath(path), []byte("{ corrupt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testSidebarWriteSessionMeta(t *testing.T, dir, name string, meta agent.BranchMeta) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(path, meta); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// testSidebarBoltIndex builds an index whose dbPath is computed once, avoiding
+// the "t.TempDir() per closure call" bug that silently opened a fresh database
+// on every path() evaluation.
+func testSidebarBoltIndex(t *testing.T, source sidebarPlanSource) *sidebarBoltIndex {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "sidebar.db")
+	index := newSidebarBoltIndex(func(*App) string { return dbPath })
+	index.source = source
+	return index
+}
+
+func testSidebarReadGeneration(t *testing.T, index *sidebarBoltIndex, app *App, groupID string) uint64 {
+	t.Helper()
+	state, err := index.open(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generation uint64
+	if err := state.db.View(func(tx *bolt.Tx) error {
+		generation = bytesToUint64(tx.Bucket(sidebarBoltMeta).Get([]byte("generation:" + groupID)))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return generation
+}
+
+func TestSidebarBoltIsolatesBrokenSidecarAndKeepsHealthyRooms(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().UTC().Add(-time.Hour)
+	testSidebarWriteSessionMeta(t, dir, "room.jsonl", agent.BranchMeta{
+		ID: "room", Scope: "project", WorkspaceRoot: dir, TopicID: "room-topic", TopicTitle: "RoomMarker",
+		SessionKind: agent.SessionKindCollaboration, Turns: 1, SchemaVersion: agent.BranchMetaCountsVersion,
+		CreatedAt: base, UpdatedAt: base,
+	})
+	testSidebarWriteBrokenMeta(t, dir, "broken.jsonl")
+
+	plan := testSidebarProjectPlan("project_rooms", "Rooms", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_rooms": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	groups, err := index.listGroups(app, SidebarRooms)
+	if err != nil || len(groups) != 1 || groups[0].ID != "project_rooms" || groups[0].SessionCount != 1 {
+		t.Fatalf("room groups=%+v err=%v", groups, err)
+	}
+	// A never-indexed (cold) broken sidecar is owned by Projects, so it must not
+	// warn in the ROOM view even though it shares a directory with a healthy ROOM.
+	roomIssues, err := index.listIssues(app, SidebarRooms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roomIssues) != 0 {
+		t.Fatalf("cold broken sidecar leaked into ROOM issues=%+v", roomIssues)
+	}
+	projectIssues, err := index.listIssues(app, SidebarProjects)
+	if err != nil || len(projectIssues) != 1 || projectIssues[0].Code != "meta_decode" || !projectIssues[0].Retryable || projectIssues[0].ObservedAt == 0 {
+		t.Fatalf("project issues=%+v err=%v", projectIssues, err)
+	}
+	page, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarRooms, GroupID: "project_rooms"})
+	if err != nil || page.Total == nil || *page.Total != 1 || len(page.Items) != 1 || page.Items[0].ID != "room" {
+		t.Fatalf("rooms page=%+v err=%v", page, err)
+	}
+	searched, err := index.search(app, SidebarSearchRequest{Filter: "all", Query: "RoomMarker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range searched.Items {
+		if item.Session != nil && item.Session.ID == "room" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("search did not return the healthy ROOM: items=%+v", searched.Items)
+	}
+}
+
+func TestSidebarIssueOwnershipFromOldRow(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().UTC().Add(-time.Hour)
+	roomPath := testSidebarWriteSessionMeta(t, dir, "room.jsonl", agent.BranchMeta{
+		ID: "room", Scope: "project", WorkspaceRoot: dir, TopicTitle: "Room",
+		SessionKind: agent.SessionKindCollaboration, Turns: 1, SchemaVersion: agent.BranchMetaCountsVersion,
+		CreatedAt: base, UpdatedAt: base,
+	})
+	plan := testSidebarProjectPlan("project_room_oldrow", "Room", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_room_oldrow": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	first, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarRooms, GroupID: "project_room_oldrow"})
+	if err != nil || first.Total == nil || *first.Total != 1 {
+		t.Fatalf("initial room page=%+v err=%v", first, err)
+	}
+	corruptSidebarMeta(t, roomPath)
+	index.markDirty(app, agent.BranchMetaPath(roomPath))
+	second, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarRooms, GroupID: "project_room_oldrow"})
+	if err != nil || second.Total == nil || *second.Total != 0 {
+		t.Fatalf("corrupted room page=%+v err=%v", second, err)
+	}
+	roomIssues, err := index.listIssues(app, SidebarRooms)
+	if err != nil || len(roomIssues) != 1 || roomIssues[0].Code != "meta_decode" {
+		t.Fatalf("room issues=%+v err=%v", roomIssues, err)
+	}
+	if projectIssues, _ := index.listIssues(app, SidebarProjects); len(projectIssues) != 1 {
+		t.Fatalf("project issues=%+v", projectIssues)
+	}
+}
+
+func TestSidebarIssueMixedProjectNormalAndRoom(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().UTC().Add(-time.Hour)
+	normalPath := testSidebarWriteSessionMeta(t, dir, "normal.jsonl", agent.BranchMeta{
+		ID: "normal", Scope: "project", WorkspaceRoot: dir, TopicTitle: "Normal", Turns: 1,
+		SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: base, UpdatedAt: base,
+	})
+	testSidebarWriteSessionMeta(t, dir, "room.jsonl", agent.BranchMeta{
+		ID: "room", Scope: "project", WorkspaceRoot: dir, TopicTitle: "Room",
+		SessionKind: agent.SessionKindCollaboration, Turns: 1, SchemaVersion: agent.BranchMetaCountsVersion,
+		CreatedAt: base, UpdatedAt: base,
+	})
+	plan := testSidebarProjectPlan("project_mixed", "Mixed", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_mixed": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	if _, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_mixed"}); err != nil {
+		t.Fatal(err)
+	}
+	corruptSidebarMeta(t, normalPath)
+	index.markDirty(app, agent.BranchMetaPath(normalPath))
+	if _, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_mixed"}); err != nil {
+		t.Fatal(err)
+	}
+	if roomIssues, _ := index.listIssues(app, SidebarRooms); len(roomIssues) != 0 {
+		t.Fatalf("normal break leaked into ROOM: %+v", roomIssues)
+	}
+	if projectIssues, _ := index.listIssues(app, SidebarProjects); len(projectIssues) != 1 {
+		t.Fatalf("project issues=%+v", projectIssues)
+	}
+}
+
+func TestSidebarBoltBrokenProjectSidecarDoesNotAffectRooms(t *testing.T) {
+	projectDir := t.TempDir()
+	roomDir := t.TempDir()
+	testSidebarWriteBrokenMeta(t, projectDir, "broken.jsonl")
+
+	base := time.Now().UTC().Add(-time.Hour)
+	testSidebarWriteSessionMeta(t, roomDir, "room.jsonl", agent.BranchMeta{
+		ID: "room", Scope: "project", WorkspaceRoot: roomDir, TopicTitle: "Room",
+		SessionKind: agent.SessionKindCollaboration, Turns: 1, SchemaVersion: agent.BranchMetaCountsVersion,
+		CreatedAt: base, UpdatedAt: base,
+	})
+
+	brokenPlan := testSidebarProjectPlan("project_broken", "Broken", projectDir, []string{projectDir})
+	roomPlan := testSidebarProjectPlan("project_room", "Room", roomDir, []string{roomDir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{brokenPlan, roomPlan}, stamps: map[string]string{"project_broken": "v1", "project_room": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	groups, err := index.listGroups(app, SidebarRooms)
+	if err != nil || len(groups) != 1 || groups[0].ID != "project_room" || groups[0].SessionCount != 1 {
+		t.Fatalf("room groups=%+v err=%v", groups, err)
+	}
+	// ROOM scope must not surface the broken non-ROOM project's issue.
+	roomIssues, err := index.listIssues(app, SidebarRooms)
+	if err != nil || len(roomIssues) != 0 {
+		t.Fatalf("room issues=%+v err=%v", roomIssues, err)
+	}
+	// Projects scope (all groups) does surface it.
+	projectIssues, err := index.listIssues(app, SidebarProjects)
+	if err != nil || len(projectIssues) != 1 || projectIssues[0].Code != "meta_decode" {
+		t.Fatalf("project issues=%+v err=%v", projectIssues, err)
+	}
+}
+
+func TestSidebarBoltTransientMetaFailureRecovers(t *testing.T) {
+	dir := t.TempDir()
+	testSidebarWriteSessionMeta(t, dir, "session.jsonl", agent.BranchMeta{
+		ID: "session", Scope: "project", WorkspaceRoot: dir, TopicTitle: "Transient", Turns: 1,
+		SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	plan := testSidebarProjectPlan("project_transient", "Transient", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_transient": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	real := index.loadBranchMeta
+	calls := 0
+	index.loadBranchMeta = func(p string) (agent.BranchMeta, bool, error) {
+		calls++
+		if calls == 1 {
+			return agent.BranchMeta{}, false, &agent.BranchMetaDecodeError{Err: errors.New("transient")}
+		}
+		return real(p)
+	}
+	index.branchMetaBackoffs = []time.Duration{0}
+
+	page, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_transient"})
+	if err != nil || page.Total == nil || *page.Total != 1 || len(page.Items) != 1 || page.Items[0].ID != "session" {
+		t.Fatalf("transient page=%+v err=%v", page, err)
+	}
+	if calls != 2 {
+		t.Fatalf("transient load calls=%d, want 2", calls)
+	}
+	if issues, _ := index.listIssues(app, SidebarProjects); len(issues) != 0 {
+		t.Fatalf("transient issues=%+v", issues)
+	}
+}
+
+func TestSidebarBoltPersistentBrokenSidecarIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	testSidebarWriteSessionMeta(t, dir, "session.jsonl", agent.BranchMeta{
+		ID: "session", Scope: "project", WorkspaceRoot: dir, TopicTitle: "Stable", Turns: 1,
+		SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	testSidebarWriteBrokenMeta(t, dir, "broken.jsonl")
+
+	plan := testSidebarProjectPlan("project_stable_broken", "Stable Broken", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_stable_broken": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	first, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_stable_broken"})
+	if err != nil || first.Total == nil || *first.Total != 1 {
+		t.Fatalf("first page=%+v err=%v", first, err)
+	}
+	firstIssues, err := index.listIssues(app, SidebarProjects)
+	if err != nil || len(firstIssues) != 1 {
+		t.Fatalf("first issues=%+v err=%v", firstIssues, err)
+	}
+	before := testSidebarReadGeneration(t, index, app, "project_stable_broken")
+	second, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_stable_broken"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondIssues, err := index.listIssues(app, SidebarProjects)
+	if err != nil || len(secondIssues) != 1 {
+		t.Fatalf("second issues=%+v err=%v", secondIssues, err)
+	}
+	if after := testSidebarReadGeneration(t, index, app, "project_stable_broken"); before == 0 || after != before || second.Snapshot != first.Snapshot {
+		t.Fatalf("broken sidecar regenerated: %d/%d snapshot=%q/%q", before, after, first.Snapshot, second.Snapshot)
+	}
+}
+
+func TestSidebarBoltBrokenSidecarRecoversOnRepair(t *testing.T) {
+	dir := t.TempDir()
+	brokenPath := testSidebarWriteBrokenMeta(t, dir, "session.jsonl")
+	plan := testSidebarProjectPlan("project_repair", "Repair", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_repair": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	page, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_repair"})
+	if err != nil || page.Total == nil || *page.Total != 0 {
+		t.Fatalf("broken page=%+v err=%v", page, err)
+	}
+	if issues, _ := index.listIssues(app, SidebarProjects); len(issues) != 1 {
+		t.Fatalf("broken issues=%+v", issues)
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(brokenPath, agent.BranchMeta{
+		ID: "session", Scope: "project", WorkspaceRoot: dir, TopicTitle: "Repaired", Turns: 1,
+		SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	index.markDirty(app, agent.BranchMetaPath(brokenPath))
+	repaired, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_repair"})
+	if err != nil || repaired.Total == nil || *repaired.Total != 1 || len(repaired.Items) != 1 || repaired.Items[0].ID != "session" {
+		t.Fatalf("repaired page=%+v err=%v", repaired, err)
+	}
+	if issues, _ := index.listIssues(app, SidebarProjects); len(issues) != 0 {
+		t.Fatalf("repaired issues=%+v", issues)
+	}
+}
+
+func TestSidebarBoltBrokenSidecarClearsIssueOnDelete(t *testing.T) {
+	dir := t.TempDir()
+	brokenPath := testSidebarWriteBrokenMeta(t, dir, "session.jsonl")
+	plan := testSidebarProjectPlan("project_delete", "Delete", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_delete": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	if _, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_delete"}); err != nil {
+		t.Fatal(err)
+	}
+	if issues, _ := index.listIssues(app, SidebarProjects); len(issues) != 1 {
+		t.Fatalf("broken issues=%+v", issues)
+	}
+	if err := os.Remove(brokenPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(agent.BranchMetaPath(brokenPath)); err != nil {
+		t.Fatal(err)
+	}
+	index.markDirty(app, brokenPath)
+	page, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_delete"})
+	if err != nil || page.Total == nil || *page.Total != 0 {
+		t.Fatalf("deleted page=%+v err=%v", page, err)
+	}
+	if issues, _ := index.listIssues(app, SidebarProjects); len(issues) != 0 {
+		t.Fatalf("deleted issues=%+v", issues)
+	}
+}
+
+func TestSidebarBoltPermissionErrorFailsWholeScan(t *testing.T) {
+	dir := t.TempDir()
+	testSidebarWriteSessionMeta(t, dir, "session.jsonl", agent.BranchMeta{
+		ID: "session", Scope: "project", WorkspaceRoot: dir, TopicTitle: "Stable", Turns: 1,
+		SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+
+	plan := testSidebarProjectPlan("project_perm", "Perm", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_perm": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	first, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_perm"})
+	if err != nil || first.Total == nil || *first.Total != 1 {
+		t.Fatalf("initial page=%+v err=%v", first, err)
+	}
+	before := testSidebarReadGeneration(t, index, app, "project_perm")
+
+	// A new sidecar appears whose meta read fails with a permission error. That
+	// is not a damaged sidecar: the whole scan must fail without publishing a
+	// missing-row generation or writing an issue.
+	badPath := filepath.Join(dir, "unreadable.jsonl")
+	if err := os.WriteFile(badPath, []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	real := index.loadBranchMeta
+	index.loadBranchMeta = func(p string) (agent.BranchMeta, bool, error) {
+		if p == badPath {
+			return agent.BranchMeta{}, false, &os.PathError{Op: "read", Path: p, Err: os.ErrPermission}
+		}
+		return real(p)
+	}
+	index.markDirty(app, badPath)
+	_, err = index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_perm"})
+	if err == nil {
+		t.Fatal("permission error did not fail the scan")
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("scan error does not wrap the permission error: %v", err)
+	}
+	if after := testSidebarReadGeneration(t, index, app, "project_perm"); after != before {
+		t.Fatalf("permission error advanced generation: %d/%d", before, after)
+	}
+	state, err := index.open(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.db.View(func(tx *bolt.Tx) error {
+		if issues := tx.Bucket(sidebarBoltIssues); issues.Stats().KeyN != 0 {
+			t.Fatalf("permission error wrote issue bucket entries: %+v", issues.Stats())
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSidebarBoltIssueManifestBatchFaultReopenSelfHeals(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().UTC().Add(-time.Hour)
+	const healthyCount = 260 // > sidebarBoltBatchSize so updates span two batches
+	for i := 0; i < healthyCount; i++ {
+		testSidebarWriteSessionMeta(t, dir, fmt.Sprintf("session-%03d.jsonl", i), agent.BranchMeta{
+			ID: fmt.Sprintf("session-%03d", i), Scope: "project", WorkspaceRoot: dir, TopicTitle: fmt.Sprintf("S%03d", i),
+			Turns: 1, SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: base, UpdatedAt: base,
+		})
+	}
+	testSidebarWriteBrokenMeta(t, dir, "broken.jsonl")
+
+	plan := testSidebarProjectPlan("project_batch", "Batch", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_batch": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	// First batch commits (256 updates); the second batch faults, so the pending
+	// marker stays set and the second half is not yet persisted.
+	batchCalls := 0
+	index.scanBatchFault = func() error {
+		batchCalls++
+		if batchCalls == 2 {
+			return errors.New("injected batch failure")
+		}
+		return nil
+	}
+	if _, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_batch"}); err == nil || !strings.Contains(err.Error(), "injected batch failure") {
+		t.Fatalf("batch fault err=%v", err)
+	}
+	if err := index.close(app); err != nil {
+		t.Fatal(err)
+	}
+	index.scanBatchFault = nil
+	page, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_batch"})
+	if err != nil || page.Total == nil || *page.Total != healthyCount || len(page.Items) != 20 {
+		t.Fatalf("recovered page total=%v items=%d err=%v", page.Total, len(page.Items), err)
+	}
+	issues, err := index.listIssues(app, SidebarProjects)
+	if err != nil || len(issues) != 1 || issues[0].Code != "meta_decode" {
+		t.Fatalf("recovered issues=%+v err=%v", issues, err)
+	}
+	// The pending marker must be cleared and the generation advanced after recovery.
+	state, err := index.open(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.db.View(func(tx *bolt.Tx) error {
+		if pending := tx.Bucket(sidebarBoltMeta).Get([]byte("pending:project_batch")); pending != nil {
+			t.Fatalf("pending marker retained after recovery: %x", pending)
+		}
+		if generation := bytesToUint64(tx.Bucket(sidebarBoltMeta).Get([]byte("generation:project_batch"))); generation == 0 {
+			t.Fatal("generation did not advance after recovery")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSidebarBoltPaginationDiscoversBrokenItem(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 5; i++ {
+		testSidebarWriteSessionMeta(t, dir, fmt.Sprintf("session-%d.jsonl", i), agent.BranchMeta{
+			ID: fmt.Sprintf("session-%d", i), Scope: "project", WorkspaceRoot: dir, TopicTitle: fmt.Sprintf("S%d", i),
+			Turns: 1, SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: base, UpdatedAt: base,
+		})
+	}
+	testSidebarWriteBrokenMeta(t, dir, "broken.jsonl")
+
+	plan := testSidebarProjectPlan("project_paged", "Paged", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_paged": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	// The broken item is discovered during a page scan and must not reject the page.
+	page, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_paged"})
+	if err != nil || page.Total == nil || *page.Total != 5 || len(page.Items) != 5 {
+		t.Fatalf("paged page=%+v err=%v", page, err)
+	}
+	issues, err := index.listIssues(app, SidebarProjects)
+	if err != nil || len(issues) != 1 || issues[0].Code != "meta_decode" {
+		t.Fatalf("paged issues=%+v err=%v", issues, err)
+	}
+}
+
+func TestSidebarIssueDTOOmitsPathsAndCause(t *testing.T) {
+	dir := t.TempDir()
+	testSidebarWriteBrokenMeta(t, dir, "broken.jsonl")
+	plan := testSidebarProjectPlan("project_dto", "DTO", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_dto": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	if _, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_dto"}); err != nil {
+		t.Fatal(err)
+	}
+	issues, err := index.listIssues(app, SidebarProjects)
+	if err != nil || len(issues) != 1 {
+		t.Fatalf("issues=%+v err=%v", issues, err)
+	}
+	encoded, err := json.Marshal(issues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := string(encoded)
+	for _, forbidden := range []string{dir, "broken.jsonl", "not valid json", "sessionPath", "metaPath", "workspace", "cause"} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("issue JSON leaks %q: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestSidebarRefreshIssuesTargetsAffectedPlan(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	brokenPath := testSidebarWriteBrokenMeta(t, dirA, "broken.jsonl")
+	base := time.Now().UTC().Add(-time.Hour)
+	testSidebarWriteSessionMeta(t, dirB, "session.jsonl", agent.BranchMeta{
+		ID: "session-b", Scope: "project", WorkspaceRoot: dirB, TopicTitle: "B", Turns: 1,
+		SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: base, UpdatedAt: base,
+	})
+
+	planA := testSidebarProjectPlan("project_a", "A", dirA, []string{dirA})
+	planB := testSidebarProjectPlan("project_b", "B", dirB, []string{dirB})
+	scanned := map[string]int{}
+	source := &sidebarTestSource{
+		plansValue: []sidebarGroupPlan{planA, planB},
+		stampFunc: func(plan sidebarGroupPlan) string {
+			scanned[plan.group.ID]++
+			return "v1"
+		},
+	}
+	index := testSidebarBoltIndex(t, source)
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	// Produce the issue by scanning A once.
+	if _, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_a"}); err != nil {
+		t.Fatal(err)
+	}
+	if issues, _ := index.listIssues(app, SidebarProjects); len(issues) != 1 {
+		t.Fatalf("initial issues=%+v", issues)
+	}
+
+	// Repair the sidecar (as the watcher would) without expanding anything.
+	if err := agent.SaveBranchMetaPreserveUpdated(brokenPath, agent.BranchMeta{
+		ID: "broken", Scope: "project", WorkspaceRoot: dirA, TopicTitle: "Fixed", Turns: 1,
+		SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: base, UpdatedAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	index.markDirty(app, agent.BranchMetaPath(brokenPath))
+	scanned = map[string]int{}
+	issues, err := index.refreshIssues(app, SidebarProjects)
+	if err != nil || len(issues) != 0 {
+		t.Fatalf("refreshed issues=%+v err=%v", issues, err)
+	}
+	if scanned["project_a"] == 0 {
+		t.Fatal("RefreshSidebarIssues did not re-scan the affected plan")
+	}
+	if scanned["project_b"] != 0 {
+		t.Fatalf("RefreshSidebarIssues scanned an unaffected plan: %+v", scanned)
+	}
+}
+
+func TestRefreshSidebarIssuesInvalidMode(t *testing.T) {
+	app := &App{}
+	if _, err := app.RefreshSidebarIssues(SidebarMode("bogus")); !errors.Is(err, errInvalidSidebarMode) {
+		t.Fatalf("invalid mode err=%v", err)
+	}
 }

@@ -1,7 +1,7 @@
-import { Bot, FolderPlus, MessageCircleQuestion, Users } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { AlertCircle, Bot, FolderPlus, MessageCircleQuestion, Users } from "lucide-react";
+import { useCallback, useEffect, useMemo } from "react";
 import type { ProjectTopicStatus } from "../lib/types";
-import { loadSidebarGroups, loadSidebarPage, refreshSidebarPage } from "./sidebarData";
+import { loadSidebarGroups, loadSidebarPage, refreshSidebarIssues, refreshSidebarPage } from "./sidebarData";
 import { SessionList, type SidebarListRow } from "./SessionList";
 import { emptySidebarPage, useSidebarStore } from "./sidebarStore";
 import type { SidebarGroup, SidebarOpenTarget, SidebarQueryMode, SidebarSession } from "./types";
@@ -44,21 +44,35 @@ export function ProjectPanel(props: ProjectPanelProps) {
   const pages = useSidebarStore((state) => state.pages);
   const expanded = useSidebarStore((state) => state.expandedGroups);
   const toggleGroup = useSidebarStore((state) => state.toggleGroup);
+  const issues = useSidebarStore((state) => state.issues);
+  const issuesStatus = useSidebarStore((state) => state.issuesStatus);
+  const issuesScope = useSidebarStore((state) => state.issuesScope);
 
-  useEffect(() => {
-    let alive = true;
-    void loadSidebarGroups(mode).then(() => {
-      if (!alive) return;
+  // refreshView re-runs the group scan and refreshes every expanded group at its
+  // current loaded depth, so the issue warning retry performs a real re-scan
+  // without resetting pagination. It stops as soon as the user left that mode.
+  const refreshView = useCallback((viewMode: SidebarQueryMode) => {
+    void loadSidebarGroups(viewMode).then(() => {
+      if (useSidebarStore.getState().activeMode !== viewMode) return;
       const state = useSidebarStore.getState();
-      for (const group of state.groupsByMode[mode]?.items ?? []) {
+      for (const group of state.groupsByMode[viewMode]?.items ?? []) {
         if (!state.expandedGroups.has(group.id)) continue;
-        const page = state.pages[`${mode}:${group.id}`];
-        if (page?.items.length) void refreshSidebarPage(mode, group.id, page.items.length);
-        else if (!page || page.status !== "loading") void loadSidebarPage(mode, group.id, true);
+        const page = state.pages[`${viewMode}:${group.id}`];
+        if (page?.items.length) void refreshSidebarPage(viewMode, group.id, page.items.length);
+        else if (!page || page.status !== "loading") void loadSidebarPage(viewMode, group.id, true);
       }
     });
-    return () => { alive = false; };
-  }, [mode, refreshSignal]);
+  }, []);
+
+  const handleIssuesRetry = useCallback(() => {
+    void refreshSidebarIssues(mode).then((ok) => {
+      if (ok) refreshView(mode);
+    });
+  }, [mode, refreshView]);
+
+  useEffect(() => {
+    refreshView(mode);
+  }, [mode, refreshSignal, refreshView]);
   useEffect(() => {
     for (const group of groupState?.items ?? []) {
       if (!expanded.has(group.id)) continue;
@@ -133,6 +147,21 @@ export function ProjectPanel(props: ProjectPanelProps) {
         </div>
       </header>
       <PanelPrimaryAction mode={mode} onAddProject={onAddProject} onModeAction={onModeAction} />
+      {issuesScope === mode ? (
+        issuesStatus === "error" ? (
+          <div className="session-sidebar__issues" role="status">
+            <AlertCircle size={14} aria-hidden="true" />
+            <span>无法加载会话索引状态</span>
+            <button type="button" onClick={handleIssuesRetry}>重试</button>
+          </div>
+        ) : issues.length > 0 ? (
+          <div className="session-sidebar__issues" role="status">
+            <AlertCircle size={14} aria-hidden="true" />
+            <span>部分会话记录暂时无法读取</span>
+            <button type="button" onClick={handleIssuesRetry}>重试</button>
+          </div>
+        ) : null
+      ) : null}
       <SessionList rows={rows} now={now} />
     </section>
   );

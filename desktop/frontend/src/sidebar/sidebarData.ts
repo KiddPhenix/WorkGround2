@@ -33,6 +33,37 @@ export function isSidebarCursorError(error: unknown): boolean {
   return /(?:invalid|expired).*(?:sidebar )?cursor|(?:sidebar )?cursor.*(?:invalid|expired)/i.test(errorText(error));
 }
 
+// loadSidebarIssues refreshes the isolated-sidecar warning for one view mode.
+// A failed fetch keeps any previously loaded issues for the SAME mode and only
+// flips the status to "error"; a different mode clears stale issues so warnings
+// never leak across Projects / ROOM / Assistant.
+export async function loadSidebarIssues(mode: SidebarQueryMode): Promise<void> {
+  const seq = useSidebarStore.getState().beginIssues(mode);
+  try {
+    const issues = await app.ListSidebarIssues(mode);
+    useSidebarStore.getState().receiveIssues(seq, mode, issues ?? []);
+  } catch {
+    useSidebarStore.getState().failIssues(seq);
+  }
+}
+
+// refreshSidebarIssues performs a targeted re-scan of only the plans that own an
+// issue in the given mode, then re-reads that mode's issues. It is used by the
+// warning retry so a collapsed project can clear its issue without a full sync.
+// It resolves to true only on success, so callers can skip the follow-up list
+// refresh and keep issuesStatus=error when the refresh fails.
+export async function refreshSidebarIssues(mode: SidebarQueryMode): Promise<boolean> {
+  const seq = useSidebarStore.getState().beginIssues(mode);
+  try {
+    const issues = await app.RefreshSidebarIssues(mode);
+    useSidebarStore.getState().receiveIssues(seq, mode, issues ?? []);
+    return true;
+  } catch {
+    useSidebarStore.getState().failIssues(seq);
+    return false;
+  }
+}
+
 export async function loadSidebarGroups(mode: SidebarQueryMode): Promise<void> {
   const store = useSidebarStore.getState();
   const seq = store.beginGroups(mode);
@@ -41,6 +72,9 @@ export async function loadSidebarGroups(mode: SidebarQueryMode): Promise<void> {
     useSidebarStore.getState().receiveGroups(mode, seq, items ?? []);
   } catch (error) {
     useSidebarStore.getState().failGroups(mode, seq, errorText(error));
+  }
+  if (useSidebarStore.getState().activeMode === mode) {
+    await loadSidebarIssues(mode);
   }
 }
 
@@ -65,6 +99,9 @@ export async function loadSidebarPage(mode: SidebarQueryMode, groupID: string, r
       return;
     }
     useSidebarStore.getState().failPage(key, request.seq, errorText(error));
+  }
+  if (useSidebarStore.getState().activeMode === mode) {
+    await loadSidebarIssues(mode);
   }
 }
 
@@ -93,6 +130,9 @@ export async function refreshSidebarPage(mode: SidebarQueryMode, groupID: string
   } catch (error) {
     useSidebarStore.getState().failPage(key, request.seq, errorText(error));
   }
+  if (useSidebarStore.getState().activeMode === mode) {
+    await loadSidebarIssues(mode);
+  }
 }
 
 export async function loadSidebarSearch(query: string, filter: SidebarSearchFilter, reset: boolean): Promise<void> {
@@ -115,6 +155,9 @@ export async function loadSidebarSearch(query: string, filter: SidebarSearchFilt
       return;
     }
     useSidebarStore.getState().failSearch(request.seq, errorText(error));
+  }
+  if (useSidebarStore.getState().activeMode === "search") {
+    await loadSidebarIssues("projects");
   }
 }
 
@@ -142,5 +185,8 @@ export async function refreshSidebarSearch(query: string, filter: SidebarSearchF
     useSidebarStore.getState().receiveSearch(request.seq, { ...latest!, items: combined, nextCursor: cursor }, true);
   } catch (error) {
     useSidebarStore.getState().failSearch(request.seq, errorText(error));
+  }
+  if (useSidebarStore.getState().activeMode === "search") {
+    await loadSidebarIssues("projects");
   }
 }

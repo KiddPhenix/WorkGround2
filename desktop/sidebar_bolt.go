@@ -25,6 +25,7 @@ import (
 const (
 	sidebarBoltSchema    = 3
 	sidebarBoltBatchSize = 256
+	maxSidebarIssues     = 200
 )
 
 var (
@@ -34,6 +35,7 @@ var (
 	sidebarBoltOrder   = []byte("order")
 	sidebarBoltGroups  = []byte("groups")
 	sidebarBoltQueries = []byte("queries")
+	sidebarBoltIssues  = []byte("issues")
 )
 
 type sidebarBoltManifest struct {
@@ -41,6 +43,21 @@ type sidebarBoltManifest struct {
 	TranscriptStamp string `json:"transcriptStamp,omitempty"`
 	MetaStamp       string `json:"metaStamp,omitempty"`
 	OrderKey        string `json:"orderKey"`
+}
+
+// sidebarIssueRecord is the persisted issue payload. Ownership records which
+// sidebar mode the sidecar belonged to before it became unreadable, so a broken
+// ROOM/Assistant sidecar only warns in its own view instead of leaking into
+// Projects (or vice versa).
+type sidebarIssueRecord struct {
+	Code       string `json:"code"`
+	Retryable  bool   `json:"retryable"`
+	ObservedAt int64  `json:"observedAt"`
+	Ownership  string `json:"ownership"` // "projects" | "rooms" | "assistants"
+}
+
+func (r sidebarIssueRecord) public() SidebarIssue {
+	return SidebarIssue{Code: r.Code, Retryable: r.Retryable, ObservedAt: r.ObservedAt}
 }
 
 type sidebarBoltQuery struct {
@@ -73,26 +90,29 @@ type sidebarBoltAppState struct {
 // sidecars. Session files remain authoritative; a corrupt or old schema is
 // dropped and rebuilt without touching them.
 type sidebarBoltIndex struct {
-	mu           sync.Mutex
-	lifecycleMu  sync.Mutex
-	lifecycles   map[string]*sync.Mutex
-	locksMu      sync.Mutex
-	syncLocks    map[string]*sync.Mutex
-	dirtyMu      sync.Mutex
-	dirty        map[string]uint64
-	audited      map[string]time.Time
-	states       map[*App]*sidebarBoltAppState
-	path         func(*App) string
-	source       sidebarPlanSource
-	auditEvery   time.Duration
-	now          func() time.Time
-	view         func(*bolt.DB, func(*bolt.Tx) error) error
-	update       func(*bolt.DB, func(*bolt.Tx) error) error
-	routes       func() map[string]channelSessionRoute
-	buildFault   func() error
-	publishFault func() error
-	resetHook    func()
-	maxBytes     int64
+	mu                 sync.Mutex
+	lifecycleMu        sync.Mutex
+	lifecycles         map[string]*sync.Mutex
+	locksMu            sync.Mutex
+	syncLocks          map[string]*sync.Mutex
+	dirtyMu            sync.Mutex
+	dirty              map[string]uint64
+	audited            map[string]time.Time
+	states             map[*App]*sidebarBoltAppState
+	path               func(*App) string
+	source             sidebarPlanSource
+	auditEvery         time.Duration
+	now                func() time.Time
+	view               func(*bolt.DB, func(*bolt.Tx) error) error
+	update             func(*bolt.DB, func(*bolt.Tx) error) error
+	routes             func() map[string]channelSessionRoute
+	buildFault         func() error
+	publishFault       func() error
+	scanBatchFault     func() error
+	loadBranchMeta     func(string) (agent.BranchMeta, bool, error)
+	branchMetaBackoffs []time.Duration
+	resetHook          func()
+	maxBytes           int64
 }
 
 type sidebarPlanSource interface {
@@ -109,6 +129,7 @@ func newSidebarBoltIndex(path func(*App) string) *sidebarBoltIndex {
 		lifecycles: map[string]*sync.Mutex{}, syncLocks: map[string]*sync.Mutex{}, dirty: map[string]uint64{}, audited: map[string]time.Time{},
 		states: map[*App]*sidebarBoltAppState{}, path: path, source: sidebarDiskIndexSource{}, auditEvery: 5 * time.Second, now: time.Now,
 		view: sidebarBoltView, update: sidebarBoltUpdate, routes: autoBotChannelSessionRoutes, maxBytes: 512 << 20,
+		loadBranchMeta: agent.LoadBranchMeta, branchMetaBackoffs: []time.Duration{20 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond},
 	}
 }
 
@@ -215,8 +236,13 @@ func sidebarBoltCorrupt(err error) bool {
 	return errors.Is(err, bolt.ErrInvalid) || errors.Is(err, bolt.ErrVersionMismatch) || errors.Is(err, bolt.ErrChecksum)
 }
 
+// errSidebarDerivedIndexCorrupt marks a semantically corrupt derived value (e.g.
+// an issue record that no longer decodes). It triggers the same disposable-index
+// reset as bolt page corruption.
+var errSidebarDerivedIndexCorrupt = errors.New("sidebar derived index is corrupt")
+
 func (index *sidebarBoltIndex) recoverError(app *App, err error) error {
-	if !sidebarBoltCorrupt(err) {
+	if !sidebarBoltCorrupt(err) && !errors.Is(err, errSidebarDerivedIndexCorrupt) {
 		return err
 	}
 	path := filepath.Clean(index.path(app))
@@ -290,7 +316,7 @@ func initSidebarBolt(tx *bolt.Tx) error {
 	}
 	want := []byte(fmt.Sprint(sidebarBoltSchema))
 	if current := meta.Get([]byte("schema")); current != nil && !bytes.Equal(current, want) {
-		for _, name := range [][]byte{sidebarBoltMeta, sidebarBoltFiles, sidebarBoltRows, sidebarBoltOrder, sidebarBoltGroups, sidebarBoltQueries} {
+		for _, name := range [][]byte{sidebarBoltMeta, sidebarBoltFiles, sidebarBoltRows, sidebarBoltOrder, sidebarBoltGroups, sidebarBoltQueries, sidebarBoltIssues} {
 			_ = tx.DeleteBucket(name)
 		}
 		meta, err = tx.CreateBucket(sidebarBoltMeta)
@@ -301,7 +327,7 @@ func initSidebarBolt(tx *bolt.Tx) error {
 	// Query cursors are process-local. Clearing their disposable buckets on
 	// reopen also recovers any failed best-effort eviction from a prior run.
 	_ = tx.DeleteBucket(sidebarBoltQueries)
-	for _, name := range [][]byte{sidebarBoltFiles, sidebarBoltRows, sidebarBoltOrder, sidebarBoltGroups, sidebarBoltQueries} {
+	for _, name := range [][]byte{sidebarBoltFiles, sidebarBoltRows, sidebarBoltOrder, sidebarBoltGroups, sidebarBoltQueries, sidebarBoltIssues} {
 		if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 			return err
 		}
@@ -512,6 +538,133 @@ func (index *sidebarBoltIndex) search(app *App, request SidebarSearchRequest) (p
 	return result, err
 }
 
+// listIssues returns the isolated sidecars visible in the given mode as a pure
+// read of the derived index. Scanning is the responsibility of listGroups,
+// listSessions and search; the frontend retries those to trigger a real re-scan.
+func (index *sidebarBoltIndex) listIssues(app *App, mode SidebarMode) (issues []SidebarIssue, err error) {
+	defer func() { err = index.recoverError(app, err) }()
+	plans, err := index.source.plans(app)
+	if err != nil {
+		return nil, err
+	}
+	validGroups := make(map[string]bool, len(plans))
+	for _, plan := range plans {
+		validGroups[plan.group.ID] = true
+	}
+	state, err := index.open(app)
+	if err != nil {
+		return nil, err
+	}
+	err = index.view(state.db, func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(sidebarBoltIssues)
+		cursor := bucket.Cursor()
+		for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
+			if value == nil {
+				continue
+			}
+			groupID := string(key)
+			if sep := bytes.IndexByte(key, 0); sep >= 0 {
+				groupID = string(key[:sep])
+			}
+			if !validGroups[groupID] {
+				continue
+			}
+			var record sidebarIssueRecord
+			if err := json.Unmarshal(value, &record); err != nil {
+				return fmt.Errorf("%w: decode sidebar issue: %v", errSidebarDerivedIndexCorrupt, err)
+			}
+			if !sidebarIssueMatchesMode(record.Ownership, mode) {
+				continue
+			}
+			issues = append(issues, record.public())
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(issues, func(i, j int) bool { return issues[i].ObservedAt > issues[j].ObservedAt })
+	if len(issues) > maxSidebarIssues {
+		issues = issues[:maxSidebarIssues]
+	}
+	return issues, nil
+}
+
+// sidebarIssueMatchesMode reports whether an issue owned by a given mode belongs
+// to the requested view. Projects shows every issue (including unknown-new ones);
+// ROOM and Assistant only show issues that were owned by those kinds before the
+// sidecar became unreadable.
+func sidebarIssueMatchesMode(ownership string, mode SidebarMode) bool {
+	if mode == SidebarProjects {
+		return true
+	}
+	want := string(SidebarRooms)
+	if mode == SidebarAssistants {
+		want = string(SidebarAssistants)
+	}
+	return ownership == want
+}
+
+// refreshIssues re-scans only the plans that currently own an issue in the given
+// mode, then returns that mode's issues. It is the targeted counterpart of the
+// pure-read listIssues: a stable bad signature keeps its issue, while a repaired
+// or deleted sidecar (signature change) clears it without a full-library sync.
+func (index *sidebarBoltIndex) refreshIssues(app *App, mode SidebarMode) (issues []SidebarIssue, err error) {
+	defer func() { err = index.recoverError(app, err) }()
+	plans, err := index.source.plans(app)
+	if err != nil {
+		return nil, err
+	}
+	planByID := make(map[string]sidebarGroupPlan, len(plans))
+	for _, plan := range plans {
+		planByID[plan.group.ID] = plan
+	}
+	state, err := index.open(app)
+	if err != nil {
+		return nil, err
+	}
+	affected := map[string]bool{}
+	err = index.view(state.db, func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(sidebarBoltIssues)
+		cursor := bucket.Cursor()
+		for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
+			if value == nil {
+				continue
+			}
+			groupID := string(key)
+			if sep := bytes.IndexByte(key, 0); sep >= 0 {
+				groupID = string(key[:sep])
+			}
+			if _, ok := planByID[groupID]; !ok {
+				continue
+			}
+			var record sidebarIssueRecord
+			if err := json.Unmarshal(value, &record); err != nil {
+				return fmt.Errorf("%w: decode sidebar issue: %v", errSidebarDerivedIndexCorrupt, err)
+			}
+			if sidebarIssueMatchesMode(record.Ownership, mode) {
+				affected[groupID] = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	targeted := make([]sidebarGroupPlan, 0, len(affected))
+	for _, plan := range plans {
+		if affected[plan.group.ID] {
+			targeted = append(targeted, plan)
+		}
+	}
+	if len(targeted) > 0 {
+		if err := index.syncPlans(app, targeted); err != nil {
+			return nil, err
+		}
+	}
+	return index.listIssues(app, mode)
+}
+
 func (index *sidebarBoltIndex) syncPlans(app *App, plans []sidebarGroupPlan) error {
 	jobs := make(chan sidebarGroupPlan)
 	errs := make(chan error, len(plans))
@@ -540,7 +693,46 @@ func (index *sidebarBoltIndex) syncPlans(app *App, plans []sidebarGroupPlan) err
 			return err
 		}
 	}
-	return nil
+	return index.pruneOrphanIssues(app)
+}
+
+// pruneOrphanIssues deletes derived issues whose group is no longer in the
+// current plan set, keeping the issue store bounded after projects are removed.
+// It always recomputes the full plan set (not the syncPlans subset), so a
+// single-group or targeted refresh never prunes other valid groups' issues.
+func (index *sidebarBoltIndex) pruneOrphanIssues(app *App) error {
+	plans, err := index.source.plans(app)
+	if err != nil {
+		return err
+	}
+	valid := make(map[string]bool, len(plans))
+	for _, plan := range plans {
+		valid[plan.group.ID] = true
+	}
+	state, err := index.open(app)
+	if err != nil {
+		return err
+	}
+	return index.update(state.db, func(tx *bolt.Tx) error {
+		issues := tx.Bucket(sidebarBoltIssues)
+		cursor := issues.Cursor()
+		stale := [][]byte{}
+		for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
+			groupID := string(key)
+			if sep := bytes.IndexByte(key, 0); sep >= 0 {
+				groupID = string(key[:sep])
+			}
+			if !valid[groupID] {
+				stale = append(stale, append([]byte(nil), key...))
+			}
+		}
+		for _, key := range stale {
+			if err := issues.Delete(key); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (index *sidebarBoltIndex) planLock(app *App, groupID string) *sync.Mutex {
@@ -638,6 +830,7 @@ type sidebarScannedFile struct {
 	transcriptStamp string
 	metaStamp       string
 	row             *SidebarSession
+	issue           *sidebarIssueRecord
 	changed         bool
 }
 
@@ -722,11 +915,19 @@ func (index *sidebarBoltIndex) scanSidebarDir(plan sidebarGroupPlan, dir string,
 		if old, ok := prior[path]; !ok || old.Signature != signature {
 			item.changed = true
 			transcriptOnlyChange := ok && old.TranscriptStamp != "" && old.TranscriptStamp != transcriptStamp && old.MetaStamp == metaStamp
-			row, visible, err := sidebarRowFromSidecar(plan, path, transcriptOnlyChange)
+			row, visible, err := index.sidebarRowFromSidecar(plan, path, transcriptOnlyChange)
 			if err != nil {
-				return nil, err
-			}
-			if visible {
+				var decodeErr *agent.BranchMetaDecodeError
+				if !errors.As(err, &decodeErr) {
+					// Permission, stat, or ordinary I/O errors are not a damaged
+					// sidecar: fail the scan so nothing is published.
+					return nil, err
+				}
+				// Isolate this malformed sidecar by signature. The old row
+				// projection (if any) is dropped and the scan continues over
+				// healthy entries so one bad meta cannot reject the group.
+				item.issue = index.sidebarIssueForMetaError(index.sidebarIssueOwnership(db, path))
+			} else if visible {
 				item.row = &row
 			}
 		}
@@ -736,14 +937,14 @@ func (index *sidebarBoltIndex) scanSidebarDir(plan sidebarGroupPlan, dir string,
 }
 
 func applySidebarScan(db *bolt.DB, groupID, dir, quick string, scanned []sidebarScannedFile) (bool, error) {
-	return applySidebarScanWithFaults(db, groupID, dir, quick, "", false, scanned, nil, nil, autoBotChannelSessionRoutes())
+	return applySidebarScanWithFaults(db, groupID, dir, quick, "", false, scanned, nil, nil, nil, autoBotChannelSessionRoutes())
 }
 
 func (index *sidebarBoltIndex) applySidebarScan(db *bolt.DB, groupID, dir, quick, classStamp string, force bool, scanned []sidebarScannedFile) (bool, error) {
-	return applySidebarScanWithFaults(db, groupID, dir, quick, classStamp, force, scanned, index.buildFault, index.publishFault, index.routes())
+	return applySidebarScanWithFaults(db, groupID, dir, quick, classStamp, force, scanned, index.buildFault, index.publishFault, index.scanBatchFault, index.routes())
 }
 
-func applySidebarScanWithFaults(db *bolt.DB, groupID, dir, quick, classStamp string, force bool, scanned []sidebarScannedFile, buildFault, publishFault func() error, crewRoutes map[string]channelSessionRoute) (bool, error) {
+func applySidebarScanWithFaults(db *bolt.DB, groupID, dir, quick, classStamp string, force bool, scanned []sidebarScannedFile, buildFault, publishFault, batchFault func() error, crewRoutes map[string]channelSessionRoute) (bool, error) {
 	prefix := groupID + "\x00" + dir + "\x00"
 	pendingKey := []byte("pending:" + groupID)
 	seen := make(map[string]bool, len(scanned))
@@ -755,6 +956,21 @@ func applySidebarScanWithFaults(db *bolt.DB, groupID, dir, quick, classStamp str
 	if err := sidebarBoltView(db, func(tx *bolt.Tx) error {
 		pending = len(tx.Bucket(sidebarBoltMeta).Get(pendingKey)) > 0
 		cursor := tx.Bucket(sidebarBoltFiles).Cursor()
+		for key, _ := cursor.Seek([]byte(prefix)); key != nil && bytes.HasPrefix(key, []byte(prefix)); key, _ = cursor.Next() {
+			path := strings.TrimPrefix(string(key), prefix)
+			if !seen[path] {
+				deleted = append(deleted, path)
+			}
+		}
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	// Also clean up issues whose sidecar disappeared without ever persisting a
+	// manifest (e.g. a scan crashed after a prior batch). Deleting a missing key
+	// is a no-op, so deleted entries are safe to process uniformly below.
+	if err := sidebarBoltView(db, func(tx *bolt.Tx) error {
+		cursor := tx.Bucket(sidebarBoltIssues).Cursor()
 		for key, _ := cursor.Seek([]byte(prefix)); key != nil && bytes.HasPrefix(key, []byte(prefix)); key, _ = cursor.Next() {
 			path := strings.TrimPrefix(string(key), prefix)
 			if !seen[path] {
@@ -782,15 +998,23 @@ func applySidebarScanWithFaults(db *bolt.DB, groupID, dir, quick, classStamp str
 			return false, err
 		}
 	}
+	runBatch := func(deleted []string, scanned []sidebarScannedFile) error {
+		if batchFault != nil {
+			if err := batchFault(); err != nil {
+				return err
+			}
+		}
+		return applySidebarScanBatch(db, prefix, deleted, scanned)
+	}
 	for start := 0; start < len(deleted); start += sidebarBoltBatchSize {
 		end := min(start+sidebarBoltBatchSize, len(deleted))
-		if err := applySidebarScanBatch(db, prefix, deleted[start:end], nil); err != nil {
+		if err := runBatch(deleted[start:end], nil); err != nil {
 			return false, err
 		}
 	}
 	for start := 0; start < len(updates); start += sidebarBoltBatchSize {
 		batch := updates[start:min(start+sidebarBoltBatchSize, len(updates))]
-		if err := applySidebarScanBatch(db, prefix, nil, batch); err != nil {
+		if err := runBatch(nil, batch); err != nil {
 			return false, err
 		}
 	}
@@ -953,9 +1177,14 @@ func buildSidebarGroupGeneration(db *bolt.DB, groupID, bucketName string, crewRo
 	}
 }
 
+// applySidebarScanBatch commits manifest, row, order and issue changes in a
+// single Bolt transaction, so a batch either fully applies or fully rolls back.
+// This guarantees a sidecar's manifest can never be updated without its issue
+// (and vice versa) — a partial batch is retried from scratch on reopen.
 func applySidebarScanBatch(db *bolt.DB, prefix string, deleted []string, scanned []sidebarScannedFile) error {
 	return sidebarBoltUpdate(db, func(tx *bolt.Tx) error {
 		files, rows, order := tx.Bucket(sidebarBoltFiles), tx.Bucket(sidebarBoltRows), tx.Bucket(sidebarBoltOrder)
+		issues := tx.Bucket(sidebarBoltIssues)
 		for _, path := range deleted {
 			key := []byte(prefix + path)
 			value := files.Get(key)
@@ -966,14 +1195,16 @@ func applySidebarScanBatch(db *bolt.DB, prefix string, deleted []string, scanned
 			}
 			_ = rows.Delete([]byte(path))
 			_ = files.Delete(key)
+			_ = issues.Delete(key)
 		}
 		for _, item := range scanned {
 			manifestKey := []byte(prefix + item.path)
+			issueKey := manifestKey
 			var old sidebarBoltManifest
 			if value := files.Get(manifestKey); value != nil {
 				_ = json.Unmarshal(value, &old)
 			}
-			if old.Signature == item.signature {
+			if old.Signature == item.signature && item.issue == nil {
 				continue
 			}
 			if old.OrderKey != "" {
@@ -1001,13 +1232,78 @@ func applySidebarScanBatch(db *bolt.DB, prefix string, deleted []string, scanned
 			if err := files.Put(manifestKey, encodedManifest); err != nil {
 				return err
 			}
+			if item.issue != nil {
+				encodedIssue, err := json.Marshal(item.issue)
+				if err != nil {
+					return err
+				}
+				if err := issues.Put(issueKey, encodedIssue); err != nil {
+					return err
+				}
+			} else {
+				_ = issues.Delete(issueKey)
+			}
 		}
 		return nil
 	})
 }
 
-func sidebarRowFromSidecar(plan sidebarGroupPlan, path string, refreshTranscript bool) (SidebarSession, bool, error) {
-	meta, ok, err := agent.LoadBranchMeta(path)
+// loadSidebarBranchMeta retries only malformed-JSON decode corruption with a
+// bounded short backoff. Permission, stat, and ordinary I/O errors are returned
+// immediately so the scan fails rather than publishing a half-built generation.
+func (index *sidebarBoltIndex) loadSidebarBranchMeta(path string) (agent.BranchMeta, bool, error) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		meta, ok, err := index.loadBranchMeta(path)
+		if err == nil {
+			return meta, ok, nil
+		}
+		lastErr = err
+		var decodeErr *agent.BranchMetaDecodeError
+		if !errors.As(err, &decodeErr) {
+			return agent.BranchMeta{}, false, err
+		}
+		if attempt >= len(index.branchMetaBackoffs) {
+			return agent.BranchMeta{}, false, lastErr
+		}
+		time.Sleep(index.branchMetaBackoffs[attempt])
+	}
+}
+
+func (index *sidebarBoltIndex) sidebarIssueForMetaError(ownership string) *sidebarIssueRecord {
+	if ownership == "" {
+		ownership = "projects"
+	}
+	return &sidebarIssueRecord{Code: "meta_decode", Retryable: true, ObservedAt: index.now().UTC().UnixMilli(), Ownership: ownership}
+}
+
+// sidebarIssueOwnership derives which mode a broken sidecar belonged to from its
+// last indexed row. A previously collaboration/assistant session keeps warning
+// in ROOM/Assistant; a normal or never-indexed sidecar falls back to Projects.
+func (index *sidebarBoltIndex) sidebarIssueOwnership(db *bolt.DB, path string) string {
+	ownership := "projects"
+	_ = index.view(db, func(tx *bolt.Tx) error {
+		encoded := tx.Bucket(sidebarBoltRows).Get([]byte(path))
+		if encoded == nil {
+			return nil
+		}
+		var row SidebarSession
+		if json.Unmarshal(encoded, &row) != nil {
+			return nil
+		}
+		switch sidebarExplicitSessionKind(row.SessionKind, row.SessionSource) {
+		case "collaboration":
+			ownership = "rooms"
+		case "assistant":
+			ownership = "assistants"
+		}
+		return nil
+	})
+	return ownership
+}
+
+func (index *sidebarBoltIndex) sidebarRowFromSidecar(plan sidebarGroupPlan, path string, refreshTranscript bool) (SidebarSession, bool, error) {
+	meta, ok, err := index.loadSidebarBranchMeta(path)
 	if err != nil {
 		return SidebarSession{}, false, err
 	}
