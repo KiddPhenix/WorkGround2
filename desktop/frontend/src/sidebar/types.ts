@@ -24,6 +24,7 @@ export interface SidebarSession {
   workspaceRoot?: string;
   title: string;
   sessionPath?: string;
+  preview?: string;
   topicId?: string;
   sessionKind?: string;
   sessionSource?: string;

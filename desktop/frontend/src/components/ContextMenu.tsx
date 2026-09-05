@@ -4,6 +4,15 @@ import { createPortal } from "react-dom";
 
 export type ContextMenuPoint = { left: number; top: number };
 
+export interface ContextMenuGridItem {
+  key: string;
+  icon: ReactNode;
+  label: string;
+  checked?: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+}
+
 export type ContextMenuItem =
   | {
       type?: "item";
@@ -20,6 +29,12 @@ export type ContextMenuItem =
   | {
       type: "separator";
       key: string;
+    }
+  | {
+      type: "grid";
+      key: string;
+      ariaLabel?: string;
+      items: ContextMenuGridItem[];
     };
 
 const EDGE_GAP = 8;
@@ -137,6 +152,30 @@ export function ContextMenu({
       {items.map((item) => {
         if (item.type === "separator") {
           return <div key={item.key} className="context-menu__separator" role="separator" />;
+        }
+        if (item.type === "grid") {
+          return (
+            <div key={item.key} className="context-menu__grid" role="group" aria-label={item.ariaLabel}>
+              {item.items.map((cell) => (
+                <button
+                  key={cell.key}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={cell.checked}
+                  aria-label={cell.label}
+                  title={cell.label}
+                  disabled={cell.disabled}
+                  className="context-menu__grid-item"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!cell.disabled) cell.onSelect();
+                  }}
+                >
+                  {cell.icon}
+                </button>
+              ))}
+            </div>
+          );
         }
         return (
           <button

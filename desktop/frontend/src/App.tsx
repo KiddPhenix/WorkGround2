@@ -64,6 +64,7 @@ import { ShortcutsCheatsheet } from "./components/ShortcutsCheatsheet";
 import { ProjectTree } from "./components/ProjectTree";
 import { SidebarShell } from "./sidebar/SidebarShell";
 import { SessionBackground } from "./components/SessionBackground";
+import { CreationWorkspaceHeader, CreationWorkspaceSwitcher, creationWorkspaceChoicesFromOptions, showsBlankSessionWorkspaceHeader, type CreationWorkspaceChoice } from "./components/CreationWorkspaceSwitcher";
 import { AddOnLauncherButton, AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
 import { SessionStatusIndicators } from "./components/SessionStatusIndicators";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
@@ -1436,6 +1437,9 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   const setRightDockMode = useLayoutStore((s) => s.setRightDockMode);
   const [dockRefreshKey, setDockRefreshKey] = useState(0);
   const [projectRevision, setProjectRevision] = useState(0);
+  const [creationWorkspaces, setCreationWorkspaces] = useState<CreationWorkspaceChoice[]>([]);
+  const [creationWorkspaceBusy, setCreationWorkspaceBusy] = useState(false);
+  const [newSessionSurface, setNewSessionSurface] = useState(false);
   const [activeTopicTurns, setActiveTopicTurns] = useState<number | undefined>(undefined);
   const [composerInsertRequest, setComposerInsertRequest] = useState<ComposerInsertRequest | null>(null);
   const [planRevisionInsertRequest, setPlanRevisionInsertRequest] = useState<ComposerInsertRequest | null>(null);
@@ -1987,6 +1991,9 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   const sessionHasContent = state.items.length > 0
     || Boolean(state.live?.text || state.live?.reasoning)
     || hydratePlaceholderActive;
+  // Match Transcript's empty-state source of truth. A carried live buffer or
+  // hydration placeholder belongs to the previous surface during navigation.
+  const sessionHasCurrentContent = state.items.length > 0;
   const sessionHasUserMessage = state.items.some((item) => item.kind === "user")
     || Boolean(state.hydratePlaceholderItems?.some((item) => item.kind === "user"));
   const activeWorkBootstrap = workBootstrap !== null && (
@@ -3035,6 +3042,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   const navigationRunningRef = useRef(false);
   const navigationPendingRef = useRef<PendingDesktopNavigationRequest | null>(null);
   const runNavigationRequest = useCallback(async (request: PendingDesktopNavigationRequest) => {
+    if (request.kind !== "blank") setNewSessionSurface(false);
     const latest = () => request.seq === navigationSeqRef.current;
     const refreshLatestTabMetas = async (): Promise<TabMeta[]> => {
       const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
@@ -3088,6 +3096,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
       if (request.kind === "blank") {
         const openedTab = await openBlankTarget(request.scope, request.workspaceRoot);
         if (!latest()) return;
+        setNewSessionSurface(true);
         seedActiveTabMeta(openedTab);
         setProjectRevision((value) => value + 1);
         await refreshLatestTabMetas();
@@ -3198,10 +3207,12 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
 
   const createProjectSession = useCallback(async (scope: string, workspaceRoot: string): Promise<void> => {
     if (scope !== "project") return openBlankSession(scope, "");
+    setNewSessionSurface(true);
     try {
       await createBlankSession("project", workspaceRoot, `blank-session-${crypto.randomUUID()}`, singleSurfaceLayout);
       await refreshTabMetas();
     } catch (err: any) {
+      setNewSessionSurface(false);
       showToast(err?.message || String(err), "error");
       throw err;
     }
@@ -3211,6 +3222,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     closeTransientOverlays();
     setAssistantOpen(false);
     setSidebarImDetailConnectionId("");
+    setNewSessionSurface(true);
     const target = blankSessionTarget();
     await openBlankSession(target.scope, target.workspaceRoot);
   }, [blankSessionTarget, closeTransientOverlays, openBlankSession]);
@@ -3806,6 +3818,41 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   const workspacePanelResizeMinWidth = workspacePanelAriaMinWidth(workspacePanelMinWidth, workspacePanelRenderWidth);
   const workspacePanelMaxWidth = rightDockDetailActive ? RIGHT_DOCK_MAX_WIDTH : RIGHT_DOCK_TREE_MAX_WIDTH;
   const sidebarCreation = desktopLayoutStyle === "creation";
+  const blankSessionWorkspaceHeader = showsBlankSessionWorkspaceHeader(
+    newSessionSurface,
+    activeTab?.blank,
+    sessionHasCurrentContent,
+  );
+  useEffect(() => {
+    if (sessionHasCurrentContent) setNewSessionSurface(false);
+  }, [sessionHasCurrentContent]);
+  useEffect(() => {
+    if (!blankSessionWorkspaceHeader) return;
+    let cancelled = false;
+    void app.ListWidgetWorkspaces()
+      .then((options) => {
+        if (!cancelled) setCreationWorkspaces(creationWorkspaceChoicesFromOptions(asArray(options)));
+      })
+      .catch(() => {
+        if (!cancelled) setCreationWorkspaces(creationWorkspaceChoicesFromOptions([]));
+      });
+    return () => { cancelled = true; };
+  }, [blankSessionWorkspaceHeader, projectRevision]);
+
+  const selectCreationWorkspace = useCallback(async (choice: CreationWorkspaceChoice) => {
+    if (creationWorkspaceBusy) return;
+    const currentRoot = activeTab?.scope === "project" ? comparableWorkspaceRoot(activeTab.workspaceRoot) : "";
+    const nextRoot = choice.scope === "project" ? comparableWorkspaceRoot(choice.root) : "";
+    if (activeTab?.scope === choice.scope && currentRoot === nextRoot) return;
+    setCreationWorkspaceBusy(true);
+    try {
+      await openBlankSession(choice.scope, choice.root);
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause), "error");
+    } finally {
+      setCreationWorkspaceBusy(false);
+    }
+  }, [activeTab?.scope, activeTab?.workspaceRoot, creationWorkspaceBusy, openBlankSession, showToast]);
   const [infoSessionId, setInfoSessionId] = useState<string | null>(null);
   const [irisFixtureActive, setIrisFixtureActive] = useState(false);
   const renderSessionId = infoSessionId ?? activeTabId ?? "";
@@ -3887,6 +3934,16 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
       : sidebarImDetailConnection
         ? t("botDetail.title", { name: sidebarImDetailConnection.title })
         : tabDisplayTitle(activeTab, t),
+    headerAccessory: blankSessionWorkspaceHeader ? (
+      <CreationWorkspaceSwitcher
+        choices={creationWorkspaces}
+        activeScope={activeTab?.scope || "global"}
+        activeRoot={activeTab?.workspaceRoot || ""}
+        activeName={tabWorkspaceTitle(activeTab)}
+        busy={creationWorkspaceBusy}
+        onSelect={(choice) => { void selectCreationWorkspace(choice); }}
+      />
+    ) : undefined,
     irisFixtureActive,
     sidebarImDetailConnection,
     contextPercent: irisFixtureActive ? 33 : contextPercent,
@@ -4750,7 +4807,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
           </button>
         )}
 
-        <section className={`chat-pane${sidebarCreation && !sessionHasContent ? " chat-pane--creation-empty" : ""}`}>
+        <section className={`chat-pane${blankSessionWorkspaceHeader ? " chat-pane--blank-session" : ""}`}>
           <SessionBackground tabId={activeTabId} />
           <>
           <header className="topicbar">
@@ -4775,7 +4832,18 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
             )}
             <div className="topicbar__identity">
               <div className="topicbar__title-row">
-                {topicbarEditing ? (
+                {blankSessionWorkspaceHeader ? (
+                  <CreationWorkspaceHeader
+                    title={topicbarTitle}
+                    titleHint={tabDisplayTitle(activeTab, t)}
+                    choices={creationWorkspaces}
+                    activeScope={activeTab?.scope || "global"}
+                    activeRoot={activeTab?.workspaceRoot || ""}
+                    activeName={tabWorkspaceTitle(activeTab)}
+                    busy={creationWorkspaceBusy}
+                    onSelect={(choice) => { void selectCreationWorkspace(choice); }}
+                  />
+                ) : topicbarEditing ? (
                   <div className="topicbar__title-edit">
                     <input
                       autoFocus

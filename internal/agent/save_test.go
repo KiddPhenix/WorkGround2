@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -64,6 +65,85 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		if len(loaded.Messages[i].ToolCalls) != len(m.ToolCalls) {
 			t.Errorf("message %d tool_calls count mismatch", i)
 		}
+	}
+}
+
+// TestSaveSnapshotOwnedRewriteConvergesWithoutRecovery pins the mid-turn
+// autosave fix (#5993): the last assistant/tool message grows in place across
+// successive snapshots while the same Session still owns the on-disk
+// digest/revision. Each snapshot must converge onto the same path as an owned
+// rewrite instead of forking a recovery branch every midTurnSnapshotInterval.
+func TestSaveSnapshotOwnedRewriteConvergesWithoutRecovery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "run"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("initial SaveSnapshot: %v", err)
+	}
+
+	// Simulate streaming: the last assistant message keeps growing in place.
+	for _, chunk := range []string{"partial and more", "partial and more still", "partial and more still done"} {
+		msgs := s.Snapshot()
+		msgs[len(msgs)-1].Content = chunk
+		s.Replace(msgs)
+		if err := s.SaveSnapshot(path); err != nil {
+			t.Fatalf("SaveSnapshot chunk %q: %v", chunk, err)
+		}
+	}
+
+	// The turn-end save must also converge onto the same path.
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("turn-end SaveSnapshot: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "-recovery-") {
+			t.Fatalf("unexpected recovery branch: %s", e.Name())
+		}
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "partial and more still done" {
+		t.Fatalf("converged content = %q", got)
+	}
+}
+
+// TestSaveSnapshotExternalDivergenceStillConflicts guards the other half of the
+// fix: a genuine cross-runtime advance (different content written by another
+// Session) must still surface ErrSessionSnapshotConflict, never a silent owned
+// rewrite.
+func TestSaveSnapshotExternalDivergenceStillConflicts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "run"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("initial SaveSnapshot: %v", err)
+	}
+
+	other := NewSession("sys")
+	other.Add(provider.Message{Role: provider.RoleUser, Content: "different"})
+	if err := other.Save(path); err != nil {
+		t.Fatalf("other Save: %v", err)
+	}
+
+	msgs := s.Snapshot()
+	msgs = append(msgs, provider.Message{Role: provider.RoleAssistant, Content: "continued"})
+	s.Replace(msgs)
+	if err := s.SaveSnapshot(path); !errors.Is(err, ErrSessionSnapshotConflict) {
+		t.Fatalf("SaveSnapshot after external divergence = %v, want ErrSessionSnapshotConflict", err)
 	}
 }
 

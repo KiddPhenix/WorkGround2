@@ -1,6 +1,8 @@
 import { Bot, ChevronLeft, ChevronRight, Folder, Search, Settings, SquarePen, Users } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import logoSymbol from "../assets/logo-symbol.svg";
+import { RecentSessionRail } from "./RecentSessionRail";
+import type { RecentSessionRailItem } from "./recentSessions";
 import type { SidebarMode } from "./types";
 
 interface PrimaryRailProps {
@@ -10,6 +12,9 @@ interface PrimaryRailProps {
   onMode: (mode: SidebarMode) => void;
   onNewSession: () => void;
   onOpenSettings: () => void;
+  recentSessions?: RecentSessionRailItem[];
+  onOpenRecentSession?: (item: RecentSessionRailItem) => void;
+  onOpenRecentSessionMenu?: (item: RecentSessionRailItem, element: HTMLElement) => void;
 }
 
 function runFramelessPointerAction(event: ReactPointerEvent<HTMLElement>, action: () => void) {
@@ -23,7 +28,7 @@ function runKeyboardClick(event: ReactMouseEvent<HTMLElement>, action: () => voi
   if (event.detail === 0) action();
 }
 
-export function PrimaryRail({ panelOpen, activeMode, onTogglePanel, onMode, onNewSession, onOpenSettings }: PrimaryRailProps) {
+export function PrimaryRail({ panelOpen, activeMode, onTogglePanel, onMode, onNewSession, onOpenSettings, recentSessions = [], onOpenRecentSession, onOpenRecentSessionMenu }: PrimaryRailProps) {
   const modes: Array<{ mode: SidebarMode; label: string; icon: typeof Search }> = [
     { mode: "search", label: "搜索", icon: Search },
     { mode: "projects", label: "项目", icon: Folder },
@@ -54,6 +59,8 @@ export function PrimaryRail({ panelOpen, activeMode, onTogglePanel, onMode, onNe
           <RailButton key={item.mode} {...item} selected={activeMode === item.mode} onClick={() => onMode(item.mode)} />
         ))}
       </div>
+
+      {onOpenRecentSession && <RecentSessionRail items={recentSessions} onOpen={onOpenRecentSession} onOpenMenu={onOpenRecentSessionMenu} />}
 
       <button
         type="button"

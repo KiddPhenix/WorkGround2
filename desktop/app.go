@@ -111,6 +111,9 @@ type App struct {
 	activeTabID            string
 	readyHook              func()
 	projectTreeChangedHook func()
+	// tabBuildStart overrides asynchronous Controller startup in navigation
+	// tests; nil uses startTabControllerBuildWithLoadedSession.
+	tabBuildStart func(*WorkspaceTab)
 
 	// sessions is the business-level registry. Unlike activeTabID, it has no
 	// concept of a current UI selection and accepts only explicit SessionIDs.
@@ -298,6 +301,14 @@ type App struct {
 	iconWidgetState       desktopIconPersistedState
 	iconWidgetStateErr    error
 	iconWidgetWindowErr   error
+	// iconWidgetLastSnapshot is the exact authoritative projection most
+	// recently returned to the icon UI. Task-open actions reuse it under
+	// iconWidgetMu instead of rebuilding the Session tree on the click path.
+	iconWidgetLastSnapshot  DesktopIconSnapshot
+	iconWidgetSnapshotReady bool
+	// desktopIconProjectTree overrides the slow project/Session listing in
+	// lock-boundary tests; nil uses ListProjectTree.
+	desktopIconProjectTree func() []ProjectNode
 
 	// iconDiagMu serializes appends to the per-user icon widget diagnostics
 	// log so concurrent hover traces can never interleave NDJSON lines.
@@ -643,6 +654,21 @@ func (a *App) enterWidgetMode() error {
 		}
 	}
 	return enter()
+}
+
+// enterWidgetModeWithoutRetain is the explicit dismiss path: the active icon
+// was already removed, so a successful transition must not add it back. The
+// intent is passed through the call instead of stored on App, avoiding
+// cross-talk between concurrent window actions.
+func (a *App) enterWidgetModeWithoutRetain() error {
+	if a.widgetModeEnter != nil {
+		return a.widgetModeEnter()
+	}
+	if a.ctx == nil {
+		return errors.New("desktop window is not ready")
+	}
+	_, err := a.enterWidgetModeSnapshot(false)
+	return err
 }
 
 const backgroundCloseTrayReadyTimeout = 500 * time.Millisecond

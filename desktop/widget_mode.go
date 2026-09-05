@@ -521,6 +521,10 @@ func (a *App) restoreMainGeometry(state DesktopWindowState, ok bool) error {
 // EnterWidgetMode preserves the main geometry and switches the same Wails
 // window into an always-on-top pager. Repeated calls are harmless.
 func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
+	return a.enterWidgetModeSnapshot(true)
+}
+
+func (a *App) enterWidgetModeSnapshot(retainActive bool) (WidgetSnapshot, error) {
 	if a.ctx == nil {
 		return WidgetSnapshot{}, errors.New("desktop window is not ready")
 	}
@@ -529,9 +533,30 @@ func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
 		return WidgetSnapshot{}, err
 	}
 	if changed {
-		runtime.EventsEmit(a.ctx, "widget:mode", true)
+		a.publishWidgetModeEntered(retainActive)
 	}
 	return a.GetWidgetSnapshot(), nil
+}
+
+// publishWidgetModeEntered makes the retained icon observable before React is
+// told to mount icon mode. Publishing first lets the frontend win the race and
+// read an empty snapshot; the completed retain has no later event to repair it.
+func (a *App) publishWidgetModeEntered(retainActive bool) {
+	a.retainActiveSessionForWidgetEnter(retainActive)
+	a.runtimeEvents.Emit(a.ctx, "widget:mode", true)
+}
+
+// retainActiveSessionForWidgetEnter durably keeps the current Session in the
+// widget icon area when the main window minimizes into widget mode. It mirrors
+// ExitWidgetMode's remember-on-open so the icon survives the turn finishing
+// and a full refresh, and is suppressed for the dismiss flow which removes the
+// active icon before entering widget mode. rememberDesktopIconTask is
+// idempotent, so repeated minimize/state updates never duplicate the icon.
+func (a *App) retainActiveSessionForWidgetEnter(retain bool) {
+	if !retain {
+		return
+	}
+	a.rememberDesktopIconTask(a.activeTabID)
 }
 
 // applyEnterWidgetMode runs inside transitionWidgetMode's widgetMu critical
@@ -610,7 +635,7 @@ func (a *App) exitWidgetMode(tabID string) error {
 	if a.ctx == nil {
 		return errors.New("desktop window is not ready")
 	}
-	_, err := a.transitionWidgetMode(false, func() error { return a.applyExitWidgetMode() })
+	changed, err := a.transitionWidgetMode(false, func() error { return a.applyExitWidgetMode() })
 	if err != nil {
 		return err
 	}
@@ -618,7 +643,16 @@ func (a *App) exitWidgetMode(tabID string) error {
 	if strings.TrimSpace(tabID) != "" {
 		activateErr = a.SetActiveTab(tabID)
 	}
-	reconciled, reconcileErr := a.reconcileMainWindow()
+	// A successful transition already restored the main geometry and taskbar
+	// inside applyExitWidgetMode, so reconcile again would repeat the native
+	// window work on the synchronous return path. Reconcile only when the
+	// logical bit was already false: the native window may still diverge, and
+	// one idempotent repair keeps a repeated exit self-healing.
+	reconciled := changed
+	var reconcileErr error
+	if !changed {
+		reconciled, reconcileErr = a.reconcileMainWindow()
+	}
 	if reconcileErr != nil {
 		return errors.Join(activateErr, reconcileErr)
 	}

@@ -1986,6 +1986,95 @@ func TestTrashTopicMovesRelatedSessionsToTrash(t *testing.T) {
 	}
 }
 
+func TestTrashTopicMissingTopicMetadataStillTrashesSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := t.TempDir()
+	topicID := "topic_missing_metadata"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	// Register the topic in the projects file so the sidebar lists it, but
+	// deliberately omit the title/index metadata. This is the "metadata already
+	// gone" state the sidebar hits when it can still find the session.
+	if err := prependTopicInProjectsFile(projectRoot, topicID, false); err != nil {
+		t.Fatalf("prepend topic: %v", err)
+	}
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sessionPath := writeTopicSession(t, dir, "missing-metadata.jsonl", topicID, "Missing metadata", projectRoot)
+
+	app := NewApp()
+	if got := loadTopicTitle(projectRoot, topicID); got != "" {
+		t.Fatalf("precondition: topic title metadata should be absent, got %q", got)
+	}
+	if !projectTreeHasTopicID(app.ListProjectTree(), topicID) {
+		t.Fatalf("topic should be visible from projects file before trash")
+	}
+
+	if err := app.TrashTopic(topicID); err != nil {
+		t.Fatalf("TrashTopic with missing topic metadata: %v", err)
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("topic session should be removed from active history, stat err = %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "missing-metadata.jsonl", "missing-metadata.jsonl")
+	if _, err := os.Stat(trashPath); err != nil {
+		t.Fatalf("topic session should be moved to trash: %v", err)
+	}
+	if projectTreeHasTopicID(app.ListProjectTree(), topicID) {
+		t.Fatalf("topic should no longer appear in project tree after trash")
+	}
+
+	// Repeated trash stays idempotent once no session or metadata remains.
+	if err := app.TrashTopic(topicID); err != nil {
+		t.Fatalf("repeated TrashTopic: %v", err)
+	}
+	if projectTreeHasTopicID(app.ListProjectTree(), topicID) {
+		t.Fatalf("repeated trash must keep topic absent from project tree")
+	}
+}
+
+func projectTreeHasTopicID(nodes []ProjectNode, topicID string) bool {
+	for i := range nodes {
+		if nodes[i].TopicID == topicID {
+			return true
+		}
+		if projectTreeHasTopicID(nodes[i].Children, topicID) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDeleteTopicMissingTopicMetadataIsIdempotent(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := t.TempDir()
+	topicID := "topic_delete_missing_metadata"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	// Topic lives in the projects file but has no title/index metadata.
+	if err := prependTopicInProjectsFile(projectRoot, topicID, false); err != nil {
+		t.Fatalf("prepend topic: %v", err)
+	}
+
+	app := NewApp()
+	if err := app.DeleteTopic(topicID); err != nil {
+		t.Fatalf("DeleteTopic with missing topic metadata: %v", err)
+	}
+	if containsDesktopString(loadProjectsFile().Projects[0].Topics, topicID) {
+		t.Fatalf("topic should be removed from projects file")
+	}
+	// Nothing remains; a second delete must still succeed.
+	if err := app.DeleteTopic(topicID); err != nil {
+		t.Fatalf("repeated DeleteTopic: %v", err)
+	}
+}
+
 func offTabRoomTopicRuntime(t *testing.T, suffix string) (*App, *desktopCollaboration, string, string) {
 	t.Helper()
 	isolateDesktopUserDirs(t)

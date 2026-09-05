@@ -161,6 +161,199 @@ func TestSidebarBoltIndexPagesRealSidecarsAndKeepsOrphanWork(t *testing.T) {
 	}
 }
 
+func TestSidebarCollapsesRecoveryChainToLeaf(t *testing.T) {
+	dbDir := t.TempDir()
+	index := newSidebarBoltIndex(func(*App) string { return filepath.Join(dbDir, "sidebar.db") })
+	project := testSidebarProjectPlan("project_chain", "Chain", `D:\sessions`, nil)
+	index.source = &sidebarTestSource{plansValue: []sidebarGroupPlan{project}, stamps: map[string]string{"project_chain": "v1"}}
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+	state, err := index.open(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	row := func(id, parentID string, recovered bool, activity int64) SidebarSession {
+		return SidebarSession{ID: id, GroupID: "project_chain", Scope: "project", TopicID: "topic-chain", Title: id, SessionPath: `D:\sessions\` + id + ".jsonl", Recovered: recovered, ParentID: parentID, LastActivityAt: activity}
+	}
+	stage := func(rows ...SidebarSession) {
+		t.Helper()
+		scanned := make([]sidebarScannedFile, len(rows))
+		for i := range rows {
+			scanned[i] = sidebarScannedFile{path: rows[i].SessionPath, signature: "v1", row: &rows[i]}
+		}
+		if _, err := applySidebarScan(state.db, "project_chain", `D:\sessions`, "v1", scanned); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(page SidebarSessionPage) map[string]bool {
+		out := make(map[string]bool, len(page.Items))
+		for _, it := range page.Items {
+			out[it.ID] = true
+		}
+		return out
+	}
+
+	// root -> r1 -> r2 -> r3 (leaf): only r3 may surface in list or search.
+	stage(row("root", "", false, 0), row("r1", "root", true, 1), row("r2", "r1", true, 2), row("r3", "r2", true, 3))
+	page, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_chain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total == nil || *page.Total != 1 || len(page.Items) != 1 || page.Items[0].ID != "r3" {
+		t.Fatalf("chain leaf list: total=%v items=%v", page.Total, ids(page))
+	}
+	searched, err := index.search(app, SidebarSearchRequest{Filter: "sessions"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if searched.Total == nil || *searched.Total != 1 || len(searched.Items) != 1 || searched.Items[0].Session == nil || searched.Items[0].Session.ID != "r3" {
+		t.Fatalf("chain leaf search: total=%v items=%+v", searched.Total, searched.Items)
+	}
+
+	// A different Topic may reuse a branch ID without becoming part of this
+	// recovery chain. Topic scope is part of the ancestor key.
+	otherRoot := row("root", "", false, 4)
+	otherRoot.TopicID = "topic-other"
+	otherRoot.SessionPath = `D:\sessions\other-root.jsonl`
+	stage(row("root", "", false, 0), row("r1", "root", true, 1), row("r2", "r1", true, 2), row("r3", "r2", true, 3), otherRoot)
+	page, err = index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_chain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total == nil || *page.Total != 2 || len(page.Items) != 2 {
+		t.Fatalf("cross-topic same ID: total=%v items=%v", page.Total, ids(page))
+	}
+
+	// A normal explicit fork (Recovered=false) is not collapsed alongside the
+	// recovery leaf.
+	stage(row("root", "", false, 0), row("r1", "root", true, 1), row("r2", "r1", true, 2), row("r3", "r2", true, 3), row("fork", "root", false, 4))
+	page, err = index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_chain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total == nil || *page.Total != 2 || len(page.Items) != 2 {
+		t.Fatalf("chain+fork: total=%v items=%v", page.Total, ids(page))
+	}
+	got := ids(page)
+	if !got["fork"] || !got["r3"] {
+		t.Fatalf("chain+fork items=%v, want fork and r3", got)
+	}
+
+	// Delete the leaf: the next-deepest recovered ancestor reappears without
+	// touching history files.
+	stage(row("root", "", false, 0), row("r1", "root", true, 1), row("r2", "r1", true, 2), row("fork", "root", false, 4))
+	page, err = index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_chain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total == nil || *page.Total != 2 || len(page.Items) != 2 {
+		t.Fatalf("leaf deleted: total=%v items=%v", page.Total, ids(page))
+	}
+	got = ids(page)
+	if !got["fork"] || !got["r2"] {
+		t.Fatalf("leaf deleted items=%v, want fork and r2", got)
+	}
+
+	// Duplicate / out-of-order re-scan is idempotent.
+	stage(row("root", "", false, 0), row("r1", "root", true, 1), row("r2", "r1", true, 2), row("fork", "root", false, 4))
+	page, err = index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_chain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total == nil || *page.Total != 2 || len(page.Items) != 2 {
+		t.Fatalf("duplicate scan: total=%v items=%v", page.Total, ids(page))
+	}
+	got = ids(page)
+	if !got["fork"] || !got["r2"] {
+		t.Fatalf("duplicate scan items=%v, want fork and r2", got)
+	}
+}
+
+func TestSidebarCollapsesRecoveryChainInGroupCount(t *testing.T) {
+	dbDir := t.TempDir()
+	index := newSidebarBoltIndex(func(*App) string { return filepath.Join(dbDir, "sidebar.db") })
+	project := testSidebarProjectPlan("project_rooms_chain", "Rooms", `D:\sessions`, nil)
+	index.source = &sidebarTestSource{plansValue: []sidebarGroupPlan{project}, stamps: map[string]string{"project_rooms_chain": "v1"}}
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+	state, err := index.open(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []SidebarSession{
+		{ID: "room-root", GroupID: "project_rooms_chain", Scope: "project", Title: "Root", SessionPath: `D:\sessions\room-root.jsonl`, SessionSource: "collaboration", LastActivityAt: 1},
+		{ID: "room-r1", GroupID: "project_rooms_chain", Scope: "project", Title: "Recovery", SessionPath: `D:\sessions\room-r1.jsonl`, SessionSource: "collaboration", Recovered: true, ParentID: "room-root", LastActivityAt: 2},
+	}
+	scanned := make([]sidebarScannedFile, len(rows))
+	for i := range rows {
+		scanned[i] = sidebarScannedFile{path: rows[i].SessionPath, signature: "v1", row: &rows[i]}
+	}
+	if _, err := applySidebarScan(state.db, "project_rooms_chain", `D:\sessions`, "v1", scanned); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := index.listGroups(app, SidebarRooms)
+	if err != nil || len(groups) != 1 || groups[0].SessionCount != 1 {
+		t.Fatalf("room groups=%+v err=%v, want single leaf count", groups, err)
+	}
+}
+
+func TestSidebarRecoverySchemaRebuildsOldRowsFromSidecars(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().UTC().Add(-time.Hour)
+	topicID := "topic-recovery-schema"
+	testSidebarWriteSessionMeta(t, dir, "root.jsonl", agent.BranchMeta{
+		ID: "root", Scope: "project", WorkspaceRoot: dir, TopicID: topicID, TopicTitle: "Recovery", Turns: 1,
+		SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: base, UpdatedAt: base,
+	})
+	leafPath := testSidebarWriteSessionMeta(t, dir, "leaf.jsonl", agent.BranchMeta{
+		ID: "leaf", Scope: "project", WorkspaceRoot: dir, TopicID: topicID, TopicTitle: "Recovery", Turns: 1,
+		Recovered: true, ParentID: "root", RecoveryDepth: 1,
+		SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: base, UpdatedAt: base.Add(time.Minute),
+	})
+
+	plan := testSidebarProjectPlan("project_recovery_schema", "Recovery Schema", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_recovery_schema": "v1"}})
+	app := &App{}
+	first, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_recovery_schema"})
+	if err != nil || first.Total == nil || *first.Total != 1 || len(first.Items) != 1 || first.Items[0].ID != "leaf" {
+		t.Fatalf("initial recovery projection=%+v err=%v", first, err)
+	}
+
+	state, err := index.open(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.db.Update(func(tx *bolt.Tx) error {
+		rows := tx.Bucket(sidebarBoltRows)
+		var stale SidebarSession
+		if err := json.Unmarshal(rows.Get([]byte(leafPath)), &stale); err != nil {
+			return err
+		}
+		stale.Recovered, stale.ParentID = false, ""
+		encoded, err := json.Marshal(stale)
+		if err != nil {
+			return err
+		}
+		if err := rows.Put([]byte(leafPath), encoded); err != nil {
+			return err
+		}
+		// Version 5 predates persisted Recovery/ParentID projection.
+		return tx.Bucket(sidebarBoltMeta).Put([]byte("schema"), []byte("5"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.close(app); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	rebuilt, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_recovery_schema"})
+	if err != nil || rebuilt.Total == nil || *rebuilt.Total != 1 || len(rebuilt.Items) != 1 || rebuilt.Items[0].ID != "leaf" {
+		t.Fatalf("schema-5 recovery rebuild=%+v err=%v", rebuilt, err)
+	}
+}
+
 func TestSidebarBoltQueryRefreshesSameSignatureGroupMetadata(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
@@ -670,6 +863,7 @@ func TestSidebarBoltClassifiesLegacySourcesAndCrew(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows := []SidebarSession{
+		{ID: "normal", GroupID: "project_modes", Scope: "project", Title: "Normal", SessionPath: `D:\sessions\normal.jsonl`, LastActivityAt: 4},
 		{ID: "room", GroupID: "project_modes", Scope: "project", Title: "Room", SessionPath: `D:\sessions\room.jsonl`, SessionSource: "collaboration", LastActivityAt: 3},
 		{ID: "assist", GroupID: "project_modes", Scope: "project", Title: "Assistant", SessionPath: `D:\sessions\assist.jsonl`, SessionSource: "assist", LastActivityAt: 2},
 		{ID: "crew", GroupID: "project_modes", Scope: "project", Title: "Crew Chat", SessionPath: `D:\sessions\crew.jsonl`, SessionSource: "wechat", Channel: "wechat", LastActivityAt: 1},
@@ -701,6 +895,18 @@ func TestSidebarBoltClassifiesLegacySourcesAndCrew(t *testing.T) {
 	}
 	if viewCount != 1 {
 		t.Fatalf("assistant group stats scanned rows %d times, want once", viewCount)
+	}
+	projectPage, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_modes"})
+	if err != nil || projectPage.Total == nil || *projectPage.Total != 1 || len(projectPage.Items) != 1 || projectPage.Items[0].ID != "normal" {
+		t.Fatalf("project page=%+v err=%v", projectPage, err)
+	}
+	roomPage, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarRooms, GroupID: "project_modes"})
+	if err != nil || roomPage.Total == nil || *roomPage.Total != 1 || len(roomPage.Items) != 1 || roomPage.Items[0].ID != "room" {
+		t.Fatalf("room page=%+v err=%v", roomPage, err)
+	}
+	assistantPage, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarAssistants, GroupID: "project_modes"})
+	if err != nil || assistantPage.Total == nil || *assistantPage.Total != 1 || len(assistantPage.Items) != 1 || assistantPage.Items[0].ID != "assist" {
+		t.Fatalf("assistant page=%+v err=%v", assistantPage, err)
 	}
 	crewPage, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "crew_folder"})
 	if err != nil || len(crewPage.Items) != 1 || crewPage.Items[0].ID != "crew" || crewPage.Items[0].GroupID != "crew_folder" {
@@ -799,6 +1005,88 @@ func TestSidebarBoltPeriodicAuditFindsContentChangeWithoutDirMtime(t *testing.T)
 	refreshed, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_audit"})
 	if err != nil || len(refreshed.Items) != 1 || refreshed.Items[0].Title != "After" || refreshed.Snapshot == first.Snapshot {
 		t.Fatalf("query after audit=%+v err=%v", refreshed, err)
+	}
+}
+
+func TestSidebarBoltSearchSkipsPeriodicAudit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(path, []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Add(-time.Hour)
+	meta := agent.BranchMeta{ID: "session", Scope: "project", WorkspaceRoot: dir, TopicTitle: "Before", Turns: 1, SchemaVersion: agent.BranchMetaCountsVersion, CreatedAt: base, UpdatedAt: base}
+	if err := agent.SaveBranchMetaPreserveUpdated(path, meta); err != nil {
+		t.Fatal(err)
+	}
+	plan := sidebarGroupPlan{group: SidebarGroup{ID: "project_search_audit", Kind: "project", Label: "Search Audit", Root: dir}, scope: "project", root: normalizeProjectRoot(dir), dirs: []string{dir}, titles: map[string]string{}, titleSource: map[string]string{}, createdAt: map[string]int64{}, pinned: map[string]bool{}}
+	dbPath := filepath.Join(t.TempDir(), "sidebar.db")
+	index := newSidebarBoltIndex(func(*App) string { return dbPath })
+	index.source = &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_search_audit": "v1"}}
+	fakeNow := time.Now()
+	index.now = func() time.Time { return fakeNow }
+	index.auditEvery = time.Second
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+	first, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_search_audit"})
+	if err != nil || len(first.Items) != 1 || first.Items[0].Title != "Before" {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.CustomTitle = "After"
+	meta.UpdatedAt = base.Add(time.Hour)
+	if err := agent.SaveBranchMetaPreserveUpdated(path, meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(dir, dirInfo.ModTime(), dirInfo.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	fakeNow = fakeNow.Add(2 * time.Second)
+	searched, err := index.search(app, SidebarSearchRequest{Filter: "sessions"})
+	if err != nil || len(searched.Items) != 1 || searched.Items[0].Session == nil || searched.Items[0].Session.Title != "Before" {
+		t.Fatalf("search=%+v err=%v", searched, err)
+	}
+	refreshed, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_search_audit"})
+	if err != nil || len(refreshed.Items) != 1 || refreshed.Items[0].Title != "After" {
+		t.Fatalf("refreshed=%+v err=%v", refreshed, err)
+	}
+}
+
+func TestSidebarBoltSearchMatchesPreviewOnlyKeyword(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().UTC().Add(-time.Hour)
+	// 关键词「保险」落在 18 字标题截断窗口之外，只存在于 sidecar 已缓存的
+	// Preview 字段，而 Title / SessionPath / group Label / Root 都不包含它。
+	// 这对应小组件 DesktopIconSearch 的 haystack 覆盖，主窗口搜索也必须命中。
+	testSidebarWriteSessionMeta(t, dir, "session.jsonl", agent.BranchMeta{
+		ID: "session", Scope: "project", WorkspaceRoot: dir,
+		CustomTitle: "普通会话", TopicTitle: "普通会话",
+		Preview: "aaaaaaaaaaaaaaaaaaaa保险", Turns: 1, SchemaVersion: agent.BranchMetaCountsVersion,
+		CreatedAt: base, UpdatedAt: base,
+	})
+	plan := testSidebarProjectPlan("project_preview", "Search Preview", dir, []string{dir})
+	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_preview": "v1"}})
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	all, err := index.search(app, SidebarSearchRequest{Query: "保险", Filter: "all"})
+	if err != nil || len(all.Items) != 1 || all.Items[0].Session == nil || all.Items[0].Session.Preview == "" {
+		t.Fatalf("all=%+v err=%v", all, err)
+	}
+	sessions, err := index.search(app, SidebarSearchRequest{Query: "保险", Filter: "sessions"})
+	if err != nil || len(sessions.Items) != 1 {
+		t.Fatalf("sessions=%+v err=%v", sessions, err)
+	}
+	projects, err := index.search(app, SidebarSearchRequest{Query: "保险", Filter: "projects"})
+	if err != nil || len(projects.Items) != 0 {
+		t.Fatalf("projects must not match a session-only preview keyword: %+v err=%v", projects, err)
+	}
+	miss, err := index.search(app, SidebarSearchRequest{Query: "不在任何字段", Filter: "all"})
+	if err != nil || len(miss.Items) != 0 {
+		t.Fatalf("miss=%+v err=%v", miss, err)
 	}
 }
 

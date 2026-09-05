@@ -537,17 +537,18 @@ export function mergeQuickStartItems(items: DesktopIconItem[], optimistic: Deskt
 }
 
 // reconcileQuickStartJobs removes an accepted job the moment its real task
-// icon (task:<tabId>) appears in a refreshed snapshot, so the handoff never
-// shows an empty frame or a duplicate. Polls never touch running or failed
-// jobs, so an old poll result can never delete a newer job, and there is no
-// time-based eviction: an accepted job whose real icon is filtered/capped out
-// of the snapshot stays usable until the icon appears or the user dismisses.
+// icon appears in a refreshed snapshot. Live icons use task:<tabId>; completed
+// kept Session icons use task:session:<path> while retaining sourceId=<tabId>,
+// so both identities must complete the same handoff. Polls never touch running
+// or failed jobs, so an old poll result can never delete a newer job, and there
+// is no time-based eviction: an accepted job whose real icon is filtered/capped
+// out of the snapshot stays usable until the icon appears or the user dismisses.
 export function reconcileQuickStartJobs(jobs: QuickStartJobs, items: DesktopIconItem[]): QuickStartJobs {
 	let changed = false;
 	let next = jobs;
 	for (const job of Object.values(jobs)) {
 		if (job.phase !== "accepted" || !job.tabId) continue;
-		if (items.some((item) => item.id === `task:${job.tabId}`)) {
+		if (items.some((item) => item.kind === "task" && (item.id === `task:${job.tabId}` || item.sourceId === job.tabId))) {
 			next = removeQuickStartJob(next, job.requestId);
 			changed = true;
 		}

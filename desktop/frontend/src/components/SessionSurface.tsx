@@ -99,6 +99,7 @@ export interface SessionSurfaceProps {
 
   // Header state
   headerTitle: string;
+  headerAccessory?: ReactNode;
   irisFixtureActive: boolean;
   sidebarImDetailConnection: { title: string } | null;
   headerReturn?: {
@@ -210,6 +211,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   workSendAvailable,
   workSendSelected,
   headerTitle,
+  headerAccessory,
   irisFixtureActive,
   sidebarImDetailConnection,
   headerReturn,
@@ -276,6 +278,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
           <h1 className="session-header__title" title={headerTitle}>
             {headerTitle}
           </h1>
+          {headerAccessory}
         </div>
         {windowActions}
       </header>}

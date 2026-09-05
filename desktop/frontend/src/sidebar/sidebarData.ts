@@ -1,6 +1,6 @@
 import { app } from "../lib/bridge";
 import { useSidebarStore } from "./sidebarStore";
-import { mergeSidebarSessions } from "./sidebarStore";
+import { mergeSearchItems, mergeSidebarSessions } from "./sidebarStore";
 import type { SidebarPage, SidebarQueryMode, SidebarSearchFilter, SidebarSession } from "./types";
 import type { SidebarSearchItem } from "./types";
 
@@ -136,7 +136,13 @@ export async function refreshSidebarPage(mode: SidebarQueryMode, groupID: string
 }
 
 export async function loadSidebarSearch(query: string, filter: SidebarSearchFilter, reset: boolean): Promise<void> {
-  const request = useSidebarStore.getState().beginSearch(reset);
+  const store = useSidebarStore.getState();
+  // A stale invocation (e.g. a debounce/refresh that fired after the user already
+  // replaced the query or filter) must not flip the current search back to
+  // "loading". The live store is the single source of truth; reject the stale
+  // request before it can issue a backend call or mutate searchPage.
+  if (store.searchQuery.trim() !== query || store.searchFilter !== filter) return;
+  const request = store.beginSearch(reset);
   if (!request) return;
   try {
     const page = await withRequestSlot(() => app.SearchSidebar({
@@ -162,7 +168,11 @@ export async function loadSidebarSearch(query: string, filter: SidebarSearchFilt
 }
 
 export async function refreshSidebarSearch(query: string, filter: SidebarSearchFilter, loadedCount: number): Promise<void> {
-  const request = useSidebarStore.getState().beginSearch(true, true);
+  const store = useSidebarStore.getState();
+  // Same staleness guard as loadSidebarSearch: a refresh that no longer matches
+  // the live query/filter must not re-enter "loading" or occupy a request slot.
+  if (store.searchQuery.trim() !== query || store.searchFilter !== filter) return;
+  const request = store.beginSearch(true, true);
   if (!request) return;
   const targetCount = Math.max(PAGE_SIZE, loadedCount);
   let cursor: string | undefined;
@@ -178,8 +188,7 @@ export async function refreshSidebarSearch(query: string, filter: SidebarSearchF
         limit: Math.min(50, remaining),
         requestId: nextRequestID("search-refresh"),
       }));
-      const seen = new Set(combined.map((item) => `${item.kind}:${item.id}`));
-      combined = [...combined, ...(latest.items ?? []).filter((item) => !seen.has(`${item.kind}:${item.id}`))];
+      combined = mergeSearchItems(combined, latest.items ?? []);
       cursor = latest.nextCursor || undefined;
     } while (cursor && combined.length < targetCount);
     useSidebarStore.getState().receiveSearch(request.seq, { ...latest!, items: combined, nextCursor: cursor }, true);

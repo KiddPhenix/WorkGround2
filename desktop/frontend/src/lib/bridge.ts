@@ -393,6 +393,16 @@ export interface DesktopIconDelegation {
   sessionTitle: string; workspaceName?: string; updatedAt?: number; sessionRef?: DesktopIconTaskRef;
 }
 export interface DesktopIconSnapshot { items: DesktopIconItem[]; delegations: DesktopIconDelegation[]; assistantTasks: DesktopIconDelegation[]; delegationError?: string; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
+export interface RecentSessionsRequest { limit?: number; requestId?: string; }
+// RecentSessionItem is the authoritative recent-session rail projection from
+// the Go side: the widget DesktopIconItem identity plus the open-routing fields
+// the sidebar already understands. The frontend must consume it as-is.
+export interface RecentSessionItem {
+	item: DesktopIconItem;
+	session: SidebarSession;
+	groupKind?: string;
+}
+export interface RecentSessionsPage { items: RecentSessionItem[]; }
 export interface DesktopIconSearchItem { id: string; kind: "session" | "room" | "person" | "task" | "workspace"; title: string; subtitle?: string; sourceId: string; lastActivityAt?: number; }
 export interface DesktopIconSearchResult { items: DesktopIconSearchItem[]; error?: string; }
 export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; answers?: QuestionAnswer[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
@@ -937,6 +947,7 @@ export interface AppBindings extends WailsWorkBindings {
   RefreshSidebarIssues(mode: SidebarQueryMode): Promise<SidebarIssue[]>;
   ListSidebarSessions(query: SidebarSessionQuery): Promise<SidebarPage<SidebarSession>>;
   SearchSidebar(request: SidebarSearchRequest): Promise<SidebarPage<SidebarSearchItem>>;
+  RecentSessions(request: RecentSessionsRequest): Promise<RecentSessionsPage>;
   RenameProject(workspaceRoot: string, title: string): Promise<void>;
   SetProjectColor(workspaceRoot: string, color: string): Promise<void>;
   SetProjectIcon(workspaceRoot: string, icon: string): Promise<void>;
@@ -1682,7 +1693,7 @@ function makeMockApp(): AppBindings {
 		assistantTasks: [],
 		items: [
 			{ id: "conversation:room-design", kind: "room", sourceId: "room-design", title: "产品 Room", status: "unread", unreadCount: 2, position: { row: "top", zone: "conversation", order: 0 }, revision: `room-${widgetRevision}`, notifications: [{ id: "room-msg", revision: "2", kind: "message", priority: 9, title: "小组件讨论", body: "收到一条新消息", createdAt: t0, conversation: "room-design", readSequence: 2, attention: "mention_agent", options: [] }] },
-			{ id: "task:tab-wg2", kind: "task", sourceId: "tab-wg2", title: "桌面图标模式", subtitle: "WorkGround2", status: widgetScenario === "widget-running" ? "running" : "thinking", unreadCount: 0, runtimeStatus: { phase: widgetScenario === "widget-running" ? "Running" : "Thinking", summary: widgetScenario === "widget-running" ? "read_file 执行中" : "正在核对真实状态投影", elapsedMs: 84_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 0 }, revision: `task-${widgetRevision}`, notifications: [] },
+			{ id: "task:tab-wg2", kind: "task", sourceId: "tab-wg2", sessionId: "session-tab-wg2", title: "桌面图标模式", subtitle: "WorkGround2", status: widgetScenario === "widget-running" ? "running" : "thinking", unreadCount: 0, runtimeStatus: { phase: widgetScenario === "widget-running" ? "Running" : "Thinking", summary: widgetScenario === "widget-running" ? "read_file 执行中" : "正在核对真实状态投影", elapsedMs: 84_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 0 }, revision: `task-${widgetRevision}`, notifications: [], workspaceIcon: "folder", sessionRef: { scope: "project", workspaceRoot: "~/projects/WorkGround2", topicId: "topic-widget-icons", sessionPath: "~/projects/WorkGround2/sessions/widget-icons.jsonl" } },
 			{ id: "external:run-dsh-demo", kind: "external", sourceId: "run-dsh-demo", title: "DSH · WorkGround2", subtitle: "WorkGround2", status: "running", unreadCount: 0, runtimeStatus: { phase: "tool", summary: "DSH 正在执行", elapsedMs: 18_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 1 }, revision: `dsh-${widgetRevision}`, notifications: [], actions: ["cancel"] },
 			...(desktopWorkspaceSlots > 0 ? [{ id: "workspace:~/projects/WorkGround2", kind: "workspace", sourceId: "~/projects/WorkGround2", title: "WorkGround2", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "workspace", order: 0 }, revision: "workspace", notifications: [] } satisfies DesktopIconItem] : []),
 			...(["new", "assistant", "delegate", "search"] as const)
@@ -5932,11 +5943,15 @@ function makeMockApp(): AppBindings {
         mockTopicIsBlank(tab.topicId)
       );
       if (existing) {
-        setMockActiveTab(existing.id);
-        return { ...existing, active: true };
+        const blank = { ...existing, active: true, blank: true };
+        mockTabs = mockTabs.map((tab) => (tab.id === blank.id ? blank : { ...tab, active: false }));
+        return blank;
       }
       const topic = await this.CreateTopic(targetScope, targetRoot, "");
-      return targetScope === "global" ? this.OpenGlobalTab(topic.id) : this.OpenProjectTab(targetRoot, topic.id);
+      const opened = targetScope === "global" ? await this.OpenGlobalTab(topic.id) : await this.OpenProjectTab(targetRoot, topic.id);
+      const blank = { ...opened, blank: true };
+      mockTabs = mockTabs.map((tab) => (tab.id === blank.id ? blank : tab));
+      return blank;
     },
     async CreateBlankSession(input: CreateBlankSessionInput) {
       const targetScope = input.scope === "project" && input.workspaceRoot ? "project" : "global";
@@ -5949,7 +5964,9 @@ function makeMockApp(): AppBindings {
         if (existing) { setMockActiveTab(existing.id); return { ...existing, active: true }; }
       }
       const topic = await this.CreateTopic(targetScope, targetRoot, "");
-      const tab = targetScope === "global" ? await this.OpenGlobalTab(topic.id) : await this.OpenProjectTab(targetRoot, topic.id);
+      const opened = targetScope === "global" ? await this.OpenGlobalTab(topic.id) : await this.OpenProjectTab(targetRoot, topic.id);
+      const tab = { ...opened, blank: true };
+      mockTabs = mockTabs.map((item) => (item.id === tab.id ? tab : item));
       mockBlankCreates.set(input.requestId, { target, tabId: tab.id });
       return tab;
     },
@@ -6082,6 +6099,34 @@ function makeMockApp(): AppBindings {
       const offset = Math.max(0, Number(request.cursor || 0) || 0);
       const limit = Math.min(50, Math.max(10, request.limit || 20));
       return { items: all.slice(offset, offset + limit), nextCursor: offset + limit < all.length ? String(offset + limit) : undefined, total: all.length, snapshot: "browser-mock" };
+    },
+    async RecentSessions(request: RecentSessionsRequest) {
+      const limit = Math.min(50, Math.max(1, request.limit || 50));
+      const items: RecentSessionItem[] = mockDesktopIconSnapshot().items
+        .filter((item) => item.kind === "task")
+        .slice(0, limit)
+        .map((item) => {
+        const ref = item.sessionRef;
+        const scope: SidebarSession["scope"] = ref?.scope === "project" ? "project" : "global";
+        return {
+          item,
+          session: {
+            id: item.sourceId || item.sessionId || item.id,
+            sessionId: item.sessionId,
+            groupId: scope === "project" ? `project:${ref?.workspaceRoot || ""}` : "global",
+            scope,
+            workspaceRoot: scope === "project" ? ref?.workspaceRoot : undefined,
+            title: item.title || "新的会话",
+            sessionPath: ref?.sessionPath,
+            topicId: ref?.topicId,
+            sessionKind: "normal",
+            status: item.status === "failed" ? "error" : item.status === "needs_confirm" || item.status === "needs_input" ? "waiting_confirmation" : item.status === "running" || item.status === "thinking" ? "thinking" : undefined,
+            running: item.status === "running" || item.status === "thinking",
+            revision: 1,
+          },
+        };
+      });
+      return { items };
     },
     async RenameProject(workspaceRoot: string, title: string) {
       const node = workspaceRoot

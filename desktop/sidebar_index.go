@@ -228,19 +228,40 @@ func sidebarRuntimeRows(app *App, plan sidebarGroupPlan) []sidebarRuntimeRow {
 	return rows
 }
 
-func sidebarRuntimeByTopic(app *App, plan sidebarGroupPlan) map[string]sidebarRuntimeRow {
+// sidebarRuntimeByPath indexes live runtimes by their physical session path.
+// The path (canonicalized through sessionRuntimeKey) is the only identity that
+// may decorate a history row: a Topic can host several sessions, so a
+// TopicID-keyed map would smear one runtime's ID/path across sibling rows.
+func sidebarRuntimeByPath(app *App, plan sidebarGroupPlan) map[string]sidebarRuntimeRow {
+	return sidebarRuntimeIndex(sidebarRuntimeRows(app, plan))
+}
+
+// sidebarRuntimeIndex folds runtime rows into one projection per canonical
+// path. It is pure so the deterministic priority (running > open > closed) is
+// covered without a live App. Empty paths are dropped and never decorate a row.
+func sidebarRuntimeIndex(rows []sidebarRuntimeRow) map[string]sidebarRuntimeRow {
 	out := map[string]sidebarRuntimeRow{}
-	for _, runtime := range sidebarRuntimeRows(app, plan) {
-		topicID := strings.TrimSpace(runtime.TopicID)
-		if topicID == "" {
+	for _, runtime := range rows {
+		key := sessionRuntimeKey(runtime.SessionPath)
+		if key == "" {
 			continue
 		}
-		prior, ok := out[topicID]
-		if !ok || runtime.Running || (!prior.Open && runtime.Open) {
-			out[topicID] = runtime
+		if prior, ok := out[key]; !ok || sidebarRuntimePriority(runtime) > sidebarRuntimePriority(prior) {
+			out[key] = runtime
 		}
 	}
 	return out
+}
+
+func sidebarRuntimePriority(runtime sidebarRuntimeRow) int {
+	switch {
+	case runtime.Running:
+		return 2
+	case runtime.Open:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func sidebarTabMatchesPlan(tab *WorkspaceTab, plan sidebarGroupPlan) bool {

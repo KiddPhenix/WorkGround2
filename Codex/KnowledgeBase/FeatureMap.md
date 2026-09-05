@@ -1,5 +1,15 @@
 # Feature Map
 
+> 2026-09-04 Session 自动保存 Recovery 链收敛：状态 `done`；当前 `main` 共享工作树包含 Session/Sidebar 同链路未提交改动，本次不切分支、不提交或合并；负责人 `Codex + WorkGround2`。运行中 30 秒自动保存允许同一 Session 在持有磁盘 digest/revision 时原位更新持续变化的 assistant/tool 消息，不再把自身快照误判为外部分叉；真实跨运行时改写仍显式返回冲突。Session List 按项目、Topic 与 ParentID 投影 Recovery 链，只展示当前叶子，祖先继续保留在磁盘与分支历史；删除叶子、重复/乱序扫描后可重新收敛，普通 Fork 与不同 Topic 不串联。实机复验发现已有 schema-5 索引行不会自动补出新增的 Recovery/ParentID，现将派生索引升级到 schema 6，强制从 sidecar 重建；真实 DB 已确认链上三层 Recovery 字段及 ParentID 完整。Agent、Control、Desktop 专项测试，两端 vet、gofmt、production build 与 diff check 通过，标准 EXE 已替换并重启。
+
+> 2026-09-04 Session List 重复与错跳修复：状态 `done`；当前 `main` 共享工作树包含同链路未提交改动，本次不切分支、不提交或合并；负责人 `Codex + WorkGround2`。前端按规范化 sessionPath 等稳定身份幂等去重；后端运行时装饰从 TopicID 映射改为物理 sessionPath 映射，同 Topic 多个 Session 保留各自 ID/path，运行态仅附着到精确 Session。同路径 runtime 按 running、open、closed 确定性选择，空路径不参与。新增同 Topic 多 Session、路径格式、选择优先级与空路径回归；Go Sidebar/Bolt 专项、vet、gofmt、前端 Session Sidebar 55 项、TypeScript 与 diff check 通过。
+
+> 2026-09-04 侧边栏任务图标统一小组件数据源：状态 `done`；当前 `main` 共享工作树包含同链路未提交改动，本次不切分支、不提交或合并；负责人 `Codex`。侧边栏竖排任务图标直接消费 Widget 的 task 投影，完整复用集合、顺序、标题、Session 身份、外观 seed、状态、未读数和工作区徽标；仅额外派生既有打开路由所需的兼容对象。实机冷启动暴露完整 `GetDesktopIconSnapshot` 会等待最长 5 秒 Session 树扫描，现优先逐字段复用最后完整 Widget 快照；首次完整快照未就绪时由同一个 Widget builder 从 persisted/live 状态快速投影 task 项，不读取或回退到 Session List。磁盘权威状态中的 `JOKE`、`算命笑话` 保持完整。新增冷启动禁止项目树读取与完整快照复用回归；Go 专项、vet/build、侧边栏前端测试 55 项、TypeScript、production build、diff check 及完整 Wails production 编译通过，验证包为 `desktop/build/bin/WorkGround2-sidebar-fix.exe`。
+
+> 2026-09-04 小组件任务图标即时打开窗口：状态 `done`；当前共享工作树已有大量无关未提交改动，本次不切分支、不提交或合并；负责人 `Codex`。第一阶段消除同 Topic 旧 Tab 的同步 Controller 重建，将分钟级阻塞降至 6–10 秒；第二阶段让 retained task 打开复用界面最后权威快照，并仅用当前 kept 状态重建单项 revision，避免点击触发 Session 树扫描且保留 stale 防护。后台快照的最长 5 秒 Session 树读取移到 `iconWidgetMu` 外，打开动作不再排队；打开成功不再重复完整投影。新增缓存、旧 revision、锁边界、同 Topic 精确 Session 回归；完整 DesktopIcon 专项、Desktop vet、Go build 与 diff check 通过。
+
+> 2026-09-04 小组件 QuickStart 图标交接修复：状态 `done`；当前共享工作树已有大量无关未提交改动，本次不切分支、不提交或合并；负责人 `Codex`。调整功能：已接受的乐观任务除兼容 `task:<tabId>` 外，也按真实 task 图标的稳定 `sourceId=<tabId>` 完成交接，覆盖完成后 kept Session 图标改用 `task:session:<path>` 的场景；非 task 同源项不会误删，运行中与失败任务仍保持原有对账保护。QuickStart Job 专项测试、前端 TypeScript 检查与 production build 通过。
+
 > 2026-09-03 ROOM 分支元数据容错：状态 `done`；分支 `developping/room-branch-meta-recovery+2026-09-03`；负责人 `Codex + subagents`。单个损坏的 Session meta 仅在 Sidebar 派生索引边界隔离，健康的项目、ROOM 与助手继续加载；普通 I/O/权限错误仍显式失败。issue 与 manifest/row/order 同事务写入，按 mode 脱敏展示并支持定向重扫、修复/删除后自愈；异步 scope、失败重试和深分页保持均有回归覆盖。Branch meta 保存改用 fsync + 原子替换防复发，原损坏文件未被修改。专项 Go、前端 26 项、TypeScript、CSS、两端 vet/build 与生产构建通过；全量仅命中可单独复跑通过的既有 Windows 插件/Work 临时文件问题及两个既有窗口图标断言基线。
 
 > 2026-09-03 Session 双栏侧边栏与大列表分页：状态 `done`；修正分支 `developping/session-sidebar-entry-fix+2026-09-03`；负责人 `Codex + subagents`。依据实机反馈修复二级栏与 Session 画布叠压，并恢复项目、ROOM、助手模式的可进入状态和顶部主创建入口：`创建项目`、`创建 / 加入 ROOM`、`创建助手`。助手入口直接打开既有创建表单；窄屏仍只让二级栏覆盖内容。保留既有分页、搜索、相对时间和恢复机制。专项测试、TypeScript、CSS/z-index、production build、视觉与交互验收通过。详细设计：`docs/SESSION_SIDEBAR_DESIGN.zh-CN.md`；视觉验收：`design-qa.md`。

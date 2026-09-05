@@ -128,7 +128,9 @@ func (a *App) dismissMainWindowToWidget() error {
 	if _, err := a.removeActiveSessionDesktopIcon(); err != nil {
 		return err
 	}
-	if err := a.enterWidgetMode(); err != nil {
+	// The icon was just removed, so use the explicit no-retain transition. A
+	// later plain minimize still uses EnterWidgetMode's retain path.
+	if err := a.enterWidgetModeWithoutRetain(); err != nil {
 		return fmt.Errorf("enter widget mode after dismiss: %w", err)
 	}
 	return nil

@@ -49,6 +49,7 @@ type SidebarSession struct {
 	WorkspaceRoot  string `json:"workspaceRoot,omitempty"`
 	Title          string `json:"title"`
 	SessionPath    string `json:"sessionPath,omitempty"`
+	Preview        string `json:"preview,omitempty"`
 	TopicID        string `json:"topicId,omitempty"`
 	TitleSource    string `json:"titleSource,omitempty"`
 	SessionSource  string `json:"sessionSource,omitempty"`
@@ -64,6 +65,11 @@ type SidebarSession struct {
 	CreatedAt      int64  `json:"createdAt,omitempty"`
 	LastActivityAt int64  `json:"lastActivityAt,omitempty"`
 	Revision       int64  `json:"revision"`
+	// Recovered and ParentID are indexed listing-only fields used to collapse a
+	// recovery chain to its current leaf. They are not stable identity; the
+	// frontend keeps using its normalized session-path identity.
+	Recovered bool   `json:"recovered,omitempty"`
+	ParentID  string `json:"parentId,omitempty"`
 }
 
 type SidebarSessionQuery struct {

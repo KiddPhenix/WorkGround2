@@ -23,7 +23,10 @@ import (
 )
 
 const (
-	sidebarBoltSchema    = 3
+	// Schema 6 adds recovery lineage to persisted rows. Bumping the disposable
+	// index is required so existing schema-5 rows are reprojected from sidecars;
+	// otherwise unchanged recovery ancestors keep empty Recovered/ParentID fields.
+	sidebarBoltSchema    = 6
 	sidebarBoltBatchSize = 256
 	maxSidebarIssues     = 200
 )
@@ -515,7 +518,7 @@ func (index *sidebarBoltIndex) search(app *App, request SidebarSearchRequest) (p
 		return SidebarSearchPage{}, err
 	}
 	if filter != "projects" {
-		if err := index.syncPlans(app, plans); err != nil {
+		if err := index.syncPlansForSearch(app, plans); err != nil {
 			return SidebarSearchPage{}, err
 		}
 	}
@@ -666,6 +669,18 @@ func (index *sidebarBoltIndex) refreshIssues(app *App, mode SidebarMode) (issues
 }
 
 func (index *sidebarBoltIndex) syncPlans(app *App, plans []sidebarGroupPlan) error {
+	return index.syncPlansMode(app, plans, true)
+}
+
+// syncPlansForSearch applies cheap directory and dirty-signal changes but does
+// not make an interactive search wait for the periodic full-library audit.
+// Normal sidebar list refreshes still perform that audit and repair any missed
+// filesystem notifications, preserving eventual consistency.
+func (index *sidebarBoltIndex) syncPlansForSearch(app *App, plans []sidebarGroupPlan) error {
+	return index.syncPlansMode(app, plans, false)
+}
+
+func (index *sidebarBoltIndex) syncPlansMode(app *App, plans []sidebarGroupPlan, allowAudit bool) error {
 	jobs := make(chan sidebarGroupPlan)
 	errs := make(chan error, len(plans))
 	var wait sync.WaitGroup
@@ -678,7 +693,7 @@ func (index *sidebarBoltIndex) syncPlans(app *App, plans []sidebarGroupPlan) err
 				if plan.crew {
 					continue
 				}
-				errs <- index.syncPlan(app, plan)
+				errs <- index.syncPlan(app, plan, allowAudit)
 			}
 		}()
 	}
@@ -802,7 +817,7 @@ func (index *sidebarBoltIndex) markAudited(app *App, dir string) {
 	index.dirtyMu.Unlock()
 }
 
-func (index *sidebarBoltIndex) syncPlan(app *App, plan sidebarGroupPlan) error {
+func (index *sidebarBoltIndex) syncPlan(app *App, plan sidebarGroupPlan, allowAudit bool) error {
 	// Crew is a virtual routing view over sessions indexed by their owning
 	// global/project plans. Scanning its union of directories as another owner
 	// would let an invisible Crew row delete the canonical project row.
@@ -817,7 +832,7 @@ func (index *sidebarBoltIndex) syncPlan(app *App, plan sidebarGroupPlan) error {
 		return err
 	}
 	for _, dir := range plan.dirs {
-		if err := index.syncDir(app, state.db, plan, dir); err != nil {
+		if err := index.syncDir(app, state.db, plan, dir, allowAudit); err != nil {
 			return err
 		}
 	}
@@ -834,8 +849,11 @@ type sidebarScannedFile struct {
 	changed         bool
 }
 
-func (index *sidebarBoltIndex) syncDir(app *App, db *bolt.DB, plan sidebarGroupPlan, dir string) error {
+func (index *sidebarBoltIndex) syncDir(app *App, db *bolt.DB, plan sidebarGroupPlan, dir string, allowAudit bool) error {
 	dirty, audit := index.dirSignal(app, dir)
+	if !allowAudit {
+		audit = false
+	}
 	quick := fmt.Sprintf("%s:%d", sidebarPathStamp(dir), dirty)
 	stampKey := []byte("dir:" + plan.group.ID + "\x00" + dir)
 	classKey := []byte("class:" + plan.group.ID)
@@ -1119,6 +1137,10 @@ func buildSidebarGroupGeneration(db *bolt.DB, groupID, bucketName string, crewRo
 	}); err != nil {
 		return 0, err
 	}
+	hidden, err := sidebarRecoveryAncestors(db)
+	if err != nil {
+		return 0, err
+	}
 	prefix := []byte(groupID + "\x00")
 	var after []byte
 	total := 0
@@ -1146,7 +1168,10 @@ func buildSidebarGroupGeneration(db *bolt.DB, groupID, bucketName string, crewRo
 					continue
 				}
 				var row SidebarSession
-				if json.Unmarshal(encoded, &row) != nil || sidebarRowBelongsToCrew(row, crewRoutes) {
+				if json.Unmarshal(encoded, &row) != nil {
+					continue
+				}
+				if hidden[sidebarRecoveryHiddenKey(groupID, row.TopicID, row.ID)] || sidebarRowBelongsToCrew(row, crewRoutes) || !sidebarModeMatches(row, SidebarProjects) {
 					continue
 				}
 				batch = append(batch, pair{append([]byte(nil), key...), append([]byte(nil), encoded...)})
@@ -1345,8 +1370,9 @@ func (index *sidebarBoltIndex) sidebarRowFromSidecar(plan sidebarGroupPlan, path
 	title := firstNonEmpty(strings.TrimSpace(meta.CustomTitle), strings.TrimSpace(meta.TopicTitle), topicTitleFromText(meta.Preview), defaultTopicTitle)
 	return SidebarSession{
 		ID: id, GroupID: plan.group.ID, Scope: plan.scope, WorkspaceRoot: plan.root, Title: title,
-		SessionPath: path, TopicID: meta.TopicID, SessionSource: meta.SessionSource, Channel: meta.Channel, ChannelLabel: meta.ChannelLabel,
+		SessionPath: path, Preview: meta.Preview, TopicID: meta.TopicID, SessionSource: meta.SessionSource, Channel: meta.Channel, ChannelLabel: meta.ChannelLabel,
 		SessionKind: kind, Turns: meta.Turns, Pinned: meta.Pinned, CreatedAt: createdAt, LastActivityAt: lastActivityAt,
+		Recovered: meta.Recovered, ParentID: strings.TrimSpace(meta.ParentID),
 	}, true, nil
 }
 
@@ -1411,7 +1437,7 @@ func (index *sidebarBoltIndex) resolveDirectQuery(app *App, encoded, signature s
 	}
 	q := &sidebarBoltQuery{
 		revision: revision, component: component, kind: "sessions", signature: signature, direct: true, generation: generation, total: total, plan: plan,
-		titles: titles, runtimes: sidebarRuntimeByTopic(app, plan),
+		titles: titles, runtimes: sidebarRuntimeByPath(app, plan),
 	}
 	if err := index.rememberQuery(state, key, q); err != nil {
 		return nil, nil, err
@@ -1642,7 +1668,7 @@ func (index *sidebarBoltIndex) buildQueryBucket(app *App, db *bolt.DB, q *sideba
 	for _, plan := range allPlans {
 		groups[plan.group.ID] = plan
 		if !plan.crew {
-			runtimes[plan.group.ID] = sidebarRuntimeByTopic(app, plan)
+			runtimes[plan.group.ID] = sidebarRuntimeByPath(app, plan)
 		}
 		for _, dir := range plan.dirs {
 			for name, title := range loadSessionTitles(dir) {
@@ -1710,6 +1736,10 @@ func (index *sidebarBoltIndex) buildQueryBucket(app *App, db *bolt.DB, q *sideba
 		}
 	}
 	if q.kind != "search" || filter != "projects" {
+		hidden, err := sidebarRecoveryAncestors(db)
+		if err != nil {
+			return err
+		}
 		var after []byte
 		for {
 			batch := make([]result, 0, sidebarBoltBatchSize)
@@ -1737,12 +1767,15 @@ func (index *sidebarBoltIndex) buildQueryBucket(app *App, db *bolt.DB, q *sideba
 					if json.Unmarshal(encodedRow, &row) != nil {
 						continue
 					}
+					if hidden[sidebarRecoveryHiddenKey(row.GroupID, row.TopicID, row.ID)] {
+						continue
+					}
 					plan := sidebarEffectivePlan(row, groups, crewRoutes)
 					if plan.group.ID == "" || !selectedIDs[plan.group.ID] {
 						continue
 					}
 					decorateSidebarBoltRow(&row, plan, sessionTitles, runtimes[plan.group.ID])
-					if !sidebarModeMatches(row, mode) || (needle != "" && !sidebarContains(needle, row.Title, row.SessionPath, plan.group.Label, plan.group.Root)) {
+					if (q.kind != "search" && !sidebarModeMatches(row, mode)) || (needle != "" && !sidebarContains(needle, row.Title, row.SessionPath, row.Preview, plan.group.Label, plan.group.Root)) {
 						continue
 					}
 					resultKey := sidebarBoltResultKey(row.LastActivityAt, row.ID, row.SessionPath)
@@ -1800,7 +1833,7 @@ func decorateSidebarBoltRow(row *SidebarSession, plan sidebarGroupPlan, sessionT
 		row.Pinned = true
 	}
 	row.TitleSource = plan.titleSource[row.TopicID]
-	if runtime, ok := runtimes[row.TopicID]; ok {
+	if runtime, ok := runtimes[sessionRuntimeKey(row.SessionPath)]; ok {
 		if runtime.ID != "" {
 			row.ID, row.SessionID = runtime.ID, runtime.ID
 		}
@@ -1838,14 +1871,50 @@ func sidebarRowHasCrewSource(row SidebarSession) bool {
 }
 
 func sidebarModeMatches(row SidebarSession, mode SidebarMode) bool {
+	kind := sidebarExplicitSessionKind(row.SessionKind, row.SessionSource)
 	if mode == SidebarProjects {
-		return true
+		return kind != "collaboration" && kind != "assistant"
 	}
 	want := "collaboration"
 	if mode == SidebarAssistants {
 		want = "assistant"
 	}
-	return sidebarExplicitSessionKind(row.SessionKind, row.SessionSource) == want
+	return kind == want
+}
+
+// sidebarRecoveryHiddenKey is the identity key of a recovery-chain ancestor:
+// a row is hidden when a Recovered child in the same group records its ID as
+// ParentID. Scoping by group and Topic keeps unrelated chains from collapsing
+// into each other, even when a branch ID is reused.
+func sidebarRecoveryHiddenKey(groupID, topicID, id string) string {
+	return groupID + "\x00" + topicID + "\x00" + id
+}
+
+// sidebarRecoveryAncestors derives, from the current indexed rows, the set of
+// (group, Topic, id) keys that must be hidden because a Recovered child points
+// at them.
+// It is derived, not persisted, so a deleted/corrupted/late child lets the
+// ancestor reappear on the next sync without touching history files.
+func sidebarRecoveryAncestors(db *bolt.DB) (map[string]bool, error) {
+	hidden := map[string]bool{}
+	err := sidebarBoltView(db, func(tx *bolt.Tx) error {
+		rows := tx.Bucket(sidebarBoltRows)
+		c := rows.Cursor()
+		for key, value := c.First(); key != nil; key, value = c.Next() {
+			if value == nil {
+				continue
+			}
+			var row SidebarSession
+			if json.Unmarshal(value, &row) != nil || !row.Recovered {
+				continue
+			}
+			if parent := strings.TrimSpace(row.ParentID); parent != "" {
+				hidden[sidebarRecoveryHiddenKey(row.GroupID, row.TopicID, parent)] = true
+			}
+		}
+		return nil
+	})
+	return hidden, err
 }
 
 func (index *sidebarBoltIndex) readSessionPage(app *App, q *sidebarBoltQuery, cursor *sidebarCursor, limit int) ([]SidebarSession, *sidebarCursor, int, error) {
@@ -1953,6 +2022,10 @@ func (index *sidebarBoltIndex) groupStats(app *App, plans []sidebarGroupPlan, mo
 	}
 	stats := map[string]sidebarGroupStat{}
 	crewRoutes := index.routes()
+	hidden, err := sidebarRecoveryAncestors(state.db)
+	if err != nil {
+		return nil, err
+	}
 	err = index.view(state.db, func(tx *bolt.Tx) error {
 		rows, order := tx.Bucket(sidebarBoltRows), tx.Bucket(sidebarBoltOrder)
 		groups := make(map[string]sidebarGroupPlan, len(plans))
@@ -1962,7 +2035,10 @@ func (index *sidebarBoltIndex) groupStats(app *App, plans []sidebarGroupPlan, mo
 		cursor := order.Cursor()
 		for _, path := cursor.First(); path != nil; _, path = cursor.Next() {
 			var row SidebarSession
-			if json.Unmarshal(rows.Get(path), &row) != nil || !sidebarModeMatches(row, mode) {
+			if json.Unmarshal(rows.Get(path), &row) != nil {
+				continue
+			}
+			if hidden[sidebarRecoveryHiddenKey(row.GroupID, row.TopicID, row.ID)] || !sidebarModeMatches(row, mode) {
 				continue
 			}
 			groupID := sidebarEffectivePlan(row, groups, crewRoutes).group.ID

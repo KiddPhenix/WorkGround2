@@ -1893,6 +1893,18 @@ func (a *App) OpenGlobalTab(topicID string) (TabMeta, error) {
 // OpenProjectTab/OpenGlobalTab, it does not resolve the topic to the latest
 // session first; sessionPath is the runtime identity being selected.
 func (a *App) OpenTopicSession(scope, workspaceRoot, topicID, sessionPath string) (TabMeta, error) {
+	return a.openExactSession(scope, workspaceRoot, topicID, sessionPath, true, false)
+}
+
+// openTaskSession opens one task-owned Session without rebinding a different
+// Session merely because both share a Topic. Existing exact tabs are reused;
+// a missing exact tab is created writable and its Controller builds in the
+// background, allowing widget-to-window navigation to return immediately.
+func (a *App) openTaskSession(scope, workspaceRoot, topicID, sessionPath string) (TabMeta, error) {
+	return a.openExactSession(scope, workspaceRoot, topicID, sessionPath, false, false)
+}
+
+func (a *App) openExactSession(scope, workspaceRoot, topicID, sessionPath string, reuseTopic, previewOnly bool) (TabMeta, error) {
 	scope = strings.TrimSpace(scope)
 	if scope != "project" {
 		scope = "global"
@@ -1910,30 +1922,13 @@ func (a *App) OpenTopicSession(scope, workspaceRoot, topicID, sessionPath string
 	if err != nil {
 		return TabMeta{}, err
 	}
-	return a.openTopicTab(scope, workspaceRoot, topicID, validPath)
+	return a.openSessionTabWithActivation(scope, workspaceRoot, topicID, validPath, true, reuseTopic, previewOnly)
 }
 
 // OpenLinkedSession opens a hidden task Session as its own visible surface.
 // It never rebinds the owning Work tab solely because both share a topic.
 func (a *App) OpenLinkedSession(scope, workspaceRoot, topicID, sessionPath string) (TabMeta, error) {
-	scope = strings.TrimSpace(scope)
-	if scope != "project" {
-		scope = "global"
-		workspaceRoot = ""
-	}
-	if scope == "project" {
-		workspaceRoot = normalizeProjectRoot(workspaceRoot)
-		if workspaceRoot == "" {
-			return TabMeta{}, fmt.Errorf("workspaceRoot is required")
-		}
-		saveWorkspace(workspaceRoot)
-		_ = addProject(workspaceRoot, "")
-	}
-	_, validPath, err := a.sessionDirForPath(sessionPath)
-	if err != nil {
-		return TabMeta{}, err
-	}
-	return a.openLinkedSessionTabWithActivation(scope, workspaceRoot, topicID, validPath, true)
+	return a.openExactSession(scope, workspaceRoot, topicID, sessionPath, false, true)
 }
 
 // ActivateTopic opens a topic into the single visible conversation surface used
@@ -2853,6 +2848,10 @@ func (a *App) closeTabRuntime(tab *WorkspaceTab) {
 // same way buildController works for the single-controller App. On success it
 // wires the controller and flips Ready; on failure it stores StartupErr.
 func (a *App) startTabControllerBuild(tab *WorkspaceTab) {
+	if a.tabBuildStart != nil {
+		a.tabBuildStart(tab)
+		return
+	}
 	a.startTabControllerBuildWithLoadedSession(tab, loadedTabSession{})
 }
 
@@ -6577,8 +6576,15 @@ func (a *App) emitRuntimeEvent(name string, payload ...interface{}) {
 	a.runtimeEvents.Emit(a.ctx, name, payload...)
 }
 
-// DeleteTopic removes a topic and its title metadata.
+// DeleteTopic removes a topic and its title metadata. A topic whose title/
+// index metadata is already gone is treated as already-deleted: residual
+// projects/pinned entries and collaboration runtimes are still converged so
+// repeated calls stay idempotent.
 func (a *App) DeleteTopic(topicID string) error {
+	topicID = strings.TrimSpace(topicID)
+	if topicID == "" {
+		return fmt.Errorf("topicID is required")
+	}
 	roomSessionPaths := a.collaborationSessionPathsForTopic(topicID)
 	f := loadProjectsFile()
 	found := false
@@ -6627,9 +6633,9 @@ func (a *App) DeleteTopic(topicID string) error {
 			found = true
 		}
 	}
-	if !found {
-		return fmt.Errorf("topic %q not found", topicID)
-	}
+	// A missing title/index entry is not an error: the topic may already be
+	// partially removed. Still converge residual projects/pinned/runtime state
+	// and report success so retries stay idempotent.
 	if err := removeTopicFromProjectsFile(topicID); err != nil {
 		return err
 	}

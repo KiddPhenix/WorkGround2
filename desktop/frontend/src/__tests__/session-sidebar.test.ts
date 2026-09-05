@@ -6,7 +6,7 @@ import { onSidebarChanged } from "../lib/bridge";
 import { formatSidebarAbsoluteTime, formatSidebarRelativeTime } from "../sidebar/sidebarTime";
 import { isSidebarCursorError, loadSidebarGroups, loadSidebarPage, loadSidebarSearch, refreshSidebarIssues, refreshSidebarSearch } from "../sidebar/sidebarData";
 import { isSidebarMenuShortcut } from "../sidebar/sidebarKeyboard";
-import { emptySidebarPage, mergeSearchItems, mergeSidebarSessions, pruneSidebarPages, useSidebarStore } from "../sidebar/sidebarStore";
+import { emptySidebarPage, mergeSearchItems, mergeSidebarSessions, pruneSidebarPages, sidebarSessionKey, useSidebarStore } from "../sidebar/sidebarStore";
 import type { SidebarPage, SidebarSearchItem, SidebarSession } from "../sidebar/types";
 
 const now = new Date(2026, 8, 3, 12, 0, 0).getTime();
@@ -35,6 +35,48 @@ assert.deepEqual(
 
 const searchA: SidebarSearchItem = { kind: "session", id: "a", session: session("a", 1) };
 assert.equal(mergeSearchItems([searchA], [searchA]).length, 1, "search page retries are idempotent");
+
+// Dedup identity: the same physical sessionPath projected under different IDs
+// must collapse, path case and / vs \ are equivalent, and two sessions that
+// share a title on different paths must stay distinct.
+{
+  const samePathOlder = { ...session("path-old", 1), sessionPath: "D:/work/session.jsonl" };
+  const samePathNewer = { ...session("path-new", 2), sessionPath: "d:\\work\\session.jsonl" };
+  assert.deepEqual(mergeSidebarSessions([samePathOlder], [samePathNewer]).map((item) => item.id), ["path-new"], "same sessionPath with different IDs collapses to the newer revision");
+
+  const samePathPlain = { ...session("plain", 1), sessionPath: "D:/a.jsonl" };
+  const samePathRicher = { ...session("rich", 1), sessionPath: "d:/a.jsonl", running: true, open: true, status: "running" };
+  assert.equal(mergeSidebarSessions([samePathPlain], [samePathRicher])[0].running, true, "a revision tie keeps the richer running/open/status projection");
+
+  const pageA = [session("page-a", 1), { ...session("dup-a", 1), sessionPath: "D:/dup.jsonl" }];
+  const pageB = [{ ...session("dup-b", 1), sessionPath: "d:/dup.jsonl" }];
+  assert.equal(mergeSidebarSessions(pageA, pageB).length, 2, "cross-page/refresh duplicates collapse by normalized path");
+
+  const sameTitleA = { ...session("title-a", 1, "same title"), sessionPath: "D:/one.jsonl" };
+  const sameTitleB = { ...session("title-b", 1, "same title"), sessionPath: "D:/two.jsonl" };
+  assert.equal(mergeSidebarSessions([sameTitleA], [sameTitleB]).length, 2, "two sessions sharing a title on different paths stay distinct");
+
+  const topicA = { ...session("topic-a", 1), sessionPath: undefined, topicId: "topic-1" };
+  const topicB = { ...session("topic-b", 2), sessionPath: undefined, topicId: "topic-1" };
+  assert.equal(mergeSidebarSessions([topicA], [topicB]).length, 1, "a missing path falls back to topicId identity");
+
+  const sessionIdA = { ...session("sid-a", 1), sessionPath: undefined, topicId: undefined, sessionId: "sid-1" };
+  const sessionIdB = { ...session("sid-b", 2), sessionPath: undefined, topicId: undefined, sessionId: "sid-1" };
+  assert.equal(mergeSidebarSessions([sessionIdA], [sessionIdB]).length, 1, "a missing path and topicId falls back to sessionId identity");
+
+  assert.equal(sidebarSessionKey({ ...session("k", 1), sessionPath: "D:\\Work\\S.jsonl" }), sidebarSessionKey({ ...session("k2", 1), sessionPath: "d:/work/s.jsonl" }), "session identity normalizes Windows path case and separators");
+}
+
+// Search rows share the same dedup identity as the session list.
+{
+  const searchDupA = { ...session("search-a", 1), sessionPath: "D:/search.jsonl" };
+  const searchDupB = { ...session("search-b", 2), sessionPath: "d:/search.jsonl" };
+  const searchItemA: SidebarSearchItem = { kind: "session", id: "search-a", session: searchDupA };
+  const searchItemB: SidebarSearchItem = { kind: "session", id: "search-b", session: searchDupB };
+  const mergedSearch = mergeSearchItems([searchItemA], [searchItemB]);
+  assert.equal(mergedSearch.length, 1, "search rows collapse by normalized sessionPath across pages");
+  assert.equal(mergedSearch[0].id, "search-b", "the newer search projection wins");
+}
 
 useSidebarStore.setState({ pages: {}, pageTouchedAt: {}, searchPage: emptySidebarPage<SidebarSearchItem>() });
 const first = useSidebarStore.getState().beginPage("projects:p", true)!;
@@ -293,9 +335,24 @@ assert.match(projectPanel, /加载更多 · 已加载 \$\{page\.items\.length\}/
 assert.match(projectPanel, /count: page\.status === "ready" && typeof page\.total === "number" \? page\.total : group\.sessionCount/, "a materialized group prefers the authoritative page total over its approximate summary count");
 assert.match(shell, /key: "new-session"[\s\S]*key: "history"[\s\S]*key: "rename"[\s\S]*key: "appearance"[\s\S]*key: "reveal"[\s\S]*key: "remove"/, "project menus retain create, history, rename, appearance, reveal, and remove actions");
 assert.match(shell, /canCustomize = isProject \|\| group\.kind === "global"/, "global groups retain rename and appearance capability");
-assert.ok(/RenameProject\(root/.test(shell) && /SetProjectColor\(root/.test(shell) && /SetProjectIcon\(root/.test(shell), "global customization routes through the empty-root backend contract");
+assert.ok(/RenameProject\(root/.test(shell) && !/SetProjectColor/.test(shell) && /SetProjectIcon\(root/.test(shell), "global customization routes through the empty-root backend contract without a sidebar color picker");
+assert.doesNotMatch(shell, /PROJECT_COLOR_OPTIONS|session-sidebar__menu-color/, "the sidebar customization submenu drops every color picker and swatch");
+assert.match(shell, /WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]*<WorkspaceMatteIcon icon=\{option\.key\}/, "the sidebar icon picker reuses the shared matte catalog instead of a private list");
+assert.match(shell, /workspaceMatteIconKey\(group\.icon\)/, "the sidebar resolves the current matte icon through the shared catalog contract");
+assert.match(shell, /checked: option\.key === currentIcon/, "the current matte icon is semantically marked in the picker");
+assert.match(contextMenu, /type: "grid"[\s\S]*role="group"[\s\S]*menuitemradio[\s\S]*aria-checked/, "the context menu renders a semantic grid picker for the matte icon catalog");
+assert.match(styles, /\.context-menu__grid\s*\{[^}]*width:\s*min\(272px, calc\(100vw - 28px\)\);[^}]*grid-template-columns:\s*repeat\(8, minmax\(0, 1fr\)\)[^}]*overflow-x:\s*hidden/, "the sidebar icon picker wraps in a viewport-bounded eight-column grid without horizontal scrolling");
+assert.match(styles, /\.context-menu__grid-item\[aria-checked="true"\]/, "the selected matte icon has a distinct visual state");
 assert.match(shell, /session\.topicId \? app\.SetTopicPinned\(session\.topicId,[\s\S]*: app\.SetSessionPinned\(session\.sessionPath/, "topic and historical session pin actions use their matching bridge APIs");
-assert.match(shell, /window\.confirm\(`将“\$\{session\.title\}”移到废纸篓？`\)[\s\S]*session\.topicId \? app\.TrashTopic\(session\.topicId\) : app\.DeleteSession/, "topic, crew, and orphan deletion is confirmed and routed by identity");
+assert.match(shell, /label: menu\.confirmTrash \? "确认删除" : "移到废纸篓"[\s\S]*if \(!menu\.confirmTrash\) \{ setMenu\(\{ \.\.\.menu, confirmTrash: true \}\); return; \}[\s\S]*session\.topicId \? app\.TrashTopic\(session\.topicId\) : app\.DeleteSession/, "topic, crew, and orphan deletion uses an in-menu two-click confirmation and routes by identity");
+assert.doesNotMatch(shell, /window\.confirm\(`将“\$\{session\.title\}”移到废纸篓？`\)/, "session deletion never opens a browser confirmation dialog");
+assert.match(shell, /menu\.kind === "recent"[\s\S]*key: "open"[\s\S]*key: "rename"[\s\S]*key: "routine"[\s\S]*key: "appearance"[\s\S]*key: "remove"/, "recent widget icon menu keeps open/rename/固化流程/换个样子/移除 in the approved order");
+assert.match(shell, /key: "open"[\s\S]*closeMenu\(\); openRecentSession\(item\)/, "recent 打开 reuses the sidebar open route (not ApplyDesktopIconAction)");
+assert.match(shell, /recentRequests\.current\.get\(intent\)[\s\S]*recentRequests\.current\.set\(intent, requestId\)/, "recent widget mutations reuse the same requestId while a retryable intent is unresolved");
+assert.match(shell, /app\.ApplyDesktopIconAction\(\{ itemId: item\.item\.id, revision: item\.item\.revision, requestId, action, values \}\)/, "recent rename/换个样子/移除 route through ApplyDesktopIconAction with the stable requestId");
+assert.match(shell, /app\.CreateDailyRoutine\(\{ tabId: item\.item\.sourceId, sessionRef: item\.item\.sessionRef, requestId \}\)/, "recent 固化流程 routes through CreateDailyRoutine with the stable requestId");
+assert.match(shell, /key: "remove"[\s\S]*danger: true, disabled: !item\.item\.retained/, "recent 移除 only targets the retained widget area and never deletes the session");
+assert.match(shell, /onOpenRecentSessionMenu=\{openRecentSessionMenu\}/, "PrimaryRail receives the recent widget icon menu opener");
 assert.match(sessionList, /ProjectGlyph icon=\{row\.icon\} open=\{row\.expanded\}/, "project rows render the configured icon with a folder fallback");
 assert.ok(/tabIndex=\{virtualRow\.index === activeIndex \? 0 : -1\}/.test(sessionList) && /ArrowDown/.test(sessionList) && /ArrowUp/.test(sessionList) && /ArrowRight/.test(sessionList) && /ArrowLeft/.test(sessionList) && /event\.key === "Enter"/.test(sessionList), "virtual rows expose roving tabindex and basic list/tree keyboard navigation");
 assert.match(sessionList, /aria-haspopup=\{row\.onMenu \? "menu" : undefined\}[\s\S]*onKeyDown=\{\(event\) => openRowMenu\(event, row\)\}[\s\S]*onContextMenu=\{\(event\) => openRowMenu\(event, row\)\}/, "focused rows expose an ARIA menu and support keyboard/native context-menu events");

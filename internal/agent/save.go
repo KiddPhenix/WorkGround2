@@ -250,7 +250,7 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 	}
 	repairLog := false
 	if mode != sessionSaveForce {
-		decision, err := s.checkSnapshotWrite(path, msgs, digest, version, mode == sessionSaveRewrite)
+		decision, err := s.checkSnapshotWrite(path, msgs, digest, version)
 		if err != nil {
 			return err
 		}
@@ -438,7 +438,7 @@ func writeSessionMessages(path string, msgs []provider.Message) error {
 
 // checkSnapshotWrite decides whether this session may write msgs over path, and
 // whether the safe write shape is a no-op, append-only suffix, or full rewrite.
-func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextDigest [sha256.Size]byte, nextVersion uint64, allowOwnedRewrite bool) (snapshotWriteDecision, error) {
+func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextDigest [sha256.Size]byte, nextVersion uint64) (snapshotWriteDecision, error) {
 	current, err := loadSessionUnlocked(path, false)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -535,17 +535,21 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 		}
 		return decision, nil
 	}
-	if allowOwnedRewrite {
-		owned := s.ownsPersistedState(path, existingDigest, currentRevision, currentLedgerDigest, nextVersion)
-		if !owned && rawDiffers {
-			// The persisted baseline describes the bytes this session wrote, so
-			// a repaired view can never match it; ownership is judged against
-			// the raw transcript.
-			owned = s.ownsPersistedState(path, rawDigest, currentRevision, currentLedgerDigest, nextVersion)
-		}
-		if owned {
-			return snapshotWriteDecision{revision: currentRevision, repairLog: current.eventLogDamaged}, nil
-		}
+	// A non-append-shaped write the session still owns is the in-place-growth
+	// case: the last assistant/tool message keeps changing while a turn runs,
+	// so each mid-turn snapshot supersedes the previous one without any other
+	// runtime having touched disk. ownsPersistedState is the same ownership
+	// proof SaveRewrite relies on, so these snapshots converge onto the same
+	// path as an owned rewrite instead of forking a recovery branch (#5993).
+	owned := s.ownsPersistedState(path, existingDigest, currentRevision, currentLedgerDigest, nextVersion)
+	if !owned && rawDiffers {
+		// The persisted baseline describes the bytes this session wrote, so
+		// a repaired view can never match it; ownership is judged against
+		// the raw transcript.
+		owned = s.ownsPersistedState(path, rawDigest, currentRevision, currentLedgerDigest, nextVersion)
+	}
+	if owned {
+		return snapshotWriteDecision{revision: currentRevision, repairLog: current.eventLogDamaged}, nil
 	}
 	if messagesHavePrefix(existing, next) || messagesHavePrefixWithCompatibleSystem(existing, next) ||
 		(rawDiffers && (messagesHavePrefix(raw, next) || messagesHavePrefixWithCompatibleSystem(raw, next))) {

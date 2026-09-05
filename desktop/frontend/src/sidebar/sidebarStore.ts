@@ -39,25 +39,73 @@ export function emptySidebarPage<T>(): SidebarPageState<T> {
   return { items: [], snapshot: "", status: "idle", requestSeq: 0 };
 }
 
+// sidebarSessionKey is the single stable identity for a physical session across
+// sidebar projections. The same session file can be projected with different
+// runtime/index IDs, so identity must not key on `id` alone: prefer the
+// normalized sessionPath (Windows case and / vs \ are equivalent), then topicId,
+// then sessionId, then id. Two genuinely different sessions may share a title,
+// so title is deliberately never part of the key.
+export function sidebarSessionKey(session: SidebarSession): string {
+  const path = comparablePath(session.sessionPath).trim();
+  if (path) return `path:${path}`;
+  const topicId = (session.topicId || "").trim();
+  if (topicId) return `topic:${topicId}`;
+  const sessionId = (session.sessionId || "").trim();
+  if (sessionId) return `session:${sessionId}`;
+  return `id:${session.id}`;
+}
+
+function preferSidebarSession(current: SidebarSession, incoming: SidebarSession): SidebarSession {
+  const currentRevision = current.revision ?? 0;
+  const incomingRevision = incoming.revision ?? 0;
+  if (incomingRevision !== currentRevision) return incomingRevision > currentRevision ? incoming : current;
+  const currentActivity = current.lastActivityAt ?? 0;
+  const incomingActivity = incoming.lastActivityAt ?? 0;
+  if (incomingActivity !== currentActivity) return incomingActivity > currentActivity ? incoming : current;
+  const richness = (item: SidebarSession): number =>
+    Number(Boolean(item.running)) + Number(Boolean(item.open)) + Number(Boolean(item.topicId)) +
+    Number(Boolean(item.sessionId)) + Number(Boolean(item.sessionPath)) + Number(Boolean(item.status));
+  const currentRichness = richness(current);
+  const incomingRichness = richness(incoming);
+  if (incomingRichness !== currentRichness) return incomingRichness > currentRichness ? incoming : current;
+  return incoming;
+}
+
 export function mergeSidebarSessions(current: SidebarSession[], incoming: SidebarSession[]): SidebarSession[] {
-  const byID = new Map(current.map((item) => [item.id, item]));
+  const byKey = new Map<string, SidebarSession>();
+  for (const item of current) byKey.set(sidebarSessionKey(item), item);
   for (const item of incoming) {
-    const prior = byID.get(item.id);
-    if (!prior || (item.revision ?? 0) >= (prior.revision ?? 0)) byID.set(item.id, item);
+    const key = sidebarSessionKey(item);
+    const prior = byKey.get(key);
+    byKey.set(key, prior ? preferSidebarSession(prior, item) : item);
   }
-  return [...byID.values()];
+  return [...byKey.values()];
+}
+
+export function sidebarSearchItemKey(item: SidebarSearchItem): string {
+  if (item.kind === "session" && item.session) return `session:${sidebarSessionKey(item.session)}`;
+  return `${item.kind}:${item.id}`;
+}
+
+function preferSearchItem(current: SidebarSearchItem, incoming: SidebarSearchItem): SidebarSearchItem {
+  const currentRevision = current.session?.revision ?? 0;
+  const incomingRevision = incoming.session?.revision ?? 0;
+  if (incomingRevision !== currentRevision) return incomingRevision > currentRevision ? incoming : current;
+  const currentActivity = current.lastActivityAt ?? current.session?.lastActivityAt ?? 0;
+  const incomingActivity = incoming.lastActivityAt ?? incoming.session?.lastActivityAt ?? 0;
+  if (incomingActivity !== currentActivity) return incomingActivity > currentActivity ? incoming : current;
+  return incoming;
 }
 
 export function mergeSearchItems(current: SidebarSearchItem[], incoming: SidebarSearchItem[]): SidebarSearchItem[] {
-  const key = (item: SidebarSearchItem) => `${item.kind}:${item.id}`;
-  const byID = new Map(current.map((item) => [key(item), item]));
+  const byKey = new Map<string, SidebarSearchItem>();
+  for (const item of current) byKey.set(sidebarSearchItemKey(item), item);
   for (const item of incoming) {
-    const prior = byID.get(key(item));
-    const priorRevision = prior?.session?.revision ?? 0;
-    const nextRevision = item.session?.revision ?? 0;
-    if (!prior || nextRevision >= priorRevision) byID.set(key(item), item);
+    const key = sidebarSearchItemKey(item);
+    const prior = byKey.get(key);
+    byKey.set(key, prior ? preferSearchItem(prior, item) : item);
   }
-  return [...byID.values()];
+  return [...byKey.values()];
 }
 
 function pageGroupID(key: string): string {

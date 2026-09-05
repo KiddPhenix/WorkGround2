@@ -111,3 +111,11 @@ export function projectIconKey(value: string | undefined): ProjectIconKey {
   if (PROJECT_ICON_OPTIONS.includes(normalized as (typeof PROJECT_ICON_OPTIONS)[number])) return normalized as ProjectIconKey;
   return isWorkspaceMatteIcon(normalized) ? normalized : "";
 }
+
+// workspaceMatteIconKey resolves any stored project icon to a matte catalog key,
+// treating legacy Lucide keys and the empty default as the folder fallback so the
+// sidebar's matte-only picker always has a visible current selection.
+export function workspaceMatteIconKey(value: string | undefined): WorkspaceMatteIconKey {
+  const key = projectIconKey(value);
+  return isWorkspaceMatteIcon(key) ? key : "folder";
+}

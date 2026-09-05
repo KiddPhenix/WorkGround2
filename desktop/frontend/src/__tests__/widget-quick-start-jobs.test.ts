@@ -268,8 +268,12 @@ function realTask(id: string): DesktopIconItem {
 	const jobs: QuickStartJobs = { r1: job };
 	const withReal = reconcileQuickStartJobs(jobs, [realTask("task:tab-1")]);
 	assert.deepEqual(withReal, {}, "an accepted job is removed the moment its real task:task:<tabId> icon appears");
+	const kept: DesktopIconItem = { ...realTask("task:session:c2Vzc2lvbi5qc29ubA"), sourceId: "tab-1", status: "done" };
+	assert.deepEqual(reconcileQuickStartJobs(jobs, [kept]), {}, "a completed kept Session icon reconciles by its stable tab sourceId");
 	assert.equal(reconcileQuickStartJobs(jobs, []), jobs, "no matching real icon keeps the accepted job (no premature removal)");
 	assert.equal(reconcileQuickStartJobs(jobs, [realTask("task:other")]), jobs, "an unrelated real icon never removes the accepted job");
+	const unrelated: DesktopIconItem = { ...kept, kind: "workspace", id: "workspace:tab-1" };
+	assert.equal(reconcileQuickStartJobs(jobs, [unrelated]), jobs, "a non-task item with the same sourceId never completes the handoff");
 	const runningJobs: QuickStartJobs = { r1: { ...job, phase: "running" }, r2: { ...job, requestId: "r2", phase: "running" } };
 	assert.equal(reconcileQuickStartJobs(runningJobs, [realTask("task:tab-1")]), runningJobs, "running jobs are never removed by a poll");
 	const failedJobs: QuickStartJobs = { r1: { ...job, phase: "failed" } };

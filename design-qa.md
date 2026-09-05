@@ -34,6 +34,54 @@ final result: passed
 
 ---
 
+# Design QA — Workbench 新 Session 标题项目切换器（2026-09-04）
+
+- Source visual truth: `D:\Temp\codex-clipboard-663c5ec8-ba10-4afe-9288-cb8abfdf2396.png`
+- Browser-rendered implementation: `D:\Codex\.codex\visualizations\2026\09\03\01a0674b-472b-79b1-8ff7-88f745b75a6c\workbench-new-session-workspace-switcher-final.png`
+- State: Workbench 布局，点击主导航“新建会话”后，项目 `joyquant-db`，空 Session。
+
+## Findings
+
+用户截图确认之前实现未进入 Workbench 实际使用的 `SessionSurface` 标题分支，属于 P1 结构缺失。现已将项目切换器作为 `headerAccessory` 接到 `session-header__title` 右侧。
+
+- 标题、上一项目、当前项目与序号、下一项目保持同一行。
+- 切换器位于右侧窗口操作区之前，未遮挡待关注和窗口按钮。
+- 新建动作显式进入空 Session 标题状态；打开历史或出现首条对话内容后退出。
+- 浏览器 DOM 验收：标题、项目序号、Ctrl+左、Ctrl+右全部存在。
+- Workbench 全屏截图无横向溢出或标题遮挡。
+
+## Validation
+
+- `npm.cmd run test:creation-workspace`: 18 passed。
+- `npm.cmd run build`: passed（含 TypeScript、CSS syntax、z-index checks）。
+
+final result: passed
+
+---
+
+# Design QA — Workbench 新 Session 项目切换器二次修正（2026-09-04）
+
+- Source visual truth: `D:\Temp\codex-clipboard-bb0ee273-2883-4d1f-837a-beaab11a6ff2.png`
+- Browser-rendered implementation: `D:\Codex\.codex\visualizations\2026\09\03\01a0674b-472b-79b1-8ff7-88f745b75a6c\workbench-new-session-workspace-switcher-polished.png`
+- State: Workbench 布局、空白 Session、输入框聚焦。
+
+## Findings
+
+- 将三个分散块收敛为 38px 高的一体式胶囊，标题间距缩至 16–28px。
+- 工作区来源改为轻量注册表；会话记录树读取失败不再导致顶部退化成 `1/1`。
+- `Ctrl+←/→` 改为捕获阶段的全局快捷键，输入框聚焦时仍可切换。
+- 实际浏览器验证从 `joyquant-db · 1 / 4` 切换到 `WorkGround2` 成功，输入框焦点保持在 `TEXTAREA`。
+
+## Validation
+
+- `npm.cmd run test:creation-workspace`: 21 passed。
+- `npm.cmd run typecheck`: passed。
+- `npm.cmd run build`: passed（含 CSS syntax、z-index token、TypeScript 与 production build）。
+
+final result: passed
+
+---
+
 # Session 双栏侧边栏与大列表分页 Design QA（2026-09-03）
 
 - Source visual truth: `D:\Work\WorkGround2\docs\assets\workground2-session-sidebar-search-design.png`（840 × 1871 px，第 2 版搜索方向稿）。
@@ -1360,5 +1408,104 @@ final result: passed
 - App Chrome：82/82。
 - Owner Decision gate：13/13。
 - TypeScript、CSS syntax、z-index token、production build、`git diff --check`：通过。
+
+final result: passed
+
+---
+
+# Design QA — Creation workspace switcher
+
+- Source visual truth: `D:\Temp\codex-clipboard-e766077c-c02f-4dc8-b106-92765e8ebc07.png`
+- Browser-rendered implementation: `D:\Codex\.codex\visualizations\2026\09\03\01a0674b-472b-79b1-8ff7-88f745b75a6c\creation-workspace-full.png`
+- Focused implementation: `D:\Codex\.codex\visualizations\2026\09\03\01a0674b-472b-79b1-8ff7-88f745b75a6c\creation-workspace-focused.png`
+- Combined comparison: `D:\Codex\.codex\visualizations\2026\09\03\01a0674b-472b-79b1-8ff7-88f745b75a6c\creation-workspace-comparison.png`
+- Viewport: 1265 × 841 CSS px, device scale factor 1
+- Pixels: source crop 370 × 75; implementation full view 1265 × 841; focused crop 363 × 69
+- Density normalization: none; both references were inspected at 1× pixel density. The focused implementation contains the 344 × 34 CSS px control plus surrounding topic-bar context.
+- State: dark theme, Creation layout, empty newly-created project Session, project `joyquant-db`, neutral focus state.
+
+## Findings
+
+No actionable P0/P1/P2 mismatch remains.
+
+- Fonts and typography: matched the existing source control's monospace shortcut labels and 14 px semibold workspace title; truncation remains single-line.
+- Spacing and layout rhythm: three-column 68 px / flexible / 68 px layout, 10 px gap, 34 px controls, and 9 px radii match the reference structure. The reference popup's outer card is intentionally omitted because this instance sits directly in the Session topic bar.
+- Colors and visual tokens: dark surface, quiet borders, foreground hierarchy, hover and focus accent states use the active WorkGround2 theme tokens.
+- Image quality and asset fidelity: the target contains no raster imagery, logos, or non-standard icons; no generated or placeholder assets are needed.
+- Copy and content: `Ctrl + ←`, `{project} · {position} / {count}`, and `Ctrl + →` match the supplied structure. Project names and counts come from the authoritative project tree.
+
+## Full-view comparison evidence
+
+At 1265 × 841, the selector occupies the former blank-session title region without shifting the window actions, sidebar, welcome surface, or composer. No horizontal overflow is present. A 700 × 800 responsive check also reported no viewport overflow; the selector measured 286 px wide.
+
+## Focused comparison evidence
+
+The combined comparison places the supplied 370 × 75 source crop beside the 363 × 69 browser crop. Button proportions, title hierarchy, three-column alignment, shortcut labels, and dark visual density agree. Project name and count differ only because the mock project dataset contains three selectable destinations.
+
+## Interaction and runtime checks
+
+- Previous and next buttons changed the active blank Session from `joyquant-db` to `joyquant-sys` and back.
+- `Ctrl+ArrowRight` followed the same selection path.
+- Native Ctrl+Arrow text navigation remains available inside inputs.
+- Browser console errors and warnings: none.
+
+## Comparison history
+
+- Initial focused capture showed the previous button's focus-visible accent after interaction.
+- Focus was moved to a neutral background region and the implementation was recaptured at the same viewport and state.
+- Post-fix evidence is the focused and combined comparison listed above; no actionable P0/P1/P2 differences remained.
+
+## Follow-up polish
+
+No P3 follow-up is required for the requested structure.
+
+final result: passed
+
+---
+
+# Design QA — Creation 标题右侧项目切换器修正（2026-09-03）
+
+- Source visual truth: `D:\Temp\codex-clipboard-9b75d327-e346-4bad-b961-a9eef2d30c43.png`
+- Browser-rendered implementation: `D:\Codex\.codex\visualizations\2026\09\03\01a0674b-472b-79b1-8ff7-88f745b75a6c\creation-workspace-title-right-final.png`
+- Combined focused comparison: `D:\Codex\.codex\visualizations\2026\09\03\01a0674b-472b-79b1-8ff7-88f745b75a6c\creation-workspace-title-right-comparison.png`
+- Viewport: 948 × 838 CSS px, device scale factor 1
+- Pixels: source 948 × 838；implementation 948 × 838；focused comparison 1896 × 112
+- Density normalization: 用户截图来自桌面端，界面缩放与浏览器 1× 捕获不同；位置对照使用标题、项目切换器、右侧操作区三个稳定锚点，不对跨缩放字体像素做虚假精确判断。
+- State: dark theme, Creation layout, empty new Session, collapsed sidebar, project `joyquant-db`.
+
+## Findings
+
+之前的实现误把项目切换器替换了“新建会话”标题，属于 P1 结构错误。现已修正，无剩余 P0/P1/P2。
+
+- Fonts and typography: 保留原有 Creation 标题样式；切换器继续使用现有快捷键与项目标题字重层级。
+- Spacing and layout rhythm: “新建会话”位于左侧，切换器位于其右侧、窗口操作区左侧；标题与切换器间距使用响应式范围，948 px 视口无横向溢出。
+- Colors and visual tokens: 继续复用 WorkGround2 暗色主题前景、弱边框与 accent 状态。
+- Image quality and asset fidelity: 目标区域没有新增图片资产；背景和图标均沿用产品已有资源。
+- Copy and content: 同时显示“新建会话”、`Ctrl + ←`、项目名与序号、`Ctrl + →`，符合用户圈选结构。
+
+## Full-view comparison evidence
+
+最终浏览器截图中，标题与项目切换器在同一标题行共存，切换器结束于右侧操作区之前；页面主体、欢迎卡片和输入区位置未被改变。
+
+## Focused comparison evidence
+
+组合图左侧为用户圈选区域，右侧为最终实现。稳定锚点顺序一致：标题 → 项目切换器 → 右侧操作区。不同的背景内容和桌面缩放不影响结构判断。
+
+## Interaction and runtime checks
+
+- 点击下一项目从 `joyquant-db · 1 / 3` 切换到 `joyquant-sys · 2 / 3`，再切回成功。
+- 空白会话切换后“新建会话”标题继续保留。
+- 948 × 838 视口无页面横向溢出。
+- Browser console errors and warnings: none.
+
+## Comparison history
+
+- Earlier P1: 项目切换器替换了标题，位置不符合用户圈选区域。
+- Fix: 新增 `CreationWorkspaceHeader`，将原标题和切换器作为同级结构渲染；调整弹性宽度和间距。
+- Post-fix evidence: `creation-workspace-title-right-final.png` 与 `creation-workspace-title-right-comparison.png`。
+
+## Follow-up polish
+
+无阻塞性 P3。
 
 final result: passed

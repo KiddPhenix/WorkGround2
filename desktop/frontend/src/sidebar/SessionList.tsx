@@ -114,7 +114,6 @@ function SidebarRow({ row, now, tabIndex, onFocus }: { row: SidebarListRow; now:
       <div className="session-sidebar__group-row" role="listitem">
         <button type="button" className="session-sidebar__group-main" aria-expanded={row.expanded} aria-haspopup={row.onMenu ? "menu" : undefined} onClick={row.onToggle} onKeyDown={(event) => openRowMenu(event, row)} onContextMenu={(event) => openRowMenu(event, row)} data-sidebar-primary tabIndex={row.onToggle ? tabIndex : -1} onFocus={onFocus}>
           <span className="session-sidebar__chevron" aria-hidden="true">{row.expanded === false ? <ChevronRight size={15} /> : <ChevronDown size={15} />}</span>
-          <span className="session-sidebar__group-color" style={{ background: row.color || "var(--accent)" }} aria-hidden="true" />
           <span className="session-sidebar__group-icon" aria-hidden="true"><ProjectGlyph icon={row.icon} open={row.expanded} /></span>
           <span className="session-sidebar__group-label">{row.label}</span>
           {typeof row.count === "number" && <span className="session-sidebar__group-count">{row.count}</span>}
