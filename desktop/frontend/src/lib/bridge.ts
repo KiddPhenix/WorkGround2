@@ -422,12 +422,12 @@ export interface ExternalRunLaunchResult { receipt: ExternalRunReceipt; run: Ext
 export interface ExternalRunCancelInput { runId: string; requestId: string; }
 export interface ExternalRunActionResult { receipt: ExternalRunReceipt; run: ExternalRunProjection; snapshot: ExternalRunSnapshot; }
 export interface DesktopIconRect { x: number; y: number; width: number; height: number; }
-export interface DesktopIconSurfaceResult { width: number; height: number; x: number; y: number; }
+export interface DesktopIconSurfaceResult { width: number; height: number; x: number; y: number; revision: number; }
 export interface DesktopIconHitRegionsInput { rects: DesktopIconRect[]; surface: DesktopIconSurfaceResult; }
 // DesktopIconSurfaceInput is one monotonic native-canvas resize request. Width
 // and height are the content's logical bounds, envelope is the safety margin
 // added on every side. Backend geometry is the authoritative identity.
-export interface DesktopIconSurfaceInput { width: number; height: number; envelope: number; }
+export interface DesktopIconSurfaceInput { width: number; height: number; envelope: number; revision: number; }
 export interface CreateBlankSessionInput { scope: string; workspaceRoot: string; requestId: string; }
 export interface DailyRoutine {
   id: string; workspaceRoot?: string; name: string; prompt: string; goal: string;
@@ -501,12 +501,14 @@ export interface AppBindings extends WailsWorkBindings {
   EnterWidgetMode(): Promise<WidgetSnapshot>;
   ExitWidgetMode(tabID: string): Promise<void>;
   IsWidgetMode(): Promise<boolean>;
+  GetWidgetModeState(): Promise<{ active: boolean; revision: number }>;
 	GetWidgetSnapshot(): Promise<WidgetSnapshot>;
 	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
 	OpenWidgetWorkspace(workspace: string, requestId: string): Promise<TabMeta>;
 	ListWidgetWorkspaces(): Promise<WidgetWorkspaceOption[]>;
 	GetDesktopIconSnapshot(): Promise<DesktopIconSnapshot>;
+	GetDesktopIconEntrySnapshot(): Promise<DesktopIconSnapshot>;
 	GetExternalRunSnapshot(): Promise<ExternalRunSnapshot>;
 	LaunchDSHRun(input: ExternalRunLaunchInput): Promise<ExternalRunLaunchResult>;
 	CancelExternalRun(input: ExternalRunCancelInput): Promise<ExternalRunActionResult>;
@@ -3037,14 +3039,19 @@ function makeMockApp(): AppBindings {
     async RevealCollaborationFile() { throw new Error("File transfer preview unavailable"); },
     async PreviewCollaborationFile() { throw new Error("File preview unavailable"); },
     async EnterWidgetMode() {
+      widgetRevision++;
       widgetMode = true;
       return mockWidgetSnapshot();
     },
     async ExitWidgetMode() {
+      widgetRevision++;
       widgetMode = false;
     },
     async IsWidgetMode() {
       return widgetMode;
+    },
+    async GetWidgetModeState() {
+      return { active: widgetMode, revision: widgetRevision };
     },
     async GetWidgetSnapshot() {
       return mockWidgetSnapshot();
@@ -3104,6 +3111,7 @@ function makeMockApp(): AppBindings {
 			];
 		},
 		async GetDesktopIconSnapshot() { return mockDesktopIconSnapshot(); },
+		async GetDesktopIconEntrySnapshot() { return mockDesktopIconSnapshot(); },
 		async GetExternalRunSnapshot() { return mockExternalRunSnapshot(); },
 		async LaunchDSHRun(input) {
 			if (!input.requestId || !input.prompt.trim()) throw new Error("requestId and prompt are required");
@@ -3151,7 +3159,7 @@ function makeMockApp(): AppBindings {
 			// bottom-right of a virtual 1920×1080 work area.
 			const width = Math.min(1920, Math.max(640, input.width + input.envelope * 2));
 			const height = Math.min(1080, Math.max(540, input.height + input.envelope * 2));
-			return { width, height, x: Math.max(0, 1920 - width - 16), y: Math.max(0, 1080 - height - 24) };
+			return { revision: input.revision, width, height, x: Math.max(0, 1920 - width - 16), y: Math.max(0, 1080 - height - 24) };
 		},
 		async SetDesktopWorkspaceSlots(slots: number) {
 			if (!Number.isInteger(slots) || slots < 0 || slots > 4) throw new Error("desktop workspace slots must be between 0 and 4");

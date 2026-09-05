@@ -241,6 +241,19 @@ func (a *App) IsWidgetMode() bool {
 	return a.widgetMode
 }
 
+// WidgetModeState identifies a committed native mode. Events invalidate the
+// frontend state; this read repairs delayed or missing event delivery.
+type WidgetModeState struct {
+	Active   bool   `json:"active"`
+	Revision uint64 `json:"revision"`
+}
+
+func (a *App) GetWidgetModeState() WidgetModeState {
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	return WidgetModeState{Active: a.widgetMode, Revision: a.widgetRevision}
+}
+
 // toggleWidgetTaskbar hides or restores the taskbar button while the native
 // window switches between widget and main geometry. widgetTaskbarToggle is a
 // test seam; nil uses the platform implementation, which is a no-op outside
@@ -265,6 +278,7 @@ func (a *App) transitionWidgetMode(target bool, apply func() error) (bool, error
 		return false, err
 	}
 	a.widgetMode = target
+	a.widgetRevision++
 	return true, nil
 }
 
@@ -389,6 +403,7 @@ func (a *App) applyDesktopIconGeometry(state WidgetWindowState, alwaysOnTop bool
 // geometry interaction inside widget-mode transitions and style switches.
 // Every field may be nil; nil uses the Wails/Win32 implementation.
 type widgetWindowOps struct {
+	regions func([]DesktopIconRect) error
 	// read reports the current window size/position and whether it is
 	// maximised.
 	read func() (WidgetWindowState, bool)
@@ -492,6 +507,7 @@ func (a *App) switchDesktopWidgetStyleLocked(style string) (string, error) {
 	if style == "icons" {
 		a.widgetSurface = newDesktopIconSurfaceRuntime(normalized)
 	}
+	a.widgetRevision++
 	return previous, nil
 }
 
@@ -534,6 +550,16 @@ func (a *App) enterWidgetModeSnapshot(retainActive bool) (WidgetSnapshot, error)
 	}
 	if changed {
 		a.publishWidgetModeEntered(retainActive)
+	}
+	// Icon mode reads its own projection after entry. The legacy pager snapshot
+	// also probes system/model information and recovers leases; none of that
+	// may hold the window transition binding open after native entry succeeded.
+	a.widgetMu.Lock()
+	icons := a.widgetStyle == "icons"
+	mode := a.widgetMode
+	a.widgetMu.Unlock()
+	if icons {
+		return WidgetSnapshot{Mode: mode}, nil
 	}
 	return a.GetWidgetSnapshot(), nil
 }

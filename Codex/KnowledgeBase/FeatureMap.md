@@ -1,5 +1,15 @@
 # Feature Map
 
+> 2026-09-05 复验进度：用户已授权重启，标准 EXE 已备份并替换为 native-state 修复构建；新版进程已启动。扩大 Widget/切换/裁剪/移除/RecentSessions Go 专项通过。Computer Use 在小组件模式下无法枚举该工具窗口，已请用户先打开主窗口再接管往返测试；实机复验尚未完成。
+
+> 2026-09-05 小组件原生状态与裁剪生命周期收敛：`Codex`；当前共享 `main` 未提交修复继续。已在实机观察到主窗口无障碍树完整、HRGN 却裁成小组件区域。模式布尔事件现在只触发 `GetWidgetModeState` 权威读取，前端按后端原生 Revision 拒绝旧读取/回包，不再根据旧事件或 void binding 假定模式；成功切换递增身份，重复进入不变。resize 与 HRGN 同时携带该身份，拒绝同尺寸跨进入周期的旧请求；React Activity 的 surface 与裁剪队列随可见周期清理。覆盖旧退出事件晚于新进入、同批次相反模式事件、快速反向点击、失败重试、相同尺寸跨周期裁剪/resize。定向 Go、TS 行为、typecheck、vet 通过；构建后待用户允许重启做实机复验。
+
+> 2026-09-05 侧边栏移除后小组件切换阻塞：负责人 `Codex`；当前 `main` 共享未提交修复继续本地处理。保留任务 remove 原先在 `iconWidgetMu` 内前后扫描完整项目/会话快照，阻塞 Enter 的 retain 与 mode 通知，可能留下已缩小的主窗口。规范化 Session ID 的 remove 现在直接校验 Kept 身份、原子持久化并返回快速任务投影，重试沿用 receipt，不触发项目扫描或旧动作恢复；legacy/person/external 仍使用各自校验。测试先复现持锁扫描，再验证真实 Exit→remove→Enter 调用与首个 mode 事件含当前 Session、迟到 remove 重试不删除新保留图标；删除回滚/重载、前端切换时序及 Desktop vet 通过。原生操作在测试中替换，仍需新进程实机确认。
+
+> 2026-09-05 小组件切换请求卡住修复：负责人 `Codex`；在“原生已进入→任务图标打开主窗口→旧 Enter binding 尚未返回→再次最小化”行为测试中复现新点击只复用旧 Promise、不调用后端。协调器现在以原生完成事件或 binding 成功作为完成依据，旧回包不会覆盖随后原生退出；图标模式 Enter 只回 mode ACK，不再执行旧 pager 的 lease/system/model 快照。前端时序回归及真实 Go 进入编排（替换原生窗口操作、阻塞旧快照锁）通过；仍需新进程实机确认。
+
+> 2026-09-05 最小化后 Session 图标即时显示：当前 `main`；负责人 `Codex`（Worker 请求停滞后本地接管）。`GetDesktopIconEntrySnapshot` 复用 live/retained task builder，绕开完整快照的 Session 树与委托扫描，保留已有非 task 图标并同步给侧边栏/动作缓存；Activity 每次恢复先快速投影再完整对账，独立请求生命周期阻止旧扫描阻塞和迟到覆盖。阻塞扫描、冷启动、同 Session 去重和跨显示周期迟到请求行为测试通过；尚未实机测量点击到图标显示时间。
+
 > 2026-09-04 Session 自动保存 Recovery 链收敛：状态 `done`；当前 `main` 共享工作树包含 Session/Sidebar 同链路未提交改动，本次不切分支、不提交或合并；负责人 `Codex + WorkGround2`。运行中 30 秒自动保存允许同一 Session 在持有磁盘 digest/revision 时原位更新持续变化的 assistant/tool 消息，不再把自身快照误判为外部分叉；真实跨运行时改写仍显式返回冲突。Session List 按项目、Topic 与 ParentID 投影 Recovery 链，只展示当前叶子，祖先继续保留在磁盘与分支历史；删除叶子、重复/乱序扫描后可重新收敛，普通 Fork 与不同 Topic 不串联。实机复验发现已有 schema-5 索引行不会自动补出新增的 Recovery/ParentID，现将派生索引升级到 schema 6，强制从 sidecar 重建；真实 DB 已确认链上三层 Recovery 字段及 ParentID 完整。Agent、Control、Desktop 专项测试，两端 vet、gofmt、production build 与 diff check 通过，标准 EXE 已替换并重启。
 
 > 2026-09-04 Session List 重复与错跳修复：状态 `done`；当前 `main` 共享工作树包含同链路未提交改动，本次不切分支、不提交或合并；负责人 `Codex + WorkGround2`。前端按规范化 sessionPath 等稳定身份幂等去重；后端运行时装饰从 TopicID 映射改为物理 sessionPath 映射，同 Topic 多个 Session 保留各自 ID/path，运行态仅附着到精确 Session。同路径 runtime 按 running、open、closed 确定性选择，空路径不参与。新增同 Topic 多 Session、路径格式、选择优先级与空路径回归；Go Sidebar/Bolt 专项、vet、gofmt、前端 Session Sidebar 55 项、TypeScript 与 diff check 通过。

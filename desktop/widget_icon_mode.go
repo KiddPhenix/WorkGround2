@@ -84,8 +84,8 @@ type DesktopIconRect struct {
 // DesktopIconHitRegionsInput binds one hit-region snapshot to the authoritative
 // native surface whose client coordinates it was measured against.
 type DesktopIconHitRegionsInput struct {
-	Rects   []DesktopIconRect `json:"rects"`
-	Surface WidgetWindowState `json:"surface"`
+	Rects   []DesktopIconRect        `json:"rects"`
+	Surface DesktopIconSurfaceResult `json:"surface"`
 }
 
 type desktopIconSurfaceRuntime struct {
@@ -130,11 +130,9 @@ func (a *App) SetDesktopIconHitRegions(input DesktopIconHitRegionsInput) error {
 		a.widgetMu.Unlock()
 		return nil
 	}
-	// Coordinates are accepted only for the authoritative native geometry they
-	// were measured against. Geometry is the identity here: a late request from
-	// an older bottom-right anchored surface cannot reinstall an old HRGN, and a
-	// React remount does not need to invent a larger sequence number.
-	if input.Surface != a.widgetSurface.State {
+	// Equal geometry can recur after exit/re-entry. Only rectangles from this
+	// committed mode lifetime may clip the window, even when bounds match.
+	if input.Surface != a.desktopIconSurfaceResult(a.widgetSurface.State) {
 		a.widgetMu.Unlock()
 		return nil
 	}
@@ -147,7 +145,11 @@ func (a *App) SetDesktopIconHitRegions(input DesktopIconHitRegionsInput) error {
 	// The frontend reports physical WebView pixels using devicePixelRatio. Native
 	// code owns the final client-bound clamp; applying WindowGetSize/GetDpiForWindow
 	// here would mix Wails logical units into that physical coordinate contract.
-	err := setDesktopIconHitRegions(input.Rects)
+	apply := setDesktopIconHitRegions
+	if a.widgetWindowOps != nil && a.widgetWindowOps.regions != nil {
+		apply = a.widgetWindowOps.regions
+	}
+	err := apply(input.Rects)
 	a.widgetRegionMu.Unlock()
 	return err
 }
@@ -157,17 +159,19 @@ func (a *App) SetDesktopIconHitRegions(input DesktopIconHitRegionsInput) error {
 // transient surface) and Envelope is the safety margin added on every side so
 // content never sits on the transparent edge.
 type DesktopIconSurfaceInput struct {
-	Width    int `json:"width"`
-	Height   int `json:"height"`
-	Envelope int `json:"envelope"`
+	Revision uint64 `json:"revision"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	Envelope int    `json:"envelope"`
 }
 
 // DesktopIconSurfaceResult reports the geometry that actually took effect.
 type DesktopIconSurfaceResult struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
-	X      int `json:"x"`
-	Y      int `json:"y"`
+	Revision uint64 `json:"revision"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	X        int    `json:"x"`
+	Y        int    `json:"y"`
 }
 
 func mergeDesktopIconSurfaceInput(current, next DesktopIconSurfaceInput) DesktopIconSurfaceInput {
@@ -178,8 +182,8 @@ func mergeDesktopIconSurfaceInput(current, next DesktopIconSurfaceInput) Desktop
 	return DesktopIconSurfaceInput{Width: max(currentWidth, nextWidth), Height: max(currentHeight, nextHeight)}
 }
 
-func desktopIconSurfaceResult(state WidgetWindowState) DesktopIconSurfaceResult {
-	return DesktopIconSurfaceResult{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y}
+func (a *App) desktopIconSurfaceResult(state WidgetWindowState) DesktopIconSurfaceResult {
+	return DesktopIconSurfaceResult{Revision: a.widgetRevision, Width: state.Width, Height: state.Height, X: state.X, Y: state.Y}
 }
 
 // SetDesktopIconSurface applies a bounded icon-surface geometry request and
@@ -195,12 +199,15 @@ func (a *App) SetDesktopIconSurface(input DesktopIconSurfaceInput) (DesktopIconS
 	if !a.widgetMode || a.widgetStyle != "icons" {
 		return DesktopIconSurfaceResult{}, errors.New("desktop icon surface is not active")
 	}
+	if input.Revision != a.widgetRevision {
+		return DesktopIconSurfaceResult{}, errors.New("desktop icon surface belongs to an expired mode")
+	}
 	// Merge by desired outer bounds. Repeated, smaller, reordered, and remounted
 	// requests all converge on the same maximum intent and return the current
 	// geometry without touching SetWindowPos or HRGN.
 	next := mergeDesktopIconSurfaceInput(a.widgetSurface.Request, input)
 	if next == a.widgetSurface.Request {
-		return desktopIconSurfaceResult(a.widgetSurface.State), nil
+		return a.desktopIconSurfaceResult(a.widgetSurface.State), nil
 	}
 	a.widgetRegionMu.Lock()
 	defer a.widgetRegionMu.Unlock()
@@ -219,7 +226,7 @@ func (a *App) SetDesktopIconSurface(input DesktopIconSurfaceInput) (DesktopIconS
 	}
 	a.widgetSurface.Request = next
 	a.widgetSurface.State = state
-	return desktopIconSurfaceResult(state), nil
+	return a.desktopIconSurfaceResult(state), nil
 }
 
 // DesktopIconTaskRef is the typed session identity every task icon snapshot
@@ -1049,6 +1056,59 @@ func (a *App) GetDesktopIconSnapshot() DesktopIconSnapshot {
 	defer a.iconWidgetMu.Unlock()
 	a.loadDesktopIconStateLocked()
 	return a.desktopIconSnapshotWithProjectTreeLocked(projectTree)
+}
+
+// GetDesktopIconEntrySnapshot refreshes task membership without Session-tree or
+// delegation discovery. Other icons keep their last complete projection until
+// GetDesktopIconSnapshot reconciles them in the background after entry.
+func (a *App) GetDesktopIconEntrySnapshot() DesktopIconSnapshot {
+	a.iconWidgetMu.Lock()
+	defer a.iconWidgetMu.Unlock()
+	a.loadDesktopIconStateLocked()
+	return a.desktopIconEntrySnapshotLocked()
+}
+
+func (a *App) desktopIconEntrySnapshotLocked() DesktopIconSnapshot {
+	sources, unread := a.widgetSources(), a.UnreadState()
+	style, hover, showDelegation, showExternalTools, showAssistant := a.desktopIconPreferences()
+	spaces := make([]WidgetWorkspaceOption, min(max(a.iconWidgetState.WorkspaceSlots, 0), desktopIconMaxSpaces))
+	for i := range spaces {
+		spaces[i].Scope = "project"
+	}
+	tasks := buildDesktopIconSnapshot(sources, unread, spaces, a.iconWidgetState, hover, nil, nil, nil, nil)
+	if a.pinNewDesktopIconTaskOrdersLocked(tasks) {
+		tasks = buildDesktopIconSnapshot(sources, unread, spaces, a.iconWidgetState, hover, nil, nil, nil, nil)
+	}
+	snapshot := a.iconWidgetLastSnapshot
+	if !a.iconWidgetSnapshotReady {
+		// No fabricated workspace shortcuts on a cold start. Reserve their task
+		// capacity above, but show only the real task and fixed entries below.
+		snapshot = buildDesktopIconSnapshot(sources, unread, nil, a.iconWidgetState, hover, nil, nil, nil, nil)
+	}
+	items := make([]DesktopIconItem, 0, len(snapshot.Items)+len(tasks.Items))
+	for _, item := range snapshot.Items {
+		if item.Kind != "task" && (a.iconWidgetSnapshotReady || item.Kind == "fixed") {
+			items = append(items, item)
+		}
+	}
+	for _, item := range tasks.Items {
+		if item.Kind == "task" {
+			items = append(items, item)
+		}
+	}
+	snapshot.Items = items
+	sortDesktopIconItems(snapshot.Items)
+	snapshot.Style, snapshot.HoverStatusDelayMs = style, hover
+	snapshot.UnreadRevision = unread.Summary.Revision
+	filterDesktopIconVisibility(&snapshot, showDelegation, showExternalTools, showAssistant)
+	if a.iconWidgetStateErr != nil {
+		snapshot.Error = a.iconWidgetStateErr.Error()
+	}
+	snapshot.Revision = desktopIconSnapshotRevision(snapshot)
+	// Actions and the sidebar must see the same newly displayed task identity.
+	a.iconWidgetLastSnapshot = snapshot
+	a.iconWidgetSnapshotReady = true
+	return snapshot
 }
 
 func (a *App) listDesktopIconProjectTree() []ProjectNode {
@@ -2467,6 +2527,16 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 			item.Revision = widgetRevision(item.Revision, desktopIconDelegationRevision(snapshot.AssistantTasks))
 		}
 	}
+	sortDesktopIconItems(items)
+	snapshot.Items = items
+	snapshot.Revision = desktopIconSnapshotRevision(snapshot)
+	if unreadState.Error != "" {
+		snapshot.Error = unreadState.Error
+	}
+	return snapshot
+}
+
+func sortDesktopIconItems(items []DesktopIconItem) {
 	sort.SliceStable(items, func(i, j int) bool {
 		left, right := items[i].Position, items[j].Position
 		if left.Row != right.Row {
@@ -2480,12 +2550,6 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 		}
 		return items[i].ID < items[j].ID
 	})
-	snapshot.Items = items
-	snapshot.Revision = desktopIconSnapshotRevision(snapshot)
-	if unreadState.Error != "" {
-		snapshot.Error = unreadState.Error
-	}
-	return snapshot
 }
 
 func desktopIconKeptItem(kept desktopIconKept, persisted desktopIconPersistedState) DesktopIconItem {
@@ -3038,6 +3102,9 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 	if input.ItemID == "" || input.RequestID == "" || input.Action == "" {
 		return a.desktopIconActionErrorLocked("invalid", errors.New("itemId, requestId and action are required"))
 	}
+	if input.Action == "remove" && strings.HasPrefix(input.ItemID, "task:session:") {
+		return a.removeDesktopIconTaskLocked(input)
+	}
 	intent := desktopIconIntent(input)
 	for i := range a.iconWidgetState.Applied {
 		receipt := &a.iconWidgetState.Applied[i]
@@ -3462,6 +3529,49 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 		return DesktopIconActionResult{Status: "accepted", Snapshot: snapshot}
 	}
 	return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+}
+
+// removeDesktopIconTaskLocked changes only durable retention. Neither identity
+// validation nor the response needs project discovery or action recovery. Those
+// scans under iconWidgetMu used to block entry after native geometry had changed
+// but before the widget:mode event could be published.
+func (a *App) removeDesktopIconTaskLocked(input DesktopIconActionInput) DesktopIconActionResult {
+	result := func(status, message string) DesktopIconActionResult {
+		return DesktopIconActionResult{Status: status, Error: message, Snapshot: a.desktopIconEntrySnapshotLocked()}
+	}
+	intent := desktopIconIntent(input)
+	for _, receipt := range a.iconWidgetState.Applied {
+		if receipt.RequestID != input.RequestID {
+			continue
+		}
+		if receipt.Intent != intent {
+			return result("invalid", "requestId was already used for another action")
+		}
+		if receipt.Status == "pending" {
+			return result("retryable_error", "action receipt is pending recovery")
+		}
+		return result("already_applied", "")
+	}
+	kept, exists := a.iconWidgetState.Kept[input.ItemID]
+	if !exists || desktopIconKeptID(kept.SessionPath) != input.ItemID {
+		return result("stale", "图标已经变化")
+	}
+	// Canonical retained IDs identify the exact Session, independent of async
+	// summary revisions. Running-task and conversation removals keep their
+	// original action/revision guards in ApplyDesktopIconAction.
+	before := cloneDesktopIconState(a.iconWidgetState)
+	delete(a.iconWidgetState.Kept, input.ItemID)
+	a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{
+		RequestID: input.RequestID, Intent: intent, Status: "applied", Action: "remove", ItemID: input.ItemID, AppliedAt: time.Now().UnixMilli(),
+	})
+	if len(a.iconWidgetState.Applied) > desktopIconActionLimit {
+		a.iconWidgetState.Applied = a.iconWidgetState.Applied[len(a.iconWidgetState.Applied)-desktopIconActionLimit:]
+	}
+	if err := a.saveDesktopIconStateLocked(); err != nil {
+		a.iconWidgetState = before
+		return result("retryable_error", fmt.Sprintf("save icon removal: %v", err))
+	}
+	return result("accepted", "")
 }
 
 // createDesktopIconWorkspaceSessionLocked performs only the creation phase of

@@ -27,6 +27,7 @@
     "test:widget-settings": "tsx src/__tests__/widget-settings-contract.test.ts",
     "test:settings-layout": "tsx src/__tests__/settings-full-window-layout.test.ts",
     "test:widget-mode": "tsx src/__tests__/widget-mode-coordinator.test.ts",
+    "test:widget-entry": "tsx src/__tests__/desktop-icon-entry-refresh.test.ts",
     "test:widget-icons": "node --import tsx --import ./scripts/test-asset-hook.mjs src/__tests__/desktop-icon-mode.test.ts && tsx src/__tests__/desktop-icon-snapshot-refresh.test.ts && tsx src/__tests__/external-run-launch-ledger.test.ts",
     "test:agent-icon": "node --import tsx --import ./scripts/test-asset-hook.mjs src/__tests__/agent-icon.test.ts && node --import tsx --import ./scripts/test-asset-hook.mjs src/__tests__/agent-icon-component.test.tsx",
     "test:widget-jobs": "tsx src/__tests__/widget-quick-start-jobs.test.ts",

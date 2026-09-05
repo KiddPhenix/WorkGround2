@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { app, type DesktopIconItem, type DesktopIconSurfaceInput, type DesktopIconSurfaceResult } from "./bridge";
 
 export interface IconSurfaceBounds { width: number; height: number; }
@@ -8,6 +8,7 @@ export interface IconSurfaceCoordinatorOptions {
 	apply: IconSurfaceApply;
 	envelope?: number;
 	initialBounds?: IconSurfaceBounds;
+	revision?: number;
 	onError?: (err: unknown) => void;
 	onApplied?: (result: DesktopIconSurfaceResult) => void;
 }
@@ -90,7 +91,7 @@ export function createIconSurfaceCoordinator(options: IconSurfaceCoordinatorOpti
 		let applied = false;
 		const current = (async () => {
 			try {
-				const result = await options.apply({ ...target, envelope });
+				const result = await options.apply({ ...target, envelope, revision: options.revision ?? 0 });
 				if (disposed) return;
 				actual = result;
 				appliedBounds = union(appliedBounds, target);
@@ -160,18 +161,18 @@ export function createIconSurfaceLifecycle(options: IconSurfaceCoordinatorOption
 	};
 }
 
-export function useDesktopIconSurface(onError?: (err: unknown) => void, onApplied?: (result: DesktopIconSurfaceResult) => void): IconSurfaceCoordinator {
+export function useDesktopIconSurface(onError?: (err: unknown) => void, onApplied?: (result: DesktopIconSurfaceResult) => void, revision = 0): IconSurfaceCoordinator {
 	const callbacks = useRef({ onError, onApplied });
 	callbacks.current = { onError, onApplied };
-	const ref = useRef<IconSurfaceLifecycle | null>(null);
-	if (ref.current === null) ref.current = createIconSurfaceLifecycle({
+	const surface = useMemo(() => createIconSurfaceLifecycle({
+		revision,
 		apply: (input) => app.SetDesktopIconSurface(input),
 		onError: (cause) => callbacks.current.onError?.(cause),
 		onApplied: (result) => callbacks.current.onApplied?.(result),
-	});
+	}), [revision]);
 	useLayoutEffect(() => {
-		ref.current?.activate();
-		return () => ref.current?.deactivate();
-	}, []);
-	return ref.current;
+		surface.activate();
+		return () => surface.deactivate();
+	}, [surface]);
+	return surface;
 }

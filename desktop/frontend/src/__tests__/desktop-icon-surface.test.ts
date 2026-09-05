@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createIconSurfaceCoordinator, createIconSurfaceLifecycle, DESKTOP_ICON_OVERLAY_BOUNDS, desktopIconLayoutBounds, type IconSurfaceBounds } from "../lib/desktopIconSurface";
 import type { DesktopIconItem, DesktopIconSurfaceInput, DesktopIconSurfaceResult } from "../lib/bridge";
 
-const response = (input: DesktopIconSurfaceInput): DesktopIconSurfaceResult => ({ width: input.width + input.envelope * 2, height: input.height + input.envelope * 2, x: 0, y: 0 });
+const response = (input: DesktopIconSurfaceInput): DesktopIconSurfaceResult => ({ revision: input.revision, width: input.width + input.envelope * 2, height: input.height + input.envelope * 2, x: 0, y: 0 });
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 const bounds = (width: number, height: number): IconSurfaceBounds => ({ width, height });
 function deferred() {
@@ -20,7 +20,7 @@ async function testPrepareGatesCommit() {
 	const prepare = coordinator.prepare(bounds(800, 600)).then((ready) => { if (ready) committed = true; });
 	await flush();
 	assert.equal(committed, false, "new content stays hidden before native resize resolves");
-	pending.resolve({ width: 864, height: 664, x: 0, y: 0 });
+	pending.resolve({ revision: 0, width: 864, height: 664, x: 0, y: 0 });
 	await prepare;
 	assert.equal(committed, true, "native confirmation releases the render gate");
 	assert.equal(coordinator.current()?.width, 864, "current geometry is the backend-clamped result");
@@ -77,11 +77,11 @@ async function testConcurrentPrepareCoalescesSingleFlight() {
 	const old = coordinator.prepare(bounds(700, 550));
 	const next = coordinator.prepare(bounds(900, 650));
 	assert.equal(pending.length, 1, "a larger concurrent intent is merged behind the current native call");
-	pending[0].resolve({ width: 764, height: 614, x: 0, y: 0 });
+	pending[0].resolve({ revision: 0, width: 764, height: 614, x: 0, y: 0 });
 	assert.equal(await old, true, "the first prepare resolves from the first authoritative geometry");
 	await flush();
 	assert.equal(pending.length, 2, "the merged larger intent drains after the first call settles");
-	pending[1].resolve({ width: 964, height: 714, x: 0, y: 0 });
+	pending[1].resolve({ revision: 0, width: 964, height: 714, x: 0, y: 0 });
 	assert.equal(await next, true);
 	assert.equal(maxActive, 1, "native surface mutation is strictly single-flight without request generations");
 	assert.equal(coordinator.current()?.width, 964, "authoritative geometry can never roll back from an out-of-order response");
@@ -122,4 +122,22 @@ await testSurfaceOnlyGrows();
 await testInitialNativeSurfaceDoesNotShrink();
 await testConcurrentPrepareCoalescesSingleFlight();
 await testActivityLifecycleRecreatesDisposedCoordinator();
+// Identical geometry from different native entries carries distinct identity.
+// A disposed coordinator cannot publish the old native reply into the new one.
+{
+	const oldReply = deferred();
+	const calls: number[] = [];
+	let oldPublished = false;
+	const old = createIconSurfaceCoordinator({ revision: 1, apply: async input => { calls.push(input.revision); return oldReply.promise; }, onApplied: () => { oldPublished = true; } });
+	const waiting = old.prepare(bounds(700, 550));
+	old.dispose();
+	const current = createIconSurfaceCoordinator({ revision: 3, apply: async input => { calls.push(input.revision); return response(input); } });
+	await current.prepare(bounds(700, 550));
+	oldReply.resolve({ revision: 1, width: 764, height: 614, x: 0, y: 0 });
+	assert.equal(await waiting, false);
+	await flush();
+	assert.deepEqual(calls, [1, 3]);
+	assert.equal(current.current()?.revision, 3);
+	assert.equal(oldPublished, false);
+}
 process.stdout.write("desktop icon surface coordinator tests passed\n");

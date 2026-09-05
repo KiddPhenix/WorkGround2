@@ -281,10 +281,11 @@ type App struct {
 	widgetActionMu       sync.Mutex
 	widgetConversationMu sync.Mutex
 	widgetMode           bool
+	widgetRevision       uint64 // native transition identity, protected by widgetMu
 	widgetStyle          string
 	// widgetSurface is the single authoritative icon-canvas runtime state. Native
 	// geometry, the largest accepted layout intent, and its applied hit regions
-	// move together under widgetMu; no request sequence/version is required.
+	// move together under widgetMu; widgetRevision fences prior mode lifetimes.
 	widgetSurface     desktopIconSurfaceRuntime
 	widgetStateLoaded bool
 	widgetState       widgetPersistedState

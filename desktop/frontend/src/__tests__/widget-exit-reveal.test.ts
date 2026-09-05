@@ -66,14 +66,14 @@ async function main() {
 	);
 	ok(
 		iconSurfaceSource.includes("createIconSurfaceLifecycle") &&
-		iconSurfaceSource.includes("ref.current?.activate()") &&
-		iconSurfaceSource.includes("ref.current?.deactivate()"),
+		iconSurfaceSource.includes("surface.activate()") &&
+		iconSurfaceSource.includes("surface.deactivate()"),
 		"Activity reveal recreates the native surface coordinator disposed while hidden",
 	);
 	ok(
-		/refreshRequested\.current = true;[\s\S]{0,160}if \(refreshPending\.current\) return refreshPending\.current;/.test(iconModeSource) &&
-		/while \(refreshRequested\.current\)[\s\S]{0,180}await refreshOnceLatest\.current\(\)/.test(iconModeSource),
-		"a reveal joining an old refresh requests one sequential authoritative follow-up",
+		iconModeSource.includes("entryRefresh.activate()") && iconModeSource.includes("entryRefresh.dispose()") &&
+		iconModeSource.includes("app.GetDesktopIconEntrySnapshot()"),
+		"each reveal starts an independent fast entry read (late-response behavior covered by desktop-icon-entry-refresh)",
 	);
 	ok(
 		/regionKey\.current = "";[\s\S]{0,80}regionErrorKey\.current = "";/.test(iconModeSource),

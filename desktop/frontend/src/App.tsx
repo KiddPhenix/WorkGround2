@@ -5439,7 +5439,8 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
 }
 
 export default function App() {
-  const [widgetMode, setWidgetMode] = useState(false);
+  const [widgetState, setWidgetState] = useState({ active: false, revision: 0 });
+  const widgetMode = widgetState.active;
   const [widgetEnabled, setWidgetEnabled] = useState(true);
   // ownerDecisionEnabled mirrors the backend ownerDecisionFeatureEnabled kill
   // switch (default off): while disabled, the sidebar entry and the decision
@@ -5455,7 +5456,7 @@ export default function App() {
   // surface once per successful open so that Session is visible.
   const [sessionRevealSignal, setSessionRevealSignal] = useState(0);
   const { showToast } = useToast();
-  const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetMode, () => {
+  const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetState, () => {
     useLayoutStore.getState().setSidebarCollapsed(true);
     useOverlayStore.getState().setSidebarSearchOpen(false);
   }), []);
@@ -5576,16 +5577,12 @@ export default function App() {
   // Widget mode: init from backend, then subscribe to authoritative widget:mode events.
   useEffect(() => {
     let alive = true;
-    let nativeEventSeen = false;
     const unsubscribe = typeof window !== "undefined" && window.runtime
-      ? window.runtime.EventsOn("widget:mode", (payload: unknown) => {
-        nativeEventSeen = true;
-        widgetCoordinator.sync(Boolean(payload));
+      ? window.runtime.EventsOn("widget:mode", () => {
+        if (alive) void widgetCoordinator.refresh().catch(reportWidgetError);
       })
       : undefined;
-    void app.IsWidgetMode().then((active) => {
-      if (alive && !nativeEventSeen) widgetCoordinator.sync(active);
-    }).catch(reportWidgetError);
+    void widgetCoordinator.refresh().catch(reportWidgetError);
     return () => {
       alive = false;
       unsubscribe?.();
@@ -5604,7 +5601,7 @@ export default function App() {
 	    <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} onDismissWindow={dismissMainWindow} collabDialogSignal={collabDialogSignal} assistantOpenSignal={assistantOpenSignal} sessionRevealSignal={sessionRevealSignal} />
 	  </ReactActivity>
 	  <ReactActivity mode={widgetMode ? "visible" : "hidden"}>
-	    <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} onOpenAssistant={openWidgetAssistant} onOpenSession={revealWidgetSession} />
+	    <DesktopIconMode modeRevision={widgetState.revision} onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} onOpenAssistant={openWidgetAssistant} onOpenSession={revealWidgetSession} />
 	  </ReactActivity>
 	</>
   );

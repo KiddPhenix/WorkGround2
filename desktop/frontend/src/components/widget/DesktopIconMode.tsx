@@ -36,6 +36,7 @@ import { useT, t, type DictKey } from "../../lib/i18n";
 import { DESKTOP_ICON_OVERLAY_BOUNDS, desktopIconLayoutBounds, useDesktopIconSurface } from "../../lib/desktopIconSurface";
 import { createDesktopIconSnapshotRefresh, desktopIconEventWakesSnapshot, SNAPSHOT_EVENT_DEBOUNCE_MS, SNAPSHOT_RECOVERY_MS, subscribeDesktopIconSnapshotRefresh } from "./desktopIconSnapshotRefresh";
 import { IconRemovals } from "./iconRemovals";
+import { createIconEntryRefresh } from "./desktopIconEntryRefresh";
 import "./desktop-icon-mode.css";
 
 const QUICK_WORKSPACE_KEY = "wg2.icon-widget-workspace";
@@ -1343,7 +1344,7 @@ function pinnedIcon(row: { pinned: boolean }) {
   return row.pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />;
 }
 
-export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenMain, onOpenAssistant, onOpenSession }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void>; onOpenAssistant: () => Promise<void>; onOpenSession: () => void }) {
+export function DesktopIconMode({ modeRevision, onNewRoom, onOpenRoom, onOpenSettings, onOpenMain, onOpenAssistant, onOpenSession }: { modeRevision: number; onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void>; onOpenAssistant: () => Promise<void>; onOpenSession: () => void }) {
 	const t = useT();
   const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], delegations: [], assistantTasks: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
 	const [removals] = useState(() => new IconRemovals(() => requestID("icon-remove")));
@@ -1491,7 +1492,6 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	const [popupWidth, setPopupWidth] = useState(0);
 	const regionKey = useRef("");
 	const regionErrorKey = useRef("");
-	const regionQueue = useRef<Promise<void>>(Promise.resolve());
 	const [collapsed, setCollapsed] = useState(readCollapsedState);
 	const exitRequest = useRef(false);
 	const [surfaceGeometry, setSurfaceGeometry] = useState<DesktopIconSurfaceResult | null>(null);
@@ -1500,8 +1500,10 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	const surface = useDesktopIconSurface(
 		(cause) => setError(cause instanceof Error ? cause.message : String(cause)),
 		(result) => setSurfaceGeometry((current) => current
+			&& current.revision === result.revision
 			&& current.width === result.width && current.height === result.height
 			&& current.x === result.x && current.y === result.y ? current : result),
+		modeRevision,
 	);
 	const [overlayReadyKey, setOverlayReadyKey] = useState("");
 	// Activity preserves refs across window mode. Each native icon-surface entry
@@ -1531,15 +1533,14 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 
 	// GetDesktopIconSnapshot is the only business-state authority. Events below
 	// merely wake a coalesced refresh; they never maintain a parallel projection.
-	const refreshPending = useRef<Promise<void> | null>(null);
-	const refreshRequested = useRef(false);
-	const refreshOnce = useCallback(async () => {
+	const refreshOnce = useCallback(async (entry: boolean, current: () => boolean) => {
 		const ticket = removals.beginSnapshot();
 		try {
-			const next = await app.GetDesktopIconSnapshot();
+			const next = await (entry ? app.GetDesktopIconEntrySnapshot() : app.GetDesktopIconSnapshot());
+			if (!current()) return;
 			const nextItems = visibleDesktopIcons(mergeQuickStartItems(removals.project(next.items), optimisticItems), roomIconCount);
 			const prepared = await surface.prepare(desktopIconLayoutBounds(nextItems, collapsed, clusterZoom * desktopZoom));
-			if (!prepared) return;
+			if (!prepared || !current()) return;
 			if (!acceptSnapshot(ticket, next)) return;
 			setSnapshotLoaded(true);
 			setError(next.error || "");
@@ -1550,27 +1551,17 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 			// filtered/capped out of the snapshot.
 			quickJobs.reconcile(next.items);
 		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
+			if (current()) setError(cause instanceof Error ? cause.message : String(cause));
 		}
 	}, [acceptSnapshot, collapsed, clusterZoom, desktopZoom, optimisticItems, quickJobs.reconcile, removals, roomIconCount, surface]);
 	const refreshOnceLatest = useRef(refreshOnce);
 	refreshOnceLatest.current = refreshOnce;
-  const refresh = useCallback(() => {
-		refreshRequested.current = true;
-		if (refreshPending.current) return refreshPending.current;
-		const pending = (async () => {
-			while (refreshRequested.current) {
-				refreshRequested.current = false;
-				await refreshOnceLatest.current();
-			}
-		})();
-		refreshPending.current = pending;
-		void pending.finally(() => { if (refreshPending.current === pending) refreshPending.current = null; });
-		return pending;
-	}, []);
+	const [entryRefresh] = useState(() => createIconEntryRefresh((entry, current) => refreshOnceLatest.current(entry, current)));
+	const refresh = entryRefresh.refresh;
 	const refreshLatest = useRef(refresh);
 	refreshLatest.current = refresh;
   useEffect(() => {
+		entryRefresh.activate();
 		const coordinator = createDesktopIconSnapshotRefresh(
 			() => refreshLatest.current(),
 			windowTimerHost,
@@ -1589,7 +1580,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		]);
 		coordinator.start();
 		void app.ListWidgetWorkspaces().then(setWorkspaces).catch(() => {});
-		return () => { unsubscribe(); coordinator.dispose(); };
+		return () => { unsubscribe(); coordinator.dispose(); entryRefresh.dispose(); };
 	}, []);
 	useEffect(() => {
 		if (!snapshotLoaded) return;
@@ -1674,16 +1665,17 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		return () => { alive = false; };
 	}, [topmostAttempt]);
 	useLayoutEffect(() => {
-		if (!surfaceGeometry) return;
+		if (!surfaceGeometry || surfaceGeometry.revision !== modeRevision) return;
 		let frame = 0;
 		let alive = true;
+		let queue = Promise.resolve();
 		const report = (rects: ReturnType<typeof iconHitRect>[]) => {
-			const surfaceKey = `${surfaceGeometry.x},${surfaceGeometry.y},${surfaceGeometry.width},${surfaceGeometry.height}`;
+			const surfaceKey = `${surfaceGeometry.revision}:${surfaceGeometry.x},${surfaceGeometry.y},${surfaceGeometry.width},${surfaceGeometry.height}`;
 			const key = `${surfaceKey}|${rects.map((rect) => `${rect.x},${rect.y},${rect.width},${rect.height}`).join(";")}`;
 			if (!key || key === regionKey.current) return;
 			regionKey.current = key;
-			const next = regionQueue.current.catch(() => {}).then(() => app.SetDesktopIconHitRegions({ rects, surface: surfaceGeometry }));
-			regionQueue.current = next.then(() => { regionErrorKey.current = ""; }, (cause) => {
+			const next = queue.catch(() => {}).then(() => { if (alive) return app.SetDesktopIconHitRegions({ rects, surface: surfaceGeometry }); });
+			queue = next.then(() => { if (alive) regionErrorKey.current = ""; }, (cause) => {
 				if (regionKey.current === key) regionKey.current = "";
 				const message = cause instanceof Error ? cause.message : String(cause);
 				if (alive && regionErrorKey.current !== message) {
@@ -1707,7 +1699,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		sync(); window.addEventListener("resize", sync);
 		void document.fonts?.ready.then(() => { if (alive) sync(); });
 		return () => { alive = false; cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener("resize", sync); };
-	}, [activeID, menuID, previewID, snapshot.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems, roomIconCount, surfaceGeometry, overlayReadyKey]);
+	}, [modeRevision, activeID, menuID, previewID, snapshot.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems, roomIconCount, surfaceGeometry, overlayReadyKey]);
 	// The floating runtime layer is an absolute sibling above each icon: it
 	// contributes no row height, so a lower row's block can cover an upper
 	// row's icon. Occlusion is decided from REAL rendered geometry after every

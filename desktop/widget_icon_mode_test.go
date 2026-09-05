@@ -1411,7 +1411,7 @@ func TestDesktopIconHitRegionsIgnoreDifferentSurface(t *testing.T) {
 	app := &App{ctx: context.Background(), widgetMode: true, widgetStyle: "icons", widgetSurface: newDesktopIconSurfaceRuntime(state)}
 	if err := app.SetDesktopIconHitRegions(DesktopIconHitRegionsInput{
 		Rects:   []DesktopIconRect{{X: 10, Y: 10, Width: 20, Height: 20}},
-		Surface: WidgetWindowState{Width: 1280, Height: 900, X: 624, Y: 156},
+		Surface: DesktopIconSurfaceResult{Width: 1280, Height: 900, X: 624, Y: 156},
 	}); err != nil {
 		t.Fatalf("stale hit region should be ignored: %v", err)
 	}
