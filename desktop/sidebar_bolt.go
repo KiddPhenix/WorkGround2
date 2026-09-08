@@ -413,13 +413,6 @@ func (index *sidebarBoltIndex) listGroups(app *App, mode SidebarMode) (groups []
 	if err != nil {
 		return nil, err
 	}
-	if mode == SidebarProjects {
-		groups := make([]SidebarGroup, len(plans))
-		for i := range plans {
-			groups[i] = plans[i].group
-		}
-		return groups, nil
-	}
 	if err := index.syncPlans(app, plans); err != nil {
 		return nil, err
 	}
@@ -432,7 +425,10 @@ func (index *sidebarBoltIndex) listGroups(app *App, mode SidebarMode) (groups []
 	groups = []SidebarGroup{}
 	for _, plan := range plans {
 		stat := stats[plan.group.ID]
-		if stat.count == 0 {
+		// Projects keep empty groups visible so the registered workspace list
+		// never collapses to nothing; Rooms/Assistants hide groups with no
+		// matching sessions.
+		if mode != SidebarProjects && stat.count == 0 {
 			continue
 		}
 		group := plan.group

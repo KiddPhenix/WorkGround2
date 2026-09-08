@@ -26,7 +26,7 @@ const closeWaitBudget = 5 * time.Second
 // response to the waiting call by id, so a call can abandon a blocking read the
 // moment its context is cancelled (the subprocess is bound to the session, not
 // the turn, so a hung server would otherwise hang a cancelled turn forever).
-// callMu serialises a request/response round-trip over the shared pipe.
+// callGate serialises a request/response round-trip over the shared pipe.
 type stdioTransport struct {
 	name   string
 	cmd    *exec.Cmd
@@ -35,7 +35,9 @@ type stdioTransport struct {
 	stdout *bufio.Reader
 	stderr *tailBuffer
 
-	callMu sync.Mutex // one in-flight request/response at a time over the shared pipe
+	gateOnce  sync.Once
+	callGate  chan struct{} // cancellation-aware round-trip serialization
+	writeGate chan struct{} // notifications and calls must not interleave JSON frames
 
 	mu      sync.Mutex
 	nextID  int
@@ -43,6 +45,7 @@ type stdioTransport struct {
 	readErr error // set once the reader goroutine exits; further calls fail fast
 
 	waitOnce    sync.Once
+	closeOnce   sync.Once
 	releaseSlot func() // returns a bounded instance slot (e.g. CodeGraph) on close; nil when unbounded
 }
 
@@ -466,8 +469,11 @@ func (t *stdioTransport) failAll(err error) {
 }
 
 func (t *stdioTransport) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	t.callMu.Lock()
-	defer t.callMu.Unlock()
+	t.initGates()
+	if err := acquireStdio(ctx, t.callGate); err != nil {
+		return nil, err
+	}
+	defer func() { <-t.callGate }()
 
 	t.mu.Lock()
 	if t.readErr != nil {
@@ -486,12 +492,17 @@ func (t *stdioTransport) call(ctx context.Context, method string, params any) (j
 		t.mu.Unlock()
 	}()
 
-	if err := t.write(rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
+	if err := t.write(ctx, rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
 		return nil, fmt.Errorf("plugin %q: write %s: %w", t.name, method, err)
 	}
 
 	select {
 	case <-ctx.Done():
+		go func() {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = t.notify(cancelCtx, "notifications/cancelled", map[string]any{"requestId": id, "reason": "caller cancelled"})
+		}()
 		return nil, ctx.Err()
 	case resp, ok := <-ch:
 		if !ok {
@@ -504,26 +515,76 @@ func (t *stdioTransport) call(ctx context.Context, method string, params any) (j
 	}
 }
 
-func (t *stdioTransport) notify(_ context.Context, method string, params any) error {
-	return t.write(rpcRequest{JSONRPC: "2.0", Method: method, Params: params})
+func (t *stdioTransport) notify(ctx context.Context, method string, params any) error {
+	return t.write(ctx, rpcRequest{JSONRPC: "2.0", Method: method, Params: params})
 }
 
-func (t *stdioTransport) write(v any) error {
+func (t *stdioTransport) initGates() {
+	t.gateOnce.Do(func() {
+		t.callGate = make(chan struct{}, 1)
+		t.writeGate = make(chan struct{}, 1)
+	})
+}
+
+func acquireStdio(ctx context.Context, gate chan struct{}) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-gate
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (t *stdioTransport) write(ctx context.Context, v any) error {
 	b, err := json.Marshal(v) // marshaled JSON never contains a literal newline
 	if err != nil {
 		return err
 	}
-	if _, err = t.stdin.Write(append(b, '\n')); err != nil {
-		return t.withStderr(err)
+	t.initGates()
+	if err := acquireStdio(ctx, t.writeGate); err != nil {
+		return err
 	}
-	return nil
+	t.mu.Lock()
+	err = t.readErr
+	t.mu.Unlock()
+	if err != nil {
+		<-t.writeGate
+		return err
+	}
+	done := make(chan error, 1)
+	go func() {
+		defer func() { <-t.writeGate }()
+		_, err := t.stdin.Write(append(b, '\n'))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return t.withStderr(err)
+		}
+		return nil
+	case <-ctx.Done():
+		// A partial frame cannot be safely retried on the same stream. Mark the
+		// transport failed immediately, then close its pipe/tree off the caller.
+		t.failAll(fmt.Errorf("plugin %q: interrupted write; reconnect the MCP server: %w", t.name, ctx.Err()))
+		go t.close()
+		return ctx.Err()
+	}
 }
 
 func (t *stdioTransport) withStderr(err error) error {
 	if t.stderr == nil {
 		return err
 	}
-	t.wait() // reap the exited child so its stderr copy goroutine has flushed the tail
+	// An EOF/broken pipe does not prove the process exited. Waiting here can
+	// deadlock error reporting on a still-live child or inherited stderr pipe.
 	msg := t.stderr.String()
 	if msg == "" {
 		return err
@@ -546,6 +607,11 @@ func (t *stdioTransport) wait() {
 // blocking forever) and reaps it under a budget so one wedged server can never
 // stall a boot or a turn teardown.
 func (t *stdioTransport) close() {
+	t.closeOnce.Do(t.closeProcess)
+}
+
+func (t *stdioTransport) closeProcess() {
+	t.failAll(fmt.Errorf("plugin %q: transport closed; reconnect the MCP server", t.name))
 	if t.releaseSlot != nil {
 		t.releaseSlot() // idempotent; frees the bounded CodeGraph instance slot
 	}
@@ -556,6 +622,7 @@ func (t *stdioTransport) close() {
 		return
 	}
 	proc.KillTracked(t.cmd, t.job)
+	t.job = 0
 	done := make(chan struct{})
 	go func() { t.wait(); close(done) }()
 	select {

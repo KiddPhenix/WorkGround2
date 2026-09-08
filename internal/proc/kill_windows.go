@@ -3,9 +3,11 @@
 package proc
 
 import (
+	"context"
 	"os/exec"
 	"strconv"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -25,7 +27,10 @@ func KillTree(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	kill := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	kill := exec.CommandContext(ctx, "taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid))
+	kill.WaitDelay = time.Second
 	HideWindow(kill)
 	_ = kill.Run()
 	_ = cmd.Process.Kill()
@@ -108,12 +113,15 @@ func resumeProcess(pid uint32) {
 }
 
 // KillTracked terminates cmd's whole process tree. When job (from StartTracked)
-// is non-zero, terminating it kills even detached descendants; the KillTree pass
-// then catches anything spawned in the gap before the job was assigned.
+// is non-zero, terminating it kills even detached descendants. Only a failed
+// job termination falls back to the bounded PID-tree walk.
 func KillTracked(cmd *exec.Cmd, job uintptr) {
 	if job != 0 {
-		_ = windows.TerminateJobObject(windows.Handle(job), 1)
+		err := windows.TerminateJobObject(windows.Handle(job), 1)
 		_ = windows.CloseHandle(windows.Handle(job))
+		if err == nil {
+			return // The job owns every descendant; do not revisit a possibly reused PID.
+		}
 	}
 	KillTree(cmd)
 }
@@ -125,4 +133,20 @@ func ReleaseTracked(job uintptr) {
 	if job != 0 {
 		_ = windows.CloseHandle(windows.Handle(job))
 	}
+}
+
+// DetachTracked releases ownership after an explicitly preserved shell exits.
+// Cancellation before this point still terminates the entire job.
+func DetachTracked(job uintptr) error {
+	if job == 0 {
+		return nil
+	}
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	_, err := windows.SetInformationJobObject(windows.Handle(job), windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)))
+	closeErr := windows.CloseHandle(windows.Handle(job))
+	if err != nil {
+		return err
+	}
+	return closeErr
 }

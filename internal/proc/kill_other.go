@@ -48,3 +48,6 @@ func KillTracked(cmd *exec.Cmd, _ uintptr) { KillTree(cmd) }
 // child has already exited naturally. It is a no-op off Windows, where there is
 // no Job Object handle to close.
 func ReleaseTracked(_ uintptr) {}
+
+// DetachTracked has no handle to release on POSIX.
+func DetachTracked(_ uintptr) error { return nil }

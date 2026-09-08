@@ -174,6 +174,7 @@ export function UserMessage({
   onEdit,
   editDisabled = false,
   onPinMemory,
+  guidance = false,
 }: {
   text: string;
   submitText?: string;
@@ -187,6 +188,7 @@ export function UserMessage({
   onEdit?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   editDisabled?: boolean;
   onPinMemory?: PinMemoryHandler;
+  guidance?: boolean;
 }) {
   const t = useT();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -318,7 +320,7 @@ export function UserMessage({
   return (
     <div
       ref={rootRef}
-      className={`msg msg--user${imSource ? " msg--im-source" : ""}${failed ? " msg--user-failed" : ""}${queued ? " msg--user-queued" : ""}`}
+      className={`msg msg--user${guidance ? " msg--guidance" : ""}${imSource ? " msg--im-source" : ""}${failed ? " msg--user-failed" : ""}${queued ? " msg--user-queued" : ""}`}
       id={anchorId}
       data-question-anchor={anchorId}
       data-turn={turn}
@@ -327,6 +329,7 @@ export function UserMessage({
       data-entrance={id || undefined}
     >
       <div className={`msg__body${editing ? " msg__body--editing" : ""}`}>
+        {guidance && <div className="msg__guidance-label">{t("composer.guidanceMode")}</div>}
         {editing ? (
           <form className="msg-edit" onSubmit={(event) => void submitEdit(event)}>
             {orderedDraftAttachments.length > 0 && (

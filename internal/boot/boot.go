@@ -217,7 +217,7 @@ func workTaskSystemPrompt(hostPrompt string) string {
 
 // AssistantSystemPrompt is the stable system prompt used by Assistant execution
 // sessions. It defines a long-running outcome executor — distinct from the
-// coding-agent prompt used by normal, work, and collaboration sessions.
+// general-assistant prompt used by normal, work, and collaboration sessions.
 const AssistantSystemPrompt = `You are a long-running outcome executor driving one Run of a persistent Assistant.
 You are NOT a coding assistant and NOT a conversational agent; you execute a
 frozen mission and the current routine, then leave verifiable evidence.
@@ -547,9 +547,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if st, ok := outputstyle.Resolve(cfg.Agent.OutputStyle, outputstyle.Dirs()); ok {
 		sysPrompt = outputstyle.Apply(sysPrompt, st)
 	}
-	// Assistant sessions swap the coding-agent role for the long-running outcome
+	// Assistant sessions swap the general-assistant role for the long-running outcome
 	// executor role while keeping any user-supplied policy/context. Normal, work,
-	// and collaboration sessions keep the coding-agent prompt unchanged.
+	// and collaboration sessions keep the general-assistant prompt unchanged.
 	if opts.SessionKind == agent.SessionKindAssistant {
 		sysPrompt = assistantSystemPrompt(sysPrompt)
 	}

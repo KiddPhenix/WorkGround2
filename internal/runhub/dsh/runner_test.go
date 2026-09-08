@@ -444,6 +444,31 @@ func TestRunnerCrashSettlesFailed(t *testing.T) {
 	}
 }
 
+func TestTeardownEscalatesWhenShutdownWriteBlocks(t *testing.T) {
+	peer := newFakePeer()
+	defer peer.stdoutR.Close()
+	defer peer.stdoutW.Close()
+	inR, inW := io.Pipe() // No reader: shutdown cannot be written.
+	defer inR.Close()
+	defer inW.Close()
+	s := &runSession{
+		runner: &Runner{cfg: RunnerConfig{Timeouts: Timeouts{Shutdown: 30 * time.Millisecond, KillGrace: 20 * time.Millisecond}}},
+		proc:   peer,
+		client: NewClient(inW, peer.Stdout(), 0),
+	}
+	done := make(chan struct{})
+	go func() { s.teardown(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("blocked shutdown prevented process-tree kill")
+	}
+	if !peer.killedFlag() || !peer.cleanedFlag() || !peer.stdinClosedFlag() {
+		t.Fatal("shutdown did not finish stdin/kill/cleanup ladder")
+	}
+	s.teardown(context.Background())
+}
+
 func TestRunnerCancelEscalatesAndSettlesCancelled(t *testing.T) {
 	peer := newFakePeer()
 	r, hub, _, runID := newTestRunner(t, func(ProcessSpec) (Proc, error) { return peer, nil })

@@ -146,6 +146,22 @@ console.log("\ndesktop icon ask flow");
     { questionId: "q2", selected: ["搜索", "发布"] },
   ], "batch payload carries every question with its selections");
 
+  const renderBusy = async (busy: boolean) => {
+    await act(async () => {
+      root.render(React.createElement(LocaleProvider, null, React.createElement(AskFlow, { key: `scenario-${scenario}`, questions, busy, onAnswer: (answers) => submitted.push(answers) })));
+    });
+  };
+  await renderBusy(true);
+  eq(document.querySelector(".desktop-icon-popup__ask")?.getAttribute("aria-busy"), "true", "submission announces its pending state");
+  eq(document.querySelector(".desktop-icon-popup__ask-next")?.textContent, "Saving…", "submission displays progress feedback");
+  click(document.querySelector(".desktop-icon-popup__ask-next"), "duplicate click while pending");
+  eq(submitted.length, 1, "pending submission cannot send a duplicate answer");
+  await renderBusy(false);
+  eq(byText("2/2")?.textContent, "2/2", "failed submission keeps the current question for retry");
+  click(document.querySelector(".desktop-icon-popup__ask-next"), "retry preserved answer");
+  eq(submitted[1], submitted[0], "retry preserves every selected answer");
+  submitted.pop();
+
   // Back preserves earlier answers; a custom answer replaces the option pick.
   await mount();
   click(byText("Go"), "question 1: pick Go");

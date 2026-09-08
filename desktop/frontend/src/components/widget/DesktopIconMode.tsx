@@ -1794,8 +1794,10 @@ export function DesktopIconMode({ modeRevision, onNewRoom, onOpenRoom, onOpenSet
 		const input: DesktopIconActionInput = { itemId: item.id, noticeId: notice?.id, revision: item.revision, requestId: stableID, action, values, answers, position, conversation: notice?.conversation, readSequence: notice?.readSequence };
     try {
       const result = await app.ApplyDesktopIconAction(input);
-      acceptSnapshot(ticket, result.snapshot);
-		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue", "remove"].includes(action) || opensRunningTask) { setActiveID(""); setActiveNoticeID(""); } if (action === "open" || opensRunningTask) onOpenSession(); }
+      // An event-triggered read can overtake the action ticket while still
+      // observing its pre-submit state. Reconcile again if that read won.
+      if (!acceptSnapshot(ticket, result.snapshot)) void refresh();
+		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue", "remove", "answer", "approve", "deny"].includes(action) || opensRunningTask) { setActiveID(""); setActiveNoticeID(""); } if (action === "open" || opensRunningTask) onOpenSession(); }
 		else { if (result.status === "stale" || result.status === "invalid") actionRequests.current.delete(intent); setError(result.error || t("desktopIcon.errorFallback")); }
 		return result.status;
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return "retryable_error"; }

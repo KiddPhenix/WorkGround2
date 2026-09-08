@@ -34,6 +34,7 @@ const SNAPSHOT_EVENT_KINDS = new Set<EventKind>([
 	"compaction_started",
 	"compaction_done",
 	"steer",
+	"task_memory_updated",
 ]);
 
 // Token, reasoning, progress, usage and phase events can arrive many times per

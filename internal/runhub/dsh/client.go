@@ -8,6 +8,7 @@ import (
 	"io"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // ErrTransportClosed reports that the runtime's stdout ended before a response
@@ -28,17 +29,17 @@ type Client struct {
 	out io.Writer
 	dec *Decoder
 
-	writeMu  sync.Mutex
-	notifyMu sync.Mutex
-	mu       sync.Mutex
-	pending  map[string]*pending
-	notify   func(Frame)
-	onErr    func(error)
-	buffer   []Frame
-	nextID   int
-	done     chan struct{}
-	once     sync.Once
-	err      error
+	writeGate chan struct{}
+	notifyMu  sync.Mutex
+	mu        sync.Mutex
+	pending   map[string]*pending
+	notify    func(Frame)
+	onErr     func(error)
+	buffer    []Frame
+	nextID    int
+	done      chan struct{}
+	once      sync.Once
+	err       error
 }
 
 type pending struct {
@@ -50,10 +51,11 @@ type pending struct {
 // stops (clean EOF or a read error).
 func NewClient(stdin io.Writer, stdout io.Reader, maxFrame int) *Client {
 	c := &Client{
-		out:     stdin,
-		dec:     NewDecoder(stdout, maxFrame),
-		pending: make(map[string]*pending),
-		done:    make(chan struct{}),
+		out:       stdin,
+		writeGate: make(chan struct{}, 1),
+		dec:       NewDecoder(stdout, maxFrame),
+		pending:   make(map[string]*pending),
+		done:      make(chan struct{}),
 	}
 	go c.readLoop()
 	return c
@@ -117,7 +119,7 @@ func (c *Client) Call(ctx context.Context, method string, params any, dst any) e
 	if err != nil {
 		return err
 	}
-	if err := c.write(req); err != nil {
+	if err := c.write(ctx, req); err != nil {
 		return err
 	}
 
@@ -147,13 +149,55 @@ func (c *Client) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	return c.write(f)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return c.write(ctx, f)
 }
 
-func (c *Client) write(f Frame) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return Encode(c.out, f)
+func (c *Client) write(ctx context.Context, f Frame) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case c.writeGate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return c.readerErr()
+	}
+	if err := ctx.Err(); err != nil {
+		<-c.writeGate
+		return err
+	}
+	select {
+	case <-c.done:
+		<-c.writeGate
+		return c.readerErr()
+	default:
+	}
+	done := make(chan error, 1)
+	go func() {
+		defer func() { <-c.writeGate }()
+		done <- Encode(c.out, f)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		// A partial frame poisons the stream. Unblock shutdown so the runner
+		// can continue through stdin EOF and its process-tree kill budget.
+		c.setReaderErr(fmt.Errorf("dsh: interrupted write: %w", ctx.Err()))
+		c.once.Do(func() { close(c.done) })
+		if closer, ok := c.out.(io.Closer); ok {
+			go closer.Close()
+		}
+		return ctx.Err()
+	case <-c.done:
+		if closer, ok := c.out.(io.Closer); ok {
+			go closer.Close()
+		}
+		return c.readerErr()
+	}
 }
 
 func (c *Client) resultOf(f Frame, dst any) error {

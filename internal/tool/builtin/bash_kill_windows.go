@@ -2,7 +2,6 @@ package builtin
 
 import (
 	"os/exec"
-	"strconv"
 
 	"workground2/internal/proc"
 )
@@ -17,10 +16,8 @@ func setKillTree(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return nil
 		}
-		kill := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid))
-		proc.HideWindow(kill)
-		_ = kill.Run()
-		return cmd.Process.Kill()
+		proc.KillTree(cmd)
+		return nil
 	}
 }
 

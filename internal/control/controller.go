@@ -2078,7 +2078,6 @@ func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]
 
 	select {
 	case ans := <-reply:
-		c.updateTaskMemory(taskMemoryPatch{current: stringPtr("执行中"), currentSource: stringPtr("runtime"), nextStep: stringPtr(""), nextStepSource: stringPtr("")})
 		return ans, nil
 	case <-waitCtx.Done():
 		// Context cancellation (timeout or a non-interactive shutdown) must not
@@ -2119,6 +2118,12 @@ func (c *Controller) ResolveQuestion(id string, answers []event.AskAnswer) bool 
 	// prompt before handing it back so a later restart cannot re-project a choice
 	// already accepted by the original turn.
 	c.clearPendingAskSidecar(id)
+	// Publish the resolved state before releasing the waiter: the next tool or
+	// model request may be slow, and every frontend must stop showing this ask
+	// without waiting for another tool/turn event. Doing this before the reply
+	// also prevents this notification from overwriting a subsequent ask's state.
+	memory := c.updateTaskMemory(taskMemoryPatch{current: stringPtr("执行中"), currentSource: stringPtr("runtime"), nextStep: stringPtr(""), nextStepSource: stringPtr("")})
+	c.sink.Emit(event.Event{Kind: event.TaskMemoryUpdated, TaskMemory: memory})
 	pending.reply <- answers // buffered, never blocks
 	return true
 }

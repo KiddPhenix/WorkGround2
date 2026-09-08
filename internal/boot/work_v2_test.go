@@ -26,14 +26,14 @@ type bootV2Executor struct {
 	calls       []work.TaskExecuteInput
 }
 
-func TestWorkTaskSystemPromptPreservesHostPoliciesWithoutCodingIdentity(t *testing.T) {
+func TestWorkTaskSystemPromptPreservesHostPoliciesWithoutDefaultIdentity(t *testing.T) {
 	host := config.DefaultSystemPrompt + "\n\nproject policy: cite authoritative inputs"
 	got := workTaskSystemPrompt(host)
 	if !strings.HasPrefix(got, "You are a work delivery executor.") {
 		t.Fatalf("unexpected Work task identity: %q", got)
 	}
-	if strings.Contains(got, "a coding agent focused on executing code tasks") {
-		t.Fatalf("coding identity leaked into Work task prompt: %q", got)
+	if strings.Contains(got, config.DefaultSystemPrompt) {
+		t.Fatalf("default identity leaked into Work task prompt: %q", got)
 	}
 	if !strings.Contains(got, "project policy: cite authoritative inputs") {
 		t.Fatalf("host policy was dropped: %q", got)

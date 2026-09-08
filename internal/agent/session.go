@@ -62,6 +62,20 @@ func (s *Session) Add(m provider.Message) {
 	s.version++
 }
 
+// prepareUser replaces the accepted turn's text after memory preparation. The
+// run loop owns index; readers may have already saved the original text, so the
+// replacement and rewrite marker must advance together under the same lock.
+func (s *Session) prepareUser(index int, content string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Messages[index].Content == content {
+		return
+	}
+	s.Messages[index].Content = content
+	s.version++
+	s.rewriteVersion++
+}
+
 // Replace swaps the whole message log — used by compaction, which rewrites the
 // middle of the history.
 func (s *Session) Replace(msgs []provider.Message) {

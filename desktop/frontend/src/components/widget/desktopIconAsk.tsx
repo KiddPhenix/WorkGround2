@@ -80,7 +80,7 @@ export function AskFlow({ questions, busy, onAnswer }: AskFlowProps) {
   const selected = sel[question.id] ?? [];
 
   return (
-    <div className="desktop-icon-popup__ask">
+    <div className="desktop-icon-popup__ask" aria-busy={busy}>
       <div className="desktop-icon-popup__ask-head">
         {question.header && <span className="desktop-icon-popup__ask-header">{question.header}</span>}
         {questions.length > 1 && <span className="desktop-icon-popup__ask-progress">{progress}</span>}
@@ -124,7 +124,7 @@ export function AskFlow({ questions, busy, onAnswer }: AskFlowProps) {
           disabled={busy || !questionAnswered(question, sel, custom)}
           onClick={advance}
         >
-          {isLast ? t("desktopIcon.ask.submit") : t("desktopIcon.ask.next")}
+          {busy ? t("desktopIcon.saving") : isLast ? t("desktopIcon.ask.submit") : t("desktopIcon.ask.next")}
         </button>
       </div>
     </div>

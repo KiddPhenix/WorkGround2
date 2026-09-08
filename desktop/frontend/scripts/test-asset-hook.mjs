@@ -33,6 +33,7 @@ registerHooks({
             set() { return tween; },
             to(_target, config) { config?.onComplete?.(); return tween; },
           };
+          export { gsap };
           export default gsap;
         `,
       };

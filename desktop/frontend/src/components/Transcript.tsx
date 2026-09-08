@@ -487,6 +487,12 @@ export function Transcript({
       for (const group of stepGroups) {
         const first = group.items[0];
 
+        if (first.kind === "notice" && first.level === "info" && first.text.startsWith("↪ ")) {
+          flushCollapseBatch();
+          out.push(<NoticeCard key={first.id} level={first.level} text={first.text} />);
+          continue;
+        }
+
         if (first.kind === "user") {
           flushCollapseBatch();
           finishTurn();
@@ -1404,6 +1410,9 @@ function PhaseCard({ text }: { text: string }) {
 }
 
 function NoticeCard({ level, text }: { level: NoticeItem["level"]; text: string }) {
+  if (level === "info" && text.startsWith("↪ ")) {
+    return <UserMessage text={text.slice(2)} guidance />;
+  }
   return (
     <div className={`notice-line notice-line--${level}`} data-entrance="true">
       <span className="notice-line__icon">{level === "warn" ? "⚠ " : "ℹ "}</span>

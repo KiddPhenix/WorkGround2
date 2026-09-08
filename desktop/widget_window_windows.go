@@ -215,13 +215,12 @@ func monitorDPI(handle uintptr, fallback uint32) uint32 {
 	return fallback
 }
 
-func normalizeWidgetWindowState(_ context.Context, state WidgetWindowState) (WidgetWindowState, error) {
-	hwnd := findWidgetHWND()
-	if hwnd == 0 {
-		return state, fmt.Errorf("normalizeWidgetWindowState: window not found")
-	}
-	fallbackDPI, _, _ := procGetDpiForWindow.Call(uintptr(hwnd))
-	current, _, _ := procMonitorFromWindow.Call(uintptr(hwnd), monitorDefaultNearest)
+// enumerateWidgetMonitors lists every visible monitor with its work area and
+// DPI, querying the display topology live so callers never trust a stale screen
+// cache after a resolution or monitor change. windowDPI (the owning window's
+// per-window DPI) is the fallback when a monitor cannot report its own DPI via
+// GetDpiForMonitor (pre-Win8.1).
+func enumerateWidgetMonitors(windowDPI uint32) ([]widgetMonitor, error) {
 	monitors := make([]widgetMonitor, 0, 4)
 	callback := syscall.NewCallback(func(handle, _, _, _ uintptr) uintptr {
 		info := w32MonitorInfo{Size: uint32(unsafe.Sizeof(w32MonitorInfo{}))}
@@ -230,7 +229,7 @@ func normalizeWidgetWindowState(_ context.Context, state WidgetWindowState) (Wid
 			monitors = append(monitors, widgetMonitor{
 				Handle:  handle,
 				Work:    info.Work,
-				DPI:     monitorDPI(handle, uint32(fallbackDPI)),
+				DPI:     monitorDPI(handle, windowDPI),
 				Primary: info.Flags&1 != 0,
 			})
 		}
@@ -238,22 +237,123 @@ func normalizeWidgetWindowState(_ context.Context, state WidgetWindowState) (Wid
 	})
 	ret, _, callErr := procEnumDisplay.Call(0, 0, callback, 0)
 	if ret == 0 {
-		return state, fmt.Errorf("normalizeWidgetWindowState: enumerate monitors failed: %w", callErr)
+		return nil, callErr
 	}
 	if len(monitors) == 0 {
-		return state, fmt.Errorf("normalizeWidgetWindowState: no visible monitors")
+		return nil, errors.New("no visible monitors")
 	}
+	return monitors, nil
+}
+
+// preferredMonitorFallback returns the index of the monitor owning hwnd when
+// it is still present (the window may have followed a removed display onto a
+// remaining monitor), otherwise the primary monitor, otherwise -1 (callers map
+// that to the first entry).
+func preferredMonitorFallback(monitors []widgetMonitor, hwnd uintptr) int {
 	fallback := -1
 	for i, monitor := range monitors {
-		if monitor.Handle == current {
-			fallback = i
-			break
+		if hwnd != 0 && monitor.Handle == hwnd {
+			return i
 		}
 		if fallback < 0 && monitor.Primary {
 			fallback = i
 		}
 	}
-	return normalizeWidgetStateForMonitors(state, monitors, fallback), nil
+	return fallback
+}
+
+func normalizeWidgetWindowState(_ context.Context, state WidgetWindowState) (WidgetWindowState, error) {
+	hwnd := findWidgetHWND()
+	if hwnd == 0 {
+		return state, fmt.Errorf("normalizeWidgetWindowState: window not found")
+	}
+	windowDPI, _, _ := procGetDpiForWindow.Call(uintptr(hwnd))
+	monitors, err := enumerateWidgetMonitors(uint32(windowDPI))
+	if err != nil {
+		return state, fmt.Errorf("normalizeWidgetWindowState: enumerate monitors failed: %w", err)
+	}
+	current, _, _ := procMonitorFromWindow.Call(uintptr(hwnd), monitorDefaultNearest)
+	return normalizeWidgetStateForMonitors(state, monitors, preferredMonitorFallback(monitors, current)), nil
+}
+
+// mainWindowStateRect converts persisted main-window geometry into an absolute
+// pixel rectangle: width/height are Wails logical units, x/y absolute pixels,
+// matching the widget-state conventions used by setDesktopWindowBounds.
+func mainWindowStateRect(state DesktopWindowState, dpi uint32) w32Rect {
+	return w32Rect{
+		Left:   int32(state.X),
+		Top:    int32(state.Y),
+		Right:  int32(state.X + scaleForDPI(state.Width, dpi)),
+		Bottom: int32(state.Y + scaleForDPI(state.Height, dpi)),
+	}
+}
+
+// clampMainWindowStateToMonitor fits an oversized main window into one monitor
+// work area and pulls an off-screen origin back inside it. Windows that already
+// fit keep their size; sizes below the native main-window minimum are raised to
+// it (a work area below that minimum is the bound instead), so the result is a
+// geometry restoreMainGeometry can actually apply. Width/height are handled as
+// Wails logical units, x/y as absolute pixels.
+func clampMainWindowStateToMonitor(state DesktopWindowState, monitor widgetMonitor) DesktopWindowState {
+	workWidth := int(monitor.Work.Right - monitor.Work.Left)
+	workHeight := int(monitor.Work.Bottom - monitor.Work.Top)
+	widthCap := scaleToDefaultDPI(workWidth, monitor.DPI)
+	heightCap := scaleToDefaultDPI(workHeight, monitor.DPI)
+	if state.Width > 0 {
+		state.Width = min(max(state.Width, min(mainWindowMinWidth, widthCap)), widthCap)
+	}
+	if state.Height > 0 {
+		state.Height = min(max(state.Height, min(mainWindowMinHeight, heightCap)), heightCap)
+	}
+	width := scaleForDPI(state.Width, monitor.DPI)
+	height := scaleForDPI(state.Height, monitor.DPI)
+	maxX := int(monitor.Work.Right) - width
+	maxY := int(monitor.Work.Bottom) - height
+	state.X = max(int(monitor.Work.Left), min(state.X, maxX))
+	state.Y = max(int(monitor.Work.Top), min(state.Y, maxY))
+	return state
+}
+
+// normalizeMainWindowStateForMonitors pins a main-window geometry to the live
+// monitor that covers the most of its rectangle, then clamps it into that
+// monitor's work area. A window left behind on a removed display (no
+// intersection at all) falls back to the monitor owning the window — or the
+// primary one — through the same selection rules as widget normalization.
+func normalizeMainWindowStateForMonitors(state DesktopWindowState, monitors []widgetMonitor, fallback int) DesktopWindowState {
+	if len(monitors) == 0 {
+		return state
+	}
+	if fallback < 0 || fallback >= len(monitors) {
+		fallback = 0
+	}
+	selected := fallback
+	var bestArea int64
+	for i, monitor := range monitors {
+		area := rectIntersectionArea(mainWindowStateRect(state, monitor.DPI), monitor.Work)
+		if area > bestArea {
+			bestArea = area
+			selected = i
+		}
+	}
+	return clampMainWindowStateToMonitor(state, monitors[selected])
+}
+
+// normalizeMainWindowState re-queries the live display topology and clamps a
+// main-window geometry (fit oversized size, pull off-screen origins back into
+// the work area) so the tray 重定位/Relocate recovery never trusts a stale
+// saved position after a monitor or resolution change.
+func normalizeMainWindowState(_ context.Context, state DesktopWindowState) (DesktopWindowState, error) {
+	hwnd := findWidgetHWND()
+	if hwnd == 0 {
+		return state, fmt.Errorf("normalizeMainWindowState: window not found")
+	}
+	windowDPI, _, _ := procGetDpiForWindow.Call(uintptr(hwnd))
+	monitors, err := enumerateWidgetMonitors(uint32(windowDPI))
+	if err != nil {
+		return state, fmt.Errorf("normalizeMainWindowState: enumerate monitors failed: %w", err)
+	}
+	current, _, _ := procMonitorFromWindow.Call(uintptr(hwnd), monitorDefaultNearest)
+	return normalizeMainWindowStateForMonitors(state, monitors, preferredMonitorFallback(monitors, current)), nil
 }
 
 func runWidgetWindowRefresh(frame, redraw, flush func() error) error {

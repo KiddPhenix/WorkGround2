@@ -2108,7 +2108,7 @@ function makeMockApp(): AppBindings {
       proxy: { type: "socks5", server: "127.0.0.1", port: 7890, username: "", password: "" },
     },
     collaboration: { preferLAN: true, connectTimeoutSeconds: 10, routeStableSeconds: 60, relays: [] },
-    agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "You are WorkGround2, a coding agent.", coldResumePrune: true, reasoningLanguage: "auto" },
+    agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "You are WorkGround2, an AI assistant that uses tools to complete user tasks.", coldResumePrune: true, reasoningLanguage: "auto" },
     agentPromptStyles: [
       { id: "paranoid", disorder: "偏执型", styleName: "风险审查者", capability: "保持高度警觉，寻找隐藏假设、利益冲突、欺诈风险和安全漏洞", selected: false },
       { id: "schizoid", disorder: "分裂样型", styleName: "独立深思者", capability: "独立分析，不迎合群体意见，减少社交噪声，专注长期逻辑与问题本质", selected: false },

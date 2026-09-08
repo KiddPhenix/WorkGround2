@@ -159,8 +159,12 @@ type App struct {
 	forceQuit                  atomic.Bool
 	backgroundMaximised        atomic.Bool
 	nativeWindowActionInFlight atomic.Bool
-	trayReady                  bool
-	tray                       *desktopTray
+	// relocateInFlight collapses repeated tray 重定位/Relocate clicks while one
+	// recovery runs. Relocation itself is idempotent, so a click that lands
+	// after a failure simply retries.
+	relocateInFlight atomic.Bool
+	trayReady        bool
+	tray             *desktopTray
 
 	// widgetModeEnter overrides the shared widget entry transition used by
 	// startup and close handling (test-only seam; nil uses EnterWidgetMode).
@@ -169,6 +173,11 @@ type App struct {
 	// windowMinimise overrides the native minimize fallback used when a
 	// platform window action races disabling widget mode (test-only seam).
 	windowMinimise func()
+
+	// windowRestoreShow overrides the hidden/minimized window restore used by
+	// the tray Relocate recovery (widget and main windows) before geometry is
+	// corrected (test-only seam; nil uses the platform background-restore plan).
+	windowRestoreShow func(wasMaximised bool)
 
 	// widgetTaskbarToggle overrides the native taskbar-button switch used by
 	// widget-mode transitions (test-only seam; nil uses the platform impl,

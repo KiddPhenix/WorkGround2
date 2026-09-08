@@ -139,6 +139,14 @@ export function buildStepGroups(items: Item[], startIdx = 0): StepGroup[] {
 
   for (let i = startIdx; i < items.length; i++) {
     const it = items[i];
+    if (it.kind === "notice" && it.level === "info" && it.text.startsWith("↪ ")) {
+      // Only user guidance stays outside process details. Splitting for it
+      // does not finish a tool/model request that is still active.
+      flush(!current.some((item) => (item.kind === "tool" && item.status === "running")
+        || (item.kind === "assistant" && item.streaming)));
+      groups.push({ items: [it], isFinal: false, isComplete: true });
+      continue;
+    }
     if (it.kind === "user") {
       flush(true);
       groups.push({ items: [it], isFinal: false, isComplete: true });

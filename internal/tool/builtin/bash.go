@@ -274,7 +274,7 @@ func shouldTrackShellProcess(sh sandbox.Shell, command string, preserveBackgroun
 }
 
 func runShellProcess(ctx context.Context, cmd *exec.Cmd, track bool) (*trackedShellProcess, error) {
-	if !track {
+	if !track && runtime.GOOS != "windows" {
 		setKillTree(cmd)
 		return nil, cmd.Run()
 	}
@@ -289,7 +289,19 @@ func runShellProcess(ctx context.Context, cmd *exec.Cmd, track bool) (*trackedSh
 		return tracked, err
 	}
 	tracked.setJob(job)
-	return tracked, waitForTrackedShellProcess(ctx, tracked, cmd.Wait, bashWaitDelay+time.Second)
+	err = waitForTrackedShellProcess(ctx, tracked, cmd.Wait, bashWaitDelay+time.Second)
+	if !track && ctx.Err() == nil {
+		// Preservation is a normal-exit policy, never an opt-out from cancel cleanup.
+		tracked.mu.Lock()
+		job = tracked.job
+		tracked.job = 0
+		tracked.killed = true
+		tracked.mu.Unlock()
+		if detachErr := proc.DetachTracked(job); detachErr != nil {
+			err = errors.Join(err, fmt.Errorf("release preserved process tree: %w", detachErr))
+		}
+	}
+	return tracked, err
 }
 
 func waitForTrackedShellProcess(ctx context.Context, tracked *trackedShellProcess, wait func() error, grace time.Duration) error {

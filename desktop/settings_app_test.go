@@ -1999,6 +1999,9 @@ func widgetStyleTestApp(t *testing.T, ops *widgetWindowOps) *App {
 	if ops.normalize == nil {
 		ops.normalize = func(state WidgetWindowState) (WidgetWindowState, error) { return state, nil }
 	}
+	if ops.normalizeMain == nil {
+		ops.normalizeMain = func(state DesktopWindowState) (DesktopWindowState, error) { return state, nil }
+	}
 	if ops.applyWidget == nil {
 		ops.applyWidget = func(WidgetWindowState, bool, bool) error { return nil }
 	}

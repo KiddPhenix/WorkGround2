@@ -95,6 +95,21 @@ func normalizeWidgetWindowState(_ context.Context, state WidgetWindowState) (Wid
 	return state, nil
 }
 
+// normalizeMainWindowState clamps a main-window geometry to the current AppKit
+// work area so the tray 重定位/Relocate recovery keeps the session window
+// usable after a display or resolution change.
+func normalizeMainWindowState(_ context.Context, state DesktopWindowState) (DesktopWindowState, error) {
+	width, height, ok := darwinCurrentWorkArea()
+	if !ok {
+		return state, fmt.Errorf("normalize main window state: current screen unavailable")
+	}
+	state.Width = min(state.Width, width)
+	state.Height = min(state.Height, height)
+	state.X = max(0, min(state.X, width-state.Width))
+	state.Y = max(0, min(state.Y, height-state.Height))
+	return state, nil
+}
+
 // AppKit uses a clear NSWindow rather than a native shape for the compact pager.
 func setWidgetWindowRegion(int, int) error { return nil }
 

@@ -1735,6 +1735,54 @@ func TestDesktopIconTaskOpenTargetUsesLastSnapshot(t *testing.T) {
 	}
 }
 
+func TestDesktopIconOpenActiveTaskSkipsDiscovery(t *testing.T) {
+	tab, path := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.ctx = context.Background()
+	app.widgetMode = true
+	app.sessionDirsOverride = []string{filepath.Dir(path)}
+	app.widgetWindowOps = &widgetWindowOps{
+		read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 590, Height: 176}, false },
+		restoreMain: func(DesktopWindowState, bool) error { return nil },
+		applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+	}
+	app.widgetTaskbarToggle = func(bool) error { return nil }
+	revealed := false
+	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {
+		if name == "widget:mode" {
+			revealed = true
+		}
+	}
+	snapshot := buildDesktopIconSnapshot([]widgetSource{{meta: TabMeta{
+		ID: tab.ID, Scope: "global", SessionPath: path,
+		RunningWork: true, ForegroundActive: true, ActivityStatus: topicStatusThinking,
+	}}}, UnreadState{}, nil, app.iconWidgetState, 0, nil, nil, nil, nil)
+	item := findDesktopIconItem(snapshot.Items, "task:"+tab.ID)
+	if item == nil || item.Retained || item.Runtime == nil {
+		t.Fatalf("expected a live, unretained task: %#v", item)
+	}
+	app.iconWidgetLastSnapshot = snapshot
+	app.iconWidgetSnapshotReady = true
+	app.desktopIconProjectTree = func() []ProjectNode {
+		t.Fatal("opening the active task waited for unrelated Session discovery under iconWidgetMu")
+		return nil
+	}
+	input := DesktopIconActionInput{ItemID: item.ID, Revision: "stale", RequestID: "open-active", Action: "open"}
+	if result := app.ApplyDesktopIconAction(input); result.Status != "stale" || revealed {
+		t.Fatalf("stale open = %q, revealed = %v", result.Status, revealed)
+	}
+	input.Revision = item.Revision
+	if result := app.ApplyDesktopIconAction(input); result.Status != "accepted" {
+		t.Fatalf("open = %q: %s", result.Status, result.Error)
+	}
+	if !revealed || app.widgetMode || app.activeTabID != tab.ID {
+		t.Fatalf("reveal = %v, widget = %v, active = %q", revealed, app.widgetMode, app.activeTabID)
+	}
+	if result := app.ApplyDesktopIconAction(input); result.Status != "already_applied" {
+		t.Fatalf("retry = %q: %s", result.Status, result.Error)
+	}
+}
+
 func TestDesktopIconWindowStateRejectsOldShortGeometryWithError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("WorkGround2_STATE_HOME", home)

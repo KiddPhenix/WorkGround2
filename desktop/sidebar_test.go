@@ -161,6 +161,79 @@ func TestSidebarBoltIndexPagesRealSidecarsAndKeepsOrphanWork(t *testing.T) {
 	}
 }
 
+func TestSidebarProjectBadgeUsesVisibleSessionCount(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().UTC().Add(-time.Hour)
+	writeMeta := func(name string, meta agent.BranchMeta) {
+		t.Helper()
+		path := filepath.Join(dir, name+".jsonl")
+		if err := os.WriteFile(path, []byte("\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := agent.SaveBranchMetaPreserveUpdated(path, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 25 user-visible normal sessions — more than one page, so the badge total
+	// must come from the authoritative index rather than the page length.
+	for i := 0; i < 25; i++ {
+		writeMeta(fmt.Sprintf("s-%02d", i), agent.BranchMeta{
+			ID: fmt.Sprintf("s-%02d", i), Scope: "project", WorkspaceRoot: dir,
+			TopicID: fmt.Sprintf("t-%02d", i), TopicTitle: fmt.Sprintf("Session %02d", i),
+			CreatedAt: base.Add(time.Duration(i) * time.Minute), UpdatedAt: base.Add(time.Duration(i) * time.Minute),
+			Turns: 1, SchemaVersion: agent.BranchMetaCountsVersion,
+		})
+	}
+	// Internal work-task record: excluded from the user-visible session list.
+	writeMeta("internal-task", agent.BranchMeta{
+		ID: "internal-task", Scope: "project", WorkspaceRoot: dir, TopicID: "t-task",
+		SessionSource: "work:task", Turns: 5, SchemaVersion: agent.BranchMetaCountsVersion,
+	})
+	// Zero-turn normal session: hidden by the session listing.
+	writeMeta("blank", agent.BranchMeta{
+		ID: "blank", Scope: "project", WorkspaceRoot: dir, TopicID: "t-blank",
+		Turns: 0, SchemaVersion: agent.BranchMetaCountsVersion,
+	})
+
+	// Simulate the stale topic-title inflation: the summary carries 19222 even
+	// though only 25 sessions are user-visible.
+	plan := sidebarGroupPlan{
+		group: SidebarGroup{ID: "project_wg2ads", Kind: "project", Label: "WG2ADS", Root: dir, SessionCount: 19_222},
+		scope: "project", root: normalizeProjectRoot(dir), dirs: []string{dir},
+		titles: map[string]string{}, titleSource: map[string]string{}, createdAt: map[string]int64{}, pinned: map[string]bool{},
+	}
+	source := &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_wg2ads": "v1"}}
+	index := newSidebarBoltIndex(func(*App) string { return filepath.Join(t.TempDir(), "sidebar.db") })
+	index.source = source
+	app := &App{}
+	t.Cleanup(func() { _ = index.close(app) })
+
+	groups, err := index.listGroups(app, SidebarProjects)
+	if err != nil || len(groups) != 1 {
+		t.Fatalf("groups=%+v err=%v", groups, err)
+	}
+	if got := groups[0].SessionCount; got != 25 {
+		t.Fatalf("collapsed badge count=%d, want 25 (user-visible sessions only)", got)
+	}
+
+	first, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_wg2ads"})
+	if err != nil || first.Total == nil {
+		t.Fatalf("first page=%+v err=%v", first, err)
+	}
+	if *first.Total != 25 {
+		t.Fatalf("expanded total=%d, want 25 (badge must match expanded list)", *first.Total)
+	}
+	if len(first.Items) != 20 {
+		t.Fatalf("first page items=%d, want 20 (pagination must not truncate the total)", len(first.Items))
+	}
+
+	// Re-reading the group summary must not accumulate or drift.
+	again, err := index.listGroups(app, SidebarProjects)
+	if err != nil || len(again) != 1 || again[0].SessionCount != 25 {
+		t.Fatalf("refreshed groups=%+v err=%v", again, err)
+	}
+}
+
 func TestSidebarCollapsesRecoveryChainToLeaf(t *testing.T) {
 	dbDir := t.TempDir()
 	index := newSidebarBoltIndex(func(*App) string { return filepath.Join(dbDir, "sidebar.db") })

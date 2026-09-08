@@ -9,11 +9,11 @@ import (
 	"workground2/internal/control"
 )
 
-func TestAssistantSystemPromptStripsCodingAgentRole(t *testing.T) {
+func TestAssistantSystemPromptStripsDefaultRole(t *testing.T) {
 	host := config.DefaultSystemPrompt + "\n\n# My policy\ncustom rules"
 	got := assistantSystemPrompt(host)
-	if strings.Contains(got, "coding agent focused on executing code tasks") {
-		t.Fatalf("assistant prompt still contains the coding-agent role:\n%s", got)
+	if strings.Contains(got, config.DefaultSystemPrompt) {
+		t.Fatalf("assistant prompt still contains the default role:\n%s", got)
 	}
 	if !strings.Contains(got, "long-running outcome executor") {
 		t.Fatalf("assistant prompt missing the executor role:\n%s", got)

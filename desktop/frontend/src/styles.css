@@ -45854,3 +45854,22 @@ body > .mermaid-diagram--fullscreen {
   .session-sidebar,
   .session-sidebar__panel { transition: none; }
 }
+
+/* Guidance shares the user bubble, with a quieter tint and a small label. */
+.msg--guidance {
+  --chat-user-bg: color-mix(in srgb, var(--accent) 12%, transparent);
+  --chat-user-border: color-mix(in srgb, var(--accent) 30%, transparent);
+  --chat-user-shadow: none;
+}
+:root .app--workbench .msg--user.msg--guidance .msg__body {
+  background: var(--chat-user-bg);
+  border-color: var(--chat-user-border);
+  box-shadow: var(--chat-user-shadow);
+}
+.msg__guidance-label {
+  margin-bottom: 3px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}

@@ -409,6 +409,8 @@ type widgetWindowOps struct {
 	read func() (WidgetWindowState, bool)
 	// normalize clamps a persisted widget geometry to a visible monitor.
 	normalize func(state WidgetWindowState) (WidgetWindowState, error)
+	// normalizeMain clamps a main-window geometry to the live visible monitors.
+	normalizeMain func(state DesktopWindowState) (DesktopWindowState, error)
 	// applyWidget applies widget geometry for the given style ("icons" selects
 	// the transparent icon surface, any other value the pager).
 	applyWidget func(state WidgetWindowState, alwaysOnTop bool, icons bool) error
@@ -434,6 +436,16 @@ func (a *App) normalizeWidgetState(state WidgetWindowState) (WidgetWindowState, 
 		return a.widgetWindowOps.normalize(state)
 	}
 	return normalizeWidgetWindowState(a.ctx, state)
+}
+
+// normalizeMainState clamps a main-window geometry to the live visible monitors
+// through the test seam when present, otherwise through the platform
+// implementation.
+func (a *App) normalizeMainState(state DesktopWindowState) (DesktopWindowState, error) {
+	if a.widgetWindowOps != nil && a.widgetWindowOps.normalizeMain != nil {
+		return a.widgetWindowOps.normalizeMain(state)
+	}
+	return normalizeMainWindowState(a.ctx, state)
 }
 
 // switchDesktopWidgetStyle acquires widgetMu around the style switch; see
@@ -517,7 +529,12 @@ func (a *App) restoreMainGeometry(state DesktopWindowState, ok bool) error {
 	}
 	runtime.WindowSetAlwaysOnTop(a.ctx, false)
 	regionErr := errors.Join(setDesktopIconNativeMode(false), a.applyWidgetRegion(clearWidgetWindowRegion))
-	runtime.WindowSetMinSize(a.ctx, 760, 480)
+	minWidth, minHeight := mainWindowMinWidth, mainWindowMinHeight
+	if ok && state.Width > 0 && state.Height > 0 {
+		// Recovery may target a work area smaller than the usual minimum.
+		minWidth, minHeight = min(minWidth, state.Width), min(minHeight, state.Height)
+	}
+	runtime.WindowSetMinSize(a.ctx, minWidth, minHeight)
 	if !ok {
 		runtime.WindowSetSize(a.ctx, 1280, 800)
 		runtime.WindowCenter(a.ctx)
@@ -665,10 +682,6 @@ func (a *App) exitWidgetMode(tabID string) error {
 	if err != nil {
 		return err
 	}
-	var activateErr error
-	if strings.TrimSpace(tabID) != "" {
-		activateErr = a.SetActiveTab(tabID)
-	}
 	// A successful transition already restored the main geometry and taskbar
 	// inside applyExitWidgetMode, so reconcile again would repeat the native
 	// window work on the synchronous return path. Reconcile only when the
@@ -679,14 +692,21 @@ func (a *App) exitWidgetMode(tabID string) error {
 	if !changed {
 		reconciled, reconcileErr = a.reconcileMainWindow()
 	}
+	if reconciled {
+		// Publish the mode switch as soon as the native main-window restore
+		// (which also cleared the icon HRGN) completes. The frontend must reveal
+		// MainApp immediately, never queued behind SetActiveTab's session
+		// snapshot or attention persistence. session:activated still fires
+		// after the precise tab is selected, so the reveal and the selection stay
+		// independently observable and retryable.
+		a.runtimeEvents.Emit(a.ctx, "widget:mode", false)
+	}
+	var activateErr error
+	if strings.TrimSpace(tabID) != "" {
+		activateErr = a.SetActiveTab(tabID)
+	}
 	if reconcileErr != nil {
 		return errors.Join(activateErr, reconcileErr)
-	}
-	if reconciled {
-		// Publish only after the final native reconciliation. This keeps React
-		// from exposing MainApp through a stale icon HRGN and also lets a repeated
-		// exit repair an already-diverged logical/native window state.
-		a.runtimeEvents.Emit(a.ctx, "widget:mode", false)
 	}
 	if activateErr != nil {
 		return activateErr

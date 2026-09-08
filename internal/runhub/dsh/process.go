@@ -116,8 +116,9 @@ type trackedProc struct {
 	waitCh   chan error
 	exitedCh chan struct{}
 
-	jobMu sync.Mutex
-	job   uintptr
+	jobMu    sync.Mutex
+	job      uintptr
+	released bool
 }
 
 func (p *trackedProc) Stdin() io.WriteCloser     { return p.stdin }
@@ -132,6 +133,11 @@ func (p *trackedProc) CloseStdin() error         { return p.stdin.Close() }
 // once, so a later Cleanup cannot double-close it.
 func (p *trackedProc) Kill() {
 	p.jobMu.Lock()
+	if p.released {
+		p.jobMu.Unlock()
+		return
+	}
+	p.released = true
 	job := p.job
 	p.job = 0
 	p.jobMu.Unlock()
@@ -142,6 +148,11 @@ func (p *trackedProc) Kill() {
 // with Kill: whichever runs first zeroes the handle so the other is a no-op.
 func (p *trackedProc) Cleanup() {
 	p.jobMu.Lock()
+	if p.released {
+		p.jobMu.Unlock()
+		return
+	}
+	p.released = true
 	job := p.job
 	p.job = 0
 	p.jobMu.Unlock()

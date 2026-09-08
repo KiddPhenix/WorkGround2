@@ -1,12 +1,77 @@
 package dsh
 
 import (
+	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestCallBlockedWriteHonorsDeadline(t *testing.T) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	defer inR.Close()
+	defer inW.Close()
+	defer outR.Close()
+	defer outW.Close()
+	c := NewClient(inW, outR, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Call(ctx, MethodShutdown, ShutdownParams{}, nil) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("shutdown: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown deadline could not interrupt pipe write")
+	}
+	select {
+	case <-c.Done():
+	case <-time.After(time.Second):
+		t.Fatal("partial stream remained live")
+	}
+	select {
+	case c.writeGate <- struct{}{}:
+		<-c.writeGate
+	case <-time.After(time.Second):
+		t.Fatal("blocked writer survived cancellation")
+	}
+}
+
+func TestCallQueuedWriteCanCancel(t *testing.T) {
+	outR, outW := io.Pipe()
+	defer outR.Close()
+	defer outW.Close()
+	c := NewClient(io.Discard, outR, 0)
+	c.writeGate <- struct{}{}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Call(ctx, MethodShutdown, ShutdownParams{}, nil) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("queued call: %v", err)
+		}
+	case <-time.After(time.Second):
+		<-c.writeGate
+		t.Fatal("queued write ignored deadline")
+	}
+	<-c.writeGate
+	select {
+	case <-c.Done():
+		t.Fatal("cancelled queued write poisoned the transport")
+	default:
+	}
+	if err := c.Notify("test", nil); err != nil {
+		t.Fatalf("reuse: %v", err)
+	}
+}
 
 const statusNotif = `{"jsonrpc":"2.0","method":"session.status","params":{"sessionId":"s","status":"running"}}`
 const eventNotif = `{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"s","event":{"type":"turn/start","seq":1,"data":{"turn":1}}}}`

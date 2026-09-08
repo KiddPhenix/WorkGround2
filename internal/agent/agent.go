@@ -1084,13 +1084,18 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	a.readOnlyStreak = 0
 	a.readOnlyNudgeSent = false
 	a.readOnlyNudgeDue = false
-	a.sink.Emit(event.Event{Kind: event.TurnStarted})
 	rawInput := input
 	memoryCompilerInput := rawInput
 	if sourceInput, ok := MemoryCompilerSourceInputFromContext(ctx); ok {
 		memoryCompilerInput = sourceInput
 	}
 	input = a.withTurnPreferences(rawInput)
+	// Publish the accepted input before acknowledging the turn or waiting on
+	// classification/memory. A newly opened frontend reads this same snapshot.
+	prior := a.session.Snapshot()
+	userIndex := len(prior)
+	a.session.Add(provider.Message{Role: provider.RoleUser, Content: input, Images: userImages(ctx), Origin: userOrigin(ctx)})
+	a.sink.Emit(event.Event{Kind: event.TurnStarted})
 	if memCompiler := a.memoryCompilerRuntime(); memCompiler != nil && !MemoryCompilerSkipFromContext(ctx) && shouldStartMemoryCompiler(memoryCompilerInput) {
 		// 使用分类器判断是否为任务
 		isTask := true // 默认为任务
@@ -1105,7 +1110,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 
 		// 只有任务才启动 Memory v5
 		if isTask {
-			if compiledInput, turn := memCompiler.StartTurn(ctx, memoryCompilerInput, a.session.Snapshot()); turn != nil {
+			if compiledInput, turn := memCompiler.StartTurn(ctx, memoryCompilerInput, prior); turn != nil {
 				injected := strings.TrimSpace(compiledInput) != "" &&
 					a.memoryCompilerShouldInject() &&
 					a.tryMarkMemoryCompilerInjected(time.Now())
@@ -1126,7 +1131,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 			}
 		}
 	}
-	a.session.Add(provider.Message{Role: provider.RoleUser, Content: input, Images: userImages(ctx), Origin: userOrigin(ctx)})
+	a.session.prepareUser(userIndex, input)
 	return a.runSteps(ctx, input)
 }
 

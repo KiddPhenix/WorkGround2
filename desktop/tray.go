@@ -1,18 +1,21 @@
 package main
 
 import (
+	"log/slog"
 	"sync"
 
 	"fyne.io/systray"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type desktopTray struct {
-	end       func()
-	openItem  *systray.MenuItem
-	quitItem  *systray.MenuItem
-	once      sync.Once
-	ready     chan struct{}
-	readyOnce sync.Once
+	end          func()
+	openItem     *systray.MenuItem
+	relocateItem *systray.MenuItem
+	quitItem     *systray.MenuItem
+	once         sync.Once
+	ready        chan struct{}
+	readyOnce    sync.Once
 }
 
 func newDesktopTray() *desktopTray {
@@ -52,6 +55,7 @@ func (a *App) startTray() bool {
 
 		labels := trayMenuLabels(a.trayLocale())
 		t.openItem = systray.AddMenuItem(labels.openTitle, labels.openTooltip)
+		t.relocateItem = systray.AddMenuItem(labels.relocateTitle, labels.relocateTooltip)
 		t.quitItem = systray.AddMenuItem(labels.quitTitle, labels.quitTooltip)
 
 		a.mu.Lock()
@@ -62,6 +66,11 @@ func (a *App) startTray() bool {
 		a.goSafe("trayOpenLoop", func() {
 			for range t.openItem.ClickedCh {
 				a.showFromTray()
+			}
+		})
+		a.goSafe("trayRelocateLoop", func() {
+			for range t.relocateItem.ClickedCh {
+				a.relocateFromTray()
 			}
 		})
 		a.goSafe("trayQuitLoop", func() {
@@ -94,12 +103,14 @@ func (a *App) updateTrayLocale(locale string) {
 	a.mu.RLock()
 	t := a.tray
 	a.mu.RUnlock()
-	if t == nil || t.openItem == nil || t.quitItem == nil {
+	if t == nil || t.openItem == nil || t.relocateItem == nil || t.quitItem == nil {
 		return
 	}
 	labels := trayMenuLabels(locale)
 	t.openItem.SetTitle(labels.openTitle)
 	t.openItem.SetTooltip(labels.openTooltip)
+	t.relocateItem.SetTitle(labels.relocateTitle)
+	t.relocateItem.SetTooltip(labels.relocateTooltip)
 	t.quitItem.SetTitle(labels.quitTitle)
 	t.quitItem.SetTooltip(labels.quitTooltip)
 }
@@ -116,30 +127,57 @@ func (a *App) showFromTray() {
 	a.showMainWindow()
 }
 
+// relocateFromTray runs the tray 重定位/Relocate recovery off the systray
+// message loop: a click re-queries the live screen geometry and repositions the
+// active widget/session window back into the visible work area. A single
+// in-flight guard collapses repeated clicks while one recovery runs; the
+// underlying geometry work is idempotent, so re-fired clicks after a failure
+// retry safely.
+func (a *App) relocateFromTray() {
+	if a.ctx == nil || !a.relocateInFlight.CompareAndSwap(false, true) {
+		return
+	}
+	a.goSafe("trayRelocate", func() {
+		defer a.relocateInFlight.Store(false)
+		if err := a.relocateActiveWindow(); err != nil {
+			slog.Error("desktop: tray relocate failed", "err", err)
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "window:action-error", err.Error())
+			}
+		}
+	})
+}
+
 func (a *App) quitFromTray() {
 	a.quitApp()
 }
 
 type trayLabels struct {
-	openTitle   string
-	openTooltip string
-	quitTitle   string
-	quitTooltip string
+	openTitle       string
+	openTooltip     string
+	relocateTitle   string
+	relocateTooltip string
+	quitTitle       string
+	quitTooltip     string
 }
 
 func trayMenuLabels(locale string) trayLabels {
 	if locale == "zh" {
 		return trayLabels{
-			openTitle:   "打开",
-			openTooltip: "打开 WorkGround2 窗口",
-			quitTitle:   "退出",
-			quitTooltip: "退出 WorkGround2",
+			openTitle:       "打开",
+			openTooltip:     "打开 WorkGround2 窗口",
+			relocateTitle:   "重定位",
+			relocateTooltip: "重新检测屏幕并将窗口移回可见区域",
+			quitTitle:       "退出",
+			quitTooltip:     "退出 WorkGround2",
 		}
 	}
 	return trayLabels{
-		openTitle:   "Open",
-		openTooltip: "Open the WorkGround2 window",
-		quitTitle:   "Quit",
-		quitTooltip: "Quit WorkGround2",
+		openTitle:       "Open",
+		openTooltip:     "Open the WorkGround2 window",
+		relocateTitle:   "Relocate",
+		relocateTooltip: "Re-detect screens and bring the window back into the visible area",
+		quitTitle:       "Quit",
+		quitTooltip:     "Quit WorkGround2",
 	}
 }

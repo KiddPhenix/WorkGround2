@@ -3063,6 +3063,11 @@ func desktopIconSnapshotItem(snapshot *DesktopIconSnapshot, itemID string) *Desk
 // a full projection for restart/test compatibility; other actions still read
 // fresh state because they may mutate unread, ordering or external ownership.
 func (a *App) desktopIconActionTargetLocked(input DesktopIconActionInput) (DesktopIconSnapshot, *DesktopIconItem) {
+	if input.Action == "answer" && strings.HasPrefix(input.ItemID, "task:") {
+		// Answer validation needs live Controller state, never project discovery.
+		snapshot := a.desktopIconEntrySnapshotLocked()
+		return snapshot, desktopIconSnapshotItem(&snapshot, input.ItemID)
+	}
 	if input.Action == "open" && strings.HasPrefix(input.ItemID, "task:") && a.iconWidgetSnapshotReady {
 		snapshot := a.iconWidgetLastSnapshot
 		cached := desktopIconSnapshotItem(&snapshot, input.ItemID)
@@ -3085,6 +3090,9 @@ func (a *App) desktopIconActionTargetLocked(input DesktopIconActionInput) (Deskt
 			*item = current
 			return snapshot, item
 		}
+		// Live tasks have no retained record. Their last published identity is
+		// sufficient for navigation; resolving it still validates the session.
+		return snapshot, cached
 	}
 	snapshot := a.desktopIconSnapshotLocked()
 	return snapshot, desktopIconSnapshotItem(&snapshot, input.ItemID)
@@ -3216,6 +3224,12 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 				return a.desktopIconActionErrorLocked("retryable_error", err)
 			}
 			return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconSnapshotLocked()}
+		}
+		if input.Action == "open" && strings.HasPrefix(input.ItemID, "task:") && a.iconWidgetSnapshotReady {
+			return DesktopIconActionResult{Status: "already_applied", Snapshot: a.iconWidgetLastSnapshot}
+		}
+		if input.Action == "answer" {
+			return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconEntrySnapshotLocked()}
 		}
 		return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconSnapshotLocked()}
 	}
@@ -3527,6 +3541,9 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 		// validation; rebuilding the full project/session projection here only
 		// delays the window reveal and its result would be discarded on unmount.
 		return DesktopIconActionResult{Status: "accepted", Snapshot: snapshot}
+	}
+	if input.Action == "answer" {
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconEntrySnapshotLocked()}
 	}
 	return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
 }

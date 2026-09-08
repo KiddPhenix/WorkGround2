@@ -22,6 +22,13 @@ func normalizeWidgetWindowState(_ context.Context, state WidgetWindowState) (Wid
 	return state, nil
 }
 
+// normalizeMainWindowState is a no-op on non-Windows platforms, mirroring
+// normalizeWidgetWindowState: the window manager keeps the main window visible
+// there and the live-screen clamping lives in the Windows implementation.
+func normalizeMainWindowState(_ context.Context, state DesktopWindowState) (DesktopWindowState, error) {
+	return state, nil
+}
+
 // setWidgetWindowRegion is a no-op on non-Windows platforms.
 func setWidgetWindowRegion(width, height int) error { return nil }
 

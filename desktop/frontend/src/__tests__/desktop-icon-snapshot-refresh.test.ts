@@ -46,15 +46,15 @@ class FakeTimers implements SnapshotTimerHost {
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 
 assert.deepEqual(
-	["turn_started", "turn_done", "message", "tool_dispatch", "tool_result", "approval_request", "ask_request", "retrying", "compaction_started", "compaction_done"]
+	["turn_started", "turn_done", "message", "tool_dispatch", "tool_result", "approval_request", "ask_request", "retrying", "compaction_started", "compaction_done", "task_memory_updated"]
 		.map((kind) => desktopIconEventWakesSnapshot(kind as Parameters<typeof desktopIconEventWakesSnapshot>[0])),
-	Array(10).fill(true),
+	Array(11).fill(true),
 	"durable agent state boundaries wake the authoritative snapshot",
 );
 assert.deepEqual(
-	["text", "reasoning", "tool_progress", "usage", "notice", "phase", "task_memory_updated"]
+	["text", "reasoning", "tool_progress", "usage", "notice", "phase"]
 		.map((kind) => desktopIconEventWakesSnapshot(kind as Parameters<typeof desktopIconEventWakesSnapshot>[0])),
-	Array(7).fill(false),
+	Array(6).fill(false),
 	"high-frequency events never trigger full snapshot scans",
 );
 

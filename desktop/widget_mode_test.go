@@ -860,6 +860,98 @@ func TestExitWidgetModeSetActiveTabFailureDoesNotEmitSessionActivated(t *testing
 	}
 }
 
+// TestExitWidgetModeRevealsBeforeSlowSnapshot reproduces the icon-mode 打开任务
+// stall: the main-window reveal (widget:mode=false) must be published as soon
+// as the native main-window restore completes, never queued behind the
+// SetActiveTab session snapshot. A running session's snapshot can block for a
+// long time on Windows disk I/O, and the frontend only swaps ReactActivity to
+// MainApp after it observes widget:mode=false. Reveal and precise tab selection
+// stay decoupled: the reveal fires first, then the exact tab is selected.
+func TestExitWidgetModeRevealsBeforeSlowSnapshot(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	// A real controller backs the outgoing tab so SetActiveTab's tab-snapshot
+	// bookkeeping (SessionPath/PlanMode/Goal/ToolApprovalMode) works; only
+	// Snapshot is intercepted to block.
+	oldCtrl := newBlockingSnapshotCtrl(control.New(control.Options{Label: "old-tab"}))
+	tabs := map[string]*WorkspaceTab{
+		"old-tab":    {ID: "old-tab", Ctrl: oldCtrl},
+		"target-tab": {ID: "target-tab"},
+	}
+	app := &App{
+		ctx:         context.Background(),
+		tabs:        tabs,
+		activeTabID: "old-tab",
+		widgetMode:  true,
+		widgetWindowOps: &widgetWindowOps{
+			read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 590, Height: 176}, false },
+			restoreMain: func(DesktopWindowState, bool) error { return nil },
+			applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+		},
+		widgetTaskbarToggle: func(bool) error { return nil },
+	}
+	modeEvents := make(chan struct{}, 1)
+	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {
+		if name == "widget:mode" {
+			select {
+			case modeEvents <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	done := make(chan error, 1)
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-oldCtrl.releaseSnapshot:
+		default:
+			close(oldCtrl.releaseSnapshot)
+		}
+		select {
+		case <-finished:
+		case <-time.After(2 * time.Second):
+			t.Error("exit goroutine did not stop during cleanup")
+		}
+	})
+	go func() {
+		defer close(finished)
+		done <- app.ExitWidgetMode("target-tab")
+	}()
+
+	// The reveal must not wait for the blocked session snapshot of the old tab.
+	select {
+	case <-modeEvents:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("widget:mode=false was not published before the slow session snapshot")
+	}
+	// The block is the outgoing-tab snapshot, not the native transition.
+	select {
+	case <-oldCtrl.firstSnapshotStarted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("SetActiveTab did not reach the outgoing-tab snapshot")
+	}
+	// The exit is still in-flight while the snapshot is held, so reveal and
+	// tab selection are decoupled rather than skipped.
+	select {
+	case err := <-done:
+		t.Fatalf("exit returned before the blocked snapshot was released: %v", err)
+	default:
+	}
+
+	close(oldCtrl.releaseSnapshot)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ExitWidgetMode: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("exit did not finish after the snapshot was released")
+	}
+	if app.activeTabID != "target-tab" {
+		t.Fatalf("active tab = %q, want target-tab", app.activeTabID)
+	}
+}
+
 func leaseErrorTab(t *testing.T) (*App, *WorkspaceTab) {
 	t.Helper()
 	tab := &WorkspaceTab{
@@ -1133,5 +1225,73 @@ func TestApplyWidgetActionCurrentNoPendingFailsExplicitly(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "pending question changed") {
 		t.Fatalf("no-pending error = %v", err)
+	}
+}
+
+// TestApplyWidgetActionCurrentAnswerClearsLiveControllerAsk proves the answer
+// branch clears the real Controller's PendingInteraction synchronously (the
+// widget snapshot then re-projects needs_input away) and delivers the full
+// batch to the blocked Ask caller. fakeAskCtrl records the call but never
+// clears `has`, so it cannot catch a regression where a resolved ask keeps
+// rendering as "待回答".
+func TestApplyWidgetActionCurrentAnswerClearsLiveControllerAsk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	ctrl := control.New(control.Options{SessionPath: path, SessionDir: dir})
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", Ctrl: ctrl}}}
+
+	questions := []event.AskQuestion{{
+		ID: "q1", Header: "整理力度", Prompt: "整理力度", Options: []event.AskOption{{Label: "轻"}, {Label: "重"}},
+	}, {
+		ID: "q2", Header: "范围", Prompt: "改动范围", Options: []event.AskOption{{Label: "桌面"}, {Label: "全部"}},
+	}}
+	answered := make(chan []event.AskAnswer, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		ans, err := ctrl.Ask(context.Background(), questions)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		answered <- ans
+	}()
+
+	var pending control.PendingInteraction
+	var ok bool
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pending, ok = ctrl.PendingInteraction()
+		if ok && pending.Kind == control.PendingInteractionAsk {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !ok || pending.Kind != control.PendingInteractionAsk {
+		t.Fatalf("pending ask not registered: %+v, %v", pending, ok)
+	}
+
+	message := messageForPending(widgetSource{meta: TabMeta{ID: "tab"}, pending: pending, has: true})
+	if err := app.applyWidgetActionCurrent(message, WidgetActionInput{
+		ItemID: message.ID, Revision: message.Revision, RequestID: "req-1", Action: "answer",
+		Answers: []QuestionAnswer{
+			{QuestionID: "q1", Selected: []string{"重"}},
+			{QuestionID: "q2", Selected: []string{"全部"}},
+		},
+	}); err != nil {
+		t.Fatalf("batch answer failed: %v", err)
+	}
+
+	if _, ok := ctrl.PendingInteraction(); ok {
+		t.Fatal("pending ask still present after answer")
+	}
+	select {
+	case ans := <-answered:
+		if len(ans) != 2 || ans[0].QuestionID != "q1" || ans[0].Selected[0] != "重" || ans[1].QuestionID != "q2" || ans[1].Selected[0] != "全部" {
+			t.Fatalf("Ask received wrong answers: %#v", ans)
+		}
+	case err := <-errCh:
+		t.Fatalf("Ask returned error: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ask did not receive the answer")
 	}
 }

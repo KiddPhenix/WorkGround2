@@ -453,11 +453,86 @@ function retainQueueSession(items: Item[], sessionPath: string): Item[] {
   return filtered.length === items.length ? items : filtered;
 }
 
-function appendStartupQueued(history: Item[], current: Item[], sessionPath: string): Item[] {
-  const ids = new Set(history.map((item) => item.id));
-  const queued = retainQueueSession(current, sessionPath)
-    .filter((item) => item.kind === "user" && item.queued && !ids.has(item.id));
-  return queued.length > 0 ? [...history, ...queued] : history;
+// retainSessionScoped keeps items valid for toPath: startup-queued sends by their
+// own queueSessionPath, and — when the session path actually changes — drops live
+// user bubbles and steer confirmations that belong to the previous session so
+// they cannot leak into the freshly resolved one.
+function retainSessionScoped(items: Item[], fromPath: string | undefined, toPath: string | undefined): Item[] {
+  let next = items;
+  if (toPath !== undefined) next = retainQueueSession(next, toPath);
+  if (fromPath && toPath && !sameQueueSession(fromPath, toPath)) {
+    next = next.filter((item) => !isLiveAcceptedUser(item) && steerGuidanceText(item) === undefined);
+  }
+  return next;
+}
+
+// steerGuidanceText returns the raw guidance text for items that render a steer
+// confirmation ("↪ <text>"), or undefined for every other item.
+function steerGuidanceText(item: Item): string | undefined {
+  if (item.kind !== "notice" || item.level !== "info") return undefined;
+  return item.text.startsWith("↪ ") ? item.text.slice(2) : undefined;
+}
+
+// isLiveAcceptedUser identifies a user bubble the frontend created live (from
+// submit or turn acknowledgement) that is not yet present in the history the
+// backend serves (HistoryPageForTab reads the in-memory session snapshot, not a
+// disk guarantee). These must survive a history replacement exactly like
+// unpersisted steer confirmations — otherwise a stale/empty history load erases
+// an accepted prompt while the turn is still running.
+function isLiveAcceptedUser(item: Item): item is Extract<Item, { kind: "user" }> {
+  return item.kind === "user" && !item.queued && !item.failed && item.id.startsWith("u");
+}
+
+// appendHydratedItems rebuilds a transcript after a history replacement. Only
+// session-local state that is not yet in the history the backend serves survives
+// the swap, in its original order: startup-queued sends, still-unpersisted steer
+// confirmations, and accepted-but-not-yet-served user bubbles. Coverage is
+// counted from the authoritative history alone; every current user/steer row —
+// hydrated or live — consumes one matching slot, so identical text never
+// collapses distinct messages and stale/repeated pages converge instead of
+// erasing the newest accepted prompt. There is no backend-provided per-user
+// identity on history rows, so matching is by display text plus that ordered
+// consumption.
+function appendHydratedItems(history: Item[], current: State, sessionPath: string): Item[] {
+  const sameSession = !current.meta?.sessionPath || sameQueueSession(current.meta.sessionPath, sessionPath);
+  const historyIds = new Set(history.map((item) => item.id));
+  const coveredSteer = new Map<string, number>();
+  const coveredUser = new Map<string, number>();
+  for (const item of history) {
+    const steer = steerGuidanceText(item);
+    if (steer !== undefined) coveredSteer.set(steer, (coveredSteer.get(steer) ?? 0) + 1);
+    if (item.kind === "user") coveredUser.set(item.text, (coveredUser.get(item.text) ?? 0) + 1);
+  }
+
+  const live: Item[] = [];
+  for (const item of current.items) {
+    if (item.kind === "user" && item.queued) {
+      if (!historyIds.has(item.id) && sameQueueSession(item.queueSessionPath, sessionPath)) live.push(item);
+      continue;
+    }
+    const steer = steerGuidanceText(item);
+    if (steer !== undefined) {
+      if (!sameSession) continue;
+      const count = coveredSteer.get(steer) ?? 0;
+      if (count > 0) {
+        coveredSteer.set(steer, count - 1);
+        continue;
+      }
+      // History-only records outside the loaded page must not be resurrected.
+      if (item.id.startsWith("s")) live.push(item);
+      continue;
+    }
+    if (item.kind === "user" && !item.failed) {
+      if (!sameSession) continue;
+      const count = coveredUser.get(item.text) ?? 0;
+      if (count > 0) {
+        coveredUser.set(item.text, count - 1);
+        continue;
+      }
+      if (isLiveAcceptedUser(item)) live.push(item);
+    }
+  }
+  return live.length > 0 ? [...history, ...live] : history;
 }
 
 type Action =
@@ -1148,11 +1223,11 @@ export function reducer(s: State, a: Action): State {
     }
     case "meta": {
       const meta = a.meta.sessionPath === undefined && s.meta?.sessionPath !== undefined ? { ...a.meta, sessionPath: s.meta.sessionPath } : a.meta;
-      const items = meta.sessionPath === undefined ? s.items : retainQueueSession(s.items, meta.sessionPath);
+      const items = retainSessionScoped(s.items, s.meta?.sessionPath, meta.sessionPath);
       return sameMeta(s.meta, meta) && items === s.items ? s : { ...s, meta, items };
     }
     case "optimistic_meta": {
-      const items = a.meta.sessionPath === undefined ? s.items : retainQueueSession(s.items, a.meta.sessionPath);
+      const items = retainSessionScoped(s.items, s.meta?.sessionPath, a.meta.sessionPath);
       return sameMeta(s.meta, a.meta) && items === s.items ? s : { ...s, meta: a.meta, items, hydrateError: undefined };
     }
     case "context": {
@@ -1190,12 +1265,12 @@ export function reducer(s: State, a: Action): State {
     case "history": {
       const { items, seq } = historyMessagesToItems(a.messages, "h", s.seq);
       const sessionPath = a.sessionPath ?? s.meta?.sessionPath ?? "";
-      return { ...s, items: compactArchivedToolItems(appendStartupQueued(items, s.items, sessionPath)), seq: Math.max(s.seq, seq), hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyLoading: false, historyResolvedPath: sessionPath, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false };
+      return { ...s, items: compactArchivedToolItems(appendHydratedItems(items, s, sessionPath)), seq: Math.max(s.seq, seq), hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyLoading: false, historyResolvedPath: sessionPath, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false };
     }
     case "history_page": {
       const { items, seq } = historyPageItems(a.page);
       const sessionPath = a.sessionPath ?? a.page.sessionPath ?? s.meta?.sessionPath ?? "";
-      const nextItems = a.mode === "prepend" ? [...items, ...s.items] : appendStartupQueued(items, s.items, sessionPath);
+      const nextItems = a.mode === "prepend" ? [...items, ...s.items] : appendHydratedItems(items, s, sessionPath);
       return {
         ...s,
         items: compactArchivedToolItems(nextItems),
@@ -1223,8 +1298,13 @@ export function reducer(s: State, a: Action): State {
         : a.queueSessionPath === undefined
           ? s.items
           : retainQueueSession(s.items, a.queueSessionPath);
-      const queued = queueItems.filter((item) => item.kind === "user" && item.queued);
-      return { ...initialState, items: queued, seq: queued.length > 0 ? s.seq : 0, meta: s.meta, context: { used: 0, window: s.context.window, sessionTokens: 0, compactRatio: s.context.compactRatio }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1 };
+      // Keep the same-session transcript until its replacement arrives. Its
+      // historical rows also anchor identical live messages during reconciliation.
+      // A different/new session retains only its own startup queue.
+      const sameSessionReload = a.queueSessionPath !== undefined
+        && sameQueueSession(a.queueSessionPath, s.meta?.sessionPath);
+      const kept = sameSessionReload ? queueItems : queueItems.filter((item) => item.kind === "user" && item.queued);
+      return { ...initialState, items: kept, seq: kept.length > 0 ? s.seq : 0, meta: s.meta, context: { used: 0, window: s.context.window, sessionTokens: 0, compactRatio: s.context.compactRatio }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1 };
     }
     case "event": return applyEvent(s, a.e);
     default: return s;

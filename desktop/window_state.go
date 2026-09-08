@@ -19,6 +19,15 @@ type DesktopWindowState struct {
 	Maximised bool `json:"maximised"`
 }
 
+// mainWindowMinWidth/Height mirror the native minimum restoreMainGeometry and
+// the Wails app options enforce. Relocate recovery clamps to these bounds so
+// the geometry it applies is one the main window can actually hold; on a work
+// area below the minimum the work area itself is the bound.
+const (
+	mainWindowMinWidth  = 760
+	mainWindowMinHeight = 480
+)
+
 func windowStatePath() string {
 	return filepath.Join(config.MemoryUserDir(), "desktop-window.json")
 }
