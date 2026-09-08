@@ -63,3 +63,7 @@ func applyDesktopIconSurface(_ context.Context, input DesktopIconSurfaceInput) (
 // setWidgetTaskbarHidden is a no-op on non-Windows platforms: there is no
 // Windows taskbar button to hide from.
 func setWidgetTaskbarHidden(bool) error { return nil }
+
+// redrawWidgetWindowForRefresh is a no-op outside Windows: the stale-rectangle
+// ghosting it repairs is a Windows DWM/layered-window artifact.
+func redrawWidgetWindowForRefresh() error { return nil }

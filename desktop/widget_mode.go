@@ -279,6 +279,9 @@ func (a *App) transitionWidgetMode(target bool, apply func() error) (bool, error
 	}
 	a.widgetMode = target
 	a.widgetRevision++
+	if a.widgetRedraw != nil {
+		a.widgetRedraw.reset()
+	}
 	return true, nil
 }
 

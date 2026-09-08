@@ -195,3 +195,7 @@ func applyDesktopIconSurface(ctx context.Context, input DesktopIconSurfaceInput)
 
 // macOS has no taskbar button equivalent for this window mode.
 func setWidgetTaskbarHidden(bool) error { return nil }
+
+// redrawWidgetWindowForRefresh is a no-op on macOS: the stale-rectangle
+// ghosting it repairs is a Windows DWM/layered-window artifact.
+func redrawWidgetWindowForRefresh() error { return nil }

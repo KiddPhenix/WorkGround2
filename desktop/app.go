@@ -292,6 +292,10 @@ type App struct {
 	widgetMode           bool
 	widgetRevision       uint64 // native transition identity, protected by widgetMu
 	widgetStyle          string
+	// widgetRedraw owns the short post-switch repaint window that clears the
+	// occasional stale rectangle left by the DWM/layered-window transition.
+	// nil disables it (tests that only drive transitionWidgetMode directly).
+	widgetRedraw *widgetRedrawScheduler
 	// widgetSurface is the single authoritative icon-canvas runtime state. Native
 	// geometry, the largest accepted layout intent, and its applied hit regions
 	// move together under widgetMu; widgetRevision fences prior mode lifetimes.
@@ -530,6 +534,7 @@ func NewApp() *App {
 		botRuntime:                newDesktopBotRuntime(),
 		dshWorkbenches:            map[string]*dshWorkbench{},
 		completionSummaryInFlight: map[string]*completionSummaryCall{},
+		widgetRedraw:              newWidgetRedrawScheduler(),
 	}
 	root := strings.TrimSpace(config.MemoryUserDir())
 	decisionPath := ""
@@ -948,6 +953,8 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	// Stop scheduling repaints before shutdown starts closing window resources.
+	a.stopWidgetRedraw()
 	defer func() {
 		if err := desktopSidebarBolt.close(a); err != nil {
 			slog.Warn("desktop: close sidebar index failed", "err", err)

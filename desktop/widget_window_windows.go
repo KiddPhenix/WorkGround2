@@ -393,6 +393,18 @@ func redrawWidgetWindow(hwnd syscall.Handle) error {
 	)
 }
 
+// redrawWidgetWindowForRefresh repaints the native Wails window in place
+// without touching its window region, so it is safe to run periodically in both
+// widget and main modes: the widget's icon HRGN and transparent gaps stay
+// intact. It is the repaint half of the short post-switch redraw window.
+func redrawWidgetWindowForRefresh() error {
+	hwnd := findWidgetHWND()
+	if hwnd == 0 {
+		return errors.New("redrawWidgetWindowForRefresh: window not found")
+	}
+	return redrawWidgetWindow(hwnd)
+}
+
 // setDesktopWindowBounds bypasses Wails' Windows SetPos implementation. Wails
 // reads absolute screen coordinates but writes monitor-work-area-relative
 // coordinates, so persisting and restoring its values drifts on every cycle.
