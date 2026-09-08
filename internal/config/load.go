@@ -655,6 +655,19 @@ func normalizeOfficialDeepSeekModels(c *Config) {
 // Flash's reasoning/effort scale (see effort.go and provider/openai.IsDeepSeek).
 const deepSeekVisionExpModel = "deepseek-v4-flash-vision-exp"
 
+// deepSeekV41TrialFlashModel is a DeepSeek V4.1 Flash trial SKU served by the
+// official API (same base_url). It is native multimodal (Vision + Reasoning)
+// with Flash's effort scale and deepseek-v4-flash pricing; expiry is not
+// modelled here — the name is passed through verbatim.
+const deepSeekV41TrialFlashModel = "deepseek-v4.1-flash-expires-on-0910"
+
+// deepSeekOfficialNewModels lists DeepSeek catalog entries added after the
+// original flash/pro pair. Both keep Flash's reasoning/effort scale and are
+// multimodal (see capability.go / effort.go).
+func deepSeekOfficialNewModels() []string {
+	return []string{deepSeekVisionExpModel, deepSeekV41TrialFlashModel}
+}
+
 // openAIGPT56Models lists the GPT-5.6 series added to the official OpenAI API
 // catalog. Every variant is vision- and reasoning-capable (see capability.go).
 func openAIGPT56Models() []string {
@@ -684,7 +697,8 @@ func normalizeOfficialNewModels(c *Config) {
 			case "deepseek-flash", "deepseek-pro":
 				continue // legacy single-model entries stay as-is
 			}
-			mergeOfficialNewModels(p, []string{deepSeekVisionExpModel}, []string{deepSeekVisionExpModel})
+			newModels := deepSeekOfficialNewModels()
+			mergeOfficialNewModels(p, newModels, newModels)
 		case "openai":
 			gpt56 := openAIGPT56Models()
 			mergeOfficialNewModels(p, gpt56, gpt56)

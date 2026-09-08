@@ -675,19 +675,22 @@ func TestOfficialDeepSeekTemplateDefaultsToRMBPricing(t *testing.T) {
 	if got.Prices["deepseek-v4-pro"] == nil || got.Prices["deepseek-v4-pro"].Currency != "¥" || got.Prices["deepseek-v4-pro"].Output != 6 {
 		t.Fatalf("deepseek-v4-pro price = %+v, want RMB pricing", got.Prices["deepseek-v4-pro"])
 	}
+	if trial := got.Prices["deepseek-v4.1-flash-expires-on-0910"]; trial == nil || trial.Currency != "¥" || trial.Input != got.Prices["deepseek-v4-flash"].Input || trial.Output != got.Prices["deepseek-v4-flash"].Output || trial.CacheHit != got.Prices["deepseek-v4-flash"].CacheHit {
+		t.Fatalf("trial SKU price = %+v, want identical to deepseek-v4-flash %+v", trial, got.Prices["deepseek-v4-flash"])
+	}
 }
 
-func TestOfficialDeepSeekTemplateIncludesVisionExp(t *testing.T) {
+func TestOfficialDeepSeekTemplateIncludesVisionModels(t *testing.T) {
 	entries, _, err := officialProviderTemplate("deepseek", "en")
 	if err != nil {
 		t.Fatalf("officialProviderTemplate: %v", err)
 	}
 	got := entries[0]
-	if !reflect.DeepEqual(got.Models, []string{"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"}) {
-		t.Fatalf("deepseek template models = %v, want vision-exp appended", got.Models)
+	if !reflect.DeepEqual(got.Models, []string{"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp", "deepseek-v4.1-flash-expires-on-0910"}) {
+		t.Fatalf("deepseek template models = %v, want vision models appended", got.Models)
 	}
-	if !reflect.DeepEqual(got.VisionModels, []string{"deepseek-v4-flash-vision-exp"}) {
-		t.Fatalf("deepseek template vision_models = %v, want only vision-exp", got.VisionModels)
+	if !reflect.DeepEqual(got.VisionModels, []string{"deepseek-v4-flash-vision-exp", "deepseek-v4.1-flash-expires-on-0910"}) {
+		t.Fatalf("deepseek template vision_models = %v, want the two vision models", got.VisionModels)
 	}
 }
 

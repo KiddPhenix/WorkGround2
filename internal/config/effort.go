@@ -29,9 +29,10 @@ type modelReasoningCapability struct {
 }
 
 var modelReasoningCapabilities = map[string]modelReasoningCapability{
-	"deepseek-v4-flash":            {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"low", "high", "max"}, Default: "high"},
-	"deepseek-v4-flash-vision-exp": {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"low", "high", "max"}, Default: "high"},
-	"deepseek-v4-pro":              {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"high", "max"}, Default: "high"},
+	"deepseek-v4-flash":                   {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"low", "high", "max"}, Default: "high"},
+	"deepseek-v4-flash-vision-exp":        {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"low", "high", "max"}, Default: "high"},
+	"deepseek-v4.1-flash-expires-on-0910": {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"low", "high", "max"}, Default: "high"},
+	"deepseek-v4-pro":                     {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"high", "max"}, Default: "high"},
 }
 
 // EffortCapabilityForEntry returns the user-facing /effort levels for a resolved

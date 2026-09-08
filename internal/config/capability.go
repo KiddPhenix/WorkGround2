@@ -75,6 +75,8 @@ var builtinModelCapabilities = map[string][]ModelCapability{
 	"deepseek-chat":                {},
 	"deepseek-reasoner":            {CapReasoning},
 	"deepseek-v4-flash-vision-exp": {CapVision, CapReasoning},
+	// Official-API trial SKU, native multimodal (see deepSeekV41TrialFlashModel).
+	"deepseek-v4.1-flash-expires-on-0910": {CapVision, CapReasoning},
 
 	// ── MiMo ────────────────────────────────────────────────
 	"mimo-v2.5":    {CapVision},

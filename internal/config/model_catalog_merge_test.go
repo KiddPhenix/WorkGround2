@@ -19,14 +19,16 @@ func TestNormalizeOfficialNewModelsAddsDeepSeekVisionExp(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek provider missing")
 	}
-	if !p.HasModel(deepSeekVisionExpModel) {
-		t.Fatalf("models = %v, want %q merged in", p.ModelList(), deepSeekVisionExpModel)
+	for _, model := range []string{deepSeekVisionExpModel, deepSeekV41TrialFlashModel} {
+		if !p.HasModel(model) {
+			t.Fatalf("models = %v, want %q merged in", p.ModelList(), model)
+		}
 	}
 	if p.Default != "deepseek-v4-flash" {
 		t.Fatalf("default = %q, want preserved deepseek-v4-flash", p.Default)
 	}
-	if !reflect.DeepEqual(p.VisionModels, []string{deepSeekVisionExpModel}) {
-		t.Fatalf("vision_models = %v, want only %q", p.VisionModels, deepSeekVisionExpModel)
+	if !reflect.DeepEqual(p.VisionModels, []string{deepSeekVisionExpModel, deepSeekV41TrialFlashModel}) {
+		t.Fatalf("vision_models = %v, want the two DeepSeek vision models", p.VisionModels)
 	}
 }
 

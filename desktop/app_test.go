@@ -1816,11 +1816,11 @@ api_key_env = "DEEPSEEK_API_KEY"
 	if !ok {
 		t.Fatal("deepseek provider not saved")
 	}
-	if len(p.Models) != 3 || p.Models[0] != "deepseek-v4-flash" || p.Models[1] != "deepseek-v4-pro" || p.Models[2] != "deepseek-v4-flash-vision-exp" || p.Default != "deepseek-v4-flash" {
+	if len(p.Models) != 4 || p.Models[0] != "deepseek-v4-flash" || p.Models[1] != "deepseek-v4-pro" || p.Models[2] != "deepseek-v4-flash-vision-exp" || p.Models[3] != "deepseek-v4.1-flash-expires-on-0910" || p.Default != "deepseek-v4-flash" {
 		t.Fatalf("deepseek provider after add = %+v, want official model list", p)
 	}
-	if !reflect.DeepEqual(p.VisionModels, []string{"deepseek-v4-flash-vision-exp"}) {
-		t.Fatalf("deepseek provider vision_models = %v, want only vision-exp", p.VisionModels)
+	if !reflect.DeepEqual(p.VisionModels, []string{"deepseek-v4-flash-vision-exp", "deepseek-v4.1-flash-expires-on-0910"}) {
+		t.Fatalf("deepseek provider vision_models = %v, want the two vision models", p.VisionModels)
 	}
 	if !providerAccessSet(cfg.Desktop.ProviderAccess)["deepseek"] {
 		t.Fatalf("provider_access missing deepseek: %+v", cfg.Desktop.ProviderAccess)
@@ -2019,6 +2019,7 @@ func TestModelsForTabOnlyListsProviderAccessWhenConfigured(t *testing.T) {
 		"deepseek/deepseek-v4-flash",
 		"deepseek/deepseek-v4-pro",
 		"deepseek/deepseek-v4-flash-vision-exp",
+		"deepseek/deepseek-v4.1-flash-expires-on-0910",
 		"mimo-pro/mimo-v2.5-pro",
 		"mimo-pro/mimo-v2.5",
 	} {
@@ -2034,8 +2035,8 @@ func TestModelsForTabOnlyListsProviderAccessWhenConfigured(t *testing.T) {
 			t.Fatalf("Models() refs = %+v, should not include hidden provider %s", models, hidden)
 		}
 	}
-	if len(models) != 5 {
-		t.Fatalf("Models() len = %d, want 5: %+v", len(models), models)
+	if len(models) != 6 {
+		t.Fatalf("Models() len = %d, want 6: %+v", len(models), models)
 	}
 }
 

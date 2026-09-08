@@ -18,8 +18,9 @@ func deepSeekV4ProPrice() *provider.Pricing {
 
 func deepSeekV4Prices() map[string]*provider.Pricing {
 	return map[string]*provider.Pricing{
-		"deepseek-v4-flash": deepSeekV4FlashPrice(),
-		"deepseek-v4-pro":   deepSeekV4ProPrice(),
+		"deepseek-v4-flash":        deepSeekV4FlashPrice(),
+		"deepseek-v4-pro":          deepSeekV4ProPrice(),
+		deepSeekV41TrialFlashModel: deepSeekV4FlashPrice(), // trial SKU prices like deepseek-v4-flash
 	}
 }
 
@@ -33,8 +34,9 @@ func deepSeekV4ProPriceUSD() *provider.Pricing {
 
 func deepSeekV4PricesUSD() map[string]*provider.Pricing {
 	return map[string]*provider.Pricing{
-		"deepseek-v4-flash": deepSeekV4FlashPriceUSD(),
-		"deepseek-v4-pro":   deepSeekV4ProPriceUSD(),
+		"deepseek-v4-flash":        deepSeekV4FlashPriceUSD(),
+		"deepseek-v4-pro":          deepSeekV4ProPriceUSD(),
+		deepSeekV41TrialFlashModel: deepSeekV4FlashPriceUSD(), // trial SKU prices like deepseek-v4-flash
 	}
 }
 

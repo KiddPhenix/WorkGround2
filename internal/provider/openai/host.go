@@ -45,10 +45,14 @@ func IsMiniMax(baseURL string) bool {
 	return matchesVendorHost(baseURL, "minimaxi.com", "api.minimaxi.com")
 }
 
-// isDeepSeekFlashModel reports whether model is a DeepSeek V4 Flash variant
-// (e.g. deepseek-v4-flash, deepseek-v4-flash-vision-exp), which supports
-// reasoning_effort=low in addition to high and max.
+// isDeepSeekFlashModel reports whether model is a DeepSeek Flash-family model
+// (e.g. deepseek-v4-flash, deepseek-v4-flash-vision-exp, or the official-API
+// trial SKU deepseek-v4.1-flash-expires-on-0910), which supports
+// reasoning_effort=low in addition to high and max. Non-Flash DeepSeek models
+// (deepseek-v4-pro, unknown names) deliberately stay on high|max.
 func isDeepSeekFlashModel(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
-	return model == "deepseek-v4-flash" || strings.HasPrefix(model, "deepseek-v4-flash-")
+	return model == "deepseek-v4-flash" ||
+		model == "deepseek-v4.1-flash-expires-on-0910" ||
+		strings.HasPrefix(model, "deepseek-v4-flash-")
 }
