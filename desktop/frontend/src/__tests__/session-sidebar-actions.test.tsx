@@ -90,7 +90,7 @@ for (const [mode, label] of [
     configurable: true,
     value: { main: { App: { ListSidebarGroups: async () => { throw new Error("room index unavailable"); }, ListSidebarIssues: async () => [] } } },
   });
-  useSidebarStore.setState({ groupsByMode: {} });
+  useSidebarStore.setState({ activeMode: "rooms", groupsByMode: {} });
   let roomAction = 0;
   const { host, root } = await render(
     <ProjectPanel

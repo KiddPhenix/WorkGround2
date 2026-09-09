@@ -195,6 +195,10 @@ interface SidebarState {
   beginGroups: (mode: string) => number;
   receiveGroups: (mode: string, seq: number, items: SidebarGroup[]) => void;
   failGroups: (mode: string, seq: number, error: string) => void;
+  cancelGroups: (mode: string, seq: number) => void;
+  cancelPage: (key: string, seq: number) => void;
+  cancelSearch: (seq: number) => void;
+  cancelIssues: (seq: number) => void;
   beginPage: (key: string, reset: boolean, retainItems?: boolean) => { seq: number; cursor?: string } | null;
   receivePage: (key: string, seq: number, page: SidebarPage<SidebarSession>, reset: boolean) => void;
   failPage: (key: string, seq: number, error: string) => void;
@@ -297,6 +301,22 @@ export const useSidebarStore = create<SidebarState>((set, get) => ({
     if (prior.requestSeq !== seq) return state;
     return { groupsByMode: { ...state.groupsByMode, [mode]: { ...prior, status: "error", error } } };
   }),
+  cancelGroups: (mode, seq) => set((state) => {
+    const prior = state.groupsByMode[mode];
+    if (prior?.requestSeq !== seq || prior.status !== "loading") return state;
+    return { groupsByMode: { ...state.groupsByMode, [mode]: { ...prior, status: prior.items.length ? "ready" : "idle" } } };
+  }),
+  cancelPage: (key, seq) => set((state) => {
+    const prior = state.pages[key];
+    if (prior?.requestSeq !== seq || prior.status !== "loading") return state;
+    return { pages: { ...state.pages, [key]: { ...prior, status: prior.items.length ? "ready" : "idle" } } };
+  }),
+  cancelSearch: (seq) => set((state) => state.searchPage.requestSeq === seq && state.searchPage.status === "loading"
+    ? { searchPage: { ...state.searchPage, status: state.searchPage.items.length ? "ready" : "idle" } }
+    : state),
+  cancelIssues: (seq) => set((state) => state.issuesRequestSeq === seq && state.issuesStatus === "loading"
+    ? { issuesStatus: state.issues.length ? "ready" : "idle" }
+    : state),
   beginPage: (key, reset, retainItems = false) => {
     const prior = get().pages[key] ?? emptySidebarPage<SidebarSession>();
     if (prior.status === "loading" && !reset) return null;

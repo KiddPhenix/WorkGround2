@@ -52,8 +52,8 @@ export function ProjectPanel(props: ProjectPanelProps) {
   // current loaded depth, so the issue warning retry performs a real re-scan
   // without resetting pagination. It stops as soon as the user left that mode.
   const refreshView = useCallback((viewMode: SidebarQueryMode) => {
-    void loadSidebarGroups(viewMode).then(() => {
-      if (useSidebarStore.getState().activeMode !== viewMode) return;
+    void loadSidebarGroups(viewMode).then((applied) => {
+      if (!applied || useSidebarStore.getState().activeMode !== viewMode) return;
       const state = useSidebarStore.getState();
       for (const group of state.groupsByMode[viewMode]?.items ?? []) {
         if (!state.expandedGroups.has(group.id)) continue;

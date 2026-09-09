@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { nextContextMenuFocus } from "../components/ContextMenu";
 import { onSidebarChanged } from "../lib/bridge";
 import { formatSidebarAbsoluteTime, formatSidebarRelativeTime } from "../sidebar/sidebarTime";
-import { isSidebarCursorError, loadSidebarGroups, loadSidebarPage, loadSidebarSearch, refreshSidebarIssues, refreshSidebarSearch } from "../sidebar/sidebarData";
+import { isSidebarCursorError, loadSidebarGroups, loadSidebarPage, loadSidebarSearch, refreshSidebarSearch } from "../sidebar/sidebarData";
 import { isSidebarMenuShortcut } from "../sidebar/sidebarKeyboard";
 import { emptySidebarPage, mergeSearchItems, mergeSidebarSessions, pruneSidebarPages, sidebarSessionKey, useSidebarStore } from "../sidebar/sidebarStore";
 import type { SidebarPage, SidebarSearchItem, SidebarSession } from "../sidebar/types";
@@ -178,13 +178,13 @@ try {
   assert.equal(useSidebarStore.getState().pages["projects:recover"].items.length, 40, "cursor recovery restores the previously loaded project depth");
   assert.equal(useSidebarStore.getState().pages["projects:recover"].items[39].id, "recovered-39", "cursor recovery atomically installs the complete replacement");
 
-  useSidebarStore.setState({ searchQuery: "recover", searchFilter: "sessions", searchPage: { items: recoveredSearch.map((item, index) => ({ ...item, id: `old-search-${index}` })), nextCursor: "expired", total: 60, snapshot: "old", status: "ready", requestSeq: 0 } });
+  useSidebarStore.setState({ activeMode: "search", searchQuery: "recover", searchFilter: "sessions", searchPage: { items: recoveredSearch.map((item, index) => ({ ...item, id: `old-search-${index}` })), nextCursor: "expired", total: 60, snapshot: "old", status: "ready", requestSeq: 0 } });
   await loadSidebarSearch("recover", "sessions", false);
   assert.equal(useSidebarStore.getState().searchPage.items.length, 40, "search cursor recovery restores the previously loaded result depth");
   assert.equal(useSidebarStore.getState().searchPage.items[39].id, "recovered-39", "search recovery atomically installs all rebuilt pages");
 
   const failedRows = recoveredSearch.map((item, index) => ({ ...item, id: `preserved-${index}` }));
-  useSidebarStore.setState({ searchQuery: "fail", searchFilter: "sessions", searchPage: { items: failedRows, nextCursor: "expired", total: 60, snapshot: "old", status: "ready", requestSeq: 0 } });
+  useSidebarStore.setState({ activeMode: "search", searchQuery: "fail", searchFilter: "sessions", searchPage: { items: failedRows, nextCursor: "expired", total: 60, snapshot: "old", status: "ready", requestSeq: 0 } });
   await loadSidebarSearch("fail", "sessions", false);
   assert.deepEqual(useSidebarStore.getState().searchPage.items.map((item) => item.id), failedRows.map((item) => item.id), "failed search cursor recovery preserves the old results");
   assert.equal(useSidebarStore.getState().searchPage.status, "error", "failed search cursor recovery exposes a retryable error");
@@ -356,9 +356,11 @@ assert.match(shell, /onOpenRecentSessionMenu=\{openRecentSessionMenu\}/, "Primar
 assert.match(sessionList, /ProjectGlyph icon=\{row\.icon\} open=\{row\.expanded\}/, "project rows render the configured icon with a folder fallback");
 assert.ok(/tabIndex=\{virtualRow\.index === activeIndex \? 0 : -1\}/.test(sessionList) && /ArrowDown/.test(sessionList) && /ArrowUp/.test(sessionList) && /ArrowRight/.test(sessionList) && /ArrowLeft/.test(sessionList) && /event\.key === "Enter"/.test(sessionList), "virtual rows expose roving tabindex and basic list/tree keyboard navigation");
 assert.match(sessionList, /aria-haspopup=\{row\.onMenu \? "menu" : undefined\}[\s\S]*onKeyDown=\{\(event\) => openRowMenu\(event, row\)\}[\s\S]*onContextMenu=\{\(event\) => openRowMenu\(event, row\)\}/, "focused rows expose an ARIA menu and support keyboard/native context-menu events");
-assert.match(sidebarData, /refreshSidebarPage[\s\S]*targetCount[\s\S]*do \{[\s\S]*Math\.min\(50, remaining\)[\s\S]*while \(cursor && combined\.length < targetCount\)/, "refresh refetches the previously loaded row count before atomically replacing it");
-assert.match(sidebarData, /isSidebarCursorError\(error\)[\s\S]*loadedCount[\s\S]*await refreshSidebarPage\(mode, groupID, loadedCount\)/, "project cursor recovery delegates to the depth-preserving atomic refresh");
-assert.match(sidebarData, /isSidebarCursorError\(error\)[\s\S]*await refreshSidebarSearch\(query, filter, current\.searchPage\.items\.length\)/, "search cursor recovery delegates to the depth-preserving atomic refresh");
+assert.match(sidebarData, /runRefreshPageChain[\s\S]*targetCount = Math\.max\(PAGE_SIZE, loadedCount, currentDepth\)[\s\S]*Math\.min\(50, remaining\)[\s\S]*combined\.length >= targetCount/, "the shared refresh engine refetches the previously loaded depth before atomically replacing the page");
+assert.match(sidebarData, /isSidebarCursorError\(call\.error\)[\s\S]*return runRefreshPageChain\(key, mode, groupID, loadedCount\)/, "project cursor recovery escalates in place to the depth-preserving atomic refresh");
+assert.match(sidebarData, /isSidebarCursorError\(call\.error\)[\s\S]*return runRefreshSearchChain\(query, filter, loadedCount\)/, "search cursor recovery escalates in place to the depth-preserving atomic refresh");
+assert.match(sidebarData, /const ACTIVE_LIMIT = 4;[\s\S]*chainSuperseded\(key, live\)[\s\S]*return false/, "page refresh chains stop paging as soon as the view changed or a newer same-key intent merged");
+assert.ok(/mergePending\(gate, chain\)/.test(sidebarData) && /pending: SidebarChain/.test(sidebarData), "same-key refresh intents merge into one pending catch-up instead of queueing duplicates");
 assert.match(projectPanel, /page\.items\.length > 0 \? refreshSidebarPage\(mode, group\.id, page\.items\.length\) : loadSidebarPage\(mode, group\.id, true\)/, "a failed deep refresh retries atomically at the previous loaded depth");
 assert.match(searchPanel, /priorRefreshRef[\s\S]*refreshSignal[\s\S]*refreshSidebarSearch\(state\.searchQuery\.trim\(\), state\.searchFilter, state\.searchPage\.items\.length\)/, "search mode reacts to refresh signals without discarding its loaded depth");
 assert.match(bridge, /let groupCursor: string \| undefined;[\s\S]*cursor: groupCursor[\s\S]*!groupMatches[\s\S]*while \(groupCursor\)/, "browser mock search walks every group page and lets project-name matches include its sessions");
