@@ -419,6 +419,9 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			case "input_json_delta":
 				if tc := tools[ev.Index]; tc != nil {
 					tc.Arguments += ev.Delta.PartialJSON
+					if ev.Delta.PartialJSON != "" && !send(provider.Chunk{Type: provider.ChunkProgress}) {
+						return
+					}
 				}
 			}
 		case "content_block_stop":

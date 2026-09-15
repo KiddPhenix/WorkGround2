@@ -20,6 +20,8 @@ Even when WorkGround2 is explicitly requested, install, create, or update Skills
 7. Poll with `scripts/dispatch.ps1 -PollOnly -SessionID <id>`. Each call returns one bounded status snapshot; repeat only while the outcome is `running`.
 8. Parallelize only independent packets with unambiguous session routing. Exit code 0 from dispatch means accepted, not completed.
 
+When snapshots include `progress`, compare its token counters and actual progress timestamps across polls. Check the phase and active tools before interpreting unchanged tokens: a tool can run without producing model tokens. Providers may report usage only at response completion; respect the reported availability/source. Missing progress on older versions is unknown, not zero. Silence or unchanged counters alone do not establish a stuck worker or justify taking over its work.
+
 ## Interactions
 
 When polling returns `pendingInteraction`:

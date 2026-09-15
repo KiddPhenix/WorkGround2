@@ -43,6 +43,7 @@ func ToWire(e event.Event) Event {
 	case event.ToolDispatch, event.ToolResult, event.ToolProgress:
 		wt := &Tool{
 			ID: e.Tool.ID, Name: e.Tool.Name, Args: e.Tool.Args,
+			StopID: e.Tool.StopID, Stopped: e.Tool.Stopped,
 			Output: e.Tool.Output, Err: e.Tool.Err,
 			ReadOnly: e.Tool.ReadOnly, Truncated: e.Tool.Truncated,
 			DurationMs: e.Tool.DurationMs, Partial: e.Tool.Partial,
@@ -206,6 +207,8 @@ type Profile struct {
 // Tool is the JSON form of an event.Tool.
 type Tool struct {
 	ID         string   `json:"id,omitempty"`
+	StopID     string   `json:"stopId,omitempty"`
+	Stopped    bool     `json:"stopped,omitempty"`
 	Name       string   `json:"name"`
 	Args       string   `json:"args,omitempty"`
 	Output     string   `json:"output,omitempty"`

@@ -31,7 +31,15 @@ Read one bounded snapshot for that exact session. Repeat only when the outcome i
 & '<skill-root>\scripts\dispatch.ps1' -Workspace '<repo-root>' -PollOnly -SessionID $sessionID -CliPath $wg
 ```
 
+Newer status responses include a `progress` object, preserved by `PollOnly` in running, interaction, and completed snapshots. Compare `inputTokens` / `outputTokens` together with the reported source, timestamps, phase, and active tools. Usage may arrive only when a model response finishes; tool execution can continue while token counters stay unchanged. Treat missing or null progress as unavailable, and keep the same SessionID while investigating an apparent stall.
+
+`progress` includes `progressSeq`, `phase`, `activeTools`, provider-reported `inputTokens` / `outputTokens`, `usageMode`, `usageSource`, `countsScope`, and activity timestamps. Counts accumulate within the current executor runtime (including compaction, excluding subagents and unreported usage); runtime replacement resets them. `usageMode` is `awaiting_usage`, `stream_reported`, `response_complete`, or `unavailable`. Real text, reasoning, tool argument chunks and tool output advance `progressSeq`; polling and elapsed time do not. A quiet tool may legitimately have unchanged counters, so inspect its name, elapsed time and `stopRequested` rather than treating it as dead.
+
+The Desktop running tool card supports **Stop tool** and keeps the conversation active. Automation clients can POST `/api/v1/session/stop-tool` with an explicit `sessionId` and the current `activeTools[].stopId`, using the same authenticated Desktop transport. Never substitute `callId`: stop IDs are unique per execution. Replies distinguish `accepted`, `already_stopped`, and `finished`; accepted means cancellation requested, and the tool result confirms settlement. Stopping `wait` ends the wait without killing its independent job.
+
 Continue an existing session without creating another one:
+
+Use `submit` for a follow-up after foreground work ends. Its acknowledgement alone does not prove that an already-running turn incorporated new guidance; keep additions locally and submit the consolidated remainder once that turn completes.
 
 ```powershell
 & $wg desktop submit --session $sessionID --yolo --no-wait '<follow-up>'

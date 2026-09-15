@@ -2181,8 +2181,13 @@ export function Composer({
     }
   };
 
-  const composerCardStyle = composerHeight === null ? undefined : ({ "--composer-height": `${composerHeight}px` } as CSSProperties);
-  const textareaStyle = composerHeight === null && textareaAutoHeight !== null
+  // Fold empty running input without overwriting the user's saved height.
+  // Keep resizing interactive; typing or finishing restores the normal layout.
+  const runIdleFold = running && !composerResizing && text.trim() === "";
+  const composerCardStyle = composerHeight === null || runIdleFold
+    ? undefined
+    : ({ "--composer-height": `${composerHeight}px` } as CSSProperties);
+  const textareaStyle = !runIdleFold && composerHeight === null && textareaAutoHeight !== null
     ? ({ height: `${textareaAutoHeight}px`, overflowY: textareaAutoOverflow ? "auto" : "hidden" } as CSSProperties)
     : undefined;
   const composerAutoExpanded = composerHeight === null && textareaAutoHeight !== null && textareaAutoHeight > 40;
@@ -2653,7 +2658,7 @@ export function Composer({
         </div>
       )}
       <div
-        className={`composer-card${composerHeight !== null || composerResizing ? " composer-card--resized" : ""}${composerAutoExpanded ? " composer-card--autosized" : ""}${composerResizing ? " composer-card--resizing" : ""}${running ? " composer-card--running" : ""}`}
+        className={`composer-card${!runIdleFold && (composerHeight !== null || composerResizing) ? " composer-card--resized" : ""}${!runIdleFold && composerAutoExpanded ? " composer-card--autosized" : ""}${composerResizing ? " composer-card--resizing" : ""}${running ? " composer-card--running" : ""}`}
         ref={composerCardRef}
         style={composerCardStyle}
       >

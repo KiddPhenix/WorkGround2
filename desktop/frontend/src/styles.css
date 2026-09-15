@@ -6436,6 +6436,56 @@ body > .mermaid-diagram--fullscreen {
   -webkit-app-region: no-drag;
   overflow: hidden;
 }
+/* Per-card single-tool stop: the head button keeps expanding the card; the stop
+   control sits beside it, only on running cards. */
+.tool__headrow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.tool__headrow .tool__head {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tool__stopcell {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding-right: 8px;
+  gap: 6px;
+  max-width: 45%;
+}
+.tool__stop-error {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--danger, #d64541);
+  font-size: 12px;
+}
+.tool__stop {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  white-space: nowrap;
+}
+.tool__stop:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.tool__stop:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.tool__stop--error {
+  color: var(--danger, #d64541);
+  border-color: var(--danger, #d64541);
+}
 .tool__head:hover {
   color: var(--fg);
 }

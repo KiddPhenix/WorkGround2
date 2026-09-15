@@ -288,6 +288,13 @@ type Agent struct {
 	// run loop writes it while a frontend's status line reads it, so it is atomic.
 	lastUsage atomic.Pointer[provider.Usage]
 
+	// progressMu guards progress: the per-call stop registry (active tool
+	// contexts keyed by unique stop ID) and the cumulative usage/phase snapshot behind
+	// ProgressSnapshot/StopToolCall. A status reader only takes this lock — it
+	// never blocks on the model or tool goroutines.
+	progressMu sync.Mutex
+	progress   progressState
+
 	// sessCacheHit/sessCacheMiss accumulate cache tokens across every API call
 	// this session, so frontends can show the aggregate hit-rate (Σhit/Σ(hit+miss))
 	// — a steadier, cost-oriented number than the single-turn rate. They are NOT
@@ -693,8 +700,14 @@ func (a *Agent) Session() *Session {
 // running turn (it only fires while idle); sessMu guards the pointer swap itself.
 func (a *Agent) SetSession(s *Session) {
 	a.sessMu.Lock()
+	prev := a.session
 	a.session = s
 	a.sessMu.Unlock()
+	if prev != s {
+		// New session runtime: cumulative token counters, phase and the
+		// per-call stop registry all reset — counts never leak across sessions.
+		a.resetProgressTracking()
+	}
 	a.sessCacheHit.Store(0)
 	a.sessCacheMiss.Store(0)
 	if s != nil {
@@ -714,6 +727,7 @@ func (a *Agent) ExecuteSyntheticToolCall(ctx context.Context, userPrompt string,
 	if a == nil {
 		return "", errors.New("agent: nil Agent")
 	}
+	defer a.setProgressPhase("idle")
 	// 1. Write synthetic user message.
 	a.session.Add(provider.Message{
 		Role:    provider.RoleUser,
@@ -754,6 +768,7 @@ func (a *Agent) ExecuteSyntheticToolCall(ctx context.Context, userPrompt string,
 		Args:       call.Arguments,
 		Output:     displayOutput,
 		Err:        outcome.errMsg,
+		Stopped:    outcome.stopped,
 		ReadOnly:   t != nil && t.ReadOnly(),
 		Truncated:  outcome.truncated,
 		DurationMs: duration,
@@ -1055,6 +1070,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	}
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
+	a.resetProgressTracking()
 	return a
 }
 
@@ -1175,6 +1191,8 @@ func lastUserTurn(msgs []provider.Message) string {
 // new user message; Continue reaches it with the history already carrying the
 // user turn, so an interrupted model/tool round resumes in place.
 func (a *Agent) runSteps(ctx context.Context, input string) error {
+	a.setProgressPhase("model")
+	defer a.setProgressPhase("idle")
 	finalReadinessBlocks := 0
 	emptyFinalBlocks := 0
 	handoffNudges := 0
@@ -1200,6 +1218,7 @@ func (a *Agent) runSteps(ctx context.Context, input string) error {
 		}
 		a.maybeNoticeAnchored()
 
+		a.setProgressPhase("model")
 		text, reasoning, signature, calls, usage, interrupted, partialToolStarted, err := a.stream(ctx, step+1)
 		if err != nil {
 			if interrupted && streamRecoveries < maxStreamRecoveries {
@@ -1321,7 +1340,9 @@ func (a *Agent) runSteps(ctx context.Context, input string) error {
 			return newMaxStepsPause(a.maxSteps, a.maxStepsKey)
 		}
 
+		a.setProgressPhase("tool")
 		results, images := a.executeBatch(ctx, calls)
+		a.setProgressPhase("model")
 		for i, call := range calls {
 			a.session.Add(provider.Message{
 				Role:       provider.RoleTool,
@@ -1857,6 +1878,9 @@ func streamRecoveryMessage(hasPartialText, hadPartialTool bool) string {
 // accumulated text and reasoning are also returned so the caller can round-trip
 // reasoning on the next turn.
 func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, []provider.ToolCall, *provider.Usage, bool, bool, error) {
+	recordUsage := a.progressUsage(a.usageSource)
+	defer recordUsage(nil, true)
+	var cacheHit, cacheMiss int64
 	ctx = provider.WithRetryNotify(ctx, func(info provider.RetryInfo) {
 		a.sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: info.Attempt, RetryMax: info.Max})
 	})
@@ -1955,6 +1979,9 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 		}
 		switch chunk.Type {
 		case provider.ChunkReasoning:
+			if chunk.Text != "" {
+				a.recordProgress()
+			}
 			reasoning.WriteString(chunk.Text)
 			if chunk.Signature != "" {
 				signature = chunk.Signature
@@ -1963,11 +1990,15 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 				a.sink.Emit(event.Event{Kind: event.Reasoning, Text: chunk.Text})
 			}
 		case provider.ChunkText:
+			if chunk.Text != "" {
+				a.recordProgress()
+			}
 			text.WriteString(chunk.Text)
 			if !protectOutput {
 				a.sink.Emit(event.Event{Kind: event.Text, Text: chunk.Text})
 			}
 		case provider.ChunkToolCallStart:
+			a.recordProgress()
 			partialToolStarted = true
 			// Surface the tool card as soon as the call begins — before its
 			// (possibly large) arguments finish streaming — so the user sees it
@@ -1979,13 +2010,22 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 				}})
 			}
 		case provider.ChunkToolCall:
+			a.recordProgress()
 			partialToolStarted = true
 			calls = append(calls, *chunk.ToolCall)
+		case provider.ChunkProgress:
+			a.recordProgress()
 		case provider.ChunkUsage:
+			if chunk.Usage == nil {
+				continue
+			}
+			recordUsage(chunk.Usage, false)
 			usage = chunk.Usage
 			a.lastUsage.Store(chunk.Usage)
-			a.sessCacheHit.Add(int64(chunk.Usage.CacheHitTokens))
-			a.sessCacheMiss.Add(int64(chunk.Usage.CacheMissTokens))
+			nextHit, nextMiss := int64(chunk.Usage.CacheHitTokens), int64(chunk.Usage.CacheMissTokens)
+			a.sessCacheHit.Add(nextHit - cacheHit)
+			a.sessCacheMiss.Add(nextMiss - cacheMiss)
+			cacheHit, cacheMiss = nextHit, nextMiss
 		case provider.ChunkError:
 			if provider.IsStreamInterrupted(chunk.Err) {
 				stored, _ := finishReasoning()
@@ -2131,6 +2171,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) ([]
 			Args:       c.Arguments,
 			Output:     displayOutput,
 			Err:        o.errMsg,
+			Stopped:    o.stopped,
 			ReadOnly:   ok && t.ReadOnly(),
 			Truncated:  o.truncated,
 			DurationMs: durations[i],
@@ -2389,6 +2430,7 @@ func batchStormSignature(calls []provider.ToolCall, outcomes []toolOutcome) (str
 // blocked narrows that to a refusal (plan mode / permission). truncMsg is set
 // (without the "· " prefix) when the output was head+tailed.
 type toolOutcome struct {
+	stopped   bool
 	output    string
 	blocked   bool
 	errMsg    string
@@ -2550,15 +2592,36 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	}
 	callID := call.ID
 	cctx = tool.WithProgress(cctx, func(chunk string) {
+		if chunk != "" {
+			a.recordProgress()
+		}
 		a.sink.Emit(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: callID, Output: chunk}})
 	})
+	// Each executing tool call runs under its own child context so the user can
+	// stop exactly this call (StopToolCall) without cancelling the turn or its
+	// sibling calls. Calls without an ID cannot be addressed and keep the turn
+	// context directly.
+	execCtx := cctx
+	finishCall := func() bool { return false }
+	if callID != "" {
+		execCtx, finishCall = a.beginToolCall(cctx, callID, call.Name)
+	}
+	defer finishCall()
 	var result string
 	var images []string
 	var err error
 	if executor, ok := t.(tool.ImageExecutor); ok {
-		result, images, err = executor.ExecuteImages(cctx, json.RawMessage(call.Arguments))
+		result, images, err = executor.ExecuteImages(execCtx, json.RawMessage(call.Arguments))
 	} else {
-		result, err = t.Execute(cctx, json.RawMessage(call.Arguments))
+		result, err = t.Execute(execCtx, json.RawMessage(call.Arguments))
+	}
+	stopped := finishCall()
+	if stopped {
+		// A user stop must not read as a successful receipt (a canonical todo
+		// would advance from an unconfirmed call) nor as an ordinary retryable
+		// tool failure. Mark it with the sentinel, then emit the explicit
+		// user-stopped result below.
+		err = errToolStoppedByUser
 	}
 	if a.evidence != nil {
 		if call.Name == "complete_step" {
@@ -2576,9 +2639,13 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 		}
 	}
 	// PostToolUse hooks observe the result (they can't block); fired whether the
-	// call succeeded or errored, since the tool did run.
+	// call succeeded, errored, or was stopped, since the tool did run.
 	if a.hooks != nil {
 		a.hooks.PostToolUse(ctx, call.Name, json.RawMessage(call.Arguments), redactProtectedText(result))
+	}
+	if stopped {
+		body, truncMsg := truncateToolOutput(stoppedToolMessage(call.Name, result))
+		return toolOutcome{output: body, errMsg: "tool stopped by user: " + call.Name, stopped: true, truncated: truncMsg != "", truncMsg: truncMsg}
 	}
 	if err != nil {
 		detail := result

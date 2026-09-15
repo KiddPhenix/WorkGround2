@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,7 +60,56 @@ func TestDispatchScriptPollOnlyReturnsOneRunningSnapshot(t *testing.T) {
 	}
 }
 
-func writeDispatchFake(t *testing.T, dir string) string {
+func TestDispatchScriptPreservesProgress(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PowerShell dispatch integration is Windows-only")
+	}
+	for _, state := range []string{"running", "completed", "interaction_required", "unknown", "legacy"} {
+		t.Run(state, func(t *testing.T) {
+			dir := t.TempDir()
+			progress := map[string]any{
+				"inputTokens":  float64(1234),
+				"outputTokens": float64(56),
+				"phase":        "tool",
+				"activeTools": []any{map[string]any{
+					"callId": "wait-1", "name": "wait", "elapsedMs": float64(15000),
+				}},
+			}
+			status := map[string]any{
+				"sessionId": "session-fake", "path": `C:\fake.jsonl`,
+				"running": true, "foregroundActive": true, "pendingPrompt": false,
+				"progress": progress,
+			}
+			wantOutcome := state
+			switch state {
+			case "completed":
+				status["running"], status["foregroundActive"] = false, false
+			case "interaction_required":
+				status["pendingPrompt"] = true
+				status["pendingInteraction"] = map[string]any{
+					"id": "approval-1", "kind": "approval", "tool": "bash", "subject": "command", "reason": "approval",
+				}
+			case "unknown":
+				status["progress"] = nil
+				wantOutcome = "running"
+			case "legacy":
+				delete(status, "progress")
+				wantOutcome = "running"
+			}
+			got := runDispatchSkill(t, "-Workspace", dir, "-PollOnly", "-SessionID", "session-fake", "-CliPath", writeDispatchFake(t, dir, status))
+			if got["outcome"] != wantOutcome {
+				t.Fatalf("outcome = %v, want %s", got["outcome"], wantOutcome)
+			}
+			want, wantPresent := status["progress"]
+			actual, present := got["progress"]
+			if present != wantPresent || !reflect.DeepEqual(actual, want) {
+				t.Fatalf("progress = %#v (present=%v), want %#v (present=%v)", actual, present, want, wantPresent)
+			}
+		})
+	}
+}
+
+func writeDispatchFake(t *testing.T, dir string, statuses ...map[string]any) string {
 	t.Helper()
 	path := filepath.Join(dir, "fake-cli.ps1")
 	script := `
@@ -78,6 +129,15 @@ switch ($args[1]) {
 }
 throw 'unexpected desktop subcommand'
 `
+	if len(statuses) > 0 {
+		data, err := json.Marshal(statuses[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := strings.Index(script, "        Write-Output '{\"sessionId\"")
+		end := strings.Index(script[start:], "\n") + start
+		script = script[:start] + "        Write-Output '" + strings.ReplaceAll(string(data), "'", "''") + "'" + script[end:]
+	}
 	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}

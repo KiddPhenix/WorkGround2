@@ -536,6 +536,12 @@ func NewApp() *App {
 		completionSummaryInFlight: map[string]*completionSummaryCall{},
 		widgetRedraw:              newWidgetRedrawScheduler(),
 	}
+	// The post-switch refresh ticks decide between re-asserting the cleared
+	// main-window HRGN (main mode) and an in-place repaint (widget/icon modes)
+	// through the committed widgetMu state.
+	if a.widgetRedraw != nil {
+		a.widgetRedraw.redraw = a.widgetPostSwitchRefresh
+	}
 	root := strings.TrimSpace(config.MemoryUserDir())
 	decisionPath := ""
 	if root != "" {
@@ -1260,6 +1266,23 @@ func (a *App) CancelTab(tabID string) {
 	if ctrl := a.ctrlByTabID(tabID); ctrl != nil {
 		ctrl.Cancel()
 	}
+}
+
+// StopToolTab cancels a runtime-issued tool execution in an explicit tab.
+// Accepted means cancellation was requested; ToolResult confirms actual completion.
+func (a *App) StopToolTab(tabID, stopID string) (agent.ToolStopResult, error) {
+	if strings.TrimSpace(tabID) == "" || strings.TrimSpace(stopID) == "" {
+		return agent.ToolStopResult{}, fmt.Errorf("tabId and stopId are required")
+	}
+	tab, ctrl := a.tabAndCtrlByID(tabID)
+	if ctrl == nil {
+		return agent.ToolStopResult{}, workspaceNotReadyErr(tab)
+	}
+	tc, ok := ctrl.(control.ToolCallControl)
+	if !ok {
+		return agent.ToolStopResult{}, fmt.Errorf("tool call control is unavailable for this session")
+	}
+	return tc.StopToolCall(stopID), nil
 }
 
 // Steer sends mid-turn guidance to the agent without interrupting the in-flight request.
@@ -2448,12 +2471,19 @@ func (a *App) ForkForSession(sessionID string, turn int) (TabMeta, error) {
 		return TabMeta{}, err
 	}
 	topicID := newTopicID()
+	// Fork topics start from an auto placeholder title (forkTopicTitle) so the
+	// branch row is distinguishable from its source in the tree while the fork
+	// has no content of its own yet. Auto (not manual) keeps the fork's title
+	// able to follow its own later turns: once the forked session produces a
+	// new user message (e.g. the user re-asks about another city), the same
+	// auto-title promotion path that titles ordinary sessions will update this
+	// topic, keeping the Global row in sync with the header/widget previews.
 	topicTitle := forkTopicTitle(sourceTitle)
 	titleRoot := workspaceRoot
 	if scope == "global" {
 		titleRoot = ""
 	}
-	if err := setTopicTitle(titleRoot, topicID, topicTitle); err != nil {
+	if err := setTopicTitleWithSource(titleRoot, topicID, topicTitle, topicTitleSourceAuto); err != nil {
 		return TabMeta{}, err
 	}
 	m, _ := agent.EnsureBranchMeta(newPath)
@@ -4922,6 +4952,7 @@ type HistoryMessage struct {
 	ToolName           string                    `json:"toolName,omitempty"`
 	ToolResultArchived bool                      `json:"toolResultArchived,omitempty"`
 	ToolResultError    string                    `json:"toolResultError,omitempty"`
+	ToolResultStopped  bool                      `json:"toolResultStopped,omitempty"`
 	Pending            bool                      `json:"pending,omitempty"`
 	Trigger            string                    `json:"trigger,omitempty"`
 	Messages           int                       `json:"messages,omitempty"`
@@ -4931,6 +4962,7 @@ type HistoryMessage struct {
 
 type HistoryToolCall struct {
 	ID                string `json:"id"`
+	StopID            string `json:"stopId,omitempty"`
 	Name              string `json:"name"`
 	Arguments         string `json:"arguments"`
 	Subject           string `json:"subject,omitempty"`
@@ -4985,10 +5017,11 @@ func (a *App) HistoryPageForTab(tabID string, beforeTurn, limit int) HistoryPage
 		}
 		return page
 	}
+	progress := toolProgress(ctrl)
 	msgs := ctrl.History()
 	dir := controllerSessionDir(ctrl)
 	path := ctrl.SessionPath()
-	return historyPageFromProviderMessages(
+	page := historyPageFromProviderMessages(
 		msgs,
 		sessionDisplayResolver(dir, path),
 		sessionPlannerDisplayTurns(dir, path),
@@ -4997,6 +5030,10 @@ func (a *App) HistoryPageForTab(tabID string, beforeTurn, limit int) HistoryPage
 		limit,
 		path,
 	)
+	if page.EndTurn == page.TotalTurns {
+		attachActiveTools(page.Messages, progress)
+	}
+	return page
 }
 
 func normalizeHistoryPageLimit(limit int) int {
@@ -5080,15 +5117,49 @@ func (a *App) HistoryForTab(tabID string) []HistoryMessage {
 		}
 		return messages
 	}
+	progress := toolProgress(ctrl)
 	msgs := ctrl.History()
 	dir := controllerSessionDir(ctrl)
 	path := ctrl.SessionPath()
-	return historyMessagesWithPlannerDisplays(
+	messages := historyMessagesWithPlannerDisplays(
 		msgs,
 		sessionDisplayResolver(dir, path),
 		sessionPlannerDisplayTurns(dir, path),
 		ctrl.CheckpointTurnsByMessageIndex(),
 	)
+	attachActiveTools(messages, progress)
+	return messages
+}
+
+func toolProgress(ctrl control.SessionAPI) agent.ProgressSnapshot {
+	if port, ok := ctrl.(control.ToolCallControl); ok {
+		return port.ProgressSnapshot()
+	}
+	return agent.ProgressSnapshot{}
+}
+
+// Only the latest unresolved invocation can receive a live stop capability.
+// Read progress before history: a later invocation must never authorize a stop
+// from an older history page that happens to reuse the provider's call ID.
+func attachActiveTools(messages []HistoryMessage, progress agent.ProgressSnapshot) {
+	active := make(map[string]string, len(progress.ActiveTools))
+	for _, call := range progress.ActiveTools {
+		active[call.CallID] = call.StopID
+	}
+	for i := len(messages) - 1; i >= 0 && len(active) > 0; i-- {
+		msg := &messages[i]
+		if msg.Role == "user" {
+			break
+		}
+		if msg.Role == "tool" {
+			delete(active, msg.ToolCallID)
+		}
+		for j := range msg.ToolCalls {
+			call := &msg.ToolCalls[j]
+			call.StopID = active[call.ID]
+			delete(active, call.ID)
+		}
+	}
 }
 
 func (a *App) HistoryCheckpointTurnsForTab(tabID string) []int {
@@ -5203,6 +5274,7 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 		if m.Role == provider.RoleTool {
 			hm.ToolCallID = m.ToolCallID
 			hm.ToolName = m.Name
+			hm.ToolResultStopped = agent.IsStoppedResult(m.Content)
 			hm.Content, hm.ToolResultArchived, hm.ToolResultError = historyToolResultContent(skill.RedactProtectedContent(m.Content), m.ToolCallID != "")
 		}
 		out = append(out, hm)

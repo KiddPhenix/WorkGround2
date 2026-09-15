@@ -1464,6 +1464,11 @@ export const zhTW: Record<DictKey, string> = {
   "msg.copied": "已複製",
 
   // 工具卡片摘要
+  "tool.stop": "停止工具",
+  "tool.stopping": "停止中…",
+  "tool.stopRetry": "重試停止",
+  "tool.stopHint": "停止此工具並繼續目前對話",
+  "tool.stopInvalid": "工具停止回應無效",
   "tool.stepOne": "{n} 步",
   "tool.stepOther": "{n} 步",
   "tool.truncated": "輸出已截斷",

@@ -122,6 +122,8 @@ type Profile struct {
 // in. Args is the raw JSON arguments — a sink compacts it for display.
 type Tool struct {
 	ID         string
+	StopID     string // runtime cancellation capability; never a provider call ID
+	Stopped    bool   // tool returned after an explicit single-call stop
 	Name       string
 	Args       string
 	Output     string // ToolResult: the result text fed to the model

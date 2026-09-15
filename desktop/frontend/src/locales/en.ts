@@ -2145,6 +2145,11 @@ export const en = {
   "msg.copied": "Copied",
 
   // tool card summaries
+  "tool.stop": "Stop tool",
+  "tool.stopping": "Stopping…",
+  "tool.stopRetry": "Retry stop",
+  "tool.stopHint": "Stop this tool and continue the conversation",
+  "tool.stopInvalid": "Invalid tool stop response",
   "tool.stepOne": "{n} step",
   "tool.stepOther": "{n} steps",
   "tool.truncated": "output truncated",

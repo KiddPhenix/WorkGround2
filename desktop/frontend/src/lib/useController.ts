@@ -100,6 +100,8 @@ export type Item =
   | {
       kind: "tool";
       id: string;
+      callId?: string;
+      stopId?: string;
       name: string;
       args: string;
       readOnly: boolean;
@@ -588,10 +590,22 @@ function backendStatusFromTab(tab: TabMeta, options: { finishActiveTurn?: boolea
 // ---- reducer helpers (unchanged logic) ----
 
 export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: string, startSeq = 0): { items: Item[]; seq: number } {
-  const resultByID = new Map<string, HistoryMessage>();
-  for (const m of messages) {
-    if (m.role === "tool" && m.toolCallId && !resultByID.has(m.toolCallId)) {
-      resultByID.set(m.toolCallId, m);
+  const resultByCall = new Map<string, HistoryMessage>();
+  const pendingCalls = new Map<string, string[]>();
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "user") pendingCalls.clear();
+    if (m.role === "assistant") {
+      m.toolCalls?.forEach((call, j) => {
+        if (!call.id) return;
+        const pending = pendingCalls.get(call.id) ?? [];
+        pending.push(positionalToolResultKey(i, j));
+        pendingCalls.set(call.id, pending);
+      });
+    }
+    if (m.role === "tool" && m.toolCallId) {
+      const key = pendingCalls.get(m.toolCallId)?.shift();
+      if (key) resultByCall.set(key, m);
     }
   }
   const positionalResults = positionalToolResults(messages);
@@ -654,7 +668,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
       for (let callIndex = 0; callIndex < toolCalls.length; callIndex += 1) {
         const tc = toolCalls[callIndex];
         const positionalResult = tc.id ? undefined : positionalResults.get(positionalToolResultKey(messageIndex, callIndex));
-        const result = tc.id ? resultByID.get(tc.id) : positionalResult?.message;
+        const result = tc.stopId ? undefined : tc.id ? resultByCall.get(positionalToolResultKey(messageIndex, callIndex)) : positionalResult?.message;
         if (tc.id) consumedToolIDs.add(tc.id);
         const archived = Boolean(tc.argumentsArchived || result?.toolResultArchived);
         const output = result?.toolResultArchived ? undefined : result?.content ?? "";
@@ -667,11 +681,13 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
           : undefined;
         items.push({
           kind: "tool",
-          id: tc.id || `${idPrefix}tool${seq}`,
+          id: tc.id ? (items.some(it => it.id === tc.id) ? `${tc.id}@${seq}` : tc.id) : `${idPrefix}tool${seq}`,
+          callId: tc.id,
           name: tc.name,
+          stopId: tc.stopId,
           args: tc.arguments ?? "",
           readOnly: isReadOnlyTool(tc.name),
-          status: result ? (error ? "error" : "done") : "stopped",
+          status: tc.stopId ? "running" : result?.toolResultStopped ? "stopped" : result ? (error ? "error" : "done") : "stopped",
           output,
           error,
           dataArchived: archived || undefined,
@@ -699,7 +715,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         name,
         args: "",
         readOnly: isReadOnlyTool(name),
-        status: error ? "error" : "done",
+        status: m.toolResultStopped ? "stopped" : error ? "error" : "done",
         output,
         error,
         dataArchived: m.toolResultArchived || undefined,
@@ -883,7 +899,7 @@ function applyEvent(s: State, e: WireEvent): State {
       // avoiding a "name → command" visual jump.
       if (t.partial) return s;
       const id = t.id || `tool${s.seq}`;
-      const idx = s.items.findIndex((it) => it.kind === "tool" && it.id === id);
+      const idx = s.items.findIndex((it) => it.kind === "tool" && (it.callId ?? it.id) === id && it.status === "running" && (it.parentId ?? "") === (t.parentId ?? ""));
       if (idx >= 0) {
         const next = [...s.items];
         const it = next[idx];
@@ -910,14 +926,14 @@ function applyEvent(s: State, e: WireEvent): State {
       const args = t.args ?? "";
       const fileDiff = fileDiffFromWire(t);
       const assistStatus = t.name === "request_help" ? requestHelpFromArgs(args) : undefined;
-      return stageResult({ ...s, seq: s.seq + 1, items: [...s.items, { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, status: "running", summary: summarizeFileDiff(fileDiff) || summarize(t.name, args), fileDiff, isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile, assistStatus }] }, s, evStage);
+      return stageResult({ ...s, seq: s.seq + 1, items: [...s.items, { kind: "tool", id: s.items.some(it => it.id === id) ? `${id}@${s.seq}` : id, callId: id, name: t.name, args, readOnly: t.readOnly, status: "running", summary: summarizeFileDiff(fileDiff) || summarize(t.name, args), fileDiff, isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile, assistStatus }] }, s, evStage);
     }
     case "tool_result": {
       const t = e.tool;
       if (!t) return s;
       const next = [...s.items];
-      let idx = t.id ? next.findIndex((it) => it.kind === "tool" && it.id === t.id) : -1;
-      if (idx < 0) {
+      let idx = t.id ? next.findIndex((it) => it.kind === "tool" && (it.callId ?? it.id) === t.id && it.status === "running" && (it.parentId ?? "") === (t.parentId ?? "")) : -1;
+      if (idx < 0 && !t.id) {
         for (let i = next.length - 1; i >= 0; i--) {
           const it = next[i];
           if (it.kind === "tool" && it.status === "running") { idx = i; break; }
@@ -936,7 +952,8 @@ function applyEvent(s: State, e: WireEvent): State {
             : existing.assistStatus;
           next[idx] = {
             ...existing,
-            status: t.err ? "error" : "done",
+            status: t.stopped ? "stopped" : t.err ? "error" : "done",
+            stopId: undefined,
             output: t.output,
             error: t.err,
             truncated: t.truncated,
@@ -951,7 +968,7 @@ function applyEvent(s: State, e: WireEvent): State {
     case "tool_progress": {
       const t = e.tool;
       if (!t?.id) return s;
-      const idx = s.items.findIndex((it) => it.kind === "tool" && it.id === t.id);
+      const idx = s.items.findIndex((it) => it.kind === "tool" && (it.callId ?? it.id) === t.id && it.status === "running" && (it.parentId ?? "") === (t.parentId ?? ""));
       if (idx < 0) return s;
       const next = [...s.items];
       const it = next[idx];
@@ -960,7 +977,7 @@ function applyEvent(s: State, e: WireEvent): State {
         const assistStatus = it.name === "request_help"
           ? applyRequestHelpProgress(it.assistStatus ?? requestHelpFromArgs(it.args), t.output ?? "")
           : it.assistStatus;
-        next[idx] = { ...it, output, assistStatus };
+        next[idx] = { ...it, output, assistStatus, stopId: t.stopId ?? it.stopId };
       }
       return stageResult({ ...s, items: next }, s, evStage);
     }

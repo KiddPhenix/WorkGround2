@@ -102,6 +102,7 @@ func (api *remoteAPI) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/session/new", api.handleSessionNew)
 	mux.HandleFunc("/api/v1/session/submit", api.handleSessionSubmit)
 	mux.HandleFunc("/api/v1/session/status", api.handleSessionStatus)
+	mux.HandleFunc("/api/v1/session/stop-tool", api.handleSessionStopTool)
 	mux.HandleFunc("/api/v1/session/approve", api.handleSessionApprove)
 	mux.HandleFunc("/api/v1/session/answer", api.handleSessionAnswer)
 	mux.HandleFunc("/api/v1/workspaces", api.handleWorkspaces)
@@ -462,6 +463,12 @@ func (api *remoteAPI) sessionResponseForTab(tab *WorkspaceTab, status string) ma
 		out["activeRuntimeWork"] = rs.ActiveRuntimeWork
 		out["cancelRequested"] = rs.CancelRequested
 		out["toolApprovalMode"] = currentTabToolApprovalMode(tab)
+		// Progress is a lightweight live snapshot (cumulative token counters,
+		// phase, active tool calls). Sessions whose controller predates the
+		// optional ToolCallControl port simply omit the key.
+		if tc, ok := ctrl.(control.ToolCallControl); ok {
+			out["progress"] = tc.ProgressSnapshot()
+		}
 	}
 	api.applyPendingInteractionForTab(tab, out)
 	api.applySubmittedState(out, path, tabHasActiveRuntimeWork(tab))
@@ -898,6 +905,33 @@ func (api *remoteAPI) handleSessionStatus(w http.ResponseWriter, r *http.Request
 		return
 	}
 	api.writeJSON(w, api.sessionResponseForTab(tab, "ok"))
+}
+
+// handleSessionStopTool cancels one execution without cancelling its turn.
+func (api *remoteAPI) handleSessionStopTool(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		SessionID string `json:"sessionId"`
+		StopID    string `json:"stopId"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil || strings.TrimSpace(body.SessionID) == "" || strings.TrimSpace(body.StopID) == "" {
+		http.Error(w, "sessionId and stopId are required", http.StatusBadRequest)
+		return
+	}
+	tab, status, message := api.remoteSession(body.SessionID)
+	if tab == nil {
+		http.Error(w, message, status)
+		return
+	}
+	result, err := api.app.StopToolTab(tab.ID, body.StopID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	api.writeJSON(w, result)
 }
 
 func (api *remoteAPI) handleSessionApprove(w http.ResponseWriter, r *http.Request) {

@@ -4101,7 +4101,7 @@ func (a *App) maybeAutoTitleTopicFromText(tab *WorkspaceTab, text string) bool {
 		return false
 	}
 	storedTitle := strings.TrimSpace(loadTopicTitle(titleRoot, tab.TopicID))
-	if storedTitle != "" && storedTitle != defaultTopicTitle {
+	if storedTitle != "" && storedTitle != defaultTopicTitle && !isForkDerivedTitle(storedTitle) {
 		return false
 	}
 	nextTitle := topicTitleFromUserText(text)
@@ -4121,7 +4121,7 @@ func autoTitleTopicFromSession(workspaceRoot, topicID, sessionPath string) (stri
 	if source := loadTopicTitleSource(workspaceRoot, topicID); source != topicTitleSourceAuto {
 		return "", false
 	}
-	nextTitle := topicTitleFromSession(sessionPath)
+	nextTitle := topicTitleFromForkAwareSession(sessionPath)
 	if nextTitle == "" || nextTitle == loadTopicTitle(workspaceRoot, topicID) {
 		return "", false
 	}
@@ -4129,6 +4129,33 @@ func autoTitleTopicFromSession(workspaceRoot, topicID, sessionPath string) (stri
 		return "", false
 	}
 	return nextTitle, true
+}
+
+// forkTopicTitleMarker is the suffix forkTopicTitle appends so a fork row stays
+// visually distinct from its source session while it still has no content of
+// its own. auto-title promotion treats such a derived title as a placeholder
+// (not a user rename): the fork's own first message may replace it.
+const forkTopicTitleMarker = " · 分叉"
+
+func isForkDerivedTitle(title string) bool {
+	t := strings.TrimSpace(title)
+	return t == "分叉会话" || strings.HasSuffix(t, forkTopicTitleMarker)
+}
+
+// topicTitleFromForkAwareSession derives the title from the first user message
+// a forked session produced AFTER its branch point. A fork copies the source
+// history up to ForkMessageIndex into its own file, so the copied messages are
+// inherited context, not the fork's own new content; using them would re-title
+// the branch with the parent's first question. When the fork has not produced a
+// new user message yet it returns "" so the caller keeps the existing title
+// (e.g. the "<source> · 分叉" placeholder). Non-fork sessions use the whole
+// file as before.
+func topicTitleFromForkAwareSession(sessionPath string) string {
+	if meta, ok, err := agent.LoadBranchMeta(sessionPath); err == nil && ok && !meta.Recovered &&
+		strings.TrimSpace(meta.ParentID) != "" && meta.ForkTurn >= 0 {
+		return topicTitleFromSessionFrom(sessionPath, meta.ForkMessageIndex)
+	}
+	return topicTitleFromSession(sessionPath)
 }
 
 type topicTitleCandidate struct {
@@ -4300,13 +4327,22 @@ func topicTitleFallbackForOpen(workspaceRoot, topicID, sessionPath string) (stri
 	return "", "", false
 }
 
+// topicTitleFromSession returns the first user message title in path.
 func topicTitleFromSession(path string) string {
+	return topicTitleFromSessionFrom(path, 0)
+}
+
+// topicTitleFromSessionFrom returns the title derived from the first user
+// message at or after message index start (0-based, skipping inherited fork
+// history when start > 0). Empty when the file ends before such a message.
+func topicTitleFromSessionFrom(path string, start int) string {
 	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
 	defer f.Close()
 	dec := json.NewDecoder(f)
+	index := 0
 	for {
 		var msg struct {
 			Role    string `json:"role"`
@@ -4315,6 +4351,11 @@ func topicTitleFromSession(path string) string {
 		if err := dec.Decode(&msg); err != nil {
 			return ""
 		}
+		if index < start {
+			index++
+			continue
+		}
+		index++
 		if msg.Role == "user" {
 			return topicTitleFromUserText(msg.Content)
 		}

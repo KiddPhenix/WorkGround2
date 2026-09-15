@@ -34,6 +34,8 @@ $utf8 = [System.Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = $utf8
 [Console]::OutputEncoding = $utf8
 $OutputEncoding = $utf8
+$script:StatusProgress = $null
+$script:HasStatusProgress = $false
 
 function Write-Outcome {
     param(
@@ -45,6 +47,9 @@ function Write-Outcome {
     $result = [ordered]@{ outcome = $Outcome }
     foreach ($key in $Fields.Keys) {
         $result[$key] = $Fields[$key]
+    }
+    if ($script:HasStatusProgress) {
+        $result['progress'] = $script:StatusProgress
     }
     [Console]::Out.WriteLine(($result | ConvertTo-Json -Depth 20 -Compress))
     exit $ExitCode
@@ -312,6 +317,10 @@ elseif ([string]::IsNullOrWhiteSpace($SessionID)) {
 }
 
 $status = Read-Status -TargetSessionID $SessionID
+if (Has-Property $status 'progress') {
+    $script:StatusProgress = $status.progress
+    $script:HasStatusProgress = $true
+}
 
 $hasForegroundActive = Has-Property $status 'foregroundActive'
 $hasRunning = Has-Property $status 'running'

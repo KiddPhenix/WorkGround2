@@ -779,10 +779,17 @@ func TestStreamSynthesizesMissingToolCallIDs(t *testing.T) {
 		t.Fatalf("Stream: %v", err)
 	}
 	var ids []string
+	progressChunks := 0
 	for chunk := range ch {
+		if chunk.Type == provider.ChunkProgress {
+			progressChunks++
+		}
 		if chunk.Type == provider.ChunkToolCall && chunk.ToolCall != nil {
 			ids = append(ids, chunk.ToolCall.ID)
 		}
+	}
+	if progressChunks != 2 {
+		t.Fatalf("argument progress chunks = %d, want 2", progressChunks)
 	}
 	if len(ids) != 2 {
 		t.Fatalf("want 2 tool calls, got %d: %v", len(ids), ids)

@@ -16,6 +16,7 @@ import (
 
 	"workground2/desktop/internal/memhttp"
 	"workground2/internal/agent"
+	"workground2/internal/agent/testutil"
 	"workground2/internal/autoresearch"
 	"workground2/internal/config"
 	"workground2/internal/control"
@@ -1499,4 +1500,236 @@ func (s *remoteStatusCtrlStub) ToolApprovalMode() string {
 
 func (s *remoteStatusCtrlStub) AutoResearchSummary() (*autoresearch.Summary, bool) {
 	return nil, false
+}
+func TestRemoteAPIStopToolRoutesBySession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	dir := t.TempDir()
+	path := agent.NewSessionPath(dir, "stoptool")
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	reg := tool.NewRegistry()
+	reg.Add(&stopCallTool{started: started, release: release})
+	sess := &agent.Session{}
+	sess.Replace([]provider.Message{{Role: provider.RoleSystem, Content: "sys"}})
+	mp := testutil.NewMock("stop-mock",
+		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "stop_call", Arguments: `{}`}}},
+		testutil.Turn{Text: "final"},
+	)
+	ag := agent.New(mp, reg, sess, agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{
+		Runner:        ag,
+		Executor:      ag,
+		Label:         "stoptool",
+		WorkspaceRoot: root,
+		SessionDir:    dir,
+		SessionPath:   path,
+		Sink:          event.Discard,
+	})
+	defer ctrl.Close()
+	tab := &WorkspaceTab{
+		ID:            "stoptool",
+		SessionID:     "session-stoptool",
+		Scope:         "project",
+		WorkspaceRoot: root,
+		Ready:         true,
+		Ctrl:          ctrl,
+		SessionPath:   path,
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}
+	app.trackSession(tab)
+	api := &remoteAPI{app: app}
+
+	// Unknown call: finished, never a spurious cancel.
+	rec := httptest.NewRecorder()
+	api.handleSessionStopTool(rec, httptest.NewRequest(http.MethodPost, "/api/v1/session/stop-tool",
+		bytes.NewBufferString(`{"sessionId":"session-stoptool","stopId":"never"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unknown stop = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil || out["status"] != string(agent.ToolStopFinished) {
+		t.Fatalf("unknown stop body = %+v err=%v", out, err)
+	}
+
+	// Run a real turn with a long tool call, then stop exactly that call over
+	// the remote API: accepted, the call reports user-stopped, the turn ends
+	// normally (model continues) and the tool observed its ctx cancellation.
+	runDone := make(chan error, 1)
+	go func() { runDone <- ag.Run(context.Background(), "run") }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool call never started")
+	}
+	stopID := ag.ProgressSnapshot().ActiveTools[0].StopID
+	page := app.HistoryPageForTab(tab.ID, 0, 10)
+	liveFound := false
+	for _, msg := range page.Messages {
+		for _, call := range msg.ToolCalls {
+			if call.StopID == stopID {
+				liveFound = true
+			}
+		}
+	}
+	if !liveFound {
+		t.Fatal("active history page lost stop capability")
+	}
+
+	rec = httptest.NewRecorder()
+	api.handleSessionStopTool(rec, httptest.NewRequest(http.MethodPost, "/api/v1/session/stop-tool",
+		bytes.NewBufferString(`{"sessionId":"session-stoptool","stopId":"`+stopID+`"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stop = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil || out["status"] != string(agent.ToolStopAccepted) || out["callId"] != "c1" {
+		t.Fatalf("stop body = %+v err=%v", out, err)
+	}
+	// Repeat is idempotent. The tool simulates a slow cleanup after cancel, so
+	// the registry entry is still live when the repeat request lands.
+	rec = httptest.NewRecorder()
+	api.handleSessionStopTool(rec, httptest.NewRequest(http.MethodPost, "/api/v1/session/stop-tool",
+		bytes.NewBufferString(`{"sessionId":"session-stoptool","stopId":"`+stopID+`"}`)))
+	_ = json.NewDecoder(rec.Body).Decode(&out)
+	if out["status"] != string(agent.ToolStopAlreadyStopped) {
+		t.Fatalf("repeat stop body = %+v, want already_stopped", out)
+	}
+	close(release)
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run after tool stop = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("turn did not finish after single-tool stop")
+	}
+	foundStopped := false
+	for _, m := range sess.Snapshot() {
+		if m.Role == provider.RoleTool && m.ToolCallID == "c1" && strings.Contains(m.Content, "user manually stopped") {
+			foundStopped = true
+		}
+	}
+	if !foundStopped {
+		t.Fatal("session lacks the user-stopped tool result for c1")
+	}
+	// Cross-session isolation: the other session cannot stop this call.
+	otherCtrl := &remoteStatusCtrlStub{path: filepath.Join(root, "other.jsonl"), status: control.RuntimeStatus{Mode: control.RuntimeModeIdle}}
+	other := &WorkspaceTab{ID: "other", SessionID: "session-other", Scope: "project", WorkspaceRoot: root, Ready: true, Ctrl: otherCtrl, SessionPath: otherCtrl.path}
+	app.tabs["other"] = other
+	app.trackSession(other)
+	rec = httptest.NewRecorder()
+	api.handleSessionStopTool(rec, httptest.NewRequest(http.MethodPost, "/api/v1/session/stop-tool",
+		bytes.NewBufferString(`{"sessionId":"session-other","stopId":"`+stopID+`"}`)))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("other-session stop code = %d, want 503 (no ToolCallControl)", rec.Code)
+	}
+}
+
+type stopCallTool struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (stopCallTool) Name() string        { return "stop_call" }
+func (stopCallTool) Description() string { return "blocking tool used to test stop" }
+func (stopCallTool) ReadOnly() bool      { return false }
+func (stopCallTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
+}
+func (t *stopCallTool) Execute(ctx context.Context, _ json.RawMessage) (string, error) {
+	select {
+	case t.started <- struct{}{}:
+	default:
+	}
+	// After cancellation the tool lingers until release (a tool with slow
+	// cleanup after cancel) so repeat-stop requests can be observed while the
+	// registry entry is still live.
+	select {
+	case <-ctx.Done():
+		select {
+		case <-t.release:
+		case <-time.After(6 * time.Second):
+		}
+		return "partial-before-stop", ctx.Err()
+	case <-t.release:
+		return "done", nil
+	}
+}
+
+func TestRemoteAPIStatusIncludesProgressObject(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	dir := t.TempDir()
+	path := agent.NewSessionPath(dir, "progress")
+	sess := &agent.Session{}
+	sess.Replace([]provider.Message{{Role: provider.RoleSystem, Content: "sys"}})
+	ag := agent.New(testutil.NewMock("p", testutil.Turn{Text: "hi", Usage: &provider.Usage{PromptTokens: 80, CompletionTokens: 12, TotalTokens: 92}}), tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{
+		Runner:        ag,
+		Executor:      ag,
+		Label:         "progress",
+		WorkspaceRoot: root,
+		SessionDir:    dir,
+		SessionPath:   path,
+		Sink:          event.Discard,
+	})
+	defer ctrl.Close()
+	tab := &WorkspaceTab{
+		ID: "progress", SessionID: "session-progress", Scope: "project", WorkspaceRoot: root,
+		Ready: true, Ctrl: ctrl, SessionPath: path,
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}
+	app.trackSession(tab)
+	api := &remoteAPI{app: app}
+
+	got := api.sessionResponseForTab(tab, "ok")
+	progress, ok := got["progress"].(agent.ProgressSnapshot)
+	if !ok {
+		t.Fatalf("status lacks progress object: %+v", got)
+	}
+	if progress.Phase != "idle" {
+		t.Fatalf("phase = %q, want idle", progress.Phase)
+	}
+	if progress.UsageSeen {
+		t.Fatal("usageSeen should be false before any model request")
+	}
+	// "Not yet observed" must not masquerade as a zero count: before any usage
+	// record the token counters are omitted entirely.
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	progressMap, _ := decoded["progress"].(map[string]any)
+	if _, has := progressMap["inputTokens"]; has {
+		t.Fatalf("inputTokens present before any usage: %+v", progressMap)
+	}
+	if progressMap["usageSeen"] != false {
+		t.Fatalf("usageSeen = %v, want false", progressMap["usageSeen"])
+	}
+	if _, has := progressMap["progressSeq"]; !has {
+		t.Fatalf("progressSeq missing: %+v", progressMap)
+	}
+	if err := ag.Run(context.Background(), "usage"); err != nil {
+		t.Fatal(err)
+	}
+	counted := api.sessionResponseForTab(tab, "ok")["progress"].(agent.ProgressSnapshot)
+	if counted.InputTokens == nil || *counted.InputTokens != 80 || counted.OutputTokens == nil || *counted.OutputTokens != 12 {
+		t.Fatalf("status lost cumulative tokens: %+v", counted)
+	}
+
+}
+
+func TestRemoteStopRequiresExplicitTarget(t *testing.T) {
+	api := &remoteAPI{}
+	for _, body := range []string{`{}`, `{"sessionId":"session"}`, `{"stopId":"tool"}`, `{"sessionId":"session","callId":"provider-id"}`} {
+		rec := httptest.NewRecorder()
+		api.handleSessionStopTool(rec, httptest.NewRequest(http.MethodPost, "/api/v1/session/stop-tool", strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status %d", body, rec.Code)
+		}
+	}
 }

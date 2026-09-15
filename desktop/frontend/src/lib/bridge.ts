@@ -480,6 +480,8 @@ export interface WorkArtifactFileIntent {
   artifactRefId: string;
 }
 
+export interface ToolStopResult { stopId: string; callId?: string; status: "accepted" | "already_stopped" | "finished" }
+
 export interface AppBindings extends WailsWorkBindings {
   Platform(): Promise<string>;
 	DecisionState(): Promise<DecisionStateView>;
@@ -618,6 +620,7 @@ export interface AppBindings extends WailsWorkBindings {
   SteerForTab(tabID: string, text: string): Promise<void>;
   Cancel(): Promise<void>;
   CancelTab(tabID: string): Promise<void>;
+  StopToolTab(tabID: string, stopID: string): Promise<ToolStopResult>;
   Approve(id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
   ApprovePending(allow: boolean): Promise<void>;
   ApproveTab(tabID: string, id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
@@ -3476,6 +3479,11 @@ function makeMockApp(): AppBindings {
         },
         async CancelTab(_tabID) {
           await withMockTabScope(_tabID, () => this.Cancel());
+        },
+        // Browser-dev mock: there is no real backend tool running, so the stop
+        // is reported finished (the running card re-arms; nothing was stopped).
+        async StopToolTab(_tabID, _callID) {
+          return { status: "finished", stopId: _callID };
         },
         async Approve(_id, allow, session, persist) {
           if (!pendingApprovalPreview) return;

@@ -621,6 +621,8 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 	if strings.TrimSpace(instructions) != "" {
 		sys += "\n\nAdditional focus for this compaction (prioritize keeping this):\n" + strings.TrimSpace(instructions)
 	}
+	recordUsage := a.progressUsage(event.UsageSourceCompaction)
+	defer recordUsage(nil, true)
 	ch, err := a.prov.Stream(ctx, provider.Request{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: sys},
@@ -656,9 +658,18 @@ func (a *Agent) summarize(ctx context.Context, region []provider.Message, instru
 			}
 			switch chunk.Type {
 			case provider.ChunkText:
+				if chunk.Text != "" {
+					a.recordProgress()
+				}
 				b.WriteString(chunk.Text)
 			case provider.ChunkUsage:
+				if chunk.Usage == nil {
+					continue
+				}
+				recordUsage(chunk.Usage, false)
 				usage = chunk.Usage
+			case provider.ChunkProgress, provider.ChunkReasoning:
+				a.recordProgress()
 			case provider.ChunkError:
 				return "", chunk.Err
 			}

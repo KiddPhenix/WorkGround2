@@ -541,6 +541,12 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				cur.Name = tc.Function.Name
 			}
 			cur.Arguments += tc.Function.Arguments
+			if tc.Function.Arguments != "" {
+				emitted = true
+				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkProgress}) {
+					return emitted, ctx.Err()
+				}
+			}
 			// Signal the call's start the moment its name is known, so a frontend
 			// can show the tool card immediately rather than only after its
 			// (possibly large) arguments finish streaming.

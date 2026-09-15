@@ -160,6 +160,7 @@ func TestReadStream(t *testing.T) {
 	var started, full *provider.ToolCall
 	var usage *provider.Usage
 	done := false
+	progressChunks := 0
 	for ck := range ch {
 		switch ck.Type {
 		case provider.ChunkText:
@@ -168,6 +169,8 @@ func TestReadStream(t *testing.T) {
 			started = ck.ToolCall
 		case provider.ChunkToolCall:
 			full = ck.ToolCall
+		case provider.ChunkProgress:
+			progressChunks++
 		case provider.ChunkUsage:
 			usage = ck.Usage
 		case provider.ChunkDone:
@@ -195,6 +198,9 @@ func TestReadStream(t *testing.T) {
 		t.Fatalf("usage cache = hit %d miss %d", usage.CacheHitTokens, usage.CacheMissTokens)
 	case usage.FinishReason != "tool_calls":
 		t.Fatalf("finish reason = %q", usage.FinishReason)
+	}
+	if progressChunks != 2 {
+		t.Fatalf("argument progress chunks = %d, want 2", progressChunks)
 	}
 	if !done {
 		t.Fatal("expected a done chunk")

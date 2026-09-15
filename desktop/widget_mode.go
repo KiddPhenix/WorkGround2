@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -419,6 +420,16 @@ type widgetWindowOps struct {
 	applyWidget func(state WidgetWindowState, alwaysOnTop bool, icons bool) error
 	// restoreMain restores the main-window geometry after widget mode.
 	restoreMain func(state DesktopWindowState, ok bool) error
+	// repaintWindow repaints the native window in place without touching its
+	// region (the post-switch refresh tick while a widget/icon clip is active).
+	// Nil uses the platform implementation.
+	repaintWindow func() error
+	// clearRegion re-asserts the cleared full-window HRGN at the final main
+	// geometry (the exit/reconcile commit and the post-switch refresh tick in
+	// main mode). Nil uses the platform implementation. Tests inject a recorder
+	// to prove every transition back to the main window ends with the region
+	// cleared after the last geometry and taskbar step.
+	clearRegion func() error
 }
 
 // windowReadState returns the current native window geometry through the test
@@ -526,32 +537,117 @@ func (a *App) switchDesktopWidgetStyleLocked(style string) (string, error) {
 	return previous, nil
 }
 
+// restoreMainGeometry restores the independent main-window geometry after
+// widget/icon mode. The cleared HRGN is deliberately applied AFTER every
+// geometry step: the compositor then derives a full-window visual clip at the
+// final geometry instead of carrying the widget/icon clip across the resize,
+// which otherwise leaves the web content presented only inside the old clipped
+// rectangles (black elsewhere). Clearing is idempotent, so repeated exits and
+// rollbacks all end in the same full-window state.
 func (a *App) restoreMainGeometry(state DesktopWindowState, ok bool) error {
 	if a.widgetWindowOps != nil && a.widgetWindowOps.restoreMain != nil {
 		return a.widgetWindowOps.restoreMain(state, ok)
 	}
-	runtime.WindowSetAlwaysOnTop(a.ctx, false)
-	regionErr := errors.Join(setDesktopIconNativeMode(false), a.applyWidgetRegion(clearWidgetWindowRegion))
+	return runRestoreMainGeometry(state, ok, a.restoreMainWindowOps())
+}
+
+// restoreMainWindowOps binds the production native operations for
+// runRestoreMainGeometry. The region clear runs through applyWidgetRegionClear
+// so it shares the native-region lock and the test seam with every other
+// main-window region commit.
+func (a *App) restoreMainWindowOps() restoreMainWindowOps {
+	return restoreMainWindowOps{
+		clearAlwaysOnTop: func() { runtime.WindowSetAlwaysOnTop(a.ctx, false) },
+		clearIconMode:    func() error { return setDesktopIconNativeMode(false) },
+		setMinSize: func(w, h int) {
+			runtime.WindowSetMinSize(a.ctx, w, h)
+		},
+		setFallbackSize: func() { runtime.WindowSetSize(a.ctx, 1280, 800) },
+		center:          func() { runtime.WindowCenter(a.ctx) },
+		unmaximise:      func() { runtime.WindowUnmaximise(a.ctx) },
+		setBounds: func(state DesktopWindowState) error {
+			return setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y)
+		},
+		maximise:    func() { runtime.WindowMaximise(a.ctx) },
+		clearRegion: a.applyWidgetRegionClear,
+	}
+}
+
+// restoreMainWindowOps is the injectable step set of the main-window restore.
+// The ordering contract — every geometry step first, the region clear last —
+// is what keeps the native window from staying clipped to stale widget/icon
+// rectangles after an exit.
+type restoreMainWindowOps struct {
+	clearAlwaysOnTop func()
+	clearIconMode    func() error
+	setMinSize       func(w, h int)
+	setFallbackSize  func()
+	center           func()
+	unmaximise       func()
+	setBounds        func(state DesktopWindowState) error
+	maximise         func()
+	clearRegion      func() error
+}
+
+// runRestoreMainGeometry applies the main-window restore in the only order
+// that is safe for the WebView2 presentation: all geometry steps (min size,
+// bounds, maximise, fallback centering) run first, and the cleared HRGN is the
+// final region-affecting operation at the final geometry. Errors from every
+// step are joined; a geometry failure never skips the region clear.
+func runRestoreMainGeometry(state DesktopWindowState, ok bool, ops restoreMainWindowOps) error {
+	ops.clearAlwaysOnTop()
+	modeErr := ops.clearIconMode()
 	minWidth, minHeight := mainWindowMinWidth, mainWindowMinHeight
 	if ok && state.Width > 0 && state.Height > 0 {
 		// Recovery may target a work area smaller than the usual minimum.
 		minWidth, minHeight = min(minWidth, state.Width), min(minHeight, state.Height)
 	}
-	runtime.WindowSetMinSize(a.ctx, minWidth, minHeight)
+	ops.setMinSize(minWidth, minHeight)
+	var geometryErr error
 	if !ok {
-		runtime.WindowSetSize(a.ctx, 1280, 800)
-		runtime.WindowCenter(a.ctx)
-		return regionErr
+		ops.setFallbackSize()
+		ops.center()
+	} else {
+		ops.unmaximise()
+		if state.Width > 0 && state.Height > 0 {
+			geometryErr = ops.setBounds(state)
+		}
+		if state.Maximised {
+			ops.maximise()
+		}
 	}
-	runtime.WindowUnmaximise(a.ctx)
-	var boundsErr error
-	if state.Width > 0 && state.Height > 0 {
-		boundsErr = setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y)
+	regionErr := ops.clearRegion()
+	return errors.Join(modeErr, geometryErr, regionErr)
+}
+
+// applyWidgetRegionClear runs the "no region / full window" native commit
+// through the test seam when present, otherwise under the native-region lock.
+// A seam without an explicit clearRegion recorder owns the whole native window
+// interaction, so there is no real window to clear and the commit is a no-op.
+func (a *App) applyWidgetRegionClear() error {
+	if a.widgetWindowOps != nil {
+		if a.widgetWindowOps.clearRegion != nil {
+			return a.widgetWindowOps.clearRegion()
+		}
+		return nil
 	}
-	if state.Maximised {
-		runtime.WindowMaximise(a.ctx)
+	return a.applyWidgetRegion(clearWidgetWindowRegion)
+}
+
+// reassertMainWindowRegion is the mode-guarded commit that re-asserts the
+// cleared full-window HRGN at the current geometry. It is a no-op while a
+// widget/icon mode owns the clip, so it is safe to call after every exit
+// commit and from the post-switch refresh ticks even when a new entry won the
+// race in between. Failure is explicit but non-fatal: the main geometry and
+// taskbar are already restored, and the post-switch refresh window plus a
+// later exit retry it.
+func (a *App) reassertMainWindowRegion() error {
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	if a.widgetMode {
+		return nil
 	}
-	return errors.Join(regionErr, boundsErr)
+	return a.applyWidgetRegionClear()
 }
 
 // EnterWidgetMode preserves the main geometry and switches the same Wails
@@ -695,6 +791,19 @@ func (a *App) exitWidgetMode(tabID string) error {
 	if !changed {
 		reconciled, reconcileErr = a.reconcileMainWindow()
 	}
+	var regionErr error
+	if reconciled {
+		// Re-assert the cleared HRGN after the taskbar show dance that follows
+		// restoreMainGeometry: the region must be the last thing the compositor
+		// saw at the final main geometry, or the web content can stay clipped to
+		// stale widget/icon rectangles. Best-effort — the main geometry and
+		// taskbar already committed, the post-switch refresh window and a later
+		// exit retry the clear.
+		regionErr = a.reassertMainWindowRegion()
+		if regionErr != nil {
+			slog.Warn("widget: main-window region re-assert failed", "err", regionErr)
+		}
+	}
 	if reconciled {
 		// Publish the mode switch as soon as the native main-window restore
 		// (which also cleared the icon HRGN) completes. The frontend must reveal
@@ -734,6 +843,12 @@ func (a *App) reconcileMainWindow() (bool, error) {
 	state, ok := loadWindowState()
 	if err := errors.Join(a.restoreMainGeometry(state, ok), a.toggleWidgetTaskbar(false)); err != nil {
 		return false, fmt.Errorf("reconcile main window: %w", err)
+	}
+	// reconcileMainWindow holds widgetMu and already verified main mode, so the
+	// final region re-assert runs inline (reassertMainWindowRegion would
+	// deadlock on widgetMu here). Best-effort, matching the exit commit.
+	if regionErr := a.applyWidgetRegionClear(); regionErr != nil {
+		slog.Warn("widget: reconcile main-window region re-assert failed", "err", regionErr)
 	}
 	return true, nil
 }

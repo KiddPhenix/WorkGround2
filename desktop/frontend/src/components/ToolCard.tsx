@@ -4,6 +4,7 @@ import { CodeViewer } from "./CodeViewer";
 import { DiffView } from "./DiffView";
 import { RequestHelpCard } from "./RequestHelpCard";
 import { useT } from "../lib/i18n";
+import { app } from "../lib/bridge";
 import { diffsFor, languageForToolArgs, subjectOf, summarize, summarizeFileDiff } from "../lib/tools";
 import { useShellExpand } from "../lib/shellExpand";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
@@ -12,6 +13,8 @@ import { isReadOnlyTool } from "../lib/useController";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
+
+type StopState = "idle" | "stopping" | "error";
 
 const SUBAGENT_TOOLS = new Set(["task", "run_skill", "explore", "research", "review", "security_review"]);
 
@@ -42,7 +45,12 @@ function splitPreview(text: string, n: number): { preview: string; total: number
 // ToolCard renders one tool call. `subcalls` are sub-agent calls nested under a
 // `task` card (their ParentID points at this call); they render inline, live, so
 // the sub-agent's work is visible as it happens.
-export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayName }: { item: ToolItem; subcalls?: ToolItem[]; tabId?: string; displayName?: string }) {
+export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayName }: {
+  item: ToolItem;
+  subcalls?: ToolItem[];
+  tabId?: string;
+  displayName?: string;
+}) {
   const t = useT();
   const nested = subcalls ?? [];
   const hasNested = nested.length > 0;
@@ -91,7 +99,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
     if (!open || !item.dataArchived || fullData || !tabId) return;
     let cancelled = false;
     import("../lib/bridge").then(({ app }) =>
-      app.ToolResultForTab(tabId, item.id).then((d) => {
+      app.ToolResultForTab(tabId, item.callId ?? item.id).then((d) => {
         if (!cancelled && d) setFullData(d);
       }).catch(() => {}),
     );
@@ -106,6 +114,51 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
     if (!item.isShell || !shellExpand) return;
     return shellExpand.register(item.id, () => setUserOpen(!openRef.current));
   }, [item.isShell, item.id, shellExpand]);
+
+  const [stopState, setStopState] = useState<StopState>("idle");
+  const [stopError, setStopError] = useState("");
+  const identity = `${tabId ?? ""}:${item.stopId ?? ""}`;
+  const current = useRef(identity);
+  current.current = identity;
+  const pending = useRef(false);
+  useEffect(() => {
+    current.current = identity;
+    pending.current = false;
+    setStopState("idle");
+    setStopError("");
+    return () => { current.current = ""; };
+  }, [identity, item.status]);
+  const canStop = Boolean(tabId && item.stopId && !item.parentId && !item.isShell && item.status === "running");
+  const stopTool = async () => {
+    if (!canStop || pending.current) return;
+    const target = identity;
+    pending.current = true;
+    setStopState("stopping");
+    setStopError("");
+    try {
+      const reply = await app.StopToolTab(tabId!, item.stopId!);
+      if (current.current !== target) return;
+      if (!reply || reply.stopId !== item.stopId || !["accepted", "already_stopped", "finished"].includes(reply.status)) {
+        throw new Error(t("tool.stopInvalid"));
+      }
+      if (reply.status === "finished") { pending.current = false; setStopState("idle"); }
+    } catch (err) {
+      if (current.current !== target) return;
+      pending.current = false;
+      setStopState("error");
+      setStopError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  const stopControl = canStop && (
+    <span className="tool__stopcell">
+      <button type="button" className={`tool__stop${stopState === "error" ? " tool__stop--error" : ""}`}
+        disabled={stopState === "stopping"} onClick={stopTool}
+        aria-label={t("tool.stop")} title={stopError || t("tool.stopHint")}>
+        {t(stopState === "stopping" ? "tool.stopping" : stopState === "error" ? "tool.stopRetry" : "tool.stop")}
+      </button>
+      {stopError && <span role="alert" className="tool__stop-error">{stopError}</span>}
+    </span>
+  );
 
   // Read-only "research" calls (read/grep/ls/glob/web_fetch) are hidden after
   // completion so they don't clutter the transcript. During execution they still
@@ -123,6 +176,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   if (isRequestHelp) {
     return (
       <div className="request-help-wrap">
+        {stopControl}
         <RequestHelpCard
           status={item.assistStatus ?? { phase: item.status === "error" ? "failed" : item.status === "done" ? "completed" : "selecting", capability: "", error: item.error }}
           args={effectiveArgs}
@@ -141,36 +195,39 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
 
   return (
     <div className={`tool${quiet ? " tool--quiet" : ""}${isSubagent ? " tool--subagent" : ""}${open && hasBody ? " tool--open" : ""}`} data-entrance={item.id}>
-      <button
-        type="button"
-        className="tool__head"
-        data-running={item.status === "running" ? "" : undefined}
-        onClick={() => hasBody && setUserOpen(!open)}
-        aria-expanded={hasBody ? open : undefined}
-      >
-        <span className="tool__label-group">
-          {hasNested && <span className="tool__nested-count">⊞{nested.length}</span>}
-          {item.status === "error" && <span className="tool__status-icon tool__status-icon--err">✗</span>}
-          {item.status === "done" && <span className="tool__status-icon tool__status-icon--ok">✓</span>}
-          {item.status === "stopped" && <span className="tool__status-icon tool__status-icon--stopped">—</span>}
-          <span className="tool__name">{displayName ?? item.name}</span>
-          {subject && <span className="tool__subject">{subject}</span>}
-        </span>
-        {profileText && <span className="tool__profile">{profileText}</span>}
-        {summary && <span className="tool__summary">{summary}</span>}
-        {duration && <span className="tool__duration">{duration}</span>}
-        {hasBody && (
-          <span className={`tool__chevron${open ? " tool__chevron--open" : ""}`}>
-            <ChevronRight size={12} />
+      <div className="tool__headrow">
+        <button
+          type="button"
+          className="tool__head"
+          data-running={item.status === "running" ? "" : undefined}
+          onClick={() => hasBody && setUserOpen(!open)}
+          aria-expanded={hasBody ? open : undefined}
+        >
+          <span className="tool__label-group">
+            {hasNested && <span className="tool__nested-count">⊞{nested.length}</span>}
+            {item.status === "error" && <span className="tool__status-icon tool__status-icon--err">✗</span>}
+            {item.status === "done" && <span className="tool__status-icon tool__status-icon--ok">✓</span>}
+            {item.status === "stopped" && <span className="tool__status-icon tool__status-icon--stopped">—</span>}
+            <span className="tool__name">{displayName ?? item.name}</span>
+            {subject && <span className="tool__subject">{subject}</span>}
           </span>
-        )}
-        {item.status !== "running" && (
-          <span
-            className={`tool__dot${item.status === "done" ? " tool__dot--ok" : ""}${item.status === "error" ? " tool__dot--err" : ""}${item.status === "stopped" ? " tool__dot--stopped" : ""}`}
-            aria-hidden="true"
-          />
-        )}
-      </button>
+          {profileText && <span className="tool__profile">{profileText}</span>}
+          {summary && <span className="tool__summary">{summary}</span>}
+          {duration && <span className="tool__duration">{duration}</span>}
+          {hasBody && (
+            <span className={`tool__chevron${open ? " tool__chevron--open" : ""}`}>
+              <ChevronRight size={12} />
+            </span>
+          )}
+          {item.status !== "running" && (
+            <span
+              className={`tool__dot${item.status === "done" ? " tool__dot--ok" : ""}${item.status === "error" ? " tool__dot--err" : ""}${item.status === "stopped" ? " tool__dot--stopped" : ""}`}
+              aria-hidden="true"
+            />
+          )}
+        </button>
+        {stopControl}
+      </div>
 
       <div ref={toolBodyRef} className="tool__body">
 

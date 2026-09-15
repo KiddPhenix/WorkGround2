@@ -2146,6 +2146,11 @@ export const zh: Record<DictKey, string> = {
   "msg.copied": "已复制",
 
   // 工具卡片摘要
+  "tool.stop": "停止工具",
+  "tool.stopping": "停止中…",
+  "tool.stopRetry": "重试停止",
+  "tool.stopHint": "停止此工具并继续当前对话",
+  "tool.stopInvalid": "工具停止响应无效",
   "tool.stepOne": "{n} 步",
   "tool.stepOther": "{n} 步",
   "tool.truncated": "输出已截断",

@@ -337,6 +337,38 @@ for (const [mode, label] of [
   Reflect.deleteProperty(window, "go");
 }
 
+{
+  // A rename/delete refresh must not wait for unrelated group discovery.
+  const groups: SidebarGroup[] = [{ id: "global", kind: "global", label: "Global", sessionCount: 1 }];
+  const before = { id: "fork", groupId: "global", scope: "global" as const, title: "北京", topicId: "fork", revision: 1 };
+  let resolveGroups!: (value: SidebarGroup[]) => void;
+  const pendingGroups = new Promise<SidebarGroup[]>((resolve) => { resolveGroups = resolve; });
+  let pageCalls = 0;
+  Object.defineProperty(window, "go", { configurable: true, value: { main: { App: {
+    ListSidebarGroups: () => pendingGroups,
+    ListSidebarIssues: async () => [],
+    ListSidebarSessions: async () => {
+      pageCalls += 1;
+      return { items: [{ ...before, title: "天津", revision: 2 }], snapshot: "after", total: 1 };
+    },
+  } } } });
+  useSidebarStore.setState({
+    activeMode: "projects", expandedGroups: new Set(["global"]),
+    groupsByMode: { projects: { items: groups, status: "ready", requestSeq: 0 } },
+    pages: { "projects:global": { items: [before], snapshot: "before", status: "ready", requestSeq: 0 } },
+    issues: [], issuesStatus: "idle", issuesScope: "", issuesDataScope: "",
+  });
+  const { host, root } = await render(<ProjectPanel mode="projects" now={Date.now()} refreshSignal={1}
+    unreadBySession={new Map()} onOpenSession={() => {}} onOpenGroupMenu={() => {}}
+    onOpenSessionMenu={() => {}} onAddProject={() => {}} />);
+  await act(async () => { await new Promise((resolve) => globalThis.setTimeout(resolve, 0)); });
+  ok(useSidebarStore.getState().pages["projects:global"].items[0]?.title === "天津", "visible renamed session refreshes while group discovery is blocked");
+  await act(async () => { resolveGroups(groups); await new Promise((resolve) => globalThis.setTimeout(resolve, 0)); });
+  ok(pageCalls === 1, "group completion does not repeat the visible-page refresh");
+  await dispose(host, root);
+  Reflect.deleteProperty(window, "go");
+}
+
 if (failed > 0) {
   process.stderr.write(`\n${passed} passed, ${failed} failed\n`);
   process.exit(1);

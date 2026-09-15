@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/agent/testutil"
 	"workground2/internal/boot"
 	"workground2/internal/config"
 	"workground2/internal/control"
@@ -7639,5 +7640,47 @@ func TestOfficialProviderKindDetectsAllNewKinds(t *testing.T) {
 		if got != tc.kind {
 			t.Errorf("officialProviderKindFromEntry(%+v) = %q, want %q", tc.entry, got, tc.kind)
 		}
+	}
+}
+func TestStopToolTabBindingRoutesCallID(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	dir := t.TempDir()
+	path := agent.NewSessionPath(dir, "stopbind")
+	sess := &agent.Session{}
+	sess.Replace([]provider.Message{{Role: provider.RoleSystem, Content: "sys"}})
+	ag := agent.New(testutil.NewMock("m", testutil.Turn{Text: "hi"}), tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{Runner: ag, Executor: ag, WorkspaceRoot: root, SessionDir: dir, SessionPath: path, Sink: event.Discard})
+	defer ctrl.Close()
+	tab := &WorkspaceTab{ID: "stop", SessionID: "session-stop", Scope: "project", WorkspaceRoot: root, Ready: true, Ctrl: ctrl, SessionPath: path}
+	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}
+	app.trackSession(tab)
+
+	// Unknown call → finished (nothing running), never an error.
+	raw, err := app.StopToolTab("stop", "ghost")
+	if err != nil {
+		t.Fatalf("StopToolTab unknown = %v", err)
+	}
+	if raw.Status != agent.ToolStopFinished || raw.StopID != "ghost" {
+		t.Fatalf("unknown stop = %+v", raw)
+	}
+	if _, err := app.StopToolTab("", "ghost"); err == nil {
+		t.Fatal("missing tab must not select active tab")
+	}
+
+	// Empty callID and unknown tab are explicit errors (retryable on the UI).
+	if _, err := app.StopToolTab("stop", ""); err == nil {
+		t.Fatal("empty callId should error")
+	}
+	if _, err := app.StopToolTab("missing-tab", "ghost"); err == nil {
+		t.Fatal("unknown tab should error")
+	}
+	// A controller without the optional port reports an explicit error.
+	stub := &remoteStatusCtrlStub{path: filepath.Join(root, "other.jsonl"), status: control.RuntimeStatus{Mode: control.RuntimeModeIdle}}
+	tab2 := &WorkspaceTab{ID: "nostop", SessionID: "session-nostop", Scope: "project", WorkspaceRoot: root, Ready: true, Ctrl: stub, SessionPath: stub.path}
+	app.tabs["nostop"] = tab2
+	app.trackSession(tab2)
+	if _, err := app.StopToolTab("nostop", "ghost"); err == nil {
+		t.Fatal("session without ToolCallControl should error explicitly")
 	}
 }

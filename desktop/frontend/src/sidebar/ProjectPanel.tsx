@@ -48,19 +48,24 @@ export function ProjectPanel(props: ProjectPanelProps) {
   const issuesStatus = useSidebarStore((state) => state.issuesStatus);
   const issuesScope = useSidebarStore((state) => state.issuesScope);
 
-  // refreshView re-runs the group scan and refreshes every expanded group at its
-  // current loaded depth, so the issue warning retry performs a real re-scan
-  // without resetting pagination. It stops as soon as the user left that mode.
+  // Refresh visible rows before group discovery: a slow unrelated project must
+  // not hold up the result of a rename or deletion in an already open group.
   const refreshView = useCallback((viewMode: SidebarQueryMode) => {
-    void loadSidebarGroups(viewMode).then((applied) => {
-      if (!applied || useSidebarStore.getState().activeMode !== viewMode) return;
+    const refreshed = new Set<string>();
+    const refreshExpanded = () => {
       const state = useSidebarStore.getState();
+      if (state.activeMode !== viewMode) return;
       for (const group of state.groupsByMode[viewMode]?.items ?? []) {
-        if (!state.expandedGroups.has(group.id)) continue;
+        if (!state.expandedGroups.has(group.id) || refreshed.has(group.id)) continue;
+        refreshed.add(group.id);
         const page = state.pages[`${viewMode}:${group.id}`];
         if (page?.items.length) void refreshSidebarPage(viewMode, group.id, page.items.length);
         else if (!page || page.status !== "loading") void loadSidebarPage(viewMode, group.id, true);
       }
+    };
+    refreshExpanded();
+    void loadSidebarGroups(viewMode).then((applied) => {
+      if (applied) refreshExpanded();
     });
   }, []);
 

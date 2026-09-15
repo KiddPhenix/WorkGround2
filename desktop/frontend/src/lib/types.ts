@@ -49,6 +49,8 @@ export interface WireProfile {
 }
 
 export interface WireTool {
+  stopId?: string;
+  stopped?: boolean;
   id?: string;
   name: string;
   args?: string;
@@ -415,6 +417,7 @@ export interface HistoryMessage {
   toolName?: string;
   toolResultArchived?: boolean;
   toolResultError?: string;
+  toolResultStopped?: boolean;
   pending?: boolean;
   trigger?: string;
   messages?: number;
@@ -423,6 +426,7 @@ export interface HistoryMessage {
 }
 
 export interface HistoryToolCall {
+  stopId?: string;
   id: string;
   name: string;
   arguments: string;

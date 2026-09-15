@@ -18,9 +18,12 @@ const (
 // widgetRedrawScheduler is the single-flight short redraw window that follows a
 // successful widget/main window switch. It repaints the native window a few
 // times to clear the occasional stale rectangle left by the DWM/layered-window
-// transition. A newer switch resets the window; a late tick from a superseded
-// switch is fenced off by a generation check. An already executing repaint
-// finishes against the current window without restoring old geometry or HRGN.
+// transition; in main mode the tick re-asserts the cleared HRGN, which is the
+// operation that makes the compositor re-derive a full-window clip instead of
+// leaving the web content clipped to stale widget/icon rectangles. A newer
+// switch resets the window; a late tick from a superseded switch is fenced off
+// by a generation check. An already executing repaint finishes against the
+// current window without restoring old geometry or HRGN.
 type widgetRedrawScheduler struct {
 	mu         sync.Mutex
 	paintMu    sync.Mutex
@@ -96,6 +99,28 @@ func (s *widgetRedrawScheduler) redrawFunc() func() error {
 		return s.redraw
 	}
 	return redrawWidgetWindowForRefresh
+}
+
+// widgetPostSwitchRefresh is the production redraw target of the short
+// post-switch refresh window. In main mode it re-asserts the cleared HRGN at
+// the current geometry — the operation that re-derives the full-window visual
+// clip after the widget/icon clip was removed — so a stale partial
+// presentation self-heals even when the exit-time re-assert raced a late
+// maximise restore or a taskbar show dance. In widget/icon modes it only
+// repaints in place: the widget clip and the icon hit-region union must stay
+// intact. The committed mode is read under widgetMu, so a tick can never
+// decide on a mode that a newer transition already superseded.
+func (a *App) widgetPostSwitchRefresh() error {
+	a.widgetMu.Lock()
+	widgetMode := a.widgetMode
+	a.widgetMu.Unlock()
+	if widgetMode {
+		if a.widgetWindowOps != nil && a.widgetWindowOps.repaintWindow != nil {
+			return a.widgetWindowOps.repaintWindow()
+		}
+		return redrawWidgetWindowForRefresh()
+	}
+	return a.reassertMainWindowRegion()
 }
 
 func (s *widgetRedrawScheduler) cancelTimerLocked() {
