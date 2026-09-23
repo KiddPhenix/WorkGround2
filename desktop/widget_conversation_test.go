@@ -7,11 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"workground2/internal/autoresearch"
 	"workground2/internal/config"
 	"workground2/internal/control"
+	"workground2/internal/provider"
 )
 
 func TestRetryWidgetConversationRetriesFiveTimesWithSameInput(t *testing.T) {
@@ -238,6 +241,262 @@ func TestWidgetApprovalModePreservesOptionalDefault(t *testing.T) {
 	}
 	if _, err := widgetApprovalMode("sometimes"); err == nil {
 		t.Fatal("unknown approval mode must fail explicitly")
+	}
+}
+
+// fakeWidgetConversationCtrl is a minimal control.SessionAPI double for the
+// widget send path: the composer send, the tab identity resolution around it and
+// the widget snapshot projection read exactly these members, so a send can be
+// observed end to end without starting a real Controller or model turn.
+type fakeWidgetConversationCtrl struct {
+	control.SessionAPI
+	root    string
+	dir     string
+	path    string
+	history []provider.Message
+	submits []string
+}
+
+func (f *fakeWidgetConversationCtrl) SessionPath() string { return f.path }
+func (f *fakeWidgetConversationCtrl) SessionDir() string  { return f.dir }
+func (f *fakeWidgetConversationCtrl) WorkspaceRoot() string {
+	return f.root
+}
+
+func (f *fakeWidgetConversationCtrl) PlanMode() bool           { return false }
+func (f *fakeWidgetConversationCtrl) AutoApproveTools() bool   { return false }
+func (f *fakeWidgetConversationCtrl) ToolApprovalMode() string { return control.ToolApprovalAuto }
+func (f *fakeWidgetConversationCtrl) Goal() string             { return "" }
+func (f *fakeWidgetConversationCtrl) GoalStatus() string       { return control.GoalStatusStopped }
+func (f *fakeWidgetConversationCtrl) Label() string            { return "fake-model" }
+
+func (f *fakeWidgetConversationCtrl) SetToolApprovalMode(string) {}
+func (f *fakeWidgetConversationCtrl) SetPlanMode(bool)           {}
+
+func (f *fakeWidgetConversationCtrl) AutoResearchSummary() (*autoresearch.Summary, bool) {
+	return nil, false
+}
+
+func (f *fakeWidgetConversationCtrl) PendingInteraction() (control.PendingInteraction, bool) {
+	return control.PendingInteraction{}, false
+}
+func (f *fakeWidgetConversationCtrl) RuntimeStatus() control.RuntimeStatus {
+	return control.RuntimeStatus{}
+}
+
+func (f *fakeWidgetConversationCtrl) History() []provider.Message {
+	return append([]provider.Message(nil), f.history...)
+}
+
+func (f *fakeWidgetConversationCtrl) SubmitDisplay(_, input string) {
+	f.submits = append(f.submits, input)
+	f.history = append(f.history, provider.Message{Role: provider.RoleUser, Content: input})
+}
+
+// A receipt whose persisted tab is gone must never be resubmitted blindly: an
+// uncertain submit stays visible instead of turning into a duplicate turn.
+func TestWidgetConversationRefusesUncertainSubmitWithStaleTab(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.ctx = context.Background()
+
+	requestID := "req-stale-submitting"
+	seed := widgetConversationReceipt{
+		RequestID: requestID, PromptHash: fmt.Sprintf("%x", sha256.Sum256([]byte("fix it"))),
+		WorkspaceSelection: widgetWorkspaceProject + ":", Model: "deepseek/deepseek-v4",
+		ToolApprovalMode: control.ToolApprovalAuto, Scope: "project", WorkspaceName: "测试区",
+		SessionName: "已有名称", TabID: "tab_gone", Status: "submitting",
+	}
+	if err := app.saveWidgetConversationReceipt(seed); err != nil {
+		t.Fatalf("seed receipt: %v", err)
+	}
+
+	result := app.startWidgetConversationOnce(WidgetConversationInput{
+		Prompt: "fix it", RequestID: requestID, Workspace: widgetWorkspaceProject + ":",
+		Model: "deepseek/deepseek-v4", ApprovalMode: control.ToolApprovalAuto,
+	})
+	if result.Status != "invalid" {
+		t.Fatalf("stale submitting result = %+v, want terminal invalid (no automatic resend)", result)
+	}
+	if !strings.Contains(result.Error, "状态未知") {
+		t.Fatalf("error = %q, want an explicit uncertain-submit report", result.Error)
+	}
+	if len(app.tabs) != 0 {
+		t.Fatalf("tabs = %d, want no tab created for an uncertain submit", len(app.tabs))
+	}
+	stored, found, err := app.widgetConversationReceipt(requestID)
+	if err != nil || !found {
+		t.Fatalf("receipt lookup: found=%v err=%v", found, err)
+	}
+	if stored.TabID != "tab_gone" || stored.Status != "submitting" {
+		t.Fatalf("receipt = %+v, want the uncertain identity kept intact", stored)
+	}
+}
+
+// Nothing was submitted for a receipt in the routing/naming/created states, so a
+// dead tab identity may be dropped: the flow must move on to creating a fresh
+// tab for the same route instead of retrying "新会话不存在" forever.
+func TestWidgetConversationRecoversStaleReceiptTab(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.ctx = context.Background()
+
+	requestID := "req-stale-created"
+	seed := widgetConversationReceipt{
+		RequestID: requestID, PromptHash: fmt.Sprintf("%x", sha256.Sum256([]byte("fix it"))),
+		WorkspaceSelection: widgetWorkspaceProject + ":", Model: "deepseek/deepseek-v4",
+		ToolApprovalMode: control.ToolApprovalAuto, Scope: "project", WorkspaceName: "测试区",
+		SessionName: "已有名称", TabID: "tab_gone", Status: "created",
+	}
+	if err := app.saveWidgetConversationReceipt(seed); err != nil {
+		t.Fatalf("seed receipt: %v", err)
+	}
+
+	// An empty project root fails the create step immediately: that is the
+	// observable proof the flow moved past the stale identity without starting a
+	// Controller, submitting a turn, or touching any user Session.
+	result := app.startWidgetConversationOnce(WidgetConversationInput{
+		Prompt: "fix it", RequestID: requestID, Workspace: widgetWorkspaceProject + ":",
+		Model: "deepseek/deepseek-v4", ApprovalMode: control.ToolApprovalAuto,
+	})
+	if strings.Contains(result.Error, "新会话不存在") {
+		t.Fatalf("stale created result = %+v, want the dead tab identity dropped", result)
+	}
+	if !strings.Contains(result.Error, "创建新对话") {
+		t.Fatalf("error = %q, want the flow to reach the create step again", result.Error)
+	}
+	stored, found, err := app.widgetConversationReceipt(requestID)
+	if err != nil || !found {
+		t.Fatalf("receipt lookup: found=%v err=%v", found, err)
+	}
+	if stored.TabID != "" || stored.Status != "created" {
+		t.Fatalf("receipt = %+v, want TabID cleared with the name/model/approval kept", stored)
+	}
+	if stored.SessionName != "已有名称" || stored.Model != "deepseek/deepseek-v4" || stored.ToolApprovalMode != control.ToolApprovalAuto {
+		t.Fatalf("receipt = %+v, want name/model/approval preserved", stored)
+	}
+}
+
+func TestWidgetConversationKeepsUncertainSubmitAfterNamingFailure(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{ID: "tab-uncertain", Scope: "global"}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	seed := widgetConversationReceipt{
+		RequestID: "req-uncertain", PromptHash: fmt.Sprintf("%x", sha256.Sum256([]byte("fix it"))),
+		WorkspaceSelection: "global", Model: "fake/fake-model", ToolApprovalMode: control.ToolApprovalAuto,
+		Scope: "global", SessionName: "已有名称", TabID: tab.ID, Status: "submitting",
+	}
+	if err := app.saveWidgetConversationReceipt(seed); err != nil {
+		t.Fatal(err)
+	}
+	input := WidgetConversationInput{Prompt: "fix it", RequestID: seed.RequestID, Workspace: "global"}
+	result := app.startWidgetConversationOnce(input)
+	if result.Status != "retryable_error" || !strings.Contains(result.Error, "应用会话名称") {
+		t.Fatalf("naming failure = %+v", result)
+	}
+	stored, _, err := app.widgetConversationReceipt(seed.RequestID)
+	if err != nil || stored.Status != "submitting" {
+		t.Fatalf("uncertain submit was downgraded: %+v, %v", stored, err)
+	}
+	delete(app.tabs, tab.ID)
+	result = app.startWidgetConversationOnce(input)
+	if result.Status != "invalid" || !strings.Contains(result.Error, "状态未知") || len(app.tabs) != 0 {
+		t.Fatalf("retry must not recreate an uncertain submission: %+v", result)
+	}
+	// An incomplete persisted identity also cannot prove that no turn ran.
+	stored.TabID = ""
+	if err := app.saveWidgetConversationReceipt(stored); err != nil {
+		t.Fatal(err)
+	}
+	result = app.startWidgetConversationOnce(input)
+	if result.Status != "invalid" || len(app.tabs) != 0 {
+		t.Fatalf("missing identity must not recreate an uncertain submission: %+v", result)
+	}
+}
+
+// The first send of one requestId must succeed once, keep the generated name
+// and the selected model/approval, and never submit the same requestId twice.
+func TestWidgetConversationSendIsIdempotentWithFakeController(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	cfg := config.Default()
+	cfg.DefaultModel = "fake/fake-model"
+	cfg.Desktop.ProviderAccess = []string{"fake"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "fake", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "fake-model"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	root := t.TempDir()
+	if err := addProject(root, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	topicID := "topic-send"
+	if err := setTopicTitleWithSource(root, topicID, defaultTopicTitle, topicTitleSourceAuto); err != nil {
+		t.Fatal(err)
+	}
+	path, err := createEmptySessionFile(desktopSessionDir(root), "fake/fake-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctrl := &fakeWidgetConversationCtrl{root: root, dir: desktopSessionDir(root), path: path}
+	tab := &WorkspaceTab{
+		ID: "tab-send", Scope: "project", WorkspaceRoot: root, TopicID: topicID,
+		TopicTitle: defaultTopicTitle, SessionPath: path, Ctrl: ctrl,
+		model: "fake/fake-model", toolApprovalMode: control.ToolApprovalAuto,
+		disabledMCP: map[string]ServerView{}, sink: &tabEventSink{tabID: "tab-send"},
+	}
+	app := NewApp()
+	app.projectTreeChangedHook = func() {}
+	app.ctx = context.Background()
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	requestID := "req-send-once"
+	seed := widgetConversationReceipt{
+		RequestID: requestID, PromptHash: fmt.Sprintf("%x", sha256.Sum256([]byte("fix it"))),
+		WorkspaceSelection: widgetWorkspaceProject + ":" + root, Model: "fake/fake-model",
+		ToolApprovalMode: control.ToolApprovalAuto, Scope: "project", WorkspaceRoot: root,
+		WorkspaceName: "测试区", SessionName: "首次发送", TabID: tab.ID, Status: "created",
+	}
+	if err := app.saveWidgetConversationReceipt(seed); err != nil {
+		t.Fatalf("seed receipt: %v", err)
+	}
+	input := WidgetConversationInput{
+		Prompt: "fix it", RequestID: requestID, Workspace: widgetWorkspaceProject + ":" + root,
+		Model: "fake/fake-model", ApprovalMode: control.ToolApprovalAuto,
+	}
+
+	result := app.startWidgetConversationOnce(input)
+	if result.Status != "accepted" {
+		t.Fatalf("first send = %+v (%s), want accepted", result, result.Error)
+	}
+	if result.TabID != tab.ID || result.SessionName != "首次发送" {
+		t.Fatalf("result = %+v, want the named conversation on its existing tab", result)
+	}
+	if len(ctrl.submits) != 1 || ctrl.submits[0] != "fix it" {
+		t.Fatalf("submits = %v, want exactly one turn", ctrl.submits)
+	}
+	if got := loadTopicTitle(root, topicID); got != "首次发送" {
+		t.Fatalf("topic title = %q, want the generated name kept", got)
+	}
+	if got := loadSessionTitles(filepath.Dir(path))[filepath.Base(path)]; got != "首次发送" {
+		t.Fatalf("session title = %q, want the generated name kept", got)
+	}
+	if tab.model != "fake/fake-model" || tab.toolApprovalMode != control.ToolApprovalAuto {
+		t.Fatalf("tab model/approval = %q/%q, want the selected settings kept", tab.model, tab.toolApprovalMode)
+	}
+
+	retry := app.startWidgetConversationOnce(input)
+	if retry.Status != "already_applied" {
+		t.Fatalf("same-requestId retry = %+v, want already_applied", retry)
+	}
+	if len(ctrl.submits) != 1 {
+		t.Fatalf("submits after retry = %v, want the same requestId submitted once", ctrl.submits)
 	}
 }
 

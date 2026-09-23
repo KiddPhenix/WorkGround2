@@ -259,6 +259,26 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 		}
 	}
 
+	if (receipt.TabID != "" || receipt.Status == "submitting") && a.widgetConversationTab(receipt.TabID) == nil {
+		recoverable, staleErr := widgetStaleTabRecovery(receipt.Status)
+		if !recoverable {
+			// The turn may already have reached the workspace and the tab that
+			// could prove it is gone. Opening another tab and resending would
+			// risk a duplicate turn, so report the uncertain state explicitly
+			// instead of retrying a request that can never converge.
+			receipt.Error = staleErr.Error()
+			_ = a.saveWidgetConversationReceipt(receipt)
+			return a.widgetConversationResult("invalid", staleErr, receipt)
+		}
+		// No turn was submitted under this requestId, so the dead tab identity is
+		// safe to drop: the create step below reuses or opens a blank tab for the
+		// same route and the persisted name/model/approval are reused as-is.
+		receipt.TabID = ""
+		receipt.Error = ""
+		if err := a.saveWidgetConversationReceipt(receipt); err != nil {
+			return a.widgetConversationResult("retryable_error", fmt.Errorf("保存新对话状态: %w", err), receipt)
+		}
+	}
 	if receipt.TabID == "" {
 		meta, err := a.EnsureBlankTab(receipt.Scope, receipt.WorkspaceRoot)
 		if err != nil {
@@ -273,14 +293,14 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 			return a.widgetConversationResult("retryable_error", fmt.Errorf("保存新对话状态: %w", err), receipt)
 		}
 	}
+	// Keep the durable stage on preparation failures: a retry of "submitting"
+	// must never become "created", which would permit a new turn after tab loss.
 	if err := a.applyWidgetSessionName(receipt.TabID, receipt.SessionName); err != nil {
-		receipt.Status = "created"
 		receipt.Error = err.Error()
 		_ = a.saveWidgetConversationReceipt(receipt)
 		return a.widgetConversationResult("retryable_error", fmt.Errorf("应用会话名称: %w", err), receipt)
 	}
 	if err := a.applyWidgetConversationDefaults(receipt.TabID, receipt.Model, receipt.ToolApprovalMode); err != nil {
-		receipt.Status = "created"
 		receipt.Error = err.Error()
 		_ = a.saveWidgetConversationReceipt(receipt)
 		return a.widgetConversationResult("retryable_error", fmt.Errorf("应用新对话设置: %w", err), receipt)
@@ -288,7 +308,6 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 
 	ctrl, err := a.waitWidgetTabReady(receipt.TabID, widgetReadyWait)
 	if err != nil {
-		receipt.Status = "created"
 		receipt.Error = err.Error()
 		_ = a.saveWidgetConversationReceipt(receipt)
 		return a.widgetConversationResult("retryable_error", err, receipt)
@@ -308,7 +327,6 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 		return a.widgetConversationResult("retryable_error", fmt.Errorf("保存发送状态: %w", err), receipt)
 	}
 	if err := a.SubmitToTab(receipt.TabID, prompt); err != nil {
-		receipt.Status = "created"
 		receipt.Error = err.Error()
 		_ = a.saveWidgetConversationReceipt(receipt)
 		return a.widgetConversationResult("retryable_error", fmt.Errorf("发送新对话: %w", err), receipt)
@@ -387,6 +405,33 @@ func (a *App) saveWidgetConversationReceipt(receipt widgetConversationReceipt) e
 		a.widgetState.Conversations = a.widgetState.Conversations[len(a.widgetState.Conversations)-widgetActionLimit:]
 	}
 	return a.saveWidgetStateLocked()
+}
+
+// widgetConversationTab resolves a persisted receipt tab identity to a live tab.
+// tabByIDLocked also accepts a SessionID alias and runtimes that were detached
+// from the UI, so a tab pruned by the single-surface layout or replaced during a
+// controller rebuild still counts as the same conversation.
+func (a *App) widgetConversationTab(tabID string) *WorkspaceTab {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.tabByIDLocked(tabID)
+}
+
+// widgetStaleTabRecovery decides what a receipt whose persisted tab is gone may
+// do next. Only statuses that provably never submitted a turn may drop the dead
+// identity and open a fresh tab; an uncertain submit must be reported instead of
+// being silently resent.
+func widgetStaleTabRecovery(status string) (bool, error) {
+	switch strings.TrimSpace(status) {
+	case "routing", "naming", "named", "created":
+		return true, nil
+	default:
+		return false, errors.New("上一次发送状态未知：原会话已不在，请先在主窗口确认结果后再重发")
+	}
 }
 
 func (a *App) waitWidgetTabReady(tabID string, timeout time.Duration) (control.SessionAPI, error) {

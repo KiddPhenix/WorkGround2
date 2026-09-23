@@ -225,37 +225,27 @@ func (a *App) applyWidgetSessionName(tabID, name string) error {
 	if name == "" {
 		return errors.New("会话名称为空")
 	}
-	tabID = strings.TrimSpace(tabID)
-	a.mu.RLock()
-	tab := a.tabs[tabID]
-	if tab == nil {
-		a.mu.RUnlock()
+	target, ok := a.widgetSessionTarget(tabID)
+	if !ok {
 		return errors.New("新会话不存在")
 	}
-	unindexed := strings.TrimSpace(tab.TopicID) == "" && strings.TrimSpace(tab.currentSessionPath()) != ""
-	a.mu.RUnlock()
-	if unindexed {
+	if strings.TrimSpace(target.topicID) == "" && strings.TrimSpace(target.sessionPath) != "" {
 		// A workspace can retain a transient blank after its last Topic is
 		// removed. Normal composer sends index that blank on the first user
 		// turn; widget QuickStart names the Session before submitting, so it
 		// must perform the same transition here instead of retrying an
 		// incomplete TabID forever.
-		a.ensureTabTopicIndexedForUserTurn(tab)
+		a.ensureTabTopicIndexedForUserTurn(target.tab)
+		if target, ok = a.widgetSessionTarget(tabID); !ok {
+			return errors.New("新会话不存在")
+		}
 	}
-
-	a.mu.RLock()
-	tab = a.tabs[tabID]
-	if tab == nil {
-		a.mu.RUnlock()
-		return errors.New("新会话不存在")
-	}
-	scope, workspaceRoot, topicID := tab.Scope, tab.WorkspaceRoot, tab.TopicID
-	sessionPath := tab.currentSessionPath()
-	a.mu.RUnlock()
-	if strings.TrimSpace(topicID) == "" || strings.TrimSpace(sessionPath) == "" {
+	topicID := strings.TrimSpace(target.topicID)
+	sessionPath := strings.TrimSpace(target.sessionPath)
+	if topicID == "" || sessionPath == "" {
 		return errors.New("新会话缺少 topic 或 session path")
 	}
-	titleRoot := topicTitleRoot(scope, workspaceRoot)
+	titleRoot := topicTitleRoot(target.scope, target.workspaceRoot)
 	if err := setTopicTitleWithSource(titleRoot, topicID, name, topicTitleSourceAuto); err != nil {
 		return err
 	}
@@ -264,12 +254,50 @@ func (a *App) applyWidgetSessionName(tabID, name string) error {
 	}
 
 	a.mu.Lock()
-	if current := a.tabs[tabID]; current != nil && current.TopicID == topicID && current.currentSessionPath() == sessionPath {
+	if current := a.tabByIDLocked(tabID); current == target.tab &&
+		current.TopicID == topicID && current.currentSessionPath() == sessionPath {
 		current.TopicTitle = name
-		a.saveTabsLocked()
+		// A runtime-less detached tab stays out of the tab snapshot; only the
+		// visible entry needs persisting.
+		if a.tabs[current.ID] == current {
+			a.saveTabsLocked()
+		}
 	}
 	a.mu.Unlock()
 	a.updateTopicSessionTitles(topicID, name)
 	a.emitProjectTreeChanged()
 	return nil
+}
+
+// widgetSessionTarget resolves a persisted widget tab identity the same way every
+// other tab-scoped entry point does: the visible tab map, a SessionID alias, or a
+// runtime that was detached from the UI (single-surface pruning, controller
+// replacement). An empty identity is refused instead of falling back to the
+// active Session, so a stale receipt can never rename an unrelated conversation.
+func (a *App) widgetSessionTarget(tabID string) (widgetSessionTarget, bool) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return widgetSessionTarget{}, false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	tab := a.tabByIDLocked(tabID)
+	if tab == nil {
+		return widgetSessionTarget{}, false
+	}
+	return widgetSessionTarget{
+		tab:           tab,
+		scope:         tab.Scope,
+		workspaceRoot: tab.WorkspaceRoot,
+		topicID:       tab.TopicID,
+		sessionPath:   tab.currentSessionPath(),
+	}, true
+}
+
+type widgetSessionTarget struct {
+	tab           *WorkspaceTab
+	scope         string
+	workspaceRoot string
+	topicID       string
+	sessionPath   string
 }

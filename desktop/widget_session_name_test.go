@@ -127,6 +127,82 @@ func TestApplyWidgetSessionNameConvergesTopicSessionAndRuntime(t *testing.T) {
 	}
 }
 
+// A live tab can leave a.tabs while its Session keeps running: the single
+// surface layout prunes hidden tabs, and a controller replacement detaches the
+// old runtime. Naming must resolve the same identity every other tab-scoped
+// entry point resolves, otherwise the widget send dead-ends on a tab that does
+// exist and the persisted receipt can never converge.
+func TestApplyWidgetSessionNameResolvesDetachedTabIdentity(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	path, err := createEmptySessionFile(desktopSessionDir(root), "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	topicID := "topic-detached"
+	if err := setTopicTitleWithSource(root, topicID, defaultTopicTitle, topicTitleSourceAuto); err != nil {
+		t.Fatal(err)
+	}
+	tab := &WorkspaceTab{
+		ID: "tab-detached", SessionID: "session_detached", Scope: "project", WorkspaceRoot: root,
+		TopicID: topicID, TopicTitle: defaultTopicTitle, SessionPath: path,
+	}
+	app := NewApp()
+	app.tabs = map[string]*WorkspaceTab{}
+	app.detachedSessions = map[string]*WorkspaceTab{sessionRuntimeKey(path): tab}
+
+	if err := app.applyWidgetSessionName(tab.ID, "小组件命名"); err != nil {
+		t.Fatalf("applyWidgetSessionName must resolve a detached tab identity: %v", err)
+	}
+	if tab.TopicTitle != "小组件命名" {
+		t.Fatalf("detached runtime title = %q, want 小组件命名", tab.TopicTitle)
+	}
+	if got := loadTopicTitle(root, topicID); got != "小组件命名" {
+		t.Fatalf("stored topic title = %q, want 小组件命名", got)
+	}
+	if got := loadSessionTitles(filepath.Dir(path))[filepath.Base(path)]; got != "小组件命名" {
+		t.Fatalf("session title = %q, want 小组件命名", got)
+	}
+
+	// A SessionID is a stable identity too (tabByIDLocked semantics).
+	if err := app.applyWidgetSessionName(tab.SessionID, "会话ID命名"); err != nil {
+		t.Fatalf("applyWidgetSessionName must resolve a SessionID identity: %v", err)
+	}
+	if got := loadTopicTitle(root, topicID); got != "会话ID命名" {
+		t.Fatalf("stored topic title after SessionID naming = %q, want 会话ID命名", got)
+	}
+}
+
+// An empty identity must never fall back to the active tab: that would rename a
+// user's unrelated Session from a widget retry.
+func TestApplyWidgetSessionNameRejectsEmptyIdentity(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	path, err := createEmptySessionFile(desktopSessionDir(root), "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	topicID := "topic-active"
+	if err := setTopicTitleWithSource(root, topicID, defaultTopicTitle, topicTitleSourceAuto); err != nil {
+		t.Fatal(err)
+	}
+	tab := &WorkspaceTab{
+		ID: "tab-active", Scope: "project", WorkspaceRoot: root,
+		TopicID: topicID, TopicTitle: defaultTopicTitle, SessionPath: path,
+	}
+	app := NewApp()
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	if err := app.applyWidgetSessionName("  ", "错误命名"); err == nil {
+		t.Fatal("an empty tab identity must fail instead of renaming the active Session")
+	}
+	if got := loadTopicTitle(root, topicID); got != defaultTopicTitle {
+		t.Fatalf("active topic title = %q, want it untouched (%q)", got, defaultTopicTitle)
+	}
+}
+
 func TestApplyWidgetSessionNameIndexesTransientBlank(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	root := t.TempDir()
