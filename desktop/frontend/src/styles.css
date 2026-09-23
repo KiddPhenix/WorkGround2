@@ -32209,6 +32209,12 @@ body > .mermaid-diagram--fullscreen {
 }
 .run-detail-panel--maximized { width: 100vw; }
 
+/* The panel is portalled to body. Leave the frameless window controls above it,
+   including in maximized mode, so the two close buttons never overlap. */
+body:has(.app--windows-frameless) .run-detail-panel {
+  top: 64px;
+}
+
 .run-detail-panel__resizer {
   position: absolute;
   z-index: var(--z-layout-resizer);
