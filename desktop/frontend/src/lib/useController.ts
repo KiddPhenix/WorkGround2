@@ -1837,7 +1837,11 @@ export function useController() {
         ? statesRef.current.get(targetTabId)?.items.filter((item) => item.kind === "user" && !item.queued).length ?? 0
         : 0;
       const runTurnId = runTurn > 0 ? `turn:${runTurn}` : undefined;
-      applyRunWireEvent(targetTabId, e, runTurnId);
+      // A cancelled turn reports done without an error, so tell the run
+      // projection that a cancel was in flight instead of letting it claim success.
+      applyRunWireEvent(targetTabId, e, runTurnId, {
+        cancelled: e.kind === "turn_done" && Boolean(statesRef.current.get(targetTabId)?.cancelRequested),
+      });
       if (
         e.kind === "turn_started" ||
         e.kind === "text" ||

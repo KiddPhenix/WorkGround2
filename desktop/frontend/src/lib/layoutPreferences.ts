@@ -8,6 +8,7 @@ export type LayoutSizeKey =
   | "workspaceTreeWidth"
   | "composerHeight"
   | "drawerWidth"
+  | "runDetailWidth"
   | "settingsDrawerWidth";
 
 type LayoutPreferences = {
@@ -26,6 +27,7 @@ const LEGACY_SIZE_KEYS: Record<LayoutSizeKey, string[]> = {
   workspaceTreeWidth: ["WorkGround2.workspaceTree.width"],
   composerHeight: ["WorkGround2.composerHeight"],
   drawerWidth: ["WorkGround2.drawer.width"],
+  runDetailWidth: [],
   settingsDrawerWidth: ["WorkGround2.settingsDrawer.width"],
 };
 

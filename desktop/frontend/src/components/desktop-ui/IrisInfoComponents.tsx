@@ -21,6 +21,7 @@ import { QueueTray } from "../desktop-ui/QueueTray";
 import { RuntimeConfigBar, connectionStatusFromRuntime, type ConnectionStatus, type SurfaceKind } from "../desktop-ui/RuntimeConfigBar";
 import { AddOnWorkbench } from "../desktop-ui/AddOnWorkbench";
 import { RunBlock } from "../desktop-ui/RunBlock";
+import { RunDetailPanel } from "../desktop-ui/RunDetailPanel";
 import { useRunStore, type RunRecord, type RunStatus } from "../../store/run";
 import { ChevronDown, Layers, ListTree } from "lucide-react";
 import { app } from "../../lib/bridge";
@@ -231,6 +232,7 @@ export function SessionRunStream({
   unassignedOnly = false,
   inlineTerminal = false,
   onStop,
+  onRetry,
 }: {
   sessionId: string;
   statuses?: readonly RunStatus[];
@@ -239,10 +241,14 @@ export function SessionRunStream({
   /** Place completed-run controls directly in the surrounding turn action row. */
   inlineTerminal?: boolean;
   onStop?: () => void;
+  onRetry?: () => void;
 }) {
   const runs = useRunStore((s) => s.runs);
   const setRunExpanded = useRunStore((s) => s.setRunExpanded);
   const setRunSelectedStep = useRunStore((s) => s.setRunSelectedStep);
+  const setRunDetailOpen = useRunStore((s) => s.setRunDetailOpen);
+  const selectRunDetailEvent = useRunStore((s) => s.selectRunDetailEvent);
+  const setRunDetailMaximized = useRunStore((s) => s.setRunDetailMaximized);
   const sessionRuns = useMemo(
     () => Object.values(runs)
       .filter((run) => runMatchesStream(run, sessionId, statuses, turnId, unassignedOnly))
@@ -263,6 +269,8 @@ export function SessionRunStream({
       key={run.runId}
       run={run}
       onStop={onStop ? () => onStop() : undefined}
+      onRetry={onRetry ? () => onRetry() : undefined}
+      onOpenDetail={(runId) => setRunDetailOpen(runId, true)}
       onStepSelect={(runId, stepIndex) => {
         const currentRun = runs[runId];
         if (!currentRun) return;
@@ -275,6 +283,23 @@ export function SessionRunStream({
       }}
     />
   );
+
+  // The detail panel belongs to the stream, not to the compact card: collapsing
+  // the card (or collapsing a finished run's action row) must never close the
+  // panel the reader is working in.
+  const renderDetail = (run: (typeof sessionRuns)[number]) => (
+    <RunDetailPanel
+      key={`${run.runId}:detail`}
+      run={run}
+      tabId={run.sessionId}
+      onSelectEvent={selectRunDetailEvent}
+      onToggleMaximized={setRunDetailMaximized}
+      onClose={() => setRunDetailOpen(run.runId, false)}
+      onStop={onStop ? () => onStop() : undefined}
+      onRetry={onRetry ? () => onRetry() : undefined}
+    />
+  );
+  const detailPanels = sessionRuns.filter((run) => run.detailOpen).map(renderDetail);
 
   const renderTerminalAction = (run: (typeof sessionRuns)[number]) => {
     const panelId = `run-process-${run.runId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -309,19 +334,23 @@ export function SessionRunStream({
             {activeRuns.map(renderRun)}
           </div>
         )}
+        {detailPanels}
       </>
     );
   }
 
   return (
-    <div className={`session-run-stream${terminalOnly ? " session-run-stream--terminal" : ""}${activeRuns.length > 0 ? " session-run-stream--active" : ""}`} aria-label="任务运行记录">
-      {terminalRuns.length > 0 && (
-        <div className="turn-actions session-run-actions" aria-label="已结束运行">
-          {terminalRuns.map(renderTerminalAction)}
-        </div>
-      )}
-      {activeRuns.map(renderRun)}
-    </div>
+    <>
+      <div className={`session-run-stream${terminalOnly ? " session-run-stream--terminal" : ""}${activeRuns.length > 0 ? " session-run-stream--active" : ""}`} aria-label="任务运行记录">
+        {terminalRuns.length > 0 && (
+          <div className="turn-actions session-run-actions" aria-label="已结束运行">
+            {terminalRuns.map(renderTerminalAction)}
+          </div>
+        )}
+        {activeRuns.map(renderRun)}
+      </div>
+      {detailPanels}
+    </>
   );
 }
 

@@ -43,6 +43,7 @@
     "test:welcome": "tsx src/__tests__/welcome-adaptive.test.tsx",
     "test:work-card": "tsx src/__tests__/work-card.test.tsx",
     "test:run-progress": "tsx src/__tests__/run-progress.test.tsx",
+    "test:run-detail": "node --import tsx src/__tests__/run-detail.test.ts && node --import tsx src/__tests__/run-detail-recovery.test.ts && node --import tsx --import ./scripts/test-asset-hook.mjs src/__tests__/run-detail-panel.test.tsx",
     "test:scroll-manager": "tsx src/__tests__/scroll-manager-contract.test.ts",
     "test:widget-exit-reveal": "tsx src/__tests__/widget-exit-reveal.test.ts",
     "test:widget-session-reveal": "tsx src/__tests__/widget-session-reveal.test.tsx",

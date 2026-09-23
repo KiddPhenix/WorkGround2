@@ -8,6 +8,7 @@ import {
   FileText,
   FlaskConical,
   Globe2,
+  ListTree,
   Loader2,
   RotateCcw,
   Search,
@@ -23,6 +24,11 @@ export interface RunBlockProps {
   onStop?: (runId: string) => void;
   onRetry?: (runId: string) => void;
   onStepSelect?: (runId: string, stepIndex: number) => void;
+  /**
+   * Open the record list + detail panel for this run. The panel is owned by the
+   * run stream (not this card) so collapsing the card never closes it.
+   */
+  onOpenDetail?: (runId: string) => void;
   elapsedSeconds?: number;
   hidden?: boolean;
 }
@@ -78,12 +84,24 @@ export function ActiveRunView({
   onStop,
   onRetry,
   onStepSelect,
+  onOpenDetail,
   elapsedSeconds,
   hidden = false,
 }: RunBlockProps) {
   const selectedIndex = run.selectedStepIndex ?? Math.max(0, run.events.length - 1);
   const tabsRef = useRef<HTMLDivElement>(null);
   const drag = useRef({ active: false, moved: false, startX: 0, scrollLeft: 0 });
+  const detailButtonRef = useRef<HTMLButtonElement>(null);
+  const everOpen = useRef(false);
+  if (run.detailOpen) everOpen.current = true;
+
+  // The panel takes focus on open; hand it back to this trigger on close so a
+  // keyboard user is never dropped at the top of the window.
+  useEffect(() => {
+    if (run.detailOpen || !everOpen.current) return;
+    everOpen.current = false;
+    detailButtonRef.current?.focus();
+  }, [run.detailOpen]);
 
   const handlePointerDown = useCallback((event: React.PointerEvent) => {
     if (event.button !== 0 || !tabsRef.current) return;
@@ -134,9 +152,31 @@ export function ActiveRunView({
           {statusIcon(run.status, 16)}
           <strong className="active-run-view__status-text">{STATUS_LABEL[run.status]}</strong>
           <span aria-hidden="true">·</span>
-          <span className="run-work-face__meta">{runMeta(run, elapsedSeconds)}</span>
+          {/* The record count doubles as the entry to the record list: the
+              compact card stays a glance, the panel is where you read. */}
+          <button
+            type="button"
+            className="run-work-face__meta active-run-view__records"
+            aria-label={`查看 ${run.events.length} 条运行记录详情`}
+            aria-expanded={Boolean(run.detailOpen)}
+            tabIndex={hidden ? -1 : 0}
+            onClick={() => onOpenDetail?.(run.runId)}
+            disabled={!onOpenDetail}
+          >
+            {runMeta(run, elapsedSeconds)}
+          </button>
         </span>
         <span className="run-work-face__actions active-run-view__actions">
+          {onOpenDetail && (
+            <IconButton
+              buttonRef={detailButtonRef}
+              icon={<ListTree size={14} />}
+              label="查看运行记录详情"
+              text="查看详情"
+              tabIndex={hidden ? -1 : 0}
+              onClick={() => onOpenDetail(run.runId)}
+            />
+          )}
           {!isTerminal(run.status) && onStop && (
             <IconButton
               icon={<CircleStop size={14} />}
@@ -211,7 +251,7 @@ function RunStepTab({
   tabIndex: number;
   onClick: () => void;
 }) {
-  const status: RunStatus = eventStatus ?? (isLast ? runStatus : "completed");
+  const status: RunStatus | "stopped" = eventStatus ?? (isLast ? runStatus : "completed");
   return (
     <button
       type="button"
@@ -227,6 +267,7 @@ function RunStepTab({
       <span className="run-step-tab__label">{label}</span>
       {status === "completed" && <CheckCircle2 size={12} />}
       {status === "failed" && <AlertCircle size={12} />}
+      {status === "stopped" && <Square size={12} />}
       {(status === "running" || status === "queued" || status === "reconnecting") && (
         <Loader2 size={12} className="animate-spin" />
       )}
@@ -377,15 +418,16 @@ export function RunBlock(props: RunBlockProps) {
   );
 }
 
-function IconButton({ icon, label, text, tabIndex, onClick }: {
+function IconButton({ icon, label, text, tabIndex, buttonRef, onClick }: {
   icon: React.ReactNode;
   label: string;
   text?: string;
   tabIndex?: number;
+  buttonRef?: React.Ref<HTMLButtonElement>;
   onClick: (event: React.MouseEvent) => void;
 }) {
   return (
-    <button type="button" className={`icon-button${text ? " icon-button--text" : ""}`} aria-label={label} tabIndex={tabIndex} onClick={onClick}>
+    <button ref={buttonRef} type="button" className={`icon-button${text ? " icon-button--text" : ""}`} aria-label={label} tabIndex={tabIndex} onClick={onClick}>
       {icon}
       {text && <span>{text}</span>}
     </button>
