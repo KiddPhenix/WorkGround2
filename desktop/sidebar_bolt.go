@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -87,6 +89,80 @@ type sidebarBoltAppState struct {
 	dbPath        string
 	db            *bolt.DB
 	dbOpenMu      sync.Mutex
+	warm          sidebarWarmState
+}
+
+// sidebarWarmState coalesces the background index prewarm of one App: at most
+// one round runs at a time, and a request that arrives while a round runs is
+// folded into a single follow-up round carrying the newest plan set.
+type sidebarWarmState struct {
+	mu      sync.Mutex
+	running bool
+	stopped bool
+	pending []sidebarGroupPlan
+	idle    chan struct{}
+	err     error
+}
+
+func (warm *sidebarWarmState) lastError() error {
+	warm.mu.Lock()
+	defer warm.mu.Unlock()
+	return warm.err
+}
+
+func (warm *sidebarWarmState) setError(err error) bool {
+	warm.mu.Lock()
+	defer warm.mu.Unlock()
+	changed := fmt.Sprint(warm.err) != fmt.Sprint(err)
+	warm.err = err
+	return changed
+}
+
+// request starts a round or folds the plans into the running one. It reports
+// whether the caller owns the new round.
+func (warm *sidebarWarmState) request(plans []sidebarGroupPlan) bool {
+	warm.mu.Lock()
+	defer warm.mu.Unlock()
+	if warm.stopped {
+		return false
+	}
+	if warm.running {
+		warm.pending = plans
+		return false
+	}
+	warm.running = true
+	warm.idle = make(chan struct{})
+	return true
+}
+
+// finishRound closes the current round and reports whether another one is due.
+func (warm *sidebarWarmState) finishRound() ([]sidebarGroupPlan, bool) {
+	warm.mu.Lock()
+	defer warm.mu.Unlock()
+	if warm.stopped || warm.pending == nil {
+		warm.running = false
+		close(warm.idle)
+		warm.idle = nil
+		return nil, false
+	}
+	next := warm.pending
+	warm.pending = nil
+	return next, true
+}
+
+// stop prevents further rounds; the running one still finishes on its own.
+func (warm *sidebarWarmState) stop() {
+	warm.mu.Lock()
+	warm.stopped = true
+	warm.pending = nil
+	warm.mu.Unlock()
+}
+
+// isStopped is the cooperative abort probe a running round polls between plans.
+func (warm *sidebarWarmState) isStopped() bool {
+	warm.mu.Lock()
+	defer warm.mu.Unlock()
+	return warm.stopped
 }
 
 // sidebarBoltIndex is a disposable, persistent projection of BranchMeta
@@ -115,7 +191,15 @@ type sidebarBoltIndex struct {
 	loadBranchMeta     func(string) (agent.BranchMeta, bool, error)
 	branchMetaBackoffs []time.Duration
 	resetHook          func()
-	maxBytes           int64
+	// prewarm schedules the background index sync that the group list hands its
+	// session work to. It is injectable so tests can observe or suppress the
+	// asynchronous path deterministically.
+	prewarm func(*App, []sidebarGroupPlan)
+	// notify is how a prewarm round that published rows wakes the frontend. It
+	// reuses the existing project-tree change event, so the sidebar reloads the
+	// group list and converges on the exact counts.
+	notify   func(*App)
+	maxBytes int64
 }
 
 type sidebarPlanSource interface {
@@ -133,6 +217,11 @@ func newSidebarBoltIndex(path func(*App) string) *sidebarBoltIndex {
 		states: map[*App]*sidebarBoltAppState{}, path: path, source: sidebarDiskIndexSource{}, auditEvery: 5 * time.Second, now: time.Now,
 		view: sidebarBoltView, update: sidebarBoltUpdate, routes: autoBotChannelSessionRoutes, maxBytes: 512 << 20,
 		loadBranchMeta: agent.LoadBranchMeta, branchMetaBackoffs: []time.Duration{20 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond},
+		notify: func(app *App) {
+			if app != nil {
+				app.emitProjectTreeChanged()
+			}
+		},
 	}
 }
 
@@ -248,13 +337,14 @@ func (index *sidebarBoltIndex) recoverError(app *App, err error) error {
 	if !sidebarBoltCorrupt(err) && !errors.Is(err, errSidebarDerivedIndexCorrupt) {
 		return err
 	}
+	// Stop the background prewarm before taking the lifecycle lock: a running
+	// round needs that lock to open the database that is about to be removed.
+	index.quiescePrewarm(app)
 	path := filepath.Clean(index.path(app))
 	lifecycle := index.lifecycle(path)
 	lifecycle.Lock()
 	defer lifecycle.Unlock()
-	index.mu.Lock()
-	state := index.states[app]
-	index.mu.Unlock()
+	state := index.lookupState(app)
 	if state == nil {
 		return fmt.Errorf("sidebar index is corrupt; retry: %w", err)
 	}
@@ -277,13 +367,7 @@ func (index *sidebarBoltIndex) enforceCapacity(app *App) error {
 	if index.maxBytes <= 0 {
 		return nil
 	}
-	path := filepath.Clean(index.path(app))
-	lifecycle := index.lifecycle(path)
-	lifecycle.Lock()
-	defer lifecycle.Unlock()
-	index.mu.Lock()
-	state := index.states[app]
-	index.mu.Unlock()
+	state := index.lookupState(app)
 	if state == nil {
 		return nil
 	}
@@ -297,7 +381,29 @@ func (index *sidebarBoltIndex) enforceCapacity(app *App) error {
 	if info.Size() <= index.maxBytes {
 		return nil
 	}
+	// Stop the background prewarm before taking the lifecycle lock (same reason
+	// as recoverError), then re-check the size under the lock so the reset
+	// decision still serializes with open().
+	index.quiescePrewarm(app)
+	path := filepath.Clean(index.path(app))
+	lifecycle := index.lifecycle(path)
+	lifecycle.Lock()
+	defer lifecycle.Unlock()
+	state = index.lookupState(app)
+	if state == nil {
+		return nil
+	}
+	info, err = os.Stat(state.dbPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect sidebar index size: %w", err)
+	}
 	size, path := info.Size(), state.dbPath
+	if size <= index.maxBytes {
+		return nil
+	}
 	closeErr := index.closeLocked(app)
 	if index.resetHook != nil {
 		index.resetHook()
@@ -355,6 +461,9 @@ func initSidebarBolt(tx *bolt.Tx) error {
 }
 
 func (index *sidebarBoltIndex) close(app *App) error {
+	// The prewarm must be stopped outside the lifecycle lock: a running round
+	// takes that lock to open the database we are closing.
+	index.quiescePrewarm(app)
 	path := filepath.Clean(index.path(app))
 	lifecycle := index.lifecycle(path)
 	lifecycle.Lock()
@@ -362,14 +471,30 @@ func (index *sidebarBoltIndex) close(app *App) error {
 	return index.closeLocked(app)
 }
 
+// quiescePrewarm stops the background prewarm and waits for the running round to
+// finish. Callers must NOT hold the lifecycle lock (see close and recoverError).
+func (index *sidebarBoltIndex) quiescePrewarm(app *App) {
+	if state := index.lookupState(app); state != nil {
+		state.warm.stop()
+		state.warm.wait()
+	}
+}
+
 func (index *sidebarBoltIndex) closeLocked(app *App) error {
 	index.mu.Lock()
 	state := index.states[app]
-	delete(index.states, app)
 	index.mu.Unlock()
 	if state == nil {
 		return nil
 	}
+	// Callers quiesce the prewarm before taking the lifecycle lock; this is the
+	// non-blocking backstop so no new round starts against a closed state.
+	state.warm.stop()
+	index.mu.Lock()
+	if index.states[app] == state {
+		delete(index.states, app)
+	}
+	index.mu.Unlock()
 	state.dbOpenMu.Lock()
 	defer state.dbOpenMu.Unlock()
 	defer func() {
@@ -402,6 +527,15 @@ func (index *sidebarBoltIndex) closeLocked(app *App) error {
 	return err
 }
 
+// listGroups returns project summaries only. Session rows are fetched lazily
+// through ListSidebarSessions.
+//
+// Project discovery deliberately never waits for the full library session scan:
+// the groups are projected from the already-published index snapshot plus the
+// cheap plan metadata, and the session work a stale or cold index needs is
+// handed to the background prewarm (see schedulePrewarm). A group that has never
+// been published therefore answers with its plan summary first and is replaced
+// by the exact visible count when the prewarm publishes and notifies.
 func (index *sidebarBoltIndex) listGroups(app *App, mode SidebarMode) (groups []SidebarGroup, err error) {
 	defer func() { err = index.recoverError(app, err) }()
 	defer func() {
@@ -413,29 +547,103 @@ func (index *sidebarBoltIndex) listGroups(app *App, mode SidebarMode) (groups []
 	if err != nil {
 		return nil, err
 	}
-	if err := index.syncPlans(app, plans); err != nil {
-		return nil, err
-	}
-	unlock := index.lockPlans(app, plans)
-	defer unlock()
-	stats, err := index.groupStats(app, plans, mode)
+	index.schedulePrewarm(app, plans)
+	stats, published, err := index.groupStats(app, plans, mode)
 	if err != nil {
 		return nil, err
 	}
 	groups = []SidebarGroup{}
 	for _, plan := range plans {
 		stat := stats[plan.group.ID]
+		known := published[plan.group.ID] || plan.crew
 		// Projects keep empty groups visible so the registered workspace list
 		// never collapses to nothing; Rooms/Assistants hide groups with no
-		// matching sessions.
-		if mode != SidebarProjects && stat.count == 0 {
+		// matching session in the published snapshot.
+		if mode != SidebarProjects && (!known || stat.count == 0) {
 			continue
 		}
 		group := plan.group
-		group.SessionCount, group.LastActivityAt = stat.count, stat.last
+		// A group with no published snapshot keeps the plan summary, so the first
+		// paint of a cold or reset index still shows project identity, visibility
+		// and order instead of an empty loading list.
+		if known {
+			group.SessionCount, group.LastActivityAt = stat.count, stat.last
+		}
 		groups = append(groups, group)
 	}
 	return groups, nil
+}
+
+// schedulePrewarm hands the session index work behind the group list to the
+// background. It never blocks the caller: a round already in flight absorbs this
+// request and re-runs once more with the newest plan set.
+func (index *sidebarBoltIndex) schedulePrewarm(app *App, plans []sidebarGroupPlan) {
+	if app == nil || len(plans) == 0 {
+		return
+	}
+	if index.prewarm != nil {
+		index.prewarm(app, plans)
+		return
+	}
+	state := index.state(app)
+	if !state.warm.request(plans) {
+		return
+	}
+	go index.prewarmLoop(app, state, plans)
+}
+
+func (index *sidebarBoltIndex) prewarmLoop(app *App, state *sidebarBoltAppState, plans []sidebarGroupPlan) {
+	for {
+		published, err := index.syncPlansMode(app, plans, true, state.warm.isStopped)
+		failureChanged := false
+		switch {
+		case errors.Is(err, errSidebarPrewarmAborted):
+			// Shutdown or a derived-index reset asked the round to yield.
+		case err != nil:
+			// The round kept every directory signature it did not reach, so the
+			// next request (frontend refresh, file event or user retry) re-syncs
+			// exactly what failed instead of leaving a half-built index.
+			slog.Warn("desktop: sidebar index prewarm failed", "err", err)
+			failureChanged = state.warm.setError(err)
+		default:
+			failureChanged = state.warm.setError(nil)
+		}
+		if published || failureChanged {
+			index.notify(app)
+		}
+		next, more := state.warm.finishRound()
+		if !more {
+			return
+		}
+		plans = next
+	}
+}
+
+// waitPrewarm blocks until no prewarm round is running or queued. Production
+// callers never wait; tests use it to make the background path deterministic.
+func (index *sidebarBoltIndex) waitPrewarm(app *App) {
+	if state := index.lookupState(app); state != nil {
+		state.warm.wait()
+	}
+}
+
+func (warm *sidebarWarmState) wait() {
+	for {
+		warm.mu.Lock()
+		if !warm.running {
+			warm.mu.Unlock()
+			return
+		}
+		idle := warm.idle
+		warm.mu.Unlock()
+		<-idle
+	}
+}
+
+func (index *sidebarBoltIndex) lookupState(app *App) *sidebarBoltAppState {
+	index.mu.Lock()
+	defer index.mu.Unlock()
+	return index.states[app]
 }
 
 func (index *sidebarBoltIndex) listSessions(app *App, query SidebarSessionQuery) (page SidebarSessionPage, err error) {
@@ -542,6 +750,11 @@ func (index *sidebarBoltIndex) search(app *App, request SidebarSearchRequest) (p
 // listSessions and search; the frontend retries those to trigger a real re-scan.
 func (index *sidebarBoltIndex) listIssues(app *App, mode SidebarMode) (issues []SidebarIssue, err error) {
 	defer func() { err = index.recoverError(app, err) }()
+	if state := index.lookupState(app); state != nil {
+		if warmErr := state.warm.lastError(); warmErr != nil {
+			return nil, fmt.Errorf("sidebar index refresh failed; retry: %w", warmErr)
+		}
+	}
 	plans, err := index.source.plans(app)
 	if err != nil {
 		return nil, err
@@ -614,6 +827,17 @@ func (index *sidebarBoltIndex) refreshIssues(app *App, mode SidebarMode) (issues
 	if err != nil {
 		return nil, err
 	}
+	if state := index.lookupState(app); state != nil && state.warm.lastError() != nil {
+		// A failed background round can have no persisted sidecar issue (e.g.
+		// a directory or transaction failed). Retry the round from this same UI.
+		index.waitPrewarm(app)
+		err := index.syncPlans(app, plans)
+		state.warm.setError(err)
+		if err != nil {
+			return nil, err
+		}
+		return index.listIssues(app, mode)
+	}
 	planByID := make(map[string]sidebarGroupPlan, len(plans))
 	for _, plan := range plans {
 		planByID[plan.group.ID] = plan
@@ -664,8 +888,14 @@ func (index *sidebarBoltIndex) refreshIssues(app *App, mode SidebarMode) (issues
 	return index.listIssues(app, mode)
 }
 
+// errSidebarPrewarmAborted is the cooperative stop of a background round: the
+// caller asked the index to yield (shutdown or derived-index reset), so the
+// interrupted sync is not a failure and must not be logged as one.
+var errSidebarPrewarmAborted = errors.New("sidebar prewarm aborted")
+
 func (index *sidebarBoltIndex) syncPlans(app *App, plans []sidebarGroupPlan) error {
-	return index.syncPlansMode(app, plans, true)
+	_, err := index.syncPlansMode(app, plans, true, nil)
+	return err
 }
 
 // syncPlansForSearch applies cheap directory and dirty-signal changes but does
@@ -673,12 +903,20 @@ func (index *sidebarBoltIndex) syncPlans(app *App, plans []sidebarGroupPlan) err
 // Normal sidebar list refreshes still perform that audit and repair any missed
 // filesystem notifications, preserving eventual consistency.
 func (index *sidebarBoltIndex) syncPlansForSearch(app *App, plans []sidebarGroupPlan) error {
-	return index.syncPlansMode(app, plans, false)
+	_, err := index.syncPlansMode(app, plans, false, nil)
+	return err
 }
 
-func (index *sidebarBoltIndex) syncPlansMode(app *App, plans []sidebarGroupPlan, allowAudit bool) error {
+// syncPlansMode syncs every plan and reports whether any of them published a new
+// generation, which is what tells an index mutation apart from a no-op audit. A
+// non-nil stop lets a background round yield between plans.
+func (index *sidebarBoltIndex) syncPlansMode(app *App, plans []sidebarGroupPlan, allowAudit bool, stop func() bool) (bool, error) {
+	type sidebarSyncResult struct {
+		published bool
+		err       error
+	}
 	jobs := make(chan sidebarGroupPlan)
-	errs := make(chan error, len(plans))
+	results := make(chan sidebarSyncResult, len(plans))
 	var wait sync.WaitGroup
 	workers := min(len(plans), maxSidebarLoadConcurrency)
 	for range workers {
@@ -689,7 +927,12 @@ func (index *sidebarBoltIndex) syncPlansMode(app *App, plans []sidebarGroupPlan,
 				if plan.crew {
 					continue
 				}
-				errs <- index.syncPlan(app, plan, allowAudit)
+				if stop != nil && stop() {
+					results <- sidebarSyncResult{err: errSidebarPrewarmAborted}
+					continue
+				}
+				published, err := index.syncPlan(app, plan, allowAudit)
+				results <- sidebarSyncResult{published: published, err: err}
 			}
 		}()
 	}
@@ -698,13 +941,23 @@ func (index *sidebarBoltIndex) syncPlansMode(app *App, plans []sidebarGroupPlan,
 	}
 	close(jobs)
 	wait.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			return err
+	close(results)
+	published := false
+	var failures []error
+	for result := range results {
+		published = published || result.published
+		if result.err != nil {
+			failures = append(failures, result.err)
 		}
 	}
-	return index.pruneOrphanIssues(app)
+	if len(failures) > 0 {
+		sort.Slice(failures, func(i, j int) bool { return failures[i].Error() < failures[j].Error() })
+		return published, errors.Join(failures...)
+	}
+	if err := index.pruneOrphanIssues(app); err != nil {
+		return published, err
+	}
+	return published, nil
 }
 
 // pruneOrphanIssues deletes derived issues whose group is no longer in the
@@ -813,26 +1066,33 @@ func (index *sidebarBoltIndex) markAudited(app *App, dir string) {
 	index.dirtyMu.Unlock()
 }
 
-func (index *sidebarBoltIndex) syncPlan(app *App, plan sidebarGroupPlan, allowAudit bool) error {
+// syncPlan syncs one plan and reports whether it published a new generation.
+func (index *sidebarBoltIndex) syncPlan(app *App, plan sidebarGroupPlan, allowAudit bool) (bool, error) {
 	// Crew is a virtual routing view over sessions indexed by their owning
 	// global/project plans. Scanning its union of directories as another owner
 	// would let an invisible Crew row delete the canonical project row.
 	if plan.crew {
-		return nil
+		return false, nil
 	}
 	lock := index.planLock(app, plan.group.ID)
 	lock.Lock()
 	defer lock.Unlock()
 	state, err := index.open(app)
 	if err != nil {
-		return err
+		return false, err
 	}
+	// The class stamp describes the plan, not the directory, so it is computed
+	// once per plan instead of once per directory.
+	classStamp := index.source.stamp(app, plan)
+	published := false
 	for _, dir := range plan.dirs {
-		if err := index.syncDir(app, state.db, plan, dir, allowAudit); err != nil {
-			return err
+		changed, err := index.syncDir(app, state.db, plan, dir, classStamp, allowAudit)
+		published = published || changed
+		if err != nil {
+			return published, err
 		}
 	}
-	return nil
+	return published, nil
 }
 
 type sidebarScannedFile struct {
@@ -845,53 +1105,69 @@ type sidebarScannedFile struct {
 	changed         bool
 }
 
-func (index *sidebarBoltIndex) syncDir(app *App, db *bolt.DB, plan sidebarGroupPlan, dir string, allowAudit bool) error {
+// sidebarDirSignatures is the persisted, cheap signature of one plan directory.
+type sidebarDirSignatures struct {
+	quick   string
+	class   string
+	pending bool
+}
+
+// sidebarDirStale is the single staleness decision shared by the scan path: a
+// changed directory signature, a changed plan class stamp, a due periodic audit
+// or an unfinished publish all require a re-scan. Pure, so the cheap check and
+// the scan cannot drift apart.
+func sidebarDirStale(quick, classStamp string, prior sidebarDirSignatures, audit bool) bool {
+	return prior.quick != quick || prior.class != classStamp || audit || prior.pending
+}
+
+func (index *sidebarBoltIndex) dirSignatures(db *bolt.DB, groupID, dir string) (sidebarDirSignatures, error) {
+	var prior sidebarDirSignatures
+	err := index.view(db, func(tx *bolt.Tx) error {
+		meta := tx.Bucket(sidebarBoltMeta)
+		prior.quick = string(meta.Get([]byte("dir:" + groupID + "\x00" + dir)))
+		prior.class = string(meta.Get([]byte("class:" + groupID)))
+		prior.pending = len(meta.Get([]byte("pending:"+groupID))) > 0
+		return nil
+	})
+	return prior, err
+}
+
+// syncDir re-scans one plan directory and reports whether it published a new
+// generation.
+func (index *sidebarBoltIndex) syncDir(app *App, db *bolt.DB, plan sidebarGroupPlan, dir, classStamp string, allowAudit bool) (bool, error) {
 	dirty, audit := index.dirSignal(app, dir)
 	if !allowAudit {
 		audit = false
 	}
 	quick := fmt.Sprintf("%s:%d", sidebarPathStamp(dir), dirty)
-	stampKey := []byte("dir:" + plan.group.ID + "\x00" + dir)
-	classKey := []byte("class:" + plan.group.ID)
-	classStamp := index.source.stamp(app, plan)
-	var priorQuick string
-	var priorClass string
-	var pending bool
-	if err := index.view(db, func(tx *bolt.Tx) error {
-		meta := tx.Bucket(sidebarBoltMeta)
-		priorQuick = string(meta.Get(stampKey))
-		priorClass = string(meta.Get(classKey))
-		pending = len(meta.Get([]byte("pending:"+plan.group.ID))) > 0
-		return nil
-	}); err != nil {
-		return err
+	prior, err := index.dirSignatures(db, plan.group.ID, dir)
+	if err != nil {
+		return false, err
 	}
-	if priorQuick == quick && priorClass == classStamp && !audit && !pending {
-		return nil
+	if !sidebarDirStale(quick, classStamp, prior, audit) {
+		return false, nil
 	}
-	for attempt := 0; attempt < 3; attempt++ {
-		scanned, err := index.scanSidebarDir(plan, dir, db)
-		if err != nil {
-			return err
+	scanned, err := index.scanSidebarDir(plan, dir, db)
+	if err != nil {
+		return false, err
+	}
+	// Publish the observed snapshot even while sessions are being written. Keep
+	// the START signature: writes during the scan must make the next refresh
+	// stale. Requiring a quiet directory starves large, continuously active ones.
+	published, err := index.applySidebarScan(db, plan.group.ID, dir, quick, classStamp, prior.class != classStamp, scanned)
+	if err != nil {
+		return false, fmt.Errorf("update sidebar index: %w", err)
+	}
+	if published {
+		if err := index.pruneGroupGenerations(app, db, plan.group.ID); err != nil {
+			return published, fmt.Errorf("prune sidebar index generations: %w", err)
 		}
-		endDirty, _ := index.dirSignal(app, dir)
-		if end := fmt.Sprintf("%s:%d", sidebarPathStamp(dir), endDirty); end != quick {
-			quick = end
-			continue
-		}
-		changed, err := index.applySidebarScan(db, plan.group.ID, dir, quick, classStamp, priorClass != classStamp, scanned)
-		if err != nil {
-			return fmt.Errorf("update sidebar index: %w", err)
-		}
-		if changed {
-			if err := index.pruneGroupGenerations(app, db, plan.group.ID); err != nil {
-				return fmt.Errorf("prune sidebar index generations: %w", err)
-			}
-		}
+	}
+	endDirty, _ := index.dirSignal(app, dir)
+	if end := fmt.Sprintf("%s:%d", sidebarPathStamp(dir), endDirty); end == quick {
 		index.markAudited(app, dir)
-		return nil
 	}
-	return errors.New("session directory changed while indexing; retry")
+	return published, nil
 }
 
 func (index *sidebarBoltIndex) scanSidebarDir(plan sidebarGroupPlan, dir string, db *bolt.DB) ([]sidebarScannedFile, error) {
@@ -918,7 +1194,7 @@ func (index *sidebarBoltIndex) scanSidebarDir(plan sidebarGroupPlan, dir string,
 	}
 	result := make([]sidebarScannedFile, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" || strings.HasSuffix(entry.Name(), ".events.jsonl") {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -1578,7 +1854,25 @@ func (index *sidebarBoltIndex) queryComponent(app *App, db *bolt.DB, plans []sid
 		}
 		return nil
 	})
-	return hex.EncodeToString(hash.Sum(nil)[:12]), err
+	if err != nil {
+		return "", err
+	}
+	// Live runtime state is cached with the query (it decorates rows at read
+	// time), so it must invalidate the cached query without invalidating the
+	// persisted index. Computed outside the read transaction: it takes App locks.
+	sidebarRuntimeStamp(app, plans, hash)
+	return hex.EncodeToString(hash.Sum(nil)[:12]), nil
+}
+
+// sidebarRuntimeStamp folds the live runtime projection of the given plans into a
+// query component. It is the in-memory counterpart of the persisted class stamp:
+// runtime state refreshes the read projection, never the on-disk index.
+func sidebarRuntimeStamp(app *App, plans []sidebarGroupPlan, hash io.Writer) {
+	for _, plan := range plans {
+		for _, runtime := range sidebarRuntimeRows(app, plan) {
+			fmt.Fprintf(hash, "%s:%s:%s:%t:%t:%s:%d\x00", runtime.ID, runtime.SessionPath, runtime.Status, runtime.Open, runtime.Running, runtime.Title, runtime.TurnStartedAt)
+		}
+	}
 }
 
 func (index *sidebarBoltIndex) rememberQuery(state *sidebarBoltAppState, key string, q *sidebarBoltQuery) error {
@@ -2011,22 +2305,36 @@ type sidebarGroupStat struct {
 	last  int64
 }
 
-func (index *sidebarBoltIndex) groupStats(app *App, plans []sidebarGroupPlan, mode SidebarMode) (map[string]sidebarGroupStat, error) {
+// groupStats folds the persisted rows into one count per group for the given
+// mode. It reports, per group, whether a generation was ever published, which is
+// how the group list tells "published and genuinely empty" apart from "never
+// indexed yet" without scanning anything.
+//
+// It reads rows, order and meta in a single Bolt view, so a concurrent prewarm
+// publish can never tear the counters. No plan lock is taken: the group list must
+// not queue behind the very background sync it is decoupled from, and the
+// published-snapshot + single-view read already keep this projection consistent.
+func (index *sidebarBoltIndex) groupStats(app *App, plans []sidebarGroupPlan, mode SidebarMode) (map[string]sidebarGroupStat, map[string]bool, error) {
 	state, err := index.open(app)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	stats := map[string]sidebarGroupStat{}
+	published := map[string]bool{}
 	crewRoutes := index.routes()
 	hidden, err := sidebarRecoveryAncestors(state.db)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	err = index.view(state.db, func(tx *bolt.Tx) error {
 		rows, order := tx.Bucket(sidebarBoltRows), tx.Bucket(sidebarBoltOrder)
+		meta := tx.Bucket(sidebarBoltMeta)
 		groups := make(map[string]sidebarGroupPlan, len(plans))
 		for _, plan := range plans {
 			groups[plan.group.ID] = plan
+			if len(meta.Get([]byte("generation:"+plan.group.ID))) > 0 {
+				published[plan.group.ID] = true
+			}
 		}
 		cursor := order.Cursor()
 		for _, path := cursor.First(); path != nil; _, path = cursor.Next() {
@@ -2048,7 +2356,7 @@ func (index *sidebarBoltIndex) groupStats(app *App, plans []sidebarGroupPlan, mo
 		}
 		return nil
 	})
-	return stats, err
+	return stats, published, err
 }
 
 func sidebarBoltOrderKey(groupID string, activity int64, id, path string) []byte {

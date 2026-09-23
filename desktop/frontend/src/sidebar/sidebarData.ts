@@ -209,7 +209,7 @@ function submitIssues(mode: SidebarQueryMode, kind: "load" | "refresh"): Promise
         const store = useSidebarStore.getState();
         if (call.status === "dropped" || !chain.live?.()) return false;
         if (call.status === "error") {
-          store.failIssues(seq);
+          store.failIssues(seq, errorText(call.error));
           return false;
         }
         store.receiveIssues(seq, mode, call.value ?? []);

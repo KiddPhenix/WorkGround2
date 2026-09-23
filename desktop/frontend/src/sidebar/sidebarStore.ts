@@ -180,12 +180,13 @@ interface SidebarState {
   searchPage: SidebarPageState<SidebarSearchItem>;
   issues: SidebarIssue[];
   issuesStatus: "idle" | "loading" | "ready" | "error";
+  issuesError: string;
   issuesRequestSeq: number;
   issuesScope: string;
   issuesDataScope: string;
   beginIssues: (scope: string) => number;
   receiveIssues: (seq: number, scope: string, issues: SidebarIssue[]) => void;
-  failIssues: (seq: number) => void;
+  failIssues: (seq: number, error?: string) => void;
   setMode: (mode: SidebarMode) => void;
   setSearchQuery: (query: string) => void;
   setSearchFilter: (filter: SidebarSearchFilter) => void;
@@ -221,6 +222,7 @@ export const useSidebarStore = create<SidebarState>((set, get) => ({
   searchPage: emptySidebarPage(),
   issues: [],
   issuesStatus: "idle",
+  issuesError: "",
   issuesRequestSeq: 0,
   issuesScope: "",
   issuesDataScope: "",
@@ -230,6 +232,7 @@ export const useSidebarStore = create<SidebarState>((set, get) => ({
       issuesStatus: "loading",
       issuesRequestSeq: seq,
       issuesScope: scope,
+      issuesError: "",
       // Switching to a different view must not show the previous view's issues.
       issues: state.issuesDataScope === scope ? state.issues : [],
     }));
@@ -238,9 +241,10 @@ export const useSidebarStore = create<SidebarState>((set, get) => ({
   receiveIssues: (seq, scope, issues) => set((state) => (state.issuesRequestSeq !== seq || state.issuesScope !== scope) ? state : ({
     issues,
     issuesStatus: "ready",
+    issuesError: "",
     issuesDataScope: scope,
   })),
-  failIssues: (seq) => set((state) => state.issuesRequestSeq !== seq ? state : ({ issuesStatus: "error" })),
+  failIssues: (seq, error = "") => set((state) => state.issuesRequestSeq !== seq ? state : ({ issuesStatus: "error", issuesError: error })),
   setMode: (activeMode) => {
     save(MODE_KEY, activeMode);
     set({ activeMode });

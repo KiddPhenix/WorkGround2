@@ -110,6 +110,9 @@ func TestSidebarBoltIndexPagesRealSidecarsAndKeepsOrphanWork(t *testing.T) {
 	sidebarDBPath := filepath.Join(t.TempDir(), "sidebar.db")
 	index := newSidebarBoltIndex(func(*App) string { return sidebarDBPath })
 	index.source = source
+	// The group list no longer syncs on its own: this test drives the scan
+	// through the session pages and asserts the summary does not page rows.
+	index.prewarm = func(*App, []sidebarGroupPlan) {}
 	app := &App{}
 	t.Cleanup(func() { _ = index.close(app) })
 
@@ -205,8 +208,12 @@ func TestSidebarProjectBadgeUsesVisibleSessionCount(t *testing.T) {
 	source := &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_wg2ads": "v1"}}
 	index := newSidebarBoltIndex(func(*App) string { return filepath.Join(t.TempDir(), "sidebar.db") })
 	index.source = source
+	// The badge must report the published visible count, so this test publishes
+	// the rows synchronously instead of racing the background prewarm.
+	index.prewarm = func(*App, []sidebarGroupPlan) {}
 	app := &App{}
 	t.Cleanup(func() { _ = index.close(app) })
+	testSidebarSyncNow(t, index, app)
 
 	groups, err := index.listGroups(app, SidebarProjects)
 	if err != nil || len(groups) != 1 {
@@ -348,6 +355,8 @@ func TestSidebarCollapsesRecoveryChainInGroupCount(t *testing.T) {
 	index := newSidebarBoltIndex(func(*App) string { return filepath.Join(dbDir, "sidebar.db") })
 	project := testSidebarProjectPlan("project_rooms_chain", "Rooms", `D:\sessions`, nil)
 	index.source = &sidebarTestSource{plansValue: []sidebarGroupPlan{project}, stamps: map[string]string{"project_rooms_chain": "v1"}}
+	// Rows are published directly below; the group list only reads them.
+	index.prewarm = func(*App, []sidebarGroupPlan) {}
 	app := &App{}
 	t.Cleanup(func() { _ = index.close(app) })
 	state, err := index.open(app)
@@ -666,6 +675,9 @@ func TestSidebarBoltHighWaterResetsDerivedIndexAndAllowsRetry(t *testing.T) {
 	index := newSidebarBoltIndex(func(*App) string { return dbPath })
 	plan := sidebarGroupPlan{group: SidebarGroup{ID: "project_capacity", Kind: "project", Label: "Capacity"}, scope: "project", titles: map[string]string{}, titleSource: map[string]string{}, createdAt: map[string]int64{}, pinned: map[string]bool{}}
 	index.source = &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_capacity": "v1"}}
+	// The capacity reset must be observed without a concurrent prewarm syncing the
+	// database that is being removed.
+	index.prewarm = func(*App, []sidebarGroupPlan) {}
 	app := &App{}
 	state, err := index.open(app)
 	if err != nil {
@@ -929,6 +941,8 @@ func TestSidebarBoltClassifiesLegacySourcesAndCrew(t *testing.T) {
 	project := sidebarGroupPlan{group: SidebarGroup{ID: "project_modes", Kind: "project", Label: "Modes"}, scope: "project", titles: map[string]string{}, titleSource: map[string]string{}, createdAt: map[string]int64{}, pinned: map[string]bool{}}
 	crew := sidebarGroupPlan{group: SidebarGroup{ID: "crew_folder", Kind: "crew", Label: "Crew"}, scope: "global", crew: true, titles: map[string]string{}, titleSource: map[string]string{}, createdAt: map[string]int64{}, pinned: map[string]bool{}}
 	index.source = &sidebarTestSource{plansValue: []sidebarGroupPlan{project, crew}, stamps: map[string]string{"project_modes": "v1", "crew_folder": "v1"}}
+	// This test counts Bolt views, so the asynchronous prewarm must not add any.
+	index.prewarm = func(*App, []sidebarGroupPlan) {}
 	app := &App{}
 	t.Cleanup(func() { _ = index.close(app) })
 	state, err := index.open(app)
@@ -968,6 +982,10 @@ func TestSidebarBoltClassifiesLegacySourcesAndCrew(t *testing.T) {
 	}
 	if viewCount != 1 {
 		t.Fatalf("assistant group stats scanned rows %d times, want once", viewCount)
+	}
+	projectGroups, err := index.listGroups(app, SidebarProjects)
+	if err != nil || len(projectGroups) != 2 || projectGroups[1].ID != "crew_folder" || projectGroups[1].SessionCount != 1 {
+		t.Fatalf("crew group count=%+v err=%v", projectGroups, err)
 	}
 	projectPage, err := index.listSessions(app, SidebarSessionQuery{Mode: SidebarProjects, GroupID: "project_modes"})
 	if err != nil || projectPage.Total == nil || *projectPage.Total != 1 || len(projectPage.Items) != 1 || projectPage.Items[0].ID != "normal" {
@@ -1598,7 +1616,32 @@ func testSidebarBoltIndex(t *testing.T, source sidebarPlanSource) *sidebarBoltIn
 	dbPath := filepath.Join(t.TempDir(), "sidebar.db")
 	index := newSidebarBoltIndex(func(*App) string { return dbPath })
 	index.source = source
+	// The group list hands its session work to the background prewarm. Tests that
+	// assert exact counts, replaced index seams or a specific number of Bolt views
+	// take the driver seat instead: they suppress the async path here and call
+	// testSidebarSyncNow explicitly. The asynchronous contract has its own tests.
+	index.prewarm = func(*App, []sidebarGroupPlan) {}
 	return index
+}
+
+// testSidebarSyncNow runs one index sync on the calling goroutine, so assertions
+// about exact post-sync counts do not depend on prewarm timing.
+func testSidebarSyncNow(t *testing.T, index *sidebarBoltIndex, app *App) {
+	t.Helper()
+	plans, err := index.source.plans(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.syncPlans(app, plans); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// testSidebarWaitPrewarm waits for the background prewarm to go idle, so a test
+// that exercises the real asynchronous path observes a settled index.
+func testSidebarWaitPrewarm(t *testing.T, index *sidebarBoltIndex, app *App) {
+	t.Helper()
+	index.waitPrewarm(app)
 }
 
 func testSidebarReadGeneration(t *testing.T, index *sidebarBoltIndex, app *App, groupID string) uint64 {
@@ -1631,6 +1674,7 @@ func TestSidebarBoltIsolatesBrokenSidecarAndKeepsHealthyRooms(t *testing.T) {
 	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{plan}, stamps: map[string]string{"project_rooms": "v1"}})
 	app := &App{}
 	t.Cleanup(func() { _ = index.close(app) })
+	testSidebarSyncNow(t, index, app)
 
 	groups, err := index.listGroups(app, SidebarRooms)
 	if err != nil || len(groups) != 1 || groups[0].ID != "project_rooms" || groups[0].SessionCount != 1 {
@@ -1750,6 +1794,7 @@ func TestSidebarBoltBrokenProjectSidecarDoesNotAffectRooms(t *testing.T) {
 	index := testSidebarBoltIndex(t, &sidebarTestSource{plansValue: []sidebarGroupPlan{brokenPlan, roomPlan}, stamps: map[string]string{"project_broken": "v1", "project_room": "v1"}})
 	app := &App{}
 	t.Cleanup(func() { _ = index.close(app) })
+	testSidebarSyncNow(t, index, app)
 
 	groups, err := index.listGroups(app, SidebarRooms)
 	if err != nil || len(groups) != 1 || groups[0].ID != "project_room" || groups[0].SessionCount != 1 {

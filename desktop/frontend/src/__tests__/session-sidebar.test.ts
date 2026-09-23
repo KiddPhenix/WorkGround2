@@ -10,6 +10,17 @@ import { emptySidebarPage, mergeSearchItems, mergeSidebarSessions, pruneSidebarP
 import type { SidebarPage, SidebarSearchItem, SidebarSession } from "../sidebar/types";
 
 const now = new Date(2026, 8, 3, 12, 0, 0).getTime();
+{
+  const store = useSidebarStore.getState();
+  const first = store.beginIssues("projects");
+  store.failIssues(first, "index read failed");
+  assert.equal(useSidebarStore.getState().issuesError, "index read failed");
+  const retry = store.beginIssues("projects");
+  store.failIssues(first, "late failure");
+  assert.equal(useSidebarStore.getState().issuesError, "", "late failure cannot overwrite retry state");
+  store.receiveIssues(retry, "projects", []);
+  assert.equal(useSidebarStore.getState().issuesError, "", "successful retry clears the reason");
+}
 assert.equal(formatSidebarRelativeTime(undefined, now), "—");
 assert.equal(formatSidebarRelativeTime(now - 20_000, now), "刚刚");
 assert.equal(formatSidebarRelativeTime(now - 5 * 60_000, now), "5分钟");

@@ -140,9 +140,11 @@ func (source sidebarDiskIndexSource) stamp(app *App, plan sidebarGroupPlan) stri
 		}
 		fmt.Fprintf(hash, "%s:%d:%d\x00", path, info.Size(), info.ModTime().UnixNano())
 	}
-	for _, runtime := range sidebarRuntimeRows(app, plan) {
-		fmt.Fprintf(hash, "%s:%s:%s:%t:%t:%s:%d\x00", runtime.ID, runtime.SessionPath, runtime.Status, runtime.Open, runtime.Running, runtime.Title, runtime.TurnStartedAt)
-	}
+	// Live runtime state (open/running/status/turn start) is deliberately NOT part
+	// of this on-disk signature. Runtime rows belong to the read projection
+	// (decorateSidebarBoltRow), so folding them in only let a turn-status flicker
+	// invalidate a whole persisted generation and force a re-scan and rebuild
+	// behind the next sidebar request.
 	return hex.EncodeToString(hash.Sum(nil)[:12])
 }
 

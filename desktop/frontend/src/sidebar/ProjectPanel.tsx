@@ -46,6 +46,7 @@ export function ProjectPanel(props: ProjectPanelProps) {
   const toggleGroup = useSidebarStore((state) => state.toggleGroup);
   const issues = useSidebarStore((state) => state.issues);
   const issuesStatus = useSidebarStore((state) => state.issuesStatus);
+  const issuesError = useSidebarStore((state) => state.issuesError);
   const issuesScope = useSidebarStore((state) => state.issuesScope);
 
   // Refresh visible rows before group discovery: a slow unrelated project must
@@ -156,7 +157,7 @@ export function ProjectPanel(props: ProjectPanelProps) {
         issuesStatus === "error" ? (
           <div className="session-sidebar__issues" role="status">
             <AlertCircle size={14} aria-hidden="true" />
-            <span>无法加载会话索引状态</span>
+            <span title={issuesError || undefined}>无法加载会话索引状态</span>
             <button type="button" onClick={handleIssuesRetry}>重试</button>
           </div>
         ) : issues.length > 0 ? (
