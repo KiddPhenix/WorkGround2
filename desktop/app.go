@@ -315,6 +315,13 @@ type App struct {
 	iconWidgetState       desktopIconPersistedState
 	iconWidgetStateErr    error
 	iconWidgetWindowErr   error
+	// iconWidgetPendingRetains holds live tab IDs whose Session path was not
+	// available yet when their retention was requested. A live tab that has not
+	// been persisted is a normal transient state, never a global icon failure;
+	// the next snapshot or retain call completes the retention once the path
+	// exists and drops tabs that are gone. In-memory only: a restart re-requests
+	// the same retention through the widget entry path.
+	iconWidgetPendingRetains map[string]struct{}
 	// iconWidgetLastSnapshot is the exact authoritative projection most
 	// recently returned to the icon UI. Task-open actions reuse it under
 	// iconWidgetMu instead of rebuilding the Session tree on the click path.

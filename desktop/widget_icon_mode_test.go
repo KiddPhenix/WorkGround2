@@ -2341,6 +2341,126 @@ func TestRememberDesktopIconTaskRequiresWidgetModeAndKnownTab(t *testing.T) {
 	}
 }
 
+// unpersistedTaskTab is a live task tab whose Session path is not available
+// yet — the transient state of a normal tab whose background Controller build
+// has not persisted its Session file.
+func unpersistedTaskTab(id string) *WorkspaceTab {
+	return &WorkspaceTab{ID: id, Scope: "global", disabledMCP: map[string]ServerView{}}
+}
+
+// A live task that has not been persisted yet carries no durable icon identity.
+// That normal transient state must stay local: it may not raise the global icon
+// state error that every snapshot and the session rail surface.
+func TestRememberDesktopIconTaskDefersMissingSessionPath(t *testing.T) {
+	tab := unpersistedTaskTab("tab_pending")
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+
+	app.rememberDesktopIconTask(tab.ID)
+
+	if app.iconWidgetStateErr != nil {
+		t.Fatalf("unpersisted task raised a global icon-state error: %v", app.iconWidgetStateErr)
+	}
+	if len(app.iconWidgetState.Kept) != 0 {
+		t.Fatalf("retained an icon without a durable identity: %+v", app.iconWidgetState.Kept)
+	}
+	if _, deferred := app.iconWidgetPendingRetains[tab.ID]; !deferred {
+		t.Fatalf("retention was not deferred: %+v", app.iconWidgetPendingRetains)
+	}
+	if _, err := app.RecentSessions(RecentSessionsRequest{}); err != nil {
+		t.Fatalf("session rail reported the deferred retention as an error: %v", err)
+	}
+}
+
+// The deferred retention must complete on its own once the Session path exists,
+// without a second user action, and repeating it stays idempotent.
+func TestDeferredDesktopIconRetainCompletesAfterLateSessionPath(t *testing.T) {
+	tab := unpersistedTaskTab("tab_pending")
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+	app.rememberDesktopIconTask(tab.ID)
+
+	sp := agent.NewSessionPath(t.TempDir(), "late")
+	tab.SessionPath = sp
+	snapshot := app.GetDesktopIconSnapshot()
+
+	itemID := desktopIconKeptID(sp)
+	if _, kept := app.iconWidgetState.Kept[itemID]; !kept {
+		t.Fatalf("late Session path was not retained: %+v", app.iconWidgetState.Kept)
+	}
+	if _, deferred := app.iconWidgetPendingRetains[tab.ID]; deferred {
+		t.Fatalf("completed retention stayed deferred: %+v", app.iconWidgetPendingRetains)
+	}
+	if findDesktopIconItem(snapshot.Items, itemID) == nil {
+		t.Fatalf("retained icon missing from the polling snapshot: %+v", snapshot.Items)
+	}
+
+	first := app.iconWidgetState.Kept[itemID]
+	app.GetDesktopIconSnapshot()
+	app.rememberDesktopIconTask(tab.ID)
+	if len(app.iconWidgetState.Kept) != 1 {
+		t.Fatalf("repeated retention duplicated the icon: %+v", app.iconWidgetState.Kept)
+	}
+	if got := app.iconWidgetState.Kept[itemID]; got != first {
+		t.Fatalf("repeated retention changed the kept entry: %+v, want %+v", got, first)
+	}
+}
+
+// Entering icon mode retains the active Session. An active Session that is not
+// persisted yet is the exact transient state that used to surface the global
+// error toast; the entry must stay clean and complete on the next entry
+// snapshot poll once the path exists.
+func TestEnterWidgetModeDefersUnpersistedActiveSession(t *testing.T) {
+	tab := unpersistedTaskTab("tab_pending")
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+
+	app.retainActiveSessionForWidgetEnter(true)
+
+	if app.iconWidgetStateErr != nil {
+		t.Fatalf("entering icon mode raised a global icon-state error: %v", app.iconWidgetStateErr)
+	}
+	sp := agent.NewSessionPath(t.TempDir(), "entry")
+	tab.SessionPath = sp
+	itemID := desktopIconKeptID(sp)
+	if findDesktopIconItem(app.GetDesktopIconEntrySnapshot().Items, itemID) == nil {
+		t.Fatalf("entry snapshot poll did not complete the deferred retention: %+v", app.iconWidgetState.Kept)
+	}
+	if _, deferred := app.iconWidgetPendingRetains[tab.ID]; deferred {
+		t.Fatalf("completed retention stayed deferred: %+v", app.iconWidgetPendingRetains)
+	}
+}
+
+// A deferred retention that can never apply again — the tab became a delegation
+// session or was closed — is dropped instead of retrying forever.
+func TestDeferredDesktopIconRetainDropsUnretainableTabs(t *testing.T) {
+	tab := unpersistedTaskTab("tab_pending")
+	closed := unpersistedTaskTab("tab_closed")
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.tabs[closed.ID] = closed
+	app.widgetMode = true
+
+	app.rememberDesktopIconTask(tab.ID)
+	app.rememberDesktopIconTask(closed.ID)
+	if len(app.iconWidgetPendingRetains) != 2 {
+		t.Fatalf("deferred retentions = %+v, want both live tabs", app.iconWidgetPendingRetains)
+	}
+
+	tab.sessionKind = agent.SessionKindCollaboration
+	delete(app.tabs, closed.ID)
+	app.GetDesktopIconSnapshot()
+
+	if len(app.iconWidgetPendingRetains) != 0 {
+		t.Fatalf("unretainable retentions were kept: %+v", app.iconWidgetPendingRetains)
+	}
+	if len(app.iconWidgetState.Kept) != 0 {
+		t.Fatalf("unretainable Sessions were retained: %+v", app.iconWidgetState.Kept)
+	}
+	if app.iconWidgetStateErr != nil {
+		t.Fatalf("dropping deferred retentions raised a global error: %v", app.iconWidgetStateErr)
+	}
+}
+
 func TestDesktopIconRemoveDeletesRetainedIcon(t *testing.T) {
 	tab, sp := completionTestTab(t, 0)
 	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})

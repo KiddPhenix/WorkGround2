@@ -695,6 +695,7 @@ func (a *App) rememberDesktopIconTask(tabID string) {
 	a.iconWidgetMu.Lock()
 	defer a.iconWidgetMu.Unlock()
 	a.loadDesktopIconStateLocked()
+	a.flushDesktopIconRetainsLocked()
 	a.rememberDesktopIconTaskLocked(tabID)
 }
 
@@ -713,6 +714,11 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 		}
 	}
 	a.mu.RUnlock()
+	// The tab lookup is authoritative from here: this request stops being
+	// pending, and the empty-path branch below defers it again explicitly when
+	// the Session is still unpersisted. A tab that is gone simply drops out, so
+	// a closed tab never keeps retrying.
+	delete(a.iconWidgetPendingRetains, tabID)
 	if tab == nil {
 		return
 	}
@@ -723,8 +729,12 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 	sessionPath := strings.TrimSpace(meta.SessionPath)
 	id := desktopIconKeptID(sessionPath)
 	if id == "" {
-		a.iconWidgetStateErr = fmt.Errorf("retain desktop task %q: session path is required", meta.ID)
-		slog.Error("desktop: retain task icon without session path", "tabID", tabID)
+		// A live tab whose Session has not been persisted yet carries no durable
+		// identity to key the icon by. That is a normal transient state (the
+		// Session path is assigned by the background Controller build), so the
+		// retention is deferred instead of turning every later snapshot and the
+		// session rail into a global error.
+		a.deferDesktopIconRetainLocked(tabID)
 		return
 	}
 	summary, completionKey, completedAt := "", "", int64(0)
@@ -802,6 +812,45 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 	a.iconWidgetState.Kept[id] = entry
 	if err := a.saveDesktopIconStateLocked(); err != nil {
 		slog.Error("desktop: retain task icon", "tabID", tabID, "err", err)
+	}
+}
+
+// deferDesktopIconRetainLocked records a retention request whose Session path
+// is not available yet, so a live tab that has not been persisted keeps its
+// place in the icon area instead of failing. Repeating the same request is a
+// no-op; the next snapshot or retain call completes it. Callers hold
+// iconWidgetMu.
+func (a *App) deferDesktopIconRetainLocked(tabID string) {
+	if tabID == "" {
+		return
+	}
+	if a.iconWidgetPendingRetains == nil {
+		a.iconWidgetPendingRetains = map[string]struct{}{}
+	}
+	if _, deferred := a.iconWidgetPendingRetains[tabID]; deferred {
+		return
+	}
+	a.iconWidgetPendingRetains[tabID] = struct{}{}
+	slog.Debug("desktop: retained task icon deferred until its session path exists", "tabID", tabID)
+}
+
+// flushDesktopIconRetainsLocked retries every deferred retention through the
+// exact same idempotent path: a tab whose Session path now exists is retained,
+// one that is still unpersisted stays deferred, and one that became a
+// delegation session or was closed is dropped. Callers hold iconWidgetMu; the
+// pass is bounded by the deferred tabs and only writes when one became
+// retainable.
+func (a *App) flushDesktopIconRetainsLocked() {
+	if len(a.iconWidgetPendingRetains) == 0 {
+		return
+	}
+	tabIDs := make([]string, 0, len(a.iconWidgetPendingRetains))
+	for tabID := range a.iconWidgetPendingRetains {
+		tabIDs = append(tabIDs, tabID)
+	}
+	sort.Strings(tabIDs)
+	for _, tabID := range tabIDs {
+		a.rememberDesktopIconTaskLocked(tabID)
 	}
 }
 
@@ -1055,6 +1104,7 @@ func (a *App) GetDesktopIconSnapshot() DesktopIconSnapshot {
 	a.iconWidgetMu.Lock()
 	defer a.iconWidgetMu.Unlock()
 	a.loadDesktopIconStateLocked()
+	a.flushDesktopIconRetainsLocked()
 	return a.desktopIconSnapshotWithProjectTreeLocked(projectTree)
 }
 
@@ -1065,6 +1115,7 @@ func (a *App) GetDesktopIconEntrySnapshot() DesktopIconSnapshot {
 	a.iconWidgetMu.Lock()
 	defer a.iconWidgetMu.Unlock()
 	a.loadDesktopIconStateLocked()
+	a.flushDesktopIconRetainsLocked()
 	return a.desktopIconEntrySnapshotLocked()
 }
 
